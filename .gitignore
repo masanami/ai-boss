@@ -1,0 +1,22 @@
+# dependencies
+node_modules/
+
+# env / secrets
+.env
+.env.*
+!.env.example
+
+# build
+dist/
+build/
+
+# local data
+*.sqlite
+*.sqlite3
+*.db
+
+# logs
+*.log
+
+# OS
+.DS_Store
