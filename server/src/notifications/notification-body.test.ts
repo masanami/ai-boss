@@ -262,4 +262,70 @@ describe("generateNotificationBody", () => {
     expect(typeof body).toBe("string");
     expect(body.length).toBeGreaterThan(0);
   });
+
+  it("interpolates the task title into the deadline_overdue fallback template (added for the scheduler integration, Issue #38)", async () => {
+    createClaudeClientMock.mockImplementationOnce(() => {
+      throw new MissingApiKeyError();
+    });
+
+    const body = await generateNotificationBody(db, env, {
+      ruleType: "deadline_overdue",
+      escalationLevel: 1,
+      task: makeTask({ title: "見積書作成" }),
+      now,
+    });
+
+    expect(body).toContain("見積書作成");
+  });
+
+  it("falls back to a fixed morning_meeting template without a task (added for the scheduler integration, Issue #38)", async () => {
+    createClaudeClientMock.mockImplementationOnce(() => {
+      throw new MissingApiKeyError();
+    });
+
+    const body = await generateNotificationBody(db, env, {
+      ruleType: "morning_meeting",
+      escalationLevel: 1,
+      task: null,
+      now,
+    });
+
+    expect(body).toContain("朝会");
+  });
+
+  it("falls back to a fixed evening_meeting template without a task (added for the scheduler integration, Issue #38)", async () => {
+    createClaudeClientMock.mockImplementationOnce(() => {
+      throw new MissingApiKeyError();
+    });
+
+    const body = await generateNotificationBody(db, env, {
+      ruleType: "evening_meeting",
+      escalationLevel: 2,
+      task: null,
+      now,
+    });
+
+    expect(body).toContain("夕会");
+  });
+
+  it("produces different fallback text across escalation levels for the new deadline_overdue rule type", async () => {
+    createClaudeClientMock.mockImplementation(() => {
+      throw new MissingApiKeyError();
+    });
+
+    const l1 = await generateNotificationBody(db, env, {
+      ruleType: "deadline_overdue",
+      escalationLevel: 1,
+      task: makeTask(),
+      now,
+    });
+    const l3 = await generateNotificationBody(db, env, {
+      ruleType: "deadline_overdue",
+      escalationLevel: 3,
+      task: makeTask(),
+      now,
+    });
+
+    expect(l1).not.toBe(l3);
+  });
 });

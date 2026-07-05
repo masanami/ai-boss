@@ -1,5 +1,4 @@
 import { execFile as nodeExecFile } from "node:child_process";
-import { promisify } from "node:util";
 
 /**
  * macOS 通知アダプタ。`terminal-notifier` が利用可能ならそれを使い（クリックで
@@ -35,12 +34,34 @@ export interface SendNotificationResult {
 }
 
 /**
- * Real `execFile`, promisified, for production wiring (injected by the
- * scheduler ticket — out of scope here). Thin wrapping only, no branching
- * logic of its own, so it is intentionally left untested here (same
- * convention as `server/src/index.ts`).
+ * Hard timeout for the real system exec (added for the scheduler
+ * integration, Issue #38 self-review): without it, a hung/misbehaving
+ * `terminal-notifier`/`osascript` process would leave `sendNotification`'s
+ * promise pending forever. Combined with the scheduler's concurrency guard
+ * (`scheduler/scheduler-tick.ts`), an unresolved promise would keep that
+ * guard's "a tick is in flight" flag stuck permanently, silently and
+ * permanently halting all future ticks. `child_process.execFile` kills the
+ * process and invokes the callback with an error once `timeout` elapses.
  */
-export const nodeSystemExecFile: ExecFileFn = promisify(nodeExecFile);
+const EXEC_TIMEOUT_MS = 10_000;
+
+/**
+ * Real `execFile` for production wiring (injected by the scheduler —
+ * `scheduler/scheduler.ts`). Thin wrapping, no branching logic of its own,
+ * so it is intentionally left untested at the integration level here (same
+ * convention as `server/src/index.ts`) — the timeout behavior itself is
+ * covered by a dedicated unit test that mocks `node:child_process`.
+ */
+export const nodeSystemExecFile: ExecFileFn = (file, args) =>
+  new Promise((resolve, reject) => {
+    nodeExecFile(file, args, { timeout: EXEC_TIMEOUT_MS }, (err, stdout, stderr) => {
+      if (err) {
+        reject(err);
+        return;
+      }
+      resolve({ stdout, stderr });
+    });
+  });
 
 function buildTerminalNotifierArgs(payload: NotificationPayload): string[] {
   const args = ["-title", payload.title, "-message", payload.body];
