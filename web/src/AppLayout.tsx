@@ -1,4 +1,5 @@
 import { useState } from "react";
+import ChatView from "./ChatView";
 import ConnectionStatus from "./ConnectionStatus";
 import TaskBoard from "./TaskBoard";
 import { useHealthCheck } from "./use-health-check";
@@ -50,7 +51,7 @@ function AppLayout() {
         </nav>
         {activeView === "chat" ? (
           <main className="app-main" aria-label="ボスとの対話">
-            <p>ここにボスとの対話が表示されます（準備中）</p>
+            <ChatView />
           </main>
         ) : (
           <main className="app-main" aria-label="タスクボード">

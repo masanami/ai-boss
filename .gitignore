@@ -1,6 +1,9 @@
 # dependencies
 node_modules/
 
+# git worktrees (para-impl teammates)
+.worktrees/
+
 # env / secrets
 .env
 .env.*
