@@ -21,6 +21,14 @@ export const RULE_TYPES = [
   "avoidance",
   "break_overrun",
   "silence",
+  // Added for the scheduler integration (Issue #38): the detection engine
+  // (Issue #36) also fires deadline/meeting rules, which did not exist yet
+  // when this module was built (Issue #37). Additive only — the existing
+  // four are left unchanged (no renames) so this module's own tests and
+  // behavior are unaffected.
+  "deadline_overdue",
+  "morning_meeting",
+  "evening_meeting",
 ] as const;
 export type RuleType = (typeof RULE_TYPES)[number];
 
@@ -45,6 +53,9 @@ const RULE_TYPE_LABELS: Record<RuleType, string> = {
   avoidance: "回避",
   break_overrun: "休憩延伸",
   silence: "無音",
+  deadline_overdue: "締切超過",
+  morning_meeting: "朝会未実施",
+  evening_meeting: "夕会未実施",
 };
 
 const ESCALATION_LEVEL_LABELS: Record<EscalationLevel, string> = {
@@ -107,6 +118,21 @@ const FALLBACK_TEMPLATES: Record<
     1: () => "今何をやっている？進捗を教えてくれ。",
     2: () => "しばらく反応がないな。状況を報告しろ。",
     3: () => "長時間音沙汰なしだ。今すぐ状況を報告しろ。",
+  },
+  deadline_overdue: {
+    1: (title) => `${title}の締切を過ぎている。早めに片付けよう。`,
+    2: (title) => `${title}、締切をとっくに過ぎているぞ。早く終わらせろ。`,
+    3: (title) => `${title}の締切超過が長引いている。今すぐ片付けろ。`,
+  },
+  morning_meeting: {
+    1: () => "朝会の時間だ。今日の予定を報告してくれ。",
+    2: () => "朝会がまだだ。早く予定を報告しろ。",
+    3: () => "朝会を無視し続けているぞ。今すぐ予定を報告しろ。",
+  },
+  evening_meeting: {
+    1: () => "夕会の時間だ。今日の進捗を報告してくれ。",
+    2: () => "夕会がまだだ。早く進捗を報告しろ。",
+    3: () => "夕会を無視し続けているぞ。今すぐ進捗を報告しろ。",
   },
 };
 

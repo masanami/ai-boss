@@ -1,8 +1,21 @@
 import { describe, expect, it, vi } from "vitest";
+import { execFile as nodeExecFile } from "node:child_process";
 import { sendNotification } from "./notifier.js";
+
+vi.mock("node:child_process", () => ({ execFile: vi.fn() }));
 
 function ok() {
   return Promise.resolve({ stdout: "", stderr: "" });
+}
+
+/** Timeout-shaped error, matching what Node's `child_process` passes to the
+ * callback when a process is killed for exceeding its configured `timeout`
+ * (see child_process docs: `killed: true`, `signal` set, no `code`). */
+function timeoutError(): Error {
+  return Object.assign(new Error("command timed out"), {
+    killed: true,
+    signal: "SIGTERM",
+  });
 }
 
 describe("sendNotification", () => {
@@ -138,5 +151,53 @@ describe("sendNotification", () => {
 
     expect(result).toEqual({ delivered: false, channel: "none" });
     consoleErrorSpy.mockRestore();
+  });
+
+  it("resolves without throwing and reports delivered:false when both commands time out (killed for exceeding the configured timeout)", async () => {
+    const execFile = vi.fn().mockRejectedValue(timeoutError());
+    const consoleErrorSpy = vi.spyOn(console, "error").mockImplementation(() => undefined);
+
+    const result = await sendNotification({ title: "ボス", body: "着手しろ" }, { execFile });
+
+    expect(result).toEqual({ delivered: false, channel: "none" });
+    consoleErrorSpy.mockRestore();
+  });
+});
+
+describe("nodeSystemExecFile", () => {
+  it("invokes child_process.execFile with a timeout so a hung notifier process cannot block the caller forever", async () => {
+    const execFileMock = vi.mocked(nodeExecFile);
+    execFileMock.mockImplementation((_file, _args, _options, callback) => {
+      (callback as (error: null, stdout: string, stderr: string) => void)(null, "", "");
+      return {} as ReturnType<typeof nodeExecFile>;
+    });
+
+    const { nodeSystemExecFile } = await import("./notifier.js");
+    await nodeSystemExecFile("terminal-notifier", ["-title", "t", "-message", "m"]);
+
+    expect(execFileMock).toHaveBeenCalledWith(
+      "terminal-notifier",
+      ["-title", "t", "-message", "m"],
+      expect.objectContaining({ timeout: expect.any(Number) }),
+      expect.any(Function),
+    );
+  });
+
+  it("rejects (without leaving the promise pending forever) when execFile reports a timeout", async () => {
+    const execFileMock = vi.mocked(nodeExecFile);
+    execFileMock.mockImplementation((_file, _args, _options, callback) => {
+      (callback as (error: Error, stdout: string, stderr: string) => void)(
+        timeoutError(),
+        "",
+        "",
+      );
+      return {} as ReturnType<typeof nodeExecFile>;
+    });
+
+    const { nodeSystemExecFile } = await import("./notifier.js");
+
+    await expect(
+      nodeSystemExecFile("terminal-notifier", ["-title", "t", "-message", "m"]),
+    ).rejects.toThrow();
   });
 });
