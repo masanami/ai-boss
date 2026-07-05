@@ -260,13 +260,17 @@ describe("createTicker().tick", () => {
   it("continues processing the remaining firings when one firing fails (per-firing isolation)", async () => {
     // 2 タスクとも締切超過 + 着手済み（task_start あり・直近活動あり）にして、
     // deadline_overdue が 2 件だけ発火する状態を作る。
+    // 勤務時間帯ゲートはローカル時刻基準のためモック時刻はローカルのまま、
+    // due_at はモック時刻の 1 時間前（絶対時刻）にして TZ 非依存で「超過」を成立させる。
+    const mockedNow = new Date("2026-07-05T09:31:00.000");
+    const overdueDueAt = new Date(mockedNow.getTime() - 60 * 60 * 1000).toISOString();
     for (const title of ["資料A", "資料B"]) {
       const task = insertTask(db, {
         title,
         description: null,
         category: "work",
         priority: "high",
-        due_at: "2026-07-05T00:00:00.000Z",
+        due_at: overdueDueAt,
         status: "in_progress",
         boss_comment: null,
         estimated_minutes: null,
@@ -274,7 +278,7 @@ describe("createTicker().tick", () => {
       recordActivityEvent(db, { type: "task_start", task_id: task.id });
     }
     markTodaysMeetingsDone(db);
-    vi.setSystemTime(new Date("2026-07-05T09:31:00.000"));
+    vi.setSystemTime(mockedNow);
 
     // 1 件目の firing の文面生成だけ失敗させ、2 件目は実実装（定型文フォール
     // バック経路）で成功させる。
