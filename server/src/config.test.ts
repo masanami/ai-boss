@@ -1,0 +1,70 @@
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { loadConfig } from "./config.js";
+
+describe("loadConfig", () => {
+  beforeEach(() => {
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it("defaults port to 8787 when PORT is not set", () => {
+    const config = loadConfig({});
+
+    expect(config.port).toBe(8787);
+  });
+
+  it("uses PORT from env when set", () => {
+    const config = loadConfig({ PORT: "3000" });
+
+    expect(config.port).toBe(3000);
+  });
+
+  it("falls back to the default port and warns when PORT is not a valid number", () => {
+    const config = loadConfig({ PORT: "not-a-number" });
+
+    expect(config.port).toBe(8787);
+    expect(console.warn).toHaveBeenCalled();
+  });
+
+  it("falls back to the default port and warns when PORT is zero or negative", () => {
+    const config = loadConfig({ PORT: "-1" });
+
+    expect(config.port).toBe(8787);
+    expect(console.warn).toHaveBeenCalled();
+  });
+
+  it("defaults dbPath to ./data/ai-boss.db when DB_PATH is not set", () => {
+    const config = loadConfig({});
+
+    expect(config.dbPath).toBe("./data/ai-boss.db");
+  });
+
+  it("uses DB_PATH from env when set", () => {
+    const config = loadConfig({ DB_PATH: "./tmp/test.db" });
+
+    expect(config.dbPath).toBe("./tmp/test.db");
+  });
+
+  it("reports hasAnthropicApiKey as false and warns when ANTHROPIC_API_KEY is not set", () => {
+    const config = loadConfig({});
+
+    expect(config.hasAnthropicApiKey).toBe(false);
+    expect(console.warn).toHaveBeenCalled();
+  });
+
+  it("reports hasAnthropicApiKey as true and never logs the key value when ANTHROPIC_API_KEY is set", () => {
+    const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+    const secretKey = "sk-ant-super-secret-value";
+
+    const config = loadConfig({ ANTHROPIC_API_KEY: secretKey });
+
+    expect(config.hasAnthropicApiKey).toBe(true);
+    const allLoggedArgs = [...logSpy.mock.calls, ...vi.mocked(console.warn).mock.calls]
+      .flat()
+      .join(" ");
+    expect(allLoggedArgs).not.toContain(secretKey);
+  });
+});

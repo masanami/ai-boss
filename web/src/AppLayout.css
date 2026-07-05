@@ -1,0 +1,83 @@
+.app-layout {
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+}
+
+.app-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0.75rem 1.5rem;
+  background-color: var(--color-bg-elevated);
+  border-bottom: 1px solid var(--color-border);
+}
+
+.app-header h1 {
+  font-size: 1.1rem;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  margin: 0;
+}
+
+.app-body {
+  display: grid;
+  grid-template-columns: var(--nav-width) 1fr var(--side-panel-width);
+  flex: 1;
+  min-height: 0;
+}
+
+.app-nav {
+  background-color: var(--color-bg-elevated);
+  border-right: 1px solid var(--color-border);
+  padding: 1rem 0.5rem;
+}
+
+.app-nav ul {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+}
+
+.app-nav button {
+  width: 100%;
+  text-align: left;
+  padding: 0.5rem 0.75rem;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--color-text);
+  font-size: 0.9rem;
+  cursor: pointer;
+}
+
+.app-nav button:hover {
+  background-color: var(--color-bg-hover);
+}
+
+.app-main {
+  padding: 1.5rem;
+  overflow-y: auto;
+}
+
+.app-side-panel {
+  background-color: var(--color-bg-elevated);
+  border-left: 1px solid var(--color-border);
+  padding: 1rem;
+  overflow-y: auto;
+}
+
+.app-side-panel section + section {
+  margin-top: 1.5rem;
+}
+
+.app-side-panel h2 {
+  font-size: 0.85rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--color-text-muted);
+  margin: 0 0 0.5rem;
+}
