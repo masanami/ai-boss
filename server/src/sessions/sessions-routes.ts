@@ -6,6 +6,7 @@ import type { SessionType } from "./session.js";
 import { findSessionById, insertSession, listSessions } from "./sessions-repository.js";
 import { validateCreateSessionInput } from "./sessions-validation.js";
 import { listMessagesBySessionId } from "./messages-repository.js";
+import { registerChatMessageRoute } from "./chat-messages-route.js";
 
 function isValidSessionType(value: string): value is SessionType {
   return SESSION_TYPES.includes(value as SessionType);
@@ -15,7 +16,10 @@ function isValidSessionType(value: string): value is SessionType {
  * Creates the sessions sub-router, mounted under `/api/sessions` by the
  * caller.
  */
-export function createSessionsRouter(db: Database.Database): Hono {
+export function createSessionsRouter(
+  db: Database.Database,
+  env: NodeJS.ProcessEnv = process.env,
+): Hono {
   const sessions = new Hono();
 
   sessions.get("/", (c) => {
@@ -55,6 +59,8 @@ export function createSessionsRouter(db: Database.Database): Hono {
 
     return c.json(listMessagesBySessionId(db, id));
   });
+
+  registerChatMessageRoute(sessions, db, env);
 
   return sessions;
 }

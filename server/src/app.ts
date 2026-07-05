@@ -14,8 +14,15 @@ function checkDatabaseConnection(db: Database.Database): boolean {
 
 /**
  * Creates the Hono application. Routes are namespaced under `/api`.
+ *
+ * `env` defaults to `process.env` and is only consulted by the chat message
+ * route (Claude API key resolution); it is threaded through explicitly so
+ * tests can inject a fake environment without mutating global state.
  */
-export function createApp(db: Database.Database): Hono {
+export function createApp(
+  db: Database.Database,
+  env: NodeJS.ProcessEnv = process.env,
+): Hono {
   const api = new Hono();
 
   api.get("/health", (c) => {
@@ -23,7 +30,7 @@ export function createApp(db: Database.Database): Hono {
   });
 
   api.route("/tasks", createTasksRouter(db));
-  api.route("/sessions", createSessionsRouter(db));
+  api.route("/sessions", createSessionsRouter(db, env));
 
   const app = new Hono();
   app.route("/api", api);

@@ -1,5 +1,8 @@
 import { describe, expect, it } from "vitest";
-import { validateCreateSessionInput } from "./sessions-validation.js";
+import {
+  validateChatMessageInput,
+  validateCreateSessionInput,
+} from "./sessions-validation.js";
 
 describe("validateCreateSessionInput", () => {
   it.each(["morning", "evening", "adhoc"] as const)(
@@ -33,5 +36,43 @@ describe("validateCreateSessionInput", () => {
     if (!result.valid) {
       expect(result.error).toContain("type");
     }
+  });
+});
+
+describe("validateChatMessageInput", () => {
+  it("accepts a non-empty content string", () => {
+    const result = validateChatMessageInput({ content: "今日は資料作成から始めます" });
+
+    expect(result).toEqual({
+      valid: true,
+      data: { content: "今日は資料作成から始めます" },
+    });
+  });
+
+  it("rejects a body that is not a JSON object", () => {
+    const result = validateChatMessageInput("not an object");
+
+    expect(result.valid).toBe(false);
+  });
+
+  it("rejects a missing content", () => {
+    const result = validateChatMessageInput({});
+
+    expect(result.valid).toBe(false);
+    if (!result.valid) {
+      expect(result.error).toContain("content");
+    }
+  });
+
+  it("rejects an empty (whitespace-only) content", () => {
+    const result = validateChatMessageInput({ content: "   " });
+
+    expect(result.valid).toBe(false);
+  });
+
+  it("rejects a non-string content", () => {
+    const result = validateChatMessageInput({ content: 42 });
+
+    expect(result.valid).toBe(false);
   });
 });
