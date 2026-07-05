@@ -1,0 +1,20 @@
+{
+  "name": "@ai-boss/server",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "scripts": {
+    "dev": "tsx watch src/index.ts",
+    "lint": "eslint . --config ../eslint.config.js",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "build": "tsc"
+  },
+  "dependencies": {},
+  "devDependencies": {
+    "@types/node": "^22.9.0",
+    "tsx": "^4.19.2",
+    "typescript": "^5.6.3",
+    "vitest": "^2.1.4"
+  }
+}

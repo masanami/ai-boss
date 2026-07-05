@@ -11,6 +11,7 @@ dist/
 build/
 
 # local data
+server/data/
 *.sqlite
 *.sqlite3
 *.db
