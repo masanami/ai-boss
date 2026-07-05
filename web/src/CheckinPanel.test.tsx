@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   fireEvent,
   render,
@@ -6,9 +6,19 @@ import {
   waitFor,
   within,
 } from "@testing-library/react";
-import CheckinPanel from "./CheckinPanel";
 import type { ActivityEvent } from "./activity-event";
 import type { Task } from "./task";
+
+const { useTasksMock } = vi.hoisted(() => ({ useTasksMock: vi.fn() }));
+
+// 「選択中タスクが selectableTasks から外れる」ケースをテストで決定的に再現する
+// ためモック化する。既定（beforeEach）では実実装へ委譲するので他のテストの挙動
+// は変わらない。
+vi.mock("./use-tasks", () => ({ useTasks: useTasksMock }));
+
+const { useTasks: actualUseTasks } =
+  await vi.importActual<typeof import("./use-tasks")>("./use-tasks");
+const { default: CheckinPanel } = await import("./CheckinPanel");
 
 function makeTask(overrides: Partial<Task> & { id: number }): Task {
   return {
@@ -90,6 +100,11 @@ function createFetchMock(options: {
 }
 
 describe("CheckinPanel", () => {
+  beforeEach(() => {
+    useTasksMock.mockReset();
+    useTasksMock.mockImplementation(actualUseTasks);
+  });
+
   afterEach(() => {
     vi.unstubAllGlobals();
   });
@@ -361,6 +376,83 @@ describe("CheckinPanel", () => {
 
     await waitFor(() => expect(noteInput).toHaveValue(""));
     expect(screen.getByText("着手しました")).toBeInTheDocument();
+  });
+
+  it("resets the selection to the default task when the selected task leaves the selectable list", async () => {
+    const taskA = makeTask({ id: 1, title: "タスクA", priority: "high" });
+    const taskB = makeTask({ id: 2, title: "タスクB", priority: "low" });
+    vi.stubGlobal("fetch", createFetchMock({}));
+
+    let tasks = [taskA, taskB];
+    useTasksMock.mockImplementation(() => ({
+      tasks,
+      status: "ready",
+      addTask: vi.fn(),
+      editTask: vi.fn(),
+    }));
+
+    const { rerender } = render(<CheckinPanel />);
+    const combobox = screen.getByRole("combobox", { name: "着手するタスク" });
+    await waitFor(() => expect(combobox).toHaveValue("1"));
+
+    fireEvent.change(combobox, { target: { value: "2" } });
+    expect(combobox).toHaveValue("2");
+
+    // 選択中のタスクBが完了して selectable から外れる → デフォルト（タスクA）へ戻る
+    tasks = [taskA, makeTask({ id: 2, title: "タスクB", priority: "low", status: "done" })];
+    rerender(<CheckinPanel />);
+
+    await waitFor(() => expect(combobox).toHaveValue("1"));
+  });
+
+  it("disables the checkin buttons while a submission is in flight (double-click guard)", async () => {
+    const tasks = [makeTask({ id: 5, title: "資料作成", priority: "high" })];
+    let releasePost: (() => void) | undefined;
+    const fetchMock = vi.fn((url: string, init?: RequestInit) => {
+      if (url === "/api/tasks" && init === undefined) {
+        return Promise.resolve({
+          ok: true,
+          status: 200,
+          json: () => Promise.resolve(tasks),
+        });
+      }
+      if (url === "/api/activity/today") {
+        return Promise.resolve({
+          ok: true,
+          status: 200,
+          json: () => Promise.resolve([]),
+        });
+      }
+      if (url === "/api/checkins" && init?.method === "POST") {
+        return new Promise((resolve) => {
+          releasePost = () =>
+            resolve({
+              ok: true,
+              status: 201,
+              json: () => Promise.resolve(makeEvent({ id: 9, type: "task_start" })),
+            });
+        });
+      }
+      return Promise.reject(new Error(`unexpected fetch call: ${url}`));
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(<CheckinPanel />);
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: "着手" })).toBeEnabled(),
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "着手" }));
+
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: "着手" })).toBeDisabled(),
+    );
+    expect(screen.getByRole("button", { name: "休憩" })).toBeDisabled();
+
+    releasePost?.();
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: "着手" })).toBeEnabled(),
+    );
   });
 
   it("shows an error message when today's activity fails to load", async () => {

@@ -26,7 +26,7 @@ function formatTime(iso: string): string {
 
 function CheckinPanel() {
   const { tasks } = useTasks();
-  const { events, status, isOnBreak, submitError, submitCheckin } =
+  const { events, status, isOnBreak, submitError, isSubmitting, submitCheckin } =
     useCheckinPanel();
 
   const selectableTasks = useMemo(
@@ -50,10 +50,16 @@ function CheckinPanel() {
   const [feedback, setFeedback] = useState<string | null>(null);
 
   useEffect(() => {
-    if (selectedTaskId === "" && defaultTask !== undefined) {
-      setSelectedTaskId(defaultTask.id);
+    // 未選択のときはデフォルトタスクを設定する。選択中タスクが完了などで
+    // selectableTasks から外れた場合も、<select> の表示と state の食い違い
+    // （存在しない task_id での送信）を防ぐためデフォルトへ戻す。
+    const selectionValid =
+      selectedTaskId !== "" &&
+      selectableTasks.some((task) => task.id === selectedTaskId);
+    if (!selectionValid) {
+      setSelectedTaskId(defaultTask?.id ?? "");
     }
-  }, [defaultTask, selectedTaskId]);
+  }, [defaultTask, selectableTasks, selectedTaskId]);
 
   const taskTitleById = useMemo(() => {
     const map = new Map<number, string>();
@@ -116,6 +122,7 @@ function CheckinPanel() {
             type="button"
             className="checkin-primary-button"
             onClick={handleBreakEnd}
+            disabled={isSubmitting}
           >
             戻りました
           </button>
@@ -147,7 +154,7 @@ function CheckinPanel() {
             <button
               type="button"
               onClick={handleStart}
-              disabled={selectedTaskId === ""}
+              disabled={selectedTaskId === "" || isSubmitting}
             >
               着手
             </button>
@@ -179,7 +186,7 @@ function CheckinPanel() {
             <button
               type="button"
               onClick={handleBreakStart}
-              disabled={!isBreakMinutesValid}
+              disabled={!isBreakMinutesValid || isSubmitting}
             >
               休憩
             </button>

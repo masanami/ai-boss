@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { fetchTodayActivity, postCheckin } from "./checkins-api";
 import { deriveIsOnBreak } from "./derive-break-status";
 import type { ActivityEvent, CheckinInput } from "./activity-event";
@@ -10,6 +10,8 @@ export interface UseCheckinPanelResult {
   status: ActivityLoadStatus;
   isOnBreak: boolean;
   submitError: string | null;
+  /** 送信中フラグ。UI 側でボタンを無効化するために公開する */
+  isSubmitting: boolean;
   submitCheckin: (input: CheckinInput) => Promise<boolean>;
 }
 
@@ -45,7 +47,17 @@ export function useCheckinPanel(): UseCheckinPanelResult {
     };
   }, []);
 
+  // 連打（二重クリック）で POST /api/checkins が多重発火し activity_events に
+  // 重複記録されるのを防ぐ。ref は同期的な再入ガード、state は UI の無効化用。
+  const submittingRef = useRef(false);
+  const [isSubmitting, setIsSubmitting] = useState(false);
+
   const submitCheckin = useCallback(async (input: CheckinInput) => {
+    if (submittingRef.current) {
+      return false;
+    }
+    submittingRef.current = true;
+    setIsSubmitting(true);
     try {
       await postCheckin(input);
       setSubmitError(null);
@@ -57,6 +69,9 @@ export function useCheckinPanel(): UseCheckinPanelResult {
         error instanceof Error ? error.message : "送信に失敗しました",
       );
       return false;
+    } finally {
+      submittingRef.current = false;
+      setIsSubmitting(false);
     }
   }, []);
 
@@ -65,6 +80,7 @@ export function useCheckinPanel(): UseCheckinPanelResult {
     status,
     isOnBreak: deriveIsOnBreak(events),
     submitError,
+    isSubmitting,
     submitCheckin,
   };
 }

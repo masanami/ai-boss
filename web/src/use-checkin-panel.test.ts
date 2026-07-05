@@ -107,6 +107,53 @@ describe("useCheckinPanel", () => {
     expect(result.current.submitError).toBeNull();
   });
 
+  it("ignores a second submitCheckin while one is in flight (double-submit guard)", async () => {
+    const fetchMock = vi.fn();
+    // 初回マウント時の GET /api/activity/today
+    fetchMock.mockResolvedValueOnce({
+      ok: true,
+      status: 200,
+      json: () => Promise.resolve([]),
+    });
+    // 1 回目の POST は解放されるまで完了しない
+    let releasePost: (() => void) | undefined;
+    fetchMock.mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          releasePost = () =>
+            resolve({
+              ok: true,
+              status: 201,
+              json: () => Promise.resolve(TASK_START_EVENT),
+            });
+        }),
+    );
+    // 1 回目成功後の再取得
+    fetchMock.mockResolvedValueOnce({
+      ok: true,
+      status: 200,
+      json: () => Promise.resolve([TASK_START_EVENT]),
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const { result } = renderHook(() => useCheckinPanel());
+    await waitFor(() => expect(result.current.status).toBe("ready"));
+
+    let first: Promise<boolean> | undefined;
+    let second = true;
+    await act(async () => {
+      first = result.current.submitCheckin({ type: "break_end" });
+      second = await result.current.submitCheckin({ type: "break_end" });
+      releasePost?.();
+      await first;
+    });
+
+    expect(second).toBe(false);
+    expect(await first).toBe(true);
+    // マウント時 GET + 1 回目 POST + 再取得 = 3 回のみ（2 回目はリクエストなし）
+    expect(fetchMock).toHaveBeenCalledTimes(3);
+  });
+
   it("sets submitError and returns false when submitCheckin fails", async () => {
     const fetchMock = vi.fn();
     fetchMock.mockResolvedValueOnce({
