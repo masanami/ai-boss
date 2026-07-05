@@ -53,8 +53,13 @@ export function validateCheckinInput(
         error: "task_id is required and must be a number for task_start",
       };
     }
-  } else if ("task_id" in body && typeof body.task_id !== "number") {
-    return { valid: false, error: "task_id must be a number" };
+  } else if (
+    "task_id" in body &&
+    body.task_id !== undefined &&
+    body.task_id !== null &&
+    typeof body.task_id !== "number"
+  ) {
+    return { valid: false, error: "task_id must be a number or null" };
   }
 
   if (
@@ -82,7 +87,7 @@ export function validateCheckinInput(
     valid: true,
     data: {
       type: body.type,
-      task_id: (body.task_id as number | undefined) ?? null,
+      task_id: (body.task_id as number | null | undefined) ?? null,
       note: (body.note as string | null | undefined) ?? null,
       expected_minutes:
         (body.expected_minutes as number | null | undefined) ?? null,

@@ -104,7 +104,18 @@ async function runTick(deps: TickDeps, now: Date): Promise<void> {
   const firings = evaluateRules(input);
 
   for (const firing of firings) {
-    await processFiring(deps, firing, now);
+    try {
+      await processFiring(deps, firing, now);
+    } catch (err) {
+      // firing ごとに独立して処理し、1 件の失敗（DB 書き込み等）が同一 tick の
+      // 他の発火（別ルール・別タスク・タイムウィンドウ依存の朝会/夕会リマインド）
+      // を止めないようにする。Claude API のエラーは generateNotificationBody 内で
+      // 捕捉済みのため、ここの message/stack にリクエスト内部情報は含まれない。
+      console.error(
+        `scheduler firing failed (rule_key=${firing.ruleKey}):`,
+        err instanceof Error ? (err.stack ?? err.message) : err,
+      );
+    }
   }
 }
 
@@ -138,7 +149,13 @@ export function createTicker(deps: TickDeps): Ticker {
       try {
         await runTick(deps, now);
       } catch (err) {
-        console.error("scheduler tick failed:", err instanceof Error ? err.name : typeof err);
+        // 毎分無人実行される唯一のエラー出力箇所のため、原因調査に足る
+        // message / stack を残す（Claude API のエラーは notification-body 内で
+        // 捕捉済みで、ここには到達しない）。
+        console.error(
+          "scheduler tick failed:",
+          err instanceof Error ? (err.stack ?? err.message) : err,
+        );
       } finally {
         isRunning = false;
       }

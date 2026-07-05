@@ -4,8 +4,14 @@ import { timeStringToMinutes, toDateKey } from "./time-utils.js";
 type MeetingSessionType = Extract<SessionType, "morning" | "evening">;
 
 function isMeetingTimePassed(now: Date, meetingTime: string): boolean {
+  const meetingMinutes = timeStringToMinutes(meetingTime);
+  if (meetingMinutes === null) {
+    // 不正な設定時刻では意図した時刻が分からないため発火しない
+    // （timeStringToMinutes が警告ログ済み）
+    return false;
+  }
   const nowMinutes = now.getHours() * 60 + now.getMinutes();
-  return nowMinutes >= timeStringToMinutes(meetingTime);
+  return nowMinutes >= meetingMinutes;
 }
 
 /**

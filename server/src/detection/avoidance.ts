@@ -21,6 +21,9 @@ export function hasRecentActivityOnOtherTasks(
     if (event.task_id === null || event.task_id === topTask.id) {
       return false;
     }
-    return diffInMinutes(now, new Date(event.created_at)) <= windowMinutes;
+    // クロックスキュー等で created_at が now より未来のイベントは負の経過分に
+    // なり窓判定が常に真になるため、「直近の活動」とはみなさない
+    const minutesAgo = diffInMinutes(now, new Date(event.created_at));
+    return minutesAgo >= 0 && minutesAgo <= windowMinutes;
   });
 }

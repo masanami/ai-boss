@@ -145,6 +145,25 @@ describe("generateNotificationBody", () => {
     expect(streamBossMessageMock).not.toHaveBeenCalled();
   });
 
+  it("falls back to the fixed template when reading settings from the DB fails", async () => {
+    const consoleErrorSpy = vi
+      .spyOn(console, "error")
+      .mockImplementation(() => undefined);
+    // resolveBossSettings(db) は db.prepare を呼ぶため、閉じた DB で例外になる
+    db.close();
+
+    const body = await generateNotificationBody(db, env, {
+      ruleType: "todo_stall",
+      escalationLevel: 1,
+      task: makeTask({ title: "資料作成" }),
+      now,
+    });
+
+    expect(body).toContain("資料作成");
+    expect(streamBossMessageMock).not.toHaveBeenCalled();
+    consoleErrorSpy.mockRestore();
+  });
+
   it("falls back to the fixed template when streamBossMessage rejects, without leaking the error message", async () => {
     const consoleErrorSpy = vi
       .spyOn(console, "error")

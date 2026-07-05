@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { buildMeetingRuleKey, isMeetingDue } from "./meeting.js";
 
 describe("isMeetingDue", () => {
@@ -24,6 +24,15 @@ describe("isMeetingDue", () => {
     const now = new Date("2026-07-05T18:30:00");
 
     expect(isMeetingDue(now, "18:00", "evening", ["morning"])).toBe(true);
+  });
+
+  it("does not fire (and warns) when the configured meeting time is malformed", () => {
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    const now = new Date("2026-07-05T09:30:00");
+
+    expect(isMeetingDue(now, "banana", "morning", [])).toBe(false);
+    expect(warnSpy).toHaveBeenCalled();
+    warnSpy.mockRestore();
   });
 });
 

@@ -165,26 +165,19 @@ export async function generateNotificationBody(
   env: NodeJS.ProcessEnv,
   request: NotificationBodyRequest,
 ): Promise<string> {
-  let client: Anthropic;
+  // クライアント生成（API キー）・設定読み取り（DB）・Claude 呼び出しの
+  // いずれで失敗しても、フォールバック定型文で必ず文面を返す
+  // （resolveBossSettings は db.prepare を呼ぶため DB 例外もここで保護する）。
   try {
-    client = createClaudeClient(env);
-  } catch (err) {
-    console.error(
-      "notification body: failed to create the Claude client, falling back to template:",
-      err instanceof Error ? err.name : typeof err,
-    );
-    return buildFallbackBody(request);
-  }
+    const client: Anthropic = createClaudeClient(env);
+    const { model, persona } = resolveBossSettings(db);
+    const system = buildPersonaPrompt(persona, {
+      tasks: request.task ? [request.task] : [],
+      recentDecisions: [],
+      now: request.now,
+      purpose: "notification",
+    });
 
-  const { model, persona } = resolveBossSettings(db);
-  const system = buildPersonaPrompt(persona, {
-    tasks: request.task ? [request.task] : [],
-    recentDecisions: [],
-    now: request.now,
-    purpose: "notification",
-  });
-
-  try {
     const message = await streamBossMessage(client, {
       model,
       system,
@@ -201,7 +194,7 @@ export async function generateNotificationBody(
     // Claude API errors may embed request internals in `message` — only log
     // the error's class name (same convention as chat-messages-route.ts).
     console.error(
-      "notification body: Claude call failed, falling back to template:",
+      "notification body: generation failed, falling back to template:",
       err instanceof Error ? err.name : typeof err,
     );
     return buildFallbackBody(request);

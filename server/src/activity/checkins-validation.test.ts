@@ -73,6 +73,44 @@ describe("validateCheckinInput", () => {
     });
   });
 
+  describe("task_id on non-task_start types", () => {
+    it("accepts an explicit null task_id (task_id is number | null)", () => {
+      const result = validateCheckinInput({ type: "checkin", task_id: null });
+
+      expect(result).toEqual({
+        valid: true,
+        data: { type: "checkin", task_id: null, note: null, expected_minutes: null },
+      });
+    });
+
+    it("accepts an explicit null task_id for break_end", () => {
+      const result = validateCheckinInput({ type: "break_end", task_id: null });
+
+      expect(result).toEqual({
+        valid: true,
+        data: { type: "break_end", task_id: null, note: null, expected_minutes: null },
+      });
+    });
+
+    it("still rejects a non-numeric, non-null task_id", () => {
+      const result = validateCheckinInput({ type: "checkin", task_id: "1" });
+
+      expect(result.valid).toBe(false);
+      if (!result.valid) {
+        expect(result.error).toContain("task_id");
+      }
+    });
+
+    it("still rejects task_start with an explicit null task_id", () => {
+      const result = validateCheckinInput({ type: "task_start", task_id: null });
+
+      expect(result.valid).toBe(false);
+      if (!result.valid) {
+        expect(result.error).toContain("task_id");
+      }
+    });
+  });
+
   describe("break_start expected_minutes", () => {
     it("accepts break_start with a positive integer expected_minutes", () => {
       const result = validateCheckinInput({

@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   clamp,
   diffInMinutes,
@@ -30,9 +30,33 @@ describe("diffInMinutes", () => {
 });
 
 describe("timeStringToMinutes", () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
   it("converts an HH:mm string to minutes since midnight", () => {
     expect(timeStringToMinutes("09:30")).toBe(570);
   });
+
+  it.each(["", "9", "ab:cd", "09:5", "banana"])(
+    "returns null and warns for a malformed time string (%j)",
+    (input) => {
+      const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+
+      expect(timeStringToMinutes(input)).toBeNull();
+      expect(warnSpy).toHaveBeenCalled();
+    },
+  );
+
+  it.each(["24:00", "09:60"])(
+    "returns null and warns for an out-of-range time string (%j)",
+    (input) => {
+      const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+
+      expect(timeStringToMinutes(input)).toBeNull();
+      expect(warnSpy).toHaveBeenCalled();
+    },
+  );
 });
 
 describe("isWithinWorkingHours", () => {
@@ -61,6 +85,19 @@ describe("isWithinWorkingHours", () => {
   it("returns false after the end", () => {
     const now = new Date("2026-07-05T18:01:00");
     expect(isWithinWorkingHours(now, workingHours)).toBe(false);
+  });
+
+  it("falls back to the default working hours (09:00-18:00) when the setting is malformed", () => {
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+
+    const inside = new Date("2026-07-05T12:00:00");
+    const outside = new Date("2026-07-05T08:00:00");
+    const malformed = { start: "banana", end: "18:00" };
+
+    expect(isWithinWorkingHours(inside, malformed)).toBe(true);
+    expect(isWithinWorkingHours(outside, malformed)).toBe(false);
+    expect(warnSpy).toHaveBeenCalled();
+    warnSpy.mockRestore();
   });
 });
 

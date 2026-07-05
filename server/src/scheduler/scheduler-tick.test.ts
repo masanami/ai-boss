@@ -8,10 +8,12 @@ import { insertSession } from "../sessions/sessions-repository.js";
 import type { SessionType } from "../sessions/session.js";
 import { listNotificationsSince } from "../notifications/notifications-repository.js";
 
-const { createClaudeClientMock, streamBossMessageMock } = vi.hoisted(() => ({
-  createClaudeClientMock: vi.fn(),
-  streamBossMessageMock: vi.fn(),
-}));
+const { createClaudeClientMock, streamBossMessageMock, generateNotificationBodyMock } =
+  vi.hoisted(() => ({
+    createClaudeClientMock: vi.fn(),
+    streamBossMessageMock: vi.fn(),
+    generateNotificationBodyMock: vi.fn(),
+  }));
 
 vi.mock("../llm/claude-client.js", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../llm/claude-client.js")>();
@@ -22,8 +24,24 @@ vi.mock("../llm/claude-client.js", async (importOriginal) => {
   };
 });
 
+// per-firing 分離のテストで「1 件目の firing だけ失敗」を決定的に再現するため
+// モック化する。既定（beforeEach）では実実装へ委譲するので他のテストの挙動は
+// 変わらない。
+vi.mock("../notifications/notification-body.js", async (importOriginal) => {
+  const actual =
+    await importOriginal<typeof import("../notifications/notification-body.js")>();
+  return {
+    ...actual,
+    generateNotificationBody: generateNotificationBodyMock,
+  };
+});
+
 const { createTicker } = await import("./scheduler-tick.js");
 const { MissingApiKeyError } = await import("../llm/claude-client.js");
+const { generateNotificationBody: actualGenerateNotificationBody } =
+  await vi.importActual<typeof import("../notifications/notification-body.js")>(
+    "../notifications/notification-body.js",
+  );
 
 function ok(): Promise<{ stdout: string; stderr: string }> {
   return Promise.resolve({ stdout: "", stderr: "" });
@@ -58,9 +76,11 @@ describe("createTicker().tick", () => {
     runMigrations(db);
     createClaudeClientMock.mockReset();
     streamBossMessageMock.mockReset();
+    generateNotificationBodyMock.mockReset();
     createClaudeClientMock.mockImplementation(() => {
       throw new MissingApiKeyError();
     });
+    generateNotificationBodyMock.mockImplementation(actualGenerateNotificationBody);
 
     vi.useFakeTimers({ toFake: ["Date"] });
     vi.setSystemTime(new Date("2026-07-05T09:00:00.000"));
@@ -234,6 +254,46 @@ describe("createTicker().tick", () => {
 
     const recorded = listNotificationsSince(db, "1970-01-01T00:00:00.000Z");
     expect(recorded).toHaveLength(1);
+    db.close();
+  });
+
+  it("continues processing the remaining firings when one firing fails (per-firing isolation)", async () => {
+    // 2 タスクとも締切超過 + 着手済み（task_start あり・直近活動あり）にして、
+    // deadline_overdue が 2 件だけ発火する状態を作る。
+    for (const title of ["資料A", "資料B"]) {
+      const task = insertTask(db, {
+        title,
+        description: null,
+        category: "work",
+        priority: "high",
+        due_at: "2026-07-05T00:00:00.000Z",
+        status: "in_progress",
+        boss_comment: null,
+        estimated_minutes: null,
+      });
+      recordActivityEvent(db, { type: "task_start", task_id: task.id });
+    }
+    markTodaysMeetingsDone(db);
+    vi.setSystemTime(new Date("2026-07-05T09:31:00.000"));
+
+    // 1 件目の firing の文面生成だけ失敗させ、2 件目は実実装（定型文フォール
+    // バック経路）で成功させる。
+    generateNotificationBodyMock.mockImplementationOnce(() => {
+      throw new Error("body boom");
+    });
+
+    const consoleErrorSpy = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    const execFile = vi.fn().mockImplementation(ok);
+    const ticker = createTicker({ db, env, execFile });
+
+    await expect(ticker.tick()).resolves.toBeUndefined();
+
+    const recorded = listNotificationsSince(db, "1970-01-01T00:00:00.000Z");
+    expect(recorded).toHaveLength(1);
+    expect(recorded[0].type).toBe("deadline_overdue");
+    const loggedArgs = consoleErrorSpy.mock.calls.flat().join(" ");
+    expect(loggedArgs).toContain("scheduler firing failed");
+    consoleErrorSpy.mockRestore();
     db.close();
   });
 

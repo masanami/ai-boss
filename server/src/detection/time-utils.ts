@@ -1,3 +1,4 @@
+import { DEFAULT_DETECTION_SETTINGS } from "./detection-types.js";
 import type { WorkingHours } from "./detection-types.js";
 
 /** 値を [min, max] の範囲に収める */
@@ -10,9 +11,27 @@ export function diffInMinutes(later: Date, earlier: Date): number {
   return (later.getTime() - earlier.getTime()) / (60 * 1000);
 }
 
-/** "HH:mm" 形式の文字列を、真夜中からの経過分に変換する */
-export function timeStringToMinutes(time: string): number {
+const TIME_STRING_PATTERN = /^\d{1,2}:\d{2}$/;
+
+/**
+ * "HH:mm" 形式の文字列を、真夜中からの経過分に変換する。
+ * 不正な形式（桁欠け・非数字・範囲外）は NaN 伝播で検知が静かに機能停止
+ * しないよう、警告ログを出して null を返す（フォールバックは呼び出し側）。
+ */
+export function timeStringToMinutes(time: string): number | null {
+  if (!TIME_STRING_PATTERN.test(time)) {
+    console.warn(
+      `invalid time string (expected "HH:mm"): ${JSON.stringify(time)}`,
+    );
+    return null;
+  }
   const [hours, minutes] = time.split(":").map(Number);
+  if (hours > 23 || minutes > 59) {
+    console.warn(
+      `invalid time string (out of range): ${JSON.stringify(time)}`,
+    );
+    return null;
+  }
   return hours * 60 + minutes;
 }
 
@@ -27,6 +46,11 @@ export function isWithinWorkingHours(
   const nowMinutes = now.getHours() * 60 + now.getMinutes();
   const startMinutes = timeStringToMinutes(workingHours.start);
   const endMinutes = timeStringToMinutes(workingHours.end);
+  if (startMinutes === null || endMinutes === null) {
+    // 不正な設定値で検知全体が静かに停止（常に false）しないよう、既定の
+    // 勤務時間帯にフォールバックする（timeStringToMinutes が警告ログ済み）
+    return isWithinWorkingHours(now, DEFAULT_DETECTION_SETTINGS.workingHours);
+  }
   return nowMinutes >= startMinutes && nowMinutes < endMinutes;
 }
 
