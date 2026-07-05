@@ -1,0 +1,141 @@
+import type {
+  ChatMessage,
+  ChatSession,
+  ChatStreamHandlers,
+  ChatToolEvent,
+} from "./chat";
+
+const SESSIONS_URL = "/api/sessions";
+
+async function toErrorMessage(response: Response): Promise<string> {
+  try {
+    const body = (await response.json()) as { error?: string };
+    return body.error ?? `request failed with status ${response.status}`;
+  } catch {
+    return `request failed with status ${response.status}`;
+  }
+}
+
+/**
+ * Returns the most recent adhoc session, or null when none exists yet. The
+ * backend lists sessions newest-first, so the first element is the latest.
+ */
+export async function fetchLatestAdhocSession(): Promise<ChatSession | null> {
+  const response = await fetch(`${SESSIONS_URL}?type=adhoc`);
+  if (!response.ok) {
+    throw new Error(await toErrorMessage(response));
+  }
+  const sessions = (await response.json()) as ChatSession[];
+  return sessions[0] ?? null;
+}
+
+export async function createAdhocSession(): Promise<ChatSession> {
+  const response = await fetch(SESSIONS_URL, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ type: "adhoc" }),
+  });
+  if (!response.ok) {
+    throw new Error(await toErrorMessage(response));
+  }
+  return (await response.json()) as ChatSession;
+}
+
+export async function fetchSessionMessages(
+  sessionId: number,
+): Promise<ChatMessage[]> {
+  const response = await fetch(`${SESSIONS_URL}/${sessionId}/messages`);
+  if (!response.ok) {
+    throw new Error(await toErrorMessage(response));
+  }
+  return (await response.json()) as ChatMessage[];
+}
+
+interface SseEvent {
+  event: string;
+  data: string;
+}
+
+function parseSseBlock(block: string): SseEvent {
+  const lines = block.split("\n");
+  const eventLine = lines.find((line) => line.startsWith("event: "));
+  const data = lines
+    .filter((line) => line.startsWith("data: "))
+    .map((line) => line.slice("data: ".length))
+    .join("\n");
+  return {
+    event: eventLine ? eventLine.slice("event: ".length) : "message",
+    data,
+  };
+}
+
+function dispatchSseEvent(event: SseEvent, handlers: ChatStreamHandlers): void {
+  switch (event.event) {
+    case "text": {
+      const payload = JSON.parse(event.data) as { text: string };
+      handlers.onText(payload.text);
+      return;
+    }
+    case "tool": {
+      handlers.onTool(JSON.parse(event.data) as ChatToolEvent);
+      return;
+    }
+    case "done": {
+      handlers.onDone(JSON.parse(event.data) as ChatMessage);
+      return;
+    }
+    case "error": {
+      const payload = JSON.parse(event.data) as { error: string };
+      handlers.onError(payload.error);
+      return;
+    }
+    default:
+      // Unknown events are ignored so the server can add event types
+      // without breaking older clients.
+      return;
+  }
+}
+
+/**
+ * Sends a chat message and consumes the boss response as an SSE stream,
+ * dispatching each event to the given handlers. `EventSource` cannot send a
+ * POST body, so the stream is read manually from `fetch`'s response body.
+ * Resolves once the stream has ended; rejects only when the request itself
+ * fails before streaming starts (e.g. 400/404/500 JSON responses).
+ */
+export async function sendChatMessage(
+  sessionId: number,
+  content: string,
+  handlers: ChatStreamHandlers,
+): Promise<void> {
+  const response = await fetch(`${SESSIONS_URL}/${sessionId}/messages`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ content }),
+  });
+  if (!response.ok || !response.body) {
+    throw new Error(await toErrorMessage(response));
+  }
+
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) {
+      break;
+    }
+    buffer += decoder.decode(value, { stream: true });
+
+    let separatorIndex = buffer.indexOf("\n\n");
+    while (separatorIndex !== -1) {
+      const block = buffer.slice(0, separatorIndex);
+      buffer = buffer.slice(separatorIndex + 2);
+      if (block.trim().length > 0) {
+        dispatchSseEvent(parseSseBlock(block), handlers);
+      }
+      separatorIndex = buffer.indexOf("\n\n");
+    }
+  }
+}
