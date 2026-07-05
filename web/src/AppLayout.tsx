@@ -1,5 +1,6 @@
 import { useState } from "react";
 import ChatView from "./ChatView";
+import CheckinPanel from "./CheckinPanel";
 import ConnectionStatus from "./ConnectionStatus";
 import TaskBoard from "./TaskBoard";
 import { useHealthCheck } from "./use-health-check";
@@ -59,6 +60,7 @@ function AppLayout() {
           </main>
         )}
         <aside className="app-side-panel" aria-label="サイドパネル">
+          <CheckinPanel />
           <section>
             <h2>今日のタスク</h2>
             <p>タスクはまだありません（準備中）</p>
