@@ -1,6 +1,6 @@
 import type Database from "better-sqlite3";
 import type { RecentDecision } from "../boss/persona-prompt.js";
-import type { Decision } from "./decision.js";
+import type { Decision, DecisionStatus } from "./decision.js";
 
 interface DecisionRow {
   content: string;
@@ -54,6 +54,26 @@ export function insertDecision(
     throw new Error("failed to read back the inserted decision");
   }
   return decision;
+}
+
+/**
+ * Updates a decision's `status` (used by the appeals flow to move an
+ * appealed decision to `'revised'` — see Issue #48). Returns the updated
+ * row, or `undefined` if no decision with the given id exists.
+ */
+export function updateDecisionStatus(
+  db: Database.Database,
+  id: number,
+  status: DecisionStatus,
+): Decision | undefined {
+  const result = db
+    .prepare("UPDATE decisions SET status = ? WHERE id = ?")
+    .run(status, id);
+
+  if (result.changes === 0) {
+    return undefined;
+  }
+  return findDecisionById(db, id);
 }
 
 /**

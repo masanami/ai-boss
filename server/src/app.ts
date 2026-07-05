@@ -36,7 +36,7 @@ export function createApp(
   api.route("/sessions", createSessionsRouter(db, env));
   api.route("/checkins", createCheckinsRouter(db));
   api.route("/activity", createActivityRouter(db));
-  api.route("/decisions", createDecisionsRouter(db));
+  api.route("/decisions", createDecisionsRouter(db, env));
 
   const app = new Hono();
   app.route("/api", api);
