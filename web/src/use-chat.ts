@@ -50,6 +50,18 @@ export function useChat(): UseChatResult {
   const [error, setError] = useState<string | null>(null);
   const sessionIdRef = useRef<number | null>(null);
   const entryCounterRef = useRef(0);
+  // Ref-based guard: unlike the `sending` state (which updates
+  // asynchronously), the ref flips synchronously, so two sends in the same
+  // tick cannot both pass the check.
+  const sendingRef = useRef(false);
+  const mountedRef = useRef(true);
+
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+    };
+  }, []);
 
   useEffect(() => {
     let cancelled = false;
@@ -89,11 +101,28 @@ export function useChat(): UseChatResult {
 
   const send = useCallback(
     async (content: string) => {
-      if (sending) {
+      if (sendingRef.current) {
         return;
       }
+      sendingRef.current = true;
       setSending(true);
       setError(null);
+
+      // Optimistic append BEFORE any request: the input field is already
+      // cleared by the caller, so even a session-creation failure must not
+      // lose what the user typed.
+      setEntries((prev) => [
+        ...prev,
+        { kind: "message", key: nextLocalKey("user"), role: "user", content },
+      ]);
+
+      // After unmount, streaming callbacks must not touch state anymore
+      // (same idea as the `cancelled` flag in the mount effect).
+      const ifMounted = (update: () => void) => {
+        if (mountedRef.current) {
+          update();
+        }
+      };
 
       try {
         if (sessionIdRef.current === null) {
@@ -102,38 +131,42 @@ export function useChat(): UseChatResult {
         }
         const sessionId = sessionIdRef.current;
 
-        setEntries((prev) => [
-          ...prev,
-          { kind: "message", key: nextLocalKey("user"), role: "user", content },
-        ]);
-
         await sendChatMessage(sessionId, content, {
           onText: (delta) => {
-            setStreamingText((prev) => prev + delta);
+            ifMounted(() => setStreamingText((prev) => prev + delta));
           },
           onTool: (tool) => {
-            setEntries((prev) => [
-              ...prev,
-              { kind: "tool", key: nextLocalKey("tool"), tool },
-            ]);
+            ifMounted(() =>
+              setEntries((prev) => [
+                ...prev,
+                { kind: "tool", key: nextLocalKey("tool"), tool },
+              ]),
+            );
           },
           onDone: (message) => {
-            setEntries((prev) => [...prev, messageEntry(message)]);
+            ifMounted(() => setEntries((prev) => [...prev, messageEntry(message)]));
           },
           onError: (message) => {
-            setError(message);
+            ifMounted(() => setError(message));
           },
         });
       } catch (err) {
-        setError(
-          err instanceof Error ? err.message : "メッセージの送信に失敗しました",
+        ifMounted(() =>
+          setError(
+            err instanceof Error
+              ? err.message
+              : "メッセージの送信に失敗しました",
+          ),
         );
       } finally {
-        setStreamingText("");
-        setSending(false);
+        sendingRef.current = false;
+        ifMounted(() => {
+          setStreamingText("");
+          setSending(false);
+        });
       }
     },
-    [sending, nextLocalKey],
+    [nextLocalKey],
   );
 
   return { entries, status, sending, streamingText, error, send };

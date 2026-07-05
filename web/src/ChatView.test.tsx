@@ -153,6 +153,34 @@ describe("ChatView", () => {
     expect(screen.getByRole("button", { name: "送信" })).toBeEnabled();
   });
 
+  it("disables the input and the send button while a message is in flight", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi
+        .fn()
+        .mockResolvedValueOnce(jsonResponse([SESSION]))
+        .mockResolvedValueOnce(jsonResponse([]))
+        .mockImplementationOnce(() => new Promise(() => {})),
+    );
+
+    render(<ChatView />);
+    await waitFor(() =>
+      expect(screen.getByLabelText("メッセージ")).toBeEnabled(),
+    );
+
+    fireEvent.change(screen.getByLabelText("メッセージ"), {
+      target: { value: "相談があります" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "送信" }));
+
+    await waitFor(() =>
+      expect(
+        screen.getByRole("button", { name: "送信中…" }),
+      ).toBeDisabled(),
+    );
+    expect(screen.getByLabelText("メッセージ")).toBeDisabled();
+  });
+
   it("renders a tool notice when the boss operates a task", async () => {
     const toolEvent = {
       name: "create_task",

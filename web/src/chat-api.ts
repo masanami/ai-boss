@@ -133,7 +133,17 @@ export async function sendChatMessage(
       const block = buffer.slice(0, separatorIndex);
       buffer = buffer.slice(separatorIndex + 2);
       if (block.trim().length > 0) {
-        dispatchSseEvent(parseSseBlock(block), handlers);
+        try {
+          dispatchSseEvent(parseSseBlock(block), handlers);
+        } catch {
+          // Once streaming has started, failures are reported through
+          // onError instead of a rejection (see the doc comment above).
+          // Malformed event data leaves the rest of the stream untrusted,
+          // so stop reading instead of dispatching further events.
+          handlers.onError("ボスの応答データを解釈できませんでした");
+          await reader.cancel();
+          return;
+        }
       }
       separatorIndex = buffer.indexOf("\n\n");
     }

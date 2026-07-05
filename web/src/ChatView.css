@@ -67,7 +67,7 @@
 
 .chat-error {
   margin: 0;
-  color: #e07070;
+  color: var(--color-danger);
   font-size: 0.85rem;
 }
 

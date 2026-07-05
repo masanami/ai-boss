@@ -215,6 +215,115 @@ describe("useChat", () => {
     expect(result.current.sending).toBe(false);
   });
 
+  it("keeps the optimistic user entry when session creation fails", async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(jsonResponse([]))
+      .mockResolvedValueOnce({
+        ok: false,
+        status: 500,
+        json: () => Promise.resolve({ error: "database is locked" }),
+      });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const { result } = renderHook(() => useChat());
+    await waitFor(() => expect(result.current.status).toBe("ready"));
+
+    await act(async () => {
+      await result.current.send("消えてほしくない相談");
+    });
+
+    expect(result.current.entries).toEqual([
+      {
+        kind: "message",
+        key: "user-local-1",
+        role: "user",
+        content: "消えてほしくない相談",
+      },
+    ]);
+    expect(result.current.error).toBe("database is locked");
+    expect(result.current.sending).toBe(false);
+  });
+
+  it("ignores a second send while one is already in flight", async () => {
+    let resolvePost: (value: unknown) => void = () => {};
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(jsonResponse([SESSION]))
+      .mockResolvedValueOnce(jsonResponse([]))
+      .mockImplementationOnce(
+        () =>
+          new Promise((resolve) => {
+            resolvePost = resolve;
+          }),
+      );
+    vi.stubGlobal("fetch", fetchMock);
+
+    const { result } = renderHook(() => useChat());
+    await waitFor(() => expect(result.current.status).toBe("ready"));
+
+    let first: Promise<void>;
+    act(() => {
+      first = result.current.send("一通目");
+    });
+    await act(async () => {
+      await result.current.send("二通目（無視されるべき）");
+    });
+
+    expect(fetchMock).toHaveBeenCalledTimes(3);
+
+    resolvePost(
+      sseResponse([`event: done\ndata: ${JSON.stringify(BOSS_REPLY)}\n\n`]),
+    );
+    await act(async () => {
+      await first;
+    });
+    expect(
+      result.current.entries.filter((entry) => entry.kind === "message"),
+    ).toHaveLength(2);
+  });
+
+  it("does not update state after unmounting mid-stream", async () => {
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    let resolvePost: (value: unknown) => void = () => {};
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(jsonResponse([SESSION]))
+      .mockResolvedValueOnce(jsonResponse([]))
+      .mockImplementationOnce(
+        () =>
+          new Promise((resolve) => {
+            resolvePost = resolve;
+          }),
+      );
+    vi.stubGlobal("fetch", fetchMock);
+
+    const { result, unmount } = renderHook(() => useChat());
+    await waitFor(() => expect(result.current.status).toBe("ready"));
+
+    let pending: Promise<void>;
+    act(() => {
+      pending = result.current.send("送信中に画面を離れる");
+    });
+    unmount();
+
+    resolvePost(
+      sseResponse([
+        'event: text\ndata: {"text":"届かない応答"}\n\n',
+        `event: done\ndata: ${JSON.stringify(BOSS_REPLY)}\n\n`,
+      ]),
+    );
+    await act(async () => {
+      await pending;
+    });
+
+    const actWarnings = errorSpy.mock.calls.filter(([first]) =>
+      String(first).includes("not wrapped in act"),
+    );
+    expect(actWarnings).toEqual([]);
+    errorSpy.mockRestore();
+  });
+
   it("surfaces a request failure as an error", async () => {
     const fetchMock = vi
       .fn()

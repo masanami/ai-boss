@@ -221,6 +221,22 @@ describe("sendChatMessage", () => {
     expect(handlers.onDone).not.toHaveBeenCalled();
   });
 
+  it("reports malformed event data via onError instead of rejecting", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      sseResponse([
+        "event: text\ndata: {broken json\n\n",
+        `event: done\ndata: ${JSON.stringify(BOSS_MESSAGE)}\n\n`,
+      ]),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+    const handlers = collectHandlers();
+
+    await expect(sendChatMessage(1, "テスト", handlers)).resolves.toBeUndefined();
+
+    expect(handlers.onError).toHaveBeenCalledTimes(1);
+    expect(handlers.onDone).not.toHaveBeenCalled();
+  });
+
   it("throws the server error before streaming when the request is rejected", async () => {
     vi.stubGlobal(
       "fetch",
