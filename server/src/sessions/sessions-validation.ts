@@ -35,3 +35,24 @@ export function validateCreateSessionInput(
 
   return { valid: true, data: { type: body.type } };
 }
+
+export interface ChatMessageInput {
+  content: string;
+}
+
+/**
+ * Validates and normalizes a `POST /api/sessions/:id/messages` request body.
+ */
+export function validateChatMessageInput(
+  body: unknown,
+): ValidationResult<ChatMessageInput> {
+  if (!isRecord(body)) {
+    return { valid: false, error: "request body must be a JSON object" };
+  }
+
+  if (typeof body.content !== "string" || body.content.trim() === "") {
+    return { valid: false, error: "content is required and must not be empty" };
+  }
+
+  return { valid: true, data: { content: body.content } };
+}
