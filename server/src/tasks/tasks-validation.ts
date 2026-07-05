@@ -130,6 +130,15 @@ export function validatePatchTaskInput(
     return { valid: false, error: "request body must be a JSON object" };
   }
 
+  // MVP では category は 'work' 固定（正本仕様）。無視して 200 を返すと
+  // 呼び出し側が更新されたと誤認するため、明示的に拒否する
+  if ("category" in body) {
+    return {
+      valid: false,
+      error: "category cannot be updated (fixed to 'work' in MVP)",
+    };
+  }
+
   if (
     "title" in body &&
     (typeof body.title !== "string" || body.title.trim() === "")

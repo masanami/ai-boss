@@ -371,6 +371,27 @@ describe("tasks routes", () => {
       expect(typeof body.error).toBe("string");
     });
 
+    it("returns 400 when category is included in the patch", async () => {
+      const app = createApp(db);
+
+      const createRes = await app.request("/api/tasks", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ title: "元のタスク" }),
+      });
+      const created = await readJson<Task>(createRes);
+
+      const res = await app.request(`/api/tasks/${created.id}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ category: "hobby" }),
+      });
+
+      expect(res.status).toBe(400);
+      const body = await readJson<ErrorBody>(res);
+      expect(body.error).toContain("category");
+    });
+
     it("sets completed_at when status transitions to done", async () => {
       const app = createApp(db);
 
