@@ -3,6 +3,7 @@ import type Database from "better-sqlite3";
 import { openDatabase } from "../db/connection.js";
 import { runMigrations } from "../db/migrate.js";
 import { insertTask } from "../tasks/tasks-repository.js";
+import type { ActivityEvent } from "../activity/activity-event.js";
 import { TASK_TOOLS, executeTaskTool } from "./task-tools.js";
 
 describe("TASK_TOOLS", () => {
@@ -124,6 +125,36 @@ describe("executeTaskTool", () => {
 
       expect(result.isError).toBe(true);
       expect(result.content).toContain("status");
+    });
+
+    it("records a task_update activity event on success", () => {
+      const task = insertTask(db, {
+        title: "資料作成",
+        description: null,
+        category: "work",
+        priority: null,
+        due_at: null,
+        status: "todo",
+        boss_comment: null,
+        estimated_minutes: null,
+      });
+
+      executeTaskTool(db, "update_task", { id: task.id, priority: "high" });
+
+      const events = db
+        .prepare("SELECT * FROM activity_events WHERE type = 'task_update'")
+        .all() as ActivityEvent[];
+      expect(events).toHaveLength(1);
+      expect(events[0]).toMatchObject({ type: "task_update", task_id: task.id });
+    });
+
+    it("does not record a task_update activity event when the task does not exist", () => {
+      executeTaskTool(db, "update_task", { id: 9999, priority: "high" });
+
+      const events = db
+        .prepare("SELECT * FROM activity_events WHERE type = 'task_update'")
+        .all() as ActivityEvent[];
+      expect(events).toHaveLength(0);
     });
   });
 

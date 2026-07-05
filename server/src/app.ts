@@ -2,6 +2,8 @@ import { Hono } from "hono";
 import type Database from "better-sqlite3";
 import { createTasksRouter } from "./tasks/tasks-routes.js";
 import { createSessionsRouter } from "./sessions/sessions-routes.js";
+import { createActivityRouter } from "./activity/activity-routes.js";
+import { createCheckinsRouter } from "./activity/checkins-routes.js";
 
 function checkDatabaseConnection(db: Database.Database): boolean {
   try {
@@ -31,6 +33,8 @@ export function createApp(
 
   api.route("/tasks", createTasksRouter(db));
   api.route("/sessions", createSessionsRouter(db, env));
+  api.route("/checkins", createCheckinsRouter(db));
+  api.route("/activity", createActivityRouter(db));
 
   const app = new Hono();
   app.route("/api", api);
