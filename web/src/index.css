@@ -1,0 +1,31 @@
+:root {
+  --color-bg: #14171c;
+  --color-bg-elevated: #1b1f26;
+  --color-bg-hover: #262b34;
+  --color-border: #2c313b;
+  --color-text: #e6e8eb;
+  --color-text-muted: #8b93a1;
+  --color-accent: #c8963e;
+
+  --nav-width: 200px;
+  --side-panel-width: 280px;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+}
+
+body {
+  margin: 0;
+  background-color: var(--color-bg);
+  color: var(--color-text);
+  font-family:
+    -apple-system, BlinkMacSystemFont, "Hiragino Sans", "Yu Gothic",
+    sans-serif;
+}
