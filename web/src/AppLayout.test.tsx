@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { render, screen, waitFor } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import AppLayout from "./AppLayout";
 
 beforeEach(() => {
@@ -88,5 +88,29 @@ describe("AppLayout", () => {
     await waitFor(() =>
       expect(screen.getByText("サーバー未接続")).toBeInTheDocument(),
     );
+  });
+
+  it("switches the main area to the task board when the task nav item is clicked", () => {
+    render(<AppLayout />);
+
+    fireEvent.click(screen.getByRole("button", { name: "タスク" }));
+
+    expect(
+      screen.getByRole("main", { name: "タスクボード" }),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByRole("main", { name: "ボスとの対話" }),
+    ).not.toBeInTheDocument();
+  });
+
+  it("switches back to the chat placeholder when the chat nav item is clicked", () => {
+    render(<AppLayout />);
+
+    fireEvent.click(screen.getByRole("button", { name: "タスク" }));
+    fireEvent.click(screen.getByRole("button", { name: "チャット" }));
+
+    expect(
+      screen.getByRole("main", { name: "ボスとの対話" }),
+    ).toBeInTheDocument();
   });
 });

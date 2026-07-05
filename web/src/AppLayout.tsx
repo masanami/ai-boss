@@ -1,11 +1,26 @@
+import { useState } from "react";
 import ConnectionStatus from "./ConnectionStatus";
+import TaskBoard from "./TaskBoard";
 import { useHealthCheck } from "./use-health-check";
 import "./AppLayout.css";
 
-const NAV_ITEMS = ["チャット", "タスク", "決定ログ", "設定"];
+type AppView = "chat" | "tasks";
+
+interface NavItem {
+  label: string;
+  view: AppView | null;
+}
+
+const NAV_ITEMS: NavItem[] = [
+  { label: "チャット", view: "chat" },
+  { label: "タスク", view: "tasks" },
+  { label: "決定ログ", view: null },
+  { label: "設定", view: null },
+];
 
 function AppLayout() {
   const healthStatus = useHealthCheck();
+  const [activeView, setActiveView] = useState<AppView>("chat");
 
   return (
     <div className="app-layout">
@@ -17,15 +32,31 @@ function AppLayout() {
         <nav className="app-nav" aria-label="メインナビゲーション">
           <ul>
             {NAV_ITEMS.map((item) => (
-              <li key={item}>
-                <button type="button">{item}</button>
+              <li key={item.label}>
+                <button
+                  type="button"
+                  disabled={item.view === null}
+                  onClick={
+                    item.view === null
+                      ? undefined
+                      : () => setActiveView(item.view as AppView)
+                  }
+                >
+                  {item.label}
+                </button>
               </li>
             ))}
           </ul>
         </nav>
-        <main className="app-main" aria-label="ボスとの対話">
-          <p>ここにボスとの対話が表示されます（準備中）</p>
-        </main>
+        {activeView === "chat" ? (
+          <main className="app-main" aria-label="ボスとの対話">
+            <p>ここにボスとの対話が表示されます（準備中）</p>
+          </main>
+        ) : (
+          <main className="app-main" aria-label="タスクボード">
+            <TaskBoard />
+          </main>
+        )}
         <aside className="app-side-panel" aria-label="サイドパネル">
           <section>
             <h2>今日のタスク</h2>
