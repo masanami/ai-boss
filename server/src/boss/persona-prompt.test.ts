@@ -37,6 +37,16 @@ describe("buildPersonaPrompt", () => {
     expect(prompt).toContain("決定の形で断言する");
   });
 
+  it("重要な決定を下したら record_decision で記録することを促す文言を含む", () => {
+    const prompt = buildPersonaPrompt(DEFAULT_PERSONA_SETTINGS, {
+      tasks: [],
+      recentDecisions: [],
+      now,
+    });
+
+    expect(prompt).toContain("record_decision");
+  });
+
   it("既定プリセット「信頼できる上司」は穏やか・合理的で、過剰な賞賛を禁止する文言を含む", () => {
     const prompt = buildPersonaPrompt(DEFAULT_PERSONA_SETTINGS, {
       tasks: [],

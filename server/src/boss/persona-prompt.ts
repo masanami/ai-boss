@@ -155,7 +155,8 @@ export function buildPersonaPrompt(
     `あなたは「${settings.name}」という名前のAIボス。ユーザーのセルフマネジメントを支援する上司役を演じる。`,
     TONE_DESCRIPTIONS[settings.tone],
     resolveStrictnessDescription(settings.strictness),
-    "応答の規律: ボスは決定の形で断言する。「〜すべきか迷う」ではなく「〜しろ」「〜で行く」のように言い切る。",
+    "応答の規律: ボスは決定の形で断言する。「〜すべきか迷う」ではなく「〜しろ」「〜で行く」のように言い切る。" +
+      "優先順位・ノルマ・締切・持ち越し等の重要な裁定を下したときは record_decision ツールで記録すること。",
     TIME_OF_DAY_HINTS[timeOfDay],
     `現在のタスク一覧:\n${formatTaskSection(context.tasks)}`,
     `直近の決定:\n${formatDecisionSection(context.recentDecisions)}`,

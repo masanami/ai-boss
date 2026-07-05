@@ -8,7 +8,7 @@ import { listTasks } from "../tasks/tasks-repository.js";
 import { listRecentDecisions } from "../decisions/decisions-repository.js";
 import { resolveBossSettings } from "../boss/boss-settings.js";
 import { buildPersonaPrompt } from "../boss/persona-prompt.js";
-import { TASK_TOOLS, executeTaskTool } from "../boss/task-tools.js";
+import { BOSS_TOOLS, executeBossTool } from "../boss/boss-tools.js";
 import {
   buildToolResultMessage,
   createClaudeClient,
@@ -146,7 +146,7 @@ export function registerChatMessageRoute(
         for (let round = 0; round < MAX_TOOL_ROUNDS; round++) {
           const finalMessage = await streamBossMessage(
             client,
-            { model, system, messages, tools: TASK_TOOLS },
+            { model, system, messages, tools: BOSS_TOOLS },
             onTextDelta,
           );
 
@@ -163,7 +163,7 @@ export function registerChatMessageRoute(
 
           const toolResultBlocks: Anthropic.ToolResultBlockParam[] = [];
           for (const block of toolUseBlocks) {
-            const result = executeTaskTool(db, block.name, block.input);
+            const result = executeBossTool(db, id, block.name, block.input);
             const summary = summarizeToolExecution(block.name, result);
             if (summary !== null) {
               toolSummaries.push(summary);
