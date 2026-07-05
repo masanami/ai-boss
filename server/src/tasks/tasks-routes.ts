@@ -1,19 +1,11 @@
 import { Hono } from "hono";
-import type { Context } from "hono";
 import type Database from "better-sqlite3";
+import { readJsonBody } from "../lib/read-json-body.js";
 import { insertTask, listTasks, updateTask } from "./tasks-repository.js";
 import {
   validateCreateTaskInput,
   validatePatchTaskInput,
 } from "./tasks-validation.js";
-
-async function readJsonBody(c: Context): Promise<unknown> {
-  try {
-    return await c.req.json();
-  } catch {
-    return undefined;
-  }
-}
 
 /**
  * Creates the tasks sub-router, mounted under `/api/tasks` by the caller.
