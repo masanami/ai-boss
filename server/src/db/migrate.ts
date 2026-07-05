@@ -1,0 +1,100 @@
+import type Database from "better-sqlite3";
+
+const LATEST_VERSION = 1;
+
+const MIGRATIONS: Record<number, string> = {
+  1: `
+    CREATE TABLE IF NOT EXISTS tasks (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      title TEXT NOT NULL,
+      description TEXT,
+      category TEXT NOT NULL DEFAULT 'work',
+      priority TEXT,
+      due_at TEXT,
+      status TEXT NOT NULL DEFAULT 'todo'
+        CHECK (status IN ('todo', 'in_progress', 'done', 'dropped')),
+      boss_comment TEXT,
+      estimated_minutes INTEGER,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      completed_at TEXT
+    );
+
+    CREATE TABLE IF NOT EXISTS sessions (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      type TEXT NOT NULL CHECK (type IN ('morning', 'evening', 'adhoc')),
+      started_at TEXT NOT NULL,
+      ended_at TEXT,
+      summary TEXT
+    );
+
+    CREATE TABLE IF NOT EXISTS messages (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      session_id INTEGER NOT NULL REFERENCES sessions(id),
+      role TEXT NOT NULL CHECK (role IN ('user', 'boss')),
+      content TEXT NOT NULL,
+      created_at TEXT NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS decisions (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      session_id INTEGER NOT NULL REFERENCES sessions(id),
+      task_id INTEGER REFERENCES tasks(id),
+      content TEXT NOT NULL,
+      rationale TEXT,
+      status TEXT NOT NULL DEFAULT 'active'
+        CHECK (status IN ('active', 'revised', 'withdrawn')),
+      created_at TEXT NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS appeals (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      decision_id INTEGER NOT NULL REFERENCES decisions(id),
+      content TEXT NOT NULL,
+      verdict TEXT NOT NULL CHECK (verdict IN ('upheld', 'revised')),
+      created_at TEXT NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS settings (
+      key TEXT PRIMARY KEY,
+      value TEXT
+    );
+
+    CREATE TABLE IF NOT EXISTS notifications (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      type TEXT NOT NULL,
+      rule_key TEXT,
+      escalation_level INTEGER,
+      body TEXT NOT NULL,
+      sent_at TEXT NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS activity_events (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      type TEXT NOT NULL
+        CHECK (type IN (
+          'task_start', 'break_start', 'break_end',
+          'checkin', 'chat_message', 'task_update'
+        )),
+      task_id INTEGER REFERENCES tasks(id),
+      note TEXT,
+      expected_minutes INTEGER,
+      created_at TEXT NOT NULL
+    );
+  `,
+};
+
+/**
+ * Applies pending schema migrations using `PRAGMA user_version` as the
+ * migration cursor. Safe to call multiple times (idempotent): migrations
+ * already applied (version <= current user_version) are skipped.
+ */
+export function runMigrations(db: Database.Database): void {
+  const currentVersion = db.pragma("user_version", { simple: true }) as number;
+
+  for (let version = currentVersion + 1; version <= LATEST_VERSION; version++) {
+    const migration = MIGRATIONS[version];
+    db.exec(migration);
+    db.pragma(`user_version = ${version}`);
+  }
+}
