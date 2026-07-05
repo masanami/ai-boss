@@ -56,6 +56,14 @@ describe("AppLayout", () => {
     ).toBeInTheDocument();
   });
 
+  it("renders the checkin panel above the other side panel sections", () => {
+    render(<AppLayout />);
+
+    expect(
+      screen.getByRole("region", { name: "チェックイン" }),
+    ).toBeInTheDocument();
+  });
+
   it("renders the header title", () => {
     render(<AppLayout />);
 
