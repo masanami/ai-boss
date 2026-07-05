@@ -46,6 +46,39 @@ function isToolUseBlock(
 }
 
 /**
+ * Human-readable one-liner for a successfully executed task tool, used to
+ * build the fallback boss message when a turn produced tool calls but no
+ * text (e.g. the tool-round cap was hit). Returns null for failed
+ * executions and unparsable results.
+ */
+function summarizeToolExecution(
+  name: string,
+  result: { content: string; isError: boolean },
+): string | null {
+  if (result.isError) {
+    return null;
+  }
+  let title: string | undefined;
+  try {
+    title = (JSON.parse(result.content) as { title?: string }).title;
+  } catch {
+    return null;
+  }
+  if (title === undefined) {
+    return null;
+  }
+  return `タスク「${title}」を${name === "create_task" ? "作成" : "更新"}`;
+}
+
+/** Boss message persisted when the stream ended without any text. */
+function buildFallbackText(toolSummaries: string[]): string {
+  if (toolSummaries.length === 0) {
+    return "応答を生成できなかった。もう一度送ってくれ。";
+  }
+  return `${toolSummaries.join("、")}した。詳細はタスクボードで確認してくれ。`;
+}
+
+/**
  * Registers `POST /:id/messages` on the given sessions router. Kept in its
  * own module because the SSE + tool-use orchestration is substantially
  * larger than the other session endpoints in `sessions-routes.ts`.
@@ -99,8 +132,9 @@ export function registerChatMessageRoute(
     const messages = toClaudeMessages(listMessagesBySessionId(db, id));
 
     return streamSSE(c, async (stream) => {
+      let fullText = "";
+      const toolSummaries: string[] = [];
       try {
-        let fullText = "";
         const onTextDelta = (delta: string) => {
           fullText += delta;
           void stream.writeSSE({
@@ -127,9 +161,13 @@ export function registerChatMessageRoute(
               finalMessage.content as unknown as Anthropic.MessageParam["content"],
           });
 
-          const toolResultBlocks: Anthropic.MessageParam["content"] = [];
+          const toolResultBlocks: Anthropic.ToolResultBlockParam[] = [];
           for (const block of toolUseBlocks) {
             const result = executeTaskTool(db, block.name, block.input);
+            const summary = summarizeToolExecution(block.name, result);
+            if (summary !== null) {
+              toolSummaries.push(summary);
+            }
             await stream.writeSSE({
               event: "tool",
               data: JSON.stringify({
@@ -145,9 +183,11 @@ export function registerChatMessageRoute(
               result.content,
               { isError: result.isError },
             );
-            if (Array.isArray(toolResultMessage.content)) {
-              (toolResultBlocks as unknown[]).push(...toolResultMessage.content);
-            }
+            // buildToolResultMessage always builds an array-form content, so
+            // the blocks can be collected without a runtime guard.
+            toolResultBlocks.push(
+              ...(toolResultMessage.content as Anthropic.ToolResultBlockParam[]),
+            );
           }
           messages.push({ role: "user", content: toolResultBlocks });
         }
@@ -155,7 +195,7 @@ export function registerChatMessageRoute(
         const bossMessage = insertMessage(db, {
           session_id: id,
           role: "boss",
-          content: fullText,
+          content: fullText !== "" ? fullText : buildFallbackText(toolSummaries),
         });
         await stream.writeSSE({
           event: "done",
@@ -171,6 +211,19 @@ export function registerChatMessageRoute(
           "chat message stream failed:",
           err instanceof Error ? err.name : typeof err,
         );
+        // Text already streamed to the client is part of the conversation
+        // the user actually saw — persist it so the history stays consistent
+        // after a reload instead of silently dropping the partial reply.
+        if (fullText !== "") {
+          try {
+            insertMessage(db, { session_id: id, role: "boss", content: fullText });
+          } catch (persistErr) {
+            console.error(
+              "failed to persist the partial boss message:",
+              persistErr instanceof Error ? persistErr.name : typeof persistErr,
+            );
+          }
+        }
         await stream.writeSSE({
           event: "error",
           data: JSON.stringify({ error: GENERIC_STREAM_ERROR_MESSAGE }),

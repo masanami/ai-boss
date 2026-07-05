@@ -41,6 +41,14 @@ export interface ChatMessageInput {
 }
 
 /**
+ * Upper bound on a single chat message. Every message is stored and sent to
+ * the Claude API as conversation history, so an unbounded payload would leak
+ * straight into token cost; 10k characters is far beyond any realistic
+ * consultation text.
+ */
+export const MAX_CHAT_MESSAGE_CONTENT_LENGTH = 10_000;
+
+/**
  * Validates and normalizes a `POST /api/sessions/:id/messages` request body.
  */
 export function validateChatMessageInput(
@@ -52,6 +60,13 @@ export function validateChatMessageInput(
 
   if (typeof body.content !== "string" || body.content.trim() === "") {
     return { valid: false, error: "content is required and must not be empty" };
+  }
+
+  if (body.content.length > MAX_CHAT_MESSAGE_CONTENT_LENGTH) {
+    return {
+      valid: false,
+      error: `content must be at most ${MAX_CHAT_MESSAGE_CONTENT_LENGTH} characters`,
+    };
   }
 
   return { valid: true, data: { content: body.content } };

@@ -46,7 +46,7 @@ describe("listRecentDecisions", () => {
     ]);
   });
 
-  it("caps the result at the given limit", () => {
+  it("caps the result at the given limit, keeping the most recent ones", () => {
     const session = insertSession(db, { type: "adhoc" });
     for (let i = 0; i < 7; i++) {
       insertDecision(db, session.id, `決定${i}`, `2026-07-0${(i % 9) + 1}T00:00:00.000Z`);
@@ -54,6 +54,12 @@ describe("listRecentDecisions", () => {
 
     const result = listRecentDecisions(db, 5);
 
-    expect(result).toHaveLength(5);
+    expect(result.map((decision) => decision.content)).toEqual([
+      "決定6",
+      "決定5",
+      "決定4",
+      "決定3",
+      "決定2",
+    ]);
   });
 });

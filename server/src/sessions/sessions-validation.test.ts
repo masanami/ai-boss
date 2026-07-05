@@ -75,4 +75,19 @@ describe("validateChatMessageInput", () => {
 
     expect(result.valid).toBe(false);
   });
+
+  it("accepts a content at exactly the maximum length", () => {
+    const result = validateChatMessageInput({ content: "あ".repeat(10_000) });
+
+    expect(result.valid).toBe(true);
+  });
+
+  it("rejects a content longer than the maximum length", () => {
+    const result = validateChatMessageInput({ content: "あ".repeat(10_001) });
+
+    expect(result.valid).toBe(false);
+    if (!result.valid) {
+      expect(result.error).toContain("content");
+    }
+  });
 });

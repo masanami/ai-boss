@@ -342,7 +342,59 @@ describe("POST /api/sessions/:id/messages", () => {
 
     const doneEvent = events.find((e) => e.event === "done");
     const bossMessage = JSON.parse(doneEvent!.data) as Message;
-    expect(bossMessage.content).toBe("");
+    expect(bossMessage.content).not.toBe("");
+    expect(bossMessage.content).toContain("タスク「無限タスク」を作成");
+
+    const persisted = db
+      .prepare("SELECT * FROM messages WHERE session_id = ? AND role = 'boss'")
+      .all(session.id) as Message[];
+    expect(persisted).toHaveLength(1);
+    expect(persisted[0].content).toBe(bossMessage.content);
+  });
+
+  it("persists a generic fallback text when the response has neither text nor tool use", async () => {
+    const session = await createSession();
+    streamBossMessageMock.mockResolvedValue(fakeTextMessage(""));
+    const app = createApp(db, env);
+
+    const res = await app.request(`/api/sessions/${session.id}/messages`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ content: "こんにちは" }),
+    });
+    const events = parseSseEvents(await res.text());
+
+    const doneEvent = events.find((e) => e.event === "done");
+    const bossMessage = JSON.parse(doneEvent!.data) as Message;
+    expect(bossMessage.content).not.toBe("");
+  });
+
+  it("persists the partial boss text when the stream fails midway", async () => {
+    const session = await createSession();
+    streamBossMessageMock.mockImplementationOnce(
+      async (_client, _request, onTextDelta) => {
+        (onTextDelta as (delta: string) => void)("途中までの応答");
+        throw new Error("connection reset with request id xyz789");
+      },
+    );
+    const app = createApp(db, env);
+
+    const res = await app.request(`/api/sessions/${session.id}/messages`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ content: "相談です" }),
+    });
+    const rawBody = await res.text();
+    const events = parseSseEvents(rawBody);
+
+    expect(rawBody).not.toContain("xyz789");
+    expect(events.find((e) => e.event === "error")).toBeDefined();
+
+    const messages = db
+      .prepare("SELECT * FROM messages WHERE session_id = ? ORDER BY id")
+      .all(session.id) as Message[];
+    expect(messages.map((m) => m.role)).toEqual(["user", "boss"]);
+    expect(messages[1].content).toBe("途中までの応答");
   });
 
   it("emits a sanitized SSE error event when the Claude call fails, without persisting a boss message", async () => {
