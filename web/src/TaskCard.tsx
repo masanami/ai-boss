@@ -6,7 +6,8 @@ import type { Task, TaskPatchInput, TaskPriority, TaskStatus } from "./task";
 interface TaskCardProps {
   task: Task;
   onStatusChange: (id: number, status: TaskStatus) => void;
-  onEdit: (id: number, patch: TaskPatchInput) => void;
+  /** Resolves to true when the update succeeded; edit mode only closes then. */
+  onEdit: (id: number, patch: TaskPatchInput) => Promise<boolean>;
 }
 
 const PRIORITY_LABEL: Record<TaskPriority, string> = {
@@ -50,13 +51,16 @@ function TaskCard({ task, onStatusChange, onEdit }: TaskCardProps) {
     if (title.trim() === "") {
       return;
     }
-    onEdit(task.id, {
+    void onEdit(task.id, {
       title: title.trim(),
       description: description.trim() === "" ? null : description.trim(),
       priority: priority === "" ? null : priority,
       due_at: dueAt === "" ? null : dueAt,
+    }).then((updated) => {
+      if (updated) {
+        setIsEditing(false);
+      }
     });
-    setIsEditing(false);
   };
 
   if (isEditing) {

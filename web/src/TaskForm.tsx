@@ -12,27 +12,33 @@ function TaskForm({ onCreate }: TaskFormProps) {
   const [description, setDescription] = useState("");
   const [priority, setPriority] = useState<TaskPriority | "">("");
   const [dueAt, setDueAt] = useState("");
+  const [isSubmitting, setIsSubmitting] = useState(false);
 
   const handleSubmit = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
-    if (title.trim() === "") {
+    if (isSubmitting || title.trim() === "") {
       return;
     }
 
+    setIsSubmitting(true);
     void onCreate({
       title: title.trim(),
       description: description.trim() === "" ? null : description.trim(),
       priority: priority === "" ? null : priority,
       due_at: dueAt === "" ? null : dueAt,
-    }).then((created) => {
-      if (!created) {
-        return;
-      }
-      setTitle("");
-      setDescription("");
-      setPriority("");
-      setDueAt("");
-    });
+    })
+      .then((created) => {
+        if (!created) {
+          return;
+        }
+        setTitle("");
+        setDescription("");
+        setPriority("");
+        setDueAt("");
+      })
+      .finally(() => {
+        setIsSubmitting(false);
+      });
   };
 
   return (
@@ -73,7 +79,9 @@ function TaskForm({ onCreate }: TaskFormProps) {
           onChange={(event) => setDueAt(event.target.value)}
         />
       </label>
-      <button type="submit">追加</button>
+      <button type="submit" disabled={isSubmitting}>
+        追加
+      </button>
     </form>
   );
 }

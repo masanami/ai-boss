@@ -102,4 +102,28 @@ describe("TaskForm", () => {
     await waitFor(() => expect(onCreate).toHaveBeenCalled());
     expect(screen.getByLabelText("タイトル")).toHaveValue("資料を作る");
   });
+
+  it("disables the submit button and ignores clicks while submitting", async () => {
+    let resolveCreate: (created: boolean) => void = () => {};
+    const onCreate = vi.fn().mockReturnValue(
+      new Promise<boolean>((resolve) => {
+        resolveCreate = resolve;
+      }),
+    );
+    render(<TaskForm onCreate={onCreate} />);
+
+    fireEvent.change(screen.getByLabelText("タイトル"), {
+      target: { value: "資料を作る" },
+    });
+    const submitButton = screen.getByRole("button", { name: "追加" });
+    fireEvent.click(submitButton);
+    fireEvent.click(submitButton);
+
+    expect(onCreate).toHaveBeenCalledTimes(1);
+    expect(submitButton).toBeDisabled();
+
+    resolveCreate(true);
+    await waitFor(() => expect(submitButton).toBeEnabled());
+    expect(screen.getByLabelText("タイトル")).toHaveValue("");
+  });
 });

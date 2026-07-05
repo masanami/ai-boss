@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { fireEvent, render, screen } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import TaskCard from "./TaskCard";
 import type { Task } from "./task";
 
@@ -125,8 +125,8 @@ describe("TaskCard", () => {
     expect(screen.getByLabelText("締切")).toHaveValue("2026-07-10");
   });
 
-  it("calls onEdit with the updated fields when the edit form is submitted", () => {
-    const onEdit = vi.fn();
+  it("calls onEdit with the updated fields when the edit form is submitted", async () => {
+    const onEdit = vi.fn().mockResolvedValue(true);
     render(
       <TaskCard task={BASE_TASK} onStatusChange={vi.fn()} onEdit={onEdit} />,
     );
@@ -143,10 +143,31 @@ describe("TaskCard", () => {
       priority: null,
       due_at: null,
     });
+    await waitFor(() =>
+      expect(
+        screen.queryByRole("form", { name: "タスクを編集" }),
+      ).not.toBeInTheDocument(),
+    );
+  });
+
+  it("stays in edit mode when the update fails", async () => {
+    const onEdit = vi.fn().mockResolvedValue(false);
+    render(
+      <TaskCard task={BASE_TASK} onStatusChange={vi.fn()} onEdit={onEdit} />,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "編集" }));
+    fireEvent.change(screen.getByLabelText("タイトル"), {
+      target: { value: "資料を仕上げる" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "保存" }));
+
+    await waitFor(() => expect(onEdit).toHaveBeenCalled());
+    expect(screen.getByLabelText("タイトル")).toHaveValue("資料を仕上げる");
   });
 
   it("calls onEdit with all fields when they are edited to non-null values", () => {
-    const onEdit = vi.fn();
+    const onEdit = vi.fn().mockResolvedValue(true);
     render(
       <TaskCard task={BASE_TASK} onStatusChange={vi.fn()} onEdit={onEdit} />,
     );
