@@ -1,4 +1,5 @@
 import type Database from "better-sqlite3";
+import { recordActivityEvent } from "../activity/activity-events-repository.js";
 import type { Task, TaskPriority, TaskStatus } from "./task.js";
 
 /**
@@ -86,6 +87,14 @@ export interface TaskPatch {
  * unchanged. When `status` transitions to `done`, `completed_at` is set to
  * the current time; when it transitions away from `done`, `completed_at` is
  * cleared. Returns `undefined` if no task with the given id exists.
+ *
+ * When `patch` requests at least one field, a `task_update` activity event
+ * is recorded automatically as part of the same transaction (single input
+ * for the slacking-detection rule engine). A patch with no fields (e.g.
+ * `PATCH {}`) requests no real change, so it is not treated as an activity
+ * signal. This function is the one layer both `PATCH /api/tasks/:id` and
+ * the boss's `update_task` tool use pass through, so recording it here
+ * covers both call sites.
  */
 export function updateTask(
   db: Database.Database,
@@ -109,24 +118,32 @@ export function updateTask(
   }
 
   const now = new Date().toISOString();
+  const isRealChange = Object.keys(patch).length > 0;
 
-  db.prepare(
-    `UPDATE tasks SET
-      title = ?, description = ?, priority = ?, due_at = ?, status = ?,
-      boss_comment = ?, estimated_minutes = ?, updated_at = ?, completed_at = ?
-    WHERE id = ?`,
-  ).run(
-    next.title,
-    next.description,
-    next.priority,
-    next.due_at,
-    next.status,
-    next.boss_comment,
-    next.estimated_minutes,
-    now,
-    completedAt,
-    id,
-  );
+  const applyUpdate = db.transaction(() => {
+    db.prepare(
+      `UPDATE tasks SET
+        title = ?, description = ?, priority = ?, due_at = ?, status = ?,
+        boss_comment = ?, estimated_minutes = ?, updated_at = ?, completed_at = ?
+      WHERE id = ?`,
+    ).run(
+      next.title,
+      next.description,
+      next.priority,
+      next.due_at,
+      next.status,
+      next.boss_comment,
+      next.estimated_minutes,
+      now,
+      completedAt,
+      id,
+    );
+
+    if (isRealChange) {
+      recordActivityEvent(db, { type: "task_update", task_id: id });
+    }
+  });
+  applyUpdate();
 
   return findTaskById(db, id);
 }
