@@ -2,10 +2,9 @@ import type Database from "better-sqlite3";
 import { getSettingValue } from "../settings/settings-repository.js";
 import {
   DEFAULT_DETECTION_SETTINGS,
+  TIME_PATTERN,
   type DetectionSettings,
 } from "../detection/detection-types.js";
-
-const TIME_PATTERN = /^([01]\d|2[0-3]):([0-5]\d)$/;
 
 function resolveTimeSetting(db: Database.Database, key: string, fallback: string): string {
   const value = getSettingValue(db, key);
