@@ -2,12 +2,13 @@ import { useState } from "react";
 import ChatView from "./ChatView";
 import CheckinPanel from "./CheckinPanel";
 import ConnectionStatus from "./ConnectionStatus";
+import Dashboard from "./Dashboard";
 import DecisionLog from "./DecisionLog";
 import TaskBoard from "./TaskBoard";
 import { useHealthCheck } from "./use-health-check";
 import "./AppLayout.css";
 
-type AppView = "chat" | "tasks" | "decisions";
+type AppView = "dashboard" | "chat" | "tasks" | "decisions";
 
 interface NavItem {
   label: string;
@@ -15,6 +16,7 @@ interface NavItem {
 }
 
 const NAV_ITEMS: NavItem[] = [
+  { label: "ダッシュボード", view: "dashboard" },
   { label: "チャット", view: "chat" },
   { label: "タスク", view: "tasks" },
   { label: "決定ログ", view: "decisions" },
@@ -23,7 +25,9 @@ const NAV_ITEMS: NavItem[] = [
 
 function AppLayout() {
   const healthStatus = useHealthCheck();
-  const [activeView, setActiveView] = useState<AppView>("chat");
+  // ダッシュボードを既定ビューにする（Issue #60 の明示的な仮定: ダッシュボード
+  // はアプリの顔。チャット中心の仕様とはナビ1クリックで両立させる）。
+  const [activeView, setActiveView] = useState<AppView>("dashboard");
 
   return (
     <div className="app-layout">
@@ -51,6 +55,11 @@ function AppLayout() {
             ))}
           </ul>
         </nav>
+        {activeView === "dashboard" && (
+          <main className="app-main" aria-label="ダッシュボード">
+            <Dashboard />
+          </main>
+        )}
         {activeView === "chat" && (
           <main className="app-main" aria-label="ボスとの対話">
             <ChatView />

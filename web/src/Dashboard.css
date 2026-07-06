@@ -1,0 +1,131 @@
+.dashboard-status {
+  color: var(--color-text-muted);
+}
+
+.dashboard {
+  display: flex;
+  flex-direction: column;
+  gap: 1.5rem;
+  max-width: 640px;
+}
+
+.dashboard-boss-row {
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+}
+
+.dashboard-boss-row .boss-avatar {
+  width: 88px;
+  height: 88px;
+  flex-shrink: 0;
+  border-radius: 12px;
+  background-color: var(--color-bg-elevated);
+  border: 1px solid var(--color-border);
+}
+
+.dashboard-boss-bubble {
+  position: relative;
+  background-color: var(--color-bg-elevated);
+  border: 1px solid var(--color-border);
+  border-radius: 10px;
+  padding: 0.75rem 1rem;
+}
+
+.dashboard-boss-bubble::before {
+  content: "";
+  position: absolute;
+  left: -8px;
+  top: 50%;
+  transform: translateY(-50%);
+  border-width: 8px 8px 8px 0;
+  border-style: solid;
+  border-color: transparent var(--color-border) transparent transparent;
+}
+
+.dashboard-boss-bubble p {
+  margin: 0;
+  line-height: 1.6;
+}
+
+.dashboard-progress h2,
+.dashboard-evening-evaluation h2 {
+  font-size: 0.85rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--color-text-muted);
+  margin: 0 0 0.5rem;
+}
+
+.dashboard-progress-bar {
+  height: 14px;
+  border-radius: 999px;
+  background-color: var(--color-bg-elevated);
+  border: 1px solid var(--color-border);
+  overflow: hidden;
+}
+
+.dashboard-progress-bar-fill {
+  height: 100%;
+  border-radius: 999px;
+  transition: width 0.3s ease;
+}
+
+/* 低: 抑えた色 → 高: 暖色アクセント（達成率に応じて色が変わる） */
+.dashboard-progress-bar-fill-low {
+  background-color: var(--color-text-muted);
+}
+
+.dashboard-progress-bar-fill-mid {
+  background-color: var(--color-accent);
+  opacity: 0.7;
+}
+
+.dashboard-progress-bar-fill-high {
+  background-color: var(--color-accent-warm);
+}
+
+.dashboard-progress-text {
+  margin: 0.5rem 0 0;
+  font-size: 0.9rem;
+  color: var(--color-text-muted);
+}
+
+.dashboard-evening-evaluation {
+  border-radius: 10px;
+  padding: 1rem 1.25rem;
+  border: 1px solid var(--color-border);
+}
+
+.dashboard-evening-evaluation h2 {
+  margin: 0 0 0.35rem;
+}
+
+.dashboard-evening-evaluation p {
+  margin: 0;
+  line-height: 1.6;
+}
+
+/* 褒め演出: 暖色アクセントで報われ感を出す */
+.dashboard-evening-evaluation-praise {
+  background-color: var(--color-praise-bg);
+  border-color: var(--color-accent-warm);
+}
+
+.dashboard-evening-evaluation-praise h2 {
+  color: var(--color-accent-warm);
+}
+
+/* 叱咤演出: 引き締まった寒色で強調する */
+.dashboard-evening-evaluation-scold {
+  background-color: var(--color-scold-bg);
+  border-color: var(--color-scold);
+}
+
+.dashboard-evening-evaluation-scold h2 {
+  color: var(--color-scold);
+}
+
+.dashboard-evening-evaluation-neutral {
+  background-color: var(--color-bg-elevated);
+}
