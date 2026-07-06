@@ -37,6 +37,16 @@ describe("buildPersonaPrompt", () => {
     expect(prompt).toContain("決定の形で断言する");
   });
 
+  it("重要な決定を下したら record_decision で記録することを促す文言を含む", () => {
+    const prompt = buildPersonaPrompt(DEFAULT_PERSONA_SETTINGS, {
+      tasks: [],
+      recentDecisions: [],
+      now,
+    });
+
+    expect(prompt).toContain("record_decision");
+  });
+
   it("既定プリセット「信頼できる上司」は穏やか・合理的で、過剰な賞賛を禁止する文言を含む", () => {
     const prompt = buildPersonaPrompt(DEFAULT_PERSONA_SETTINGS, {
       tasks: [],
@@ -214,5 +224,112 @@ describe("buildPersonaPrompt", () => {
     });
 
     expect(prompt).toContain("通知文面として使われる");
+  });
+
+  describe("sessionType によるセッションフロー指示", () => {
+    it("sessionType: 'morning' のとき、優先順位・ノルマの決定を促す文言を含む", () => {
+      const prompt = buildPersonaPrompt(DEFAULT_PERSONA_SETTINGS, {
+        tasks: [],
+        recentDecisions: [],
+        now,
+        sessionType: "morning",
+      });
+
+      expect(prompt).toContain("朝会（計画セッション）");
+      expect(prompt).toContain("優先順位");
+      expect(prompt).toContain("ノルマ");
+    });
+
+    it("sessionType: 'morning' のとき、所要時間見積もりの提案→確認→estimated_minutes 保存の指示を含む", () => {
+      const prompt = buildPersonaPrompt(DEFAULT_PERSONA_SETTINGS, {
+        tasks: [],
+        recentDecisions: [],
+        now,
+        sessionType: "morning",
+      });
+
+      expect(prompt).toContain("見積もり");
+      expect(prompt).toContain("estimated_minutes");
+    });
+
+    it("sessionType: 'evening' のとき、達成/未達の評価と持ち越し裁定の指示を含む", () => {
+      const prompt = buildPersonaPrompt(DEFAULT_PERSONA_SETTINGS, {
+        tasks: [],
+        recentDecisions: [],
+        now,
+        sessionType: "evening",
+      });
+
+      expect(prompt).toContain("夕会（報告セッション）");
+      expect(prompt).toContain("達成");
+      expect(prompt).toContain("未達");
+      expect(prompt).toContain("持ち越し");
+    });
+
+    it("sessionType: 'adhoc' のとき、朝会/夕会固有の指示を含まない", () => {
+      const prompt = buildPersonaPrompt(DEFAULT_PERSONA_SETTINGS, {
+        tasks: [],
+        recentDecisions: [],
+        now,
+        sessionType: "adhoc",
+      });
+
+      expect(prompt).not.toContain("朝会（計画セッション）");
+      expect(prompt).not.toContain("夕会（報告セッション）");
+    });
+
+    it("sessionType 省略時、朝会/夕会固有の指示を含まない（後方互換）", () => {
+      const prompt = buildPersonaPrompt(DEFAULT_PERSONA_SETTINGS, {
+        tasks: [],
+        recentDecisions: [],
+        now,
+      });
+
+      expect(prompt).not.toContain("朝会（計画セッション）");
+      expect(prompt).not.toContain("夕会（報告セッション）");
+    });
+
+    it("purpose が chat（既定）のとき、チャットでの新規タスク作成時の見積もり確認の共通指示を含む", () => {
+      const prompt = buildPersonaPrompt(DEFAULT_PERSONA_SETTINGS, {
+        tasks: [],
+        recentDecisions: [],
+        now,
+        sessionType: "adhoc",
+      });
+
+      expect(prompt).toContain("チャットからタスクを新規作成する");
+      expect(prompt).toContain("estimated_minutes");
+    });
+
+    it("purpose が notification のとき、チャット向けの共通指示（見積もり確認）を含まない", () => {
+      const prompt = buildPersonaPrompt(DEFAULT_PERSONA_SETTINGS, {
+        tasks: [],
+        recentDecisions: [],
+        now,
+        purpose: "notification",
+      });
+
+      expect(prompt).not.toContain("チャットからタスクを新規作成する");
+    });
+
+    it("purpose が notification のときは sessionType が morning/evening でも朝会/夕会の指示を含まない", () => {
+      const morning = buildPersonaPrompt(DEFAULT_PERSONA_SETTINGS, {
+        tasks: [],
+        recentDecisions: [],
+        now,
+        purpose: "notification",
+        sessionType: "morning",
+      });
+      const evening = buildPersonaPrompt(DEFAULT_PERSONA_SETTINGS, {
+        tasks: [],
+        recentDecisions: [],
+        now,
+        purpose: "notification",
+        sessionType: "evening",
+      });
+
+      expect(morning).not.toContain("朝会（計画セッション）");
+      expect(evening).not.toContain("夕会（報告セッション）");
+    });
   });
 });

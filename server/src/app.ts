@@ -4,6 +4,7 @@ import { createTasksRouter } from "./tasks/tasks-routes.js";
 import { createSessionsRouter } from "./sessions/sessions-routes.js";
 import { createActivityRouter } from "./activity/activity-routes.js";
 import { createCheckinsRouter } from "./activity/checkins-routes.js";
+import { createDecisionsRouter } from "./decisions/decisions-routes.js";
 
 function checkDatabaseConnection(db: Database.Database): boolean {
   try {
@@ -35,6 +36,7 @@ export function createApp(
   api.route("/sessions", createSessionsRouter(db, env));
   api.route("/checkins", createCheckinsRouter(db));
   api.route("/activity", createActivityRouter(db));
+  api.route("/decisions", createDecisionsRouter(db, env));
 
   const app = new Hono();
   app.route("/api", api);

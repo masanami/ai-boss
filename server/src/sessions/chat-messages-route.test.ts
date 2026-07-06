@@ -4,6 +4,7 @@ import type Anthropic from "@anthropic-ai/sdk";
 import { openDatabase } from "../db/connection.js";
 import { runMigrations } from "../db/migrate.js";
 import { listTasks } from "../tasks/tasks-repository.js";
+import { listDecisions } from "../decisions/decisions-repository.js";
 import type { Session } from "./session.js";
 import type { Message } from "./message.js";
 
@@ -242,6 +243,7 @@ describe("POST /api/sessions/:id/messages", () => {
         tools: expect.arrayContaining([
           expect.objectContaining({ name: "create_task" }),
           expect.objectContaining({ name: "update_task" }),
+          expect.objectContaining({ name: "record_decision" }),
         ]),
         messages: expect.arrayContaining([
           expect.objectContaining({ role: "user", content: "進捗どうですか" }),
@@ -250,6 +252,33 @@ describe("POST /api/sessions/:id/messages", () => {
       expect.any(Function),
     );
     expect(streamBossMessageMock.mock.calls[0][1].system).toContain("資料作成");
+  });
+
+  it("passes the session's type as sessionType so the system prompt reflects the morning flow guidance", async () => {
+    const app = createApp(db, env);
+    const session = await readJson<Session>(
+      await app.request("/api/sessions", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ type: "morning" }),
+      }),
+    );
+    streamBossMessageMock.mockResolvedValue(fakeTextMessage("了解した"));
+
+    const res = await app.request(`/api/sessions/${session.id}/messages`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ content: "今日の予定を報告します" }),
+    });
+    await res.text();
+
+    expect(streamBossMessageMock).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        system: expect.stringContaining("朝会（計画セッション）"),
+      }),
+      expect.any(Function),
+    );
   });
 
   it("executes a create_task tool call, emits a tool event, and continues the conversation", async () => {
@@ -299,6 +328,78 @@ describe("POST /api/sessions/:id/messages", () => {
       (m: { role: string }) => m.role,
     );
     expect(roles).toEqual(["user", "assistant", "user"]);
+  });
+
+  it("executes a record_decision tool call, persists it under the session's id, and emits a tool event", async () => {
+    const session = await createSession();
+    streamBossMessageMock
+      .mockImplementationOnce(async () =>
+        fakeToolUseMessage("tool_1", "record_decision", {
+          content: "資料作成を最優先にする",
+        }),
+      )
+      .mockImplementationOnce(async (_client, _request, onTextDelta) => {
+        onTextDelta?.("そう決めた");
+        return fakeTextMessage("そう決めた");
+      });
+    const app = createApp(db, env);
+
+    const res = await app.request(`/api/sessions/${session.id}/messages`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ content: "何を優先すべき？" }),
+    });
+
+    const events = parseSseEvents(await res.text());
+    expect(streamBossMessageMock).toHaveBeenCalledTimes(2);
+
+    const decisions = listDecisions(db);
+    expect(decisions).toHaveLength(1);
+    expect(decisions[0]).toMatchObject({
+      session_id: session.id,
+      content: "資料作成を最優先にする",
+      status: "active",
+    });
+
+    const toolEvent = events.find((e) => e.event === "tool");
+    expect(toolEvent).toBeDefined();
+    const toolPayload = JSON.parse(toolEvent!.data) as {
+      name: string;
+      isError: boolean;
+      result: string;
+    };
+    expect(toolPayload.name).toBe("record_decision");
+    expect(toolPayload.isError).toBe(false);
+    expect(JSON.parse(toolPayload.result)).toMatchObject({
+      content: "資料作成を最優先にする",
+    });
+
+    const doneEvent = events.find((e) => e.event === "done");
+    const bossMessage = JSON.parse(doneEvent!.data) as Message;
+    expect(bossMessage.content).toBe("そう決めた");
+  });
+
+  it("marks the tool result as an error and does not persist a decision when record_decision content is missing", async () => {
+    const session = await createSession();
+    streamBossMessageMock
+      .mockImplementationOnce(async () =>
+        fakeToolUseMessage("tool_1", "record_decision", {}),
+      )
+      .mockImplementationOnce(async () => fakeTextMessage("わかった"));
+    const app = createApp(db, env);
+
+    const res = await app.request(`/api/sessions/${session.id}/messages`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ content: "何か決めて" }),
+    });
+
+    const events = parseSseEvents(await res.text());
+    const toolEvent = events.find((e) => e.event === "tool");
+    const toolPayload = JSON.parse(toolEvent!.data) as { isError: boolean };
+    expect(toolPayload.isError).toBe(true);
+    expect(streamBossMessageMock).toHaveBeenCalledTimes(2);
+    expect(listDecisions(db)).toHaveLength(0);
   });
 
   it("marks the tool result as an error and still continues when the tool call is invalid", async () => {

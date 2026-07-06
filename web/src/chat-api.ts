@@ -3,6 +3,7 @@ import type {
   ChatSession,
   ChatStreamHandlers,
   ChatToolEvent,
+  SessionType,
 } from "./chat";
 
 const SESSIONS_URL = "/api/sessions";
@@ -17,11 +18,14 @@ async function toErrorMessage(response: Response): Promise<string> {
 }
 
 /**
- * Returns the most recent adhoc session, or null when none exists yet. The
- * backend lists sessions newest-first, so the first element is the latest.
+ * Returns the most recent session of the given type, or null when none
+ * exists yet. The backend lists sessions newest-first, so the first element
+ * is the latest.
  */
-export async function fetchLatestAdhocSession(): Promise<ChatSession | null> {
-  const response = await fetch(`${SESSIONS_URL}?type=adhoc`);
+export async function fetchLatestSession(
+  type: SessionType,
+): Promise<ChatSession | null> {
+  const response = await fetch(`${SESSIONS_URL}?type=${type}`);
   if (!response.ok) {
     throw new Error(await toErrorMessage(response));
   }
@@ -29,11 +33,24 @@ export async function fetchLatestAdhocSession(): Promise<ChatSession | null> {
   return sessions[0] ?? null;
 }
 
-export async function createAdhocSession(): Promise<ChatSession> {
+export async function createSession(type: SessionType): Promise<ChatSession> {
   const response = await fetch(SESSIONS_URL, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ type: "adhoc" }),
+    body: JSON.stringify({ type }),
+  });
+  if (!response.ok) {
+    throw new Error(await toErrorMessage(response));
+  }
+  return (await response.json()) as ChatSession;
+}
+
+/**
+ * Ends the given session (sets `ended_at`) and returns the updated record.
+ */
+export async function endSession(sessionId: number): Promise<ChatSession> {
+  const response = await fetch(`${SESSIONS_URL}/${sessionId}/end`, {
+    method: "POST",
   });
   if (!response.ok) {
     throw new Error(await toErrorMessage(response));

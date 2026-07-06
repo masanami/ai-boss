@@ -48,6 +48,9 @@ export interface ClaudeMessageRequest {
   system?: string;
   messages: Anthropic.MessageParam[];
   tools?: Anthropic.Tool[];
+  /** Forces (or disables) tool use. Only consumed by {@link createBossMessage}
+   * so far — the chat route (`streamBossMessage`) has no need for it yet. */
+  toolChoice?: Anthropic.ToolChoice;
   maxTokens?: number;
 }
 
@@ -77,6 +80,27 @@ export function streamBossMessage(
   }
 
   return stream.finalMessage();
+}
+
+/**
+ * Sends `request` to Claude and resolves with the full response in one
+ * round-trip (no streaming). Used by the appeals re-adjudication flow
+ * (Issue #48), which needs a single structured `submit_verdict` tool call
+ * rather than a conversational stream — see the ticket's explicit
+ * assumption ("再裁定は非ストリーミング").
+ */
+export function createBossMessage(
+  client: Anthropic,
+  request: ClaudeMessageRequest,
+): Promise<Anthropic.Message> {
+  return client.messages.create({
+    model: request.model ?? DEFAULT_MODEL,
+    max_tokens: request.maxTokens ?? DEFAULT_MAX_TOKENS,
+    system: request.system,
+    messages: request.messages,
+    tools: request.tools,
+    tool_choice: request.toolChoice,
+  });
 }
 
 /**

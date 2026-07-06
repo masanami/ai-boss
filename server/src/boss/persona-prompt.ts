@@ -1,4 +1,5 @@
 import type { Task } from "../tasks/task.js";
+import type { SessionType } from "../sessions/session.js";
 
 export const TONE_PRESETS = ["reliable", "strict", "logical", "passionate"] as const;
 export type TonePreset = (typeof TONE_PRESETS)[number];
@@ -48,6 +49,11 @@ export interface PersonaPromptContext {
   now: Date;
   /** 用途。省略時は "chat"（通知文面は "notification" でより短い文章を要求） */
   purpose?: PromptPurpose;
+  /**
+   * セッション種別。morning/evening のときのみ専用のフロー指示を追加する。
+   * adhoc または省略時は追加指示なし（従来どおり）。
+   */
+  sessionType?: SessionType;
 }
 
 const TONE_DESCRIPTIONS: Record<TonePreset, string> = {
@@ -140,6 +146,33 @@ function formatDecisionSection(decisions: RecentDecision[]): string {
   return decisions.map(formatDecisionLine).join("\n");
 }
 
+// 朝会/夕会のガイドはシステムプロンプトによる誘導のみで実現し、ステップ管理の
+// 状態機械はサーバーに持たない（Issue #47 明示的な仮定）。
+const MORNING_FLOW_INSTRUCTION =
+  "これは朝会（計画セッション）。ユーザーから今日の予定の報告を受けたら、タスクの優先順位と今日のノルマを決定の形で提示し、" +
+  "create_task / update_task でタスクへ反映すること。各タスクの所要時間はざっくり見積もって提案し、ユーザーが同意または修正した" +
+  "値だけを estimated_minutes に保存すること（ユーザーの確認前に保存してはならない）。優先順位・ノルマの決定は record_decision で記録すること。";
+
+const EVENING_FLOW_INSTRUCTION =
+  "これは夕会（報告セッション）。ユーザーから進捗の報告を受けたら、タスクごとに達成/未達を評価すること。未達タスクは理由を確認した" +
+  "うえで、持ち越し（締切変更・継続・取り下げ）を裁定し update_task で反映すること。裁定は record_decision で記録すること。";
+
+const TASK_ESTIMATE_CONFIRMATION_INSTRUCTION =
+  "チャットからタスクを新規作成するときは、所要時間の見積もりを提案し、ユーザーが確認（同意または修正）した値だけを" +
+  "estimated_minutes に保存すること（確認前に保存してはならない）。";
+
+function resolveSessionFlowInstruction(
+  sessionType: SessionType | undefined,
+): string | null {
+  if (sessionType === "morning") {
+    return MORNING_FLOW_INSTRUCTION;
+  }
+  if (sessionType === "evening") {
+    return EVENING_FLOW_INSTRUCTION;
+  }
+  return null;
+}
+
 /**
  * ボスの人格設定と現在のコンテキストから、Claude API に渡すシステムプロンプトを
  * 組み立てる純粋関数。チャット応答・通知文面生成の両方から共用される。
@@ -155,7 +188,8 @@ export function buildPersonaPrompt(
     `あなたは「${settings.name}」という名前のAIボス。ユーザーのセルフマネジメントを支援する上司役を演じる。`,
     TONE_DESCRIPTIONS[settings.tone],
     resolveStrictnessDescription(settings.strictness),
-    "応答の規律: ボスは決定の形で断言する。「〜すべきか迷う」ではなく「〜しろ」「〜で行く」のように言い切る。",
+    "応答の規律: ボスは決定の形で断言する。「〜すべきか迷う」ではなく「〜しろ」「〜で行く」のように言い切る。" +
+      "優先順位・ノルマ・締切・持ち越し等の重要な裁定を下したときは record_decision ツールで記録すること。",
     TIME_OF_DAY_HINTS[timeOfDay],
     `現在のタスク一覧:\n${formatTaskSection(context.tasks)}`,
     `直近の決定:\n${formatDecisionSection(context.recentDecisions)}`,
@@ -169,6 +203,14 @@ export function buildPersonaPrompt(
     sections.push(
       "この応答は通知文面として使われる。要点を絞り、短く簡潔な文章にすること。",
     );
+  } else {
+    const sessionFlowInstruction = resolveSessionFlowInstruction(
+      context.sessionType,
+    );
+    if (sessionFlowInstruction) {
+      sections.push(sessionFlowInstruction);
+    }
+    sections.push(TASK_ESTIMATE_CONFIRMATION_INSTRUCTION);
   }
 
   return sections.join("\n\n");

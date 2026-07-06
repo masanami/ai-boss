@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import ChatView from "./ChatView";
 import type { ChatMessage, ChatSession } from "./chat";
@@ -36,6 +36,14 @@ const BOSS_REPLY: ChatMessage = {
   created_at: "2026-07-05T10:00:00.000Z",
 };
 
+const MORNING_SESSION: ChatSession = {
+  id: 20,
+  type: "morning",
+  started_at: "2026-07-05T00:00:00.000Z",
+  ended_at: null,
+  summary: null,
+};
+
 function jsonResponse(body: unknown, status = 200) {
   return { ok: true, status, json: () => Promise.resolve(body) };
 }
@@ -56,7 +64,17 @@ function sseResponse(chunks: string[]) {
   };
 }
 
+beforeEach(() => {
+  // Only `Date` is faked so React Testing Library's `waitFor` (real
+  // `setTimeout` polling) keeps working. `SESSION.started_at` above is on
+  // 2026-07-05, so "now" is fixed to the same local day (adhoc daily
+  // cutoff).
+  vi.useFakeTimers({ toFake: ["Date"] });
+  vi.setSystemTime(new Date("2026-07-05T03:00:00.000Z"));
+});
+
 afterEach(() => {
+  vi.useRealTimers();
   vi.unstubAllGlobals();
 });
 
@@ -248,5 +266,157 @@ describe("ChatView", () => {
         "ボスの応答中にエラーが発生しました",
       ),
     );
+  });
+
+  it("shows the morning/evening start buttons while chatting adhoc", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValueOnce(jsonResponse([])));
+
+    render(<ChatView />);
+
+    await waitFor(() =>
+      expect(
+        screen.getByRole("button", { name: "朝会を開始" }),
+      ).toBeInTheDocument(),
+    );
+    expect(
+      screen.getByRole("button", { name: "夕会を開始" }),
+    ).toBeInTheDocument();
+  });
+
+  it("starts a morning session and shows the in-session badge with an end button", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi
+        .fn()
+        .mockResolvedValueOnce(jsonResponse([])) // mount: no adhoc session
+        .mockResolvedValueOnce(jsonResponse([])) // no morning session today
+        .mockResolvedValueOnce(jsonResponse(MORNING_SESSION, 201)), // create
+    );
+
+    render(<ChatView />);
+    await waitFor(() =>
+      expect(
+        screen.getByRole("button", { name: "朝会を開始" }),
+      ).toBeInTheDocument(),
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "朝会を開始" }));
+
+    await waitFor(() => expect(screen.getByText("朝会中")).toBeInTheDocument());
+    expect(
+      screen.getByRole("button", { name: "セッションを終了" }),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: "朝会を開始" }),
+    ).not.toBeInTheDocument();
+  });
+
+  it("ends a morning session and returns to the adhoc start buttons", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi
+        .fn()
+        .mockResolvedValueOnce(jsonResponse([]))
+        .mockResolvedValueOnce(jsonResponse([]))
+        .mockResolvedValueOnce(jsonResponse(MORNING_SESSION, 201))
+        .mockResolvedValueOnce(
+          jsonResponse({ ...MORNING_SESSION, ended_at: "2026-07-05T01:00:00.000Z" }),
+        ),
+    );
+
+    render(<ChatView />);
+    await waitFor(() =>
+      expect(
+        screen.getByRole("button", { name: "朝会を開始" }),
+      ).toBeInTheDocument(),
+    );
+    fireEvent.click(screen.getByRole("button", { name: "朝会を開始" }));
+    await waitFor(() => expect(screen.getByText("朝会中")).toBeInTheDocument());
+
+    fireEvent.click(screen.getByRole("button", { name: "セッションを終了" }));
+
+    await waitFor(() =>
+      expect(
+        screen.getByRole("button", { name: "朝会を開始" }),
+      ).toBeInTheDocument(),
+    );
+    expect(
+      screen.getByRole("button", { name: "夕会を開始" }),
+    ).toBeInTheDocument();
+    expect(screen.queryByText("朝会中")).not.toBeInTheDocument();
+  });
+
+  it("shows the evening badge when starting an evening session", async () => {
+    const eveningSession: ChatSession = { ...MORNING_SESSION, id: 21, type: "evening" };
+    vi.stubGlobal(
+      "fetch",
+      vi
+        .fn()
+        .mockResolvedValueOnce(jsonResponse([]))
+        .mockResolvedValueOnce(jsonResponse([]))
+        .mockResolvedValueOnce(jsonResponse(eveningSession, 201)),
+    );
+
+    render(<ChatView />);
+    await waitFor(() =>
+      expect(
+        screen.getByRole("button", { name: "夕会を開始" }),
+      ).toBeInTheDocument(),
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "夕会を開始" }));
+
+    await waitFor(() => expect(screen.getByText("夕会中")).toBeInTheDocument());
+  });
+
+  it("disables the send button and message input while a session switch is in flight", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi
+        .fn()
+        .mockResolvedValueOnce(jsonResponse([]))
+        .mockImplementationOnce(() => new Promise(() => {})), // startSession's list lookup never resolves
+    );
+
+    render(<ChatView />);
+    await waitFor(() =>
+      expect(
+        screen.getByRole("button", { name: "朝会を開始" }),
+      ).toBeInTheDocument(),
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "朝会を開始" }));
+
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: "朝会を開始" })).toBeDisabled(),
+    );
+    expect(screen.getByLabelText("メッセージ")).toBeDisabled();
+    expect(screen.getByRole("button", { name: "送信" })).toBeDisabled();
+  });
+
+  it("disables the session start buttons while a message is in flight", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi
+        .fn()
+        .mockResolvedValueOnce(jsonResponse([]))
+        .mockResolvedValueOnce(jsonResponse([]))
+        .mockImplementationOnce(() => new Promise(() => {})), // createSession("adhoc") never resolves
+    );
+
+    render(<ChatView />);
+    await waitFor(() =>
+      expect(screen.getByLabelText("メッセージ")).toBeEnabled(),
+    );
+
+    fireEvent.change(screen.getByLabelText("メッセージ"), {
+      target: { value: "相談があります" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "送信" }));
+
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: "朝会を開始" })).toBeDisabled(),
+    );
+    expect(screen.getByRole("button", { name: "夕会を開始" })).toBeDisabled();
   });
 });

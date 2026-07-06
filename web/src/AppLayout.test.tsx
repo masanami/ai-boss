@@ -121,4 +121,17 @@ describe("AppLayout", () => {
       screen.getByRole("main", { name: "ボスとの対話" }),
     ).toBeInTheDocument();
   });
+
+  it("switches the main area to the decision log when the decision log nav item is clicked", () => {
+    render(<AppLayout />);
+
+    fireEvent.click(screen.getByRole("button", { name: "決定ログ" }));
+
+    expect(
+      screen.getByRole("main", { name: "決定ログ" }),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByRole("main", { name: "ボスとの対話" }),
+    ).not.toBeInTheDocument();
+  });
 });
