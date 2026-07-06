@@ -1,0 +1,16 @@
+<svg width="120" height="120" viewBox="0 0 120 120" xmlns="http://www.w3.org/2000/svg" role="img" aria-hidden="true">
+  <circle cx="60" cy="60" r="58" fill="#2a2f3a" />
+  <path d="M10 120 Q60 80 110 120 Z" fill="#1f232b" />
+  <polygon points="50,90 60,104 70,90" fill="#d0d4dc" />
+  <polygon points="46,86 60,104 54,112 34,96" fill="#23272f" />
+  <polygon points="74,86 60,104 66,112 86,96" fill="#23272f" />
+  <circle cx="60" cy="48" r="28" fill="#3a4150" stroke="#4a5165" stroke-width="1" />
+  <!-- eyebrows: lowered toward center -->
+  <line x1="42" y1="36" x2="54" y2="42" stroke="#d0d4dc" stroke-width="3" stroke-linecap="round" />
+  <line x1="78" y1="36" x2="66" y2="42" stroke="#d0d4dc" stroke-width="3" stroke-linecap="round" />
+  <!-- eyes: horizontal -->
+  <line x1="44" y1="47" x2="52" y2="47" stroke="#d0d4dc" stroke-width="3" stroke-linecap="round" />
+  <line x1="68" y1="47" x2="76" y2="47" stroke="#d0d4dc" stroke-width="3" stroke-linecap="round" />
+  <!-- mouth: への字 (inverted smile) -->
+  <path d="M48 68 Q60 58 72 68" fill="none" stroke="#d0d4dc" stroke-width="3" stroke-linecap="round" />
+</svg>
