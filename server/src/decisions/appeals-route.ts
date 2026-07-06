@@ -24,6 +24,15 @@ import type { Appeal } from "./appeal.js";
  * discipline as `chat-messages-route.ts`. */
 const GENERIC_VERDICT_ERROR_MESSAGE = "ボスの再裁定中にエラーが発生しました";
 
+/**
+ * Thrown (and caught locally) when the decision stopped being `active`
+ * between the initial guard check and the write transaction — e.g. a second
+ * appeal on the same decision resolved first while this request's Claude
+ * round-trip (up to ~120s) was still in flight. Re-checked inside the
+ * transaction so the two writes can't race each other.
+ */
+class DecisionNoLongerActiveError extends Error {}
+
 function isToolUseBlock(
   block: Anthropic.ContentBlock,
 ): block is Anthropic.ToolUseBlock {
@@ -145,34 +154,52 @@ export function registerAppealsRoute(
 
     const { verdict, response, revisedContent, revisedRationale } = parsed.data;
 
-    const { appeal, revisedDecision } = db.transaction(() => {
-      const insertedAppeal: Appeal = insertAppeal(db, {
-        decision_id: id,
-        content: validation.data.content,
-        verdict,
-        response,
-      });
+    let transactionResult: {
+      appeal: Appeal;
+      decision: Decision;
+      revisedDecision?: Decision;
+    };
+    try {
+      transactionResult = db.transaction(() => {
+        // Re-fetch (rather than trust the `decision` read before the Claude
+        // round-trip) and re-check `active`: the status may have changed
+        // while this request was awaiting Claude (see
+        // `DecisionNoLongerActiveError`'s doc comment).
+        const current = findDecisionById(db, id);
+        if (!current || current.status !== "active") {
+          throw new DecisionNoLongerActiveError();
+        }
 
-      let inserted: Decision | undefined;
-      if (verdict === "revised") {
-        updateDecisionStatus(db, id, "revised");
-        inserted = insertDecision(db, {
-          session_id: decision.session_id,
-          task_id: decision.task_id,
+        const insertedAppeal = insertAppeal(db, {
+          decision_id: id,
+          content: validation.data.content,
+          verdict,
+          response,
+        });
+
+        if (verdict !== "revised") {
+          return { appeal: insertedAppeal, decision: current };
+        }
+
+        const updated = updateDecisionStatus(db, id, "revised") as Decision;
+        const revised = insertDecision(db, {
+          session_id: current.session_id,
+          task_id: current.task_id,
           content: revisedContent as string,
           rationale: revisedRationale ?? null,
         });
+        return { appeal: insertedAppeal, decision: updated, revisedDecision: revised };
+      })();
+    } catch (err) {
+      if (err instanceof DecisionNoLongerActiveError) {
+        return c.json(
+          { error: `decision ${rawId} is no longer active` },
+          409,
+        );
       }
+      throw err;
+    }
 
-      return { appeal: insertedAppeal, revisedDecision: inserted };
-    })();
-
-    const updatedDecision = findDecisionById(db, id) as Decision;
-
-    return c.json({
-      appeal,
-      decision: updatedDecision,
-      ...(revisedDecision ? { revisedDecision } : {}),
-    });
+    return c.json(transactionResult);
   });
 }

@@ -276,6 +276,40 @@ describe("POST /api/decisions/:id/appeals", () => {
     });
   });
 
+  it("returns 409 and makes no DB changes when the decision stopped being active while the Claude call was in flight (race guard)", async () => {
+    const decision = createActiveDecision();
+    createBossMessageMock.mockImplementationOnce(async () => {
+      // Simulates a second request (or the boss itself) revising the same
+      // decision while this request's ~120s Claude round-trip is still
+      // pending — the initial active check happened before this point.
+      updateDecisionStatus(db, decision.id, "revised");
+      return verdictToolUseMessage({ verdict: "upheld", response: "維持する" });
+    });
+
+    const res = await postAppeal(decision.id);
+
+    expect(res.status).toBe(409);
+    expect(listAppealsByDecisionId(db, decision.id)).toEqual([]);
+    expect(findDecisionById(db, decision.id)).toMatchObject({ status: "revised" });
+  });
+
+  it("carries a null task_id through to the revised decision when the original decision has no related task", async () => {
+    const decision = createActiveDecision();
+    expect(decision.task_id).toBeNull();
+    createBossMessageMock.mockResolvedValue(
+      verdictToolUseMessage({
+        verdict: "revised",
+        response: "検討の結果、修正する",
+        revised_content: "資料作成は明日に延ばす",
+      }),
+    );
+
+    const res = await postAppeal(decision.id, "今日は間に合わない");
+    const body = await readJson<AppealResponseBody>(res);
+
+    expect(body.revisedDecision).toMatchObject({ task_id: null });
+  });
+
   it("forces submit_verdict via tool_choice and passes only that tool (no task tools)", async () => {
     const decision = createActiveDecision();
     createBossMessageMock.mockResolvedValue(
