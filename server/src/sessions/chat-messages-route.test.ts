@@ -254,6 +254,33 @@ describe("POST /api/sessions/:id/messages", () => {
     expect(streamBossMessageMock.mock.calls[0][1].system).toContain("資料作成");
   });
 
+  it("passes the session's type as sessionType so the system prompt reflects the morning flow guidance", async () => {
+    const app = createApp(db, env);
+    const session = await readJson<Session>(
+      await app.request("/api/sessions", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ type: "morning" }),
+      }),
+    );
+    streamBossMessageMock.mockResolvedValue(fakeTextMessage("了解した"));
+
+    const res = await app.request(`/api/sessions/${session.id}/messages`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ content: "今日の予定を報告します" }),
+    });
+    await res.text();
+
+    expect(streamBossMessageMock).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        system: expect.stringContaining("朝会（計画セッション）"),
+      }),
+      expect.any(Function),
+    );
+  });
+
   it("executes a create_task tool call, emits a tool event, and continues the conversation", async () => {
     const session = await createSession();
     streamBossMessageMock

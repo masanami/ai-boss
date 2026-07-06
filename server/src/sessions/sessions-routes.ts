@@ -3,7 +3,12 @@ import type Database from "better-sqlite3";
 import { readJsonBody } from "../lib/read-json-body.js";
 import { SESSION_TYPES } from "./session.js";
 import type { SessionType } from "./session.js";
-import { findSessionById, insertSession, listSessions } from "./sessions-repository.js";
+import {
+  endSession,
+  findSessionById,
+  insertSession,
+  listSessions,
+} from "./sessions-repository.js";
 import { validateCreateSessionInput } from "./sessions-validation.js";
 import { listMessagesBySessionId } from "./messages-repository.js";
 import { registerChatMessageRoute } from "./chat-messages-route.js";
@@ -47,6 +52,18 @@ export function createSessionsRouter(
 
     const session = insertSession(db, result.data);
     return c.json(session, 201);
+  });
+
+  sessions.post("/:id/end", (c) => {
+    const rawId = c.req.param("id");
+    const id = Number(rawId);
+
+    const session = endSession(db, id);
+    if (!session) {
+      return c.json({ error: `session ${rawId} not found` }, 404);
+    }
+
+    return c.json(session, 200);
   });
 
   sessions.get("/:id/messages", (c) => {

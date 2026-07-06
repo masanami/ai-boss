@@ -1,8 +1,9 @@
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type Database from "better-sqlite3";
 import { openDatabase } from "../db/connection.js";
 import { runMigrations } from "../db/migrate.js";
 import {
+  endSession,
   findSessionById,
   insertSession,
   listSessions,
@@ -70,6 +71,41 @@ describe("sessions repository", () => {
       const result = listSessions(db, { type: "adhoc" });
 
       expect(result.map((s) => s.id)).toEqual([adhoc.id]);
+    });
+  });
+
+  describe("endSession", () => {
+    afterEach(() => {
+      vi.useRealTimers();
+    });
+
+    it("sets ended_at to the current time and returns the updated session", () => {
+      const session = insertSession(db, { type: "morning" });
+      vi.useFakeTimers();
+      vi.setSystemTime(new Date("2026-07-06T09:00:00+09:00"));
+
+      const ended = endSession(db, session.id);
+
+      expect(ended).toMatchObject({
+        id: session.id,
+        ended_at: new Date("2026-07-06T09:00:00+09:00").toISOString(),
+      });
+    });
+
+    it("returns undefined when the session does not exist", () => {
+      expect(endSession(db, 9999)).toBeUndefined();
+    });
+
+    it("is idempotent: ending an already-ended session leaves ended_at unchanged", () => {
+      const session = insertSession(db, { type: "evening" });
+      vi.useFakeTimers();
+      vi.setSystemTime(new Date("2026-07-06T09:00:00+09:00"));
+      const firstEnd = endSession(db, session.id);
+
+      vi.setSystemTime(new Date("2026-07-06T10:00:00+09:00"));
+      const secondEnd = endSession(db, session.id);
+
+      expect(secondEnd).toEqual(firstEnd);
     });
   });
 });
