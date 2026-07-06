@@ -12,9 +12,10 @@ export interface BossExpressionContext {
 }
 
 const ESCALATION_DISPLEASED_THRESHOLD = 2;
-const SATISFIED_RATIO_THRESHOLD = 0.8;
-const EVENING_DISPLEASED_RATIO_THRESHOLD = 0.5;
-const ENCOURAGING_RATIO_THRESHOLD = 0.3;
+// 進捗ゲージ・夕会評価演出（Issue #60）も同じ達成率カットオフを踏襲するため export する。
+export const SATISFIED_RATIO_THRESHOLD = 0.8;
+export const EVENING_DISPLEASED_RATIO_THRESHOLD = 0.5;
+export const ENCOURAGING_RATIO_THRESHOLD = 0.3;
 
 /**
  * 文脈からボスの表情を決める純粋関数。優先順位（Issue #59 の明示的な仮定）:

@@ -6,6 +6,10 @@
   --color-text: #e6e8eb;
   --color-text-muted: #8b93a1;
   --color-accent: #c8963e;
+  --color-accent-warm: #e8a15c;
+  --color-praise-bg: #3a2c1d;
+  --color-scold: #6f9bc9;
+  --color-scold-bg: #1c2733;
   --color-danger: #e07070;
 
   --nav-width: 200px;
