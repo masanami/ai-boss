@@ -3,10 +3,17 @@ import { act, renderHook, waitFor } from "@testing-library/react";
 import { useChat } from "./use-chat";
 import type { ChatMessage, ChatSession } from "./chat";
 
+// Local-time anchors: `isSameLocalDay` compares local dates, so all
+// "today"/"yesterday" session timestamps are derived from local-date
+// constructors (not fixed UTC strings) to stay TZ-independent.
+const LOCAL_NOW = new Date(2026, 6, 5, 12, 0, 0); // 2026-07-05 12:00 local
+const localIso = (day: number, hour: number) =>
+  new Date(2026, 6, day, hour, 0, 0).toISOString();
+
 const SESSION: ChatSession = {
   id: 1,
   type: "adhoc",
-  started_at: "2026-07-05T09:00:00.000Z",
+  started_at: localIso(5, 9),
   ended_at: null,
   summary: null,
 };
@@ -40,7 +47,7 @@ const BOSS_REPLY: ChatMessage = {
 const YESTERDAY_ADHOC_SESSION: ChatSession = {
   id: 9,
   type: "adhoc",
-  started_at: "2026-07-04T09:00:00.000Z",
+  started_at: localIso(4, 9),
   ended_at: null,
   summary: null,
 };
@@ -48,7 +55,7 @@ const YESTERDAY_ADHOC_SESSION: ChatSession = {
 const MORNING_SESSION_TODAY: ChatSession = {
   id: 20,
   type: "morning",
-  started_at: "2026-07-05T00:00:00.000Z",
+  started_at: localIso(5, 8),
   ended_at: null,
   summary: null,
 };
@@ -56,7 +63,7 @@ const MORNING_SESSION_TODAY: ChatSession = {
 const MORNING_SESSION_YESTERDAY: ChatSession = {
   id: 19,
   type: "morning",
-  started_at: "2026-07-04T00:00:00.000Z",
+  started_at: localIso(4, 8),
   ended_at: null,
   summary: null,
 };
@@ -93,10 +100,10 @@ function sseResponse(chunks: string[]) {
 
 beforeEach(() => {
   // Only `Date` is faked (not timers), so React Testing Library's `waitFor`
-  // (which polls via real `setTimeout`) keeps working. `SESSION.started_at`
-  // above is on 2026-07-05, so "now" is fixed to the same local day.
+  // (which polls via real `setTimeout`) keeps working. "now" is fixed to the
+  // same local day as `SESSION.started_at` (both derived from local dates).
   vi.useFakeTimers({ toFake: ["Date"] });
-  vi.setSystemTime(new Date("2026-07-05T03:00:00.000Z"));
+  vi.setSystemTime(LOCAL_NOW);
 });
 
 afterEach(() => {
@@ -527,6 +534,42 @@ describe("useChat session switching", () => {
     expect(result.current.error).toBe("network error");
     expect(result.current.switching).toBe(false);
     expect(result.current.sessionType).toBe("adhoc");
+  });
+
+  it("does not update state after unmounting mid session switch", async () => {
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    let resolveSessions: (value: unknown) => void = () => {};
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(jsonResponse([])) // mount: no adhoc session
+      .mockImplementationOnce(
+        () =>
+          new Promise((resolve) => {
+            resolveSessions = resolve;
+          }),
+      ) // startSession: kept pending until after unmount
+      .mockResolvedValueOnce(jsonResponse([])); // messages of the found session
+    vi.stubGlobal("fetch", fetchMock);
+
+    const { result, unmount } = renderHook(() => useChat());
+    await waitFor(() => expect(result.current.status).toBe("ready"));
+
+    let pending: Promise<void>;
+    act(() => {
+      pending = result.current.startSession("morning");
+    });
+    unmount();
+
+    resolveSessions(jsonResponse([MORNING_SESSION_TODAY]));
+    await act(async () => {
+      await pending;
+    });
+
+    const actWarnings = errorSpy.mock.calls.filter(([first]) =>
+      String(first).includes("not wrapped in act"),
+    );
+    expect(actWarnings).toEqual([]);
+    errorSpy.mockRestore();
   });
 
   it("ends the current session and restores the adhoc conversation from before switching", async () => {

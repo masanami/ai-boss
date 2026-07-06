@@ -114,6 +114,15 @@ export function useChat(): UseChatResult {
     };
   }, []);
 
+  // After unmount, async callbacks (streaming, session switching) must not
+  // touch state anymore (same idea as the `cancelled` flag in the mount
+  // effect). Shared by `send` / `startSession` / `endSession`.
+  const ifMounted = useCallback((update: () => void) => {
+    if (mountedRef.current) {
+      update();
+    }
+  }, []);
+
   useEffect(() => {
     let cancelled = false;
 
@@ -158,14 +167,6 @@ export function useChat(): UseChatResult {
         ...prev,
         { kind: "message", key: nextLocalKey("user"), role: "user", content },
       ]);
-
-      // After unmount, streaming callbacks must not touch state anymore
-      // (same idea as the `cancelled` flag in the mount effect).
-      const ifMounted = (update: () => void) => {
-        if (mountedRef.current) {
-          update();
-        }
-      };
 
       try {
         if (sessionIdRef.current === null) {
@@ -212,42 +213,49 @@ export function useChat(): UseChatResult {
         });
       }
     },
-    [nextLocalKey],
+    [ifMounted, nextLocalKey],
   );
 
-  const startSession = useCallback(async (type: "morning" | "evening") => {
-    // Only reachable from adhoc in the UI (start buttons only render there),
-    // but guarded here too: starting from a non-adhoc session would
-    // overwrite the adhoc snapshot with the wrong conversation.
-    if (switchingRef.current || sendingRef.current || sessionTypeRef.current !== "adhoc") {
-      return;
-    }
-    switchingRef.current = true;
-    setSwitching(true);
-    setError(null);
-    try {
-      // Remember exactly where the adhoc conversation was so ending this
-      // session can restore it without a re-fetch.
-      adhocSnapshotRef.current = {
-        sessionId: sessionIdRef.current,
-        entries: entriesRef.current,
-      };
+  const startSession = useCallback(
+    async (type: "morning" | "evening") => {
+      // Only reachable from adhoc in the UI (start buttons only render there),
+      // but guarded here too: starting from a non-adhoc session would
+      // overwrite the adhoc snapshot with the wrong conversation.
+      if (switchingRef.current || sendingRef.current || sessionTypeRef.current !== "adhoc") {
+        return;
+      }
+      switchingRef.current = true;
+      setSwitching(true);
+      setError(null);
+      try {
+        // Remember exactly where the adhoc conversation was so ending this
+        // session can restore it without a re-fetch.
+        adhocSnapshotRef.current = {
+          sessionId: sessionIdRef.current,
+          entries: entriesRef.current,
+        };
 
-      const { session, messages } = await loadTodaysSession(type);
-      const active = session ?? (await createSession(type));
+        const { session, messages } = await loadTodaysSession(type);
+        const active = session ?? (await createSession(type));
 
-      sessionIdRef.current = active.id;
-      setSessionType(type);
-      setEntries(messages.map(messageEntry));
-    } catch (err) {
-      setError(
-        err instanceof Error ? err.message : "セッションの開始に失敗しました",
-      );
-    } finally {
-      switchingRef.current = false;
-      setSwitching(false);
-    }
-  }, []);
+        sessionIdRef.current = active.id;
+        ifMounted(() => {
+          setSessionType(type);
+          setEntries(messages.map(messageEntry));
+        });
+      } catch (err) {
+        ifMounted(() =>
+          setError(
+            err instanceof Error ? err.message : "セッションの開始に失敗しました",
+          ),
+        );
+      } finally {
+        switchingRef.current = false;
+        ifMounted(() => setSwitching(false));
+      }
+    },
+    [ifMounted],
+  );
 
   const endSession = useCallback(async () => {
     if (switchingRef.current || sendingRef.current) {
@@ -266,17 +274,21 @@ export function useChat(): UseChatResult {
       const snapshot = adhocSnapshotRef.current;
       adhocSnapshotRef.current = null;
       sessionIdRef.current = snapshot?.sessionId ?? null;
-      setSessionType("adhoc");
-      setEntries(snapshot?.entries ?? []);
+      ifMounted(() => {
+        setSessionType("adhoc");
+        setEntries(snapshot?.entries ?? []);
+      });
     } catch (err) {
-      setError(
-        err instanceof Error ? err.message : "セッションの終了に失敗しました",
+      ifMounted(() =>
+        setError(
+          err instanceof Error ? err.message : "セッションの終了に失敗しました",
+        ),
       );
     } finally {
       switchingRef.current = false;
-      setSwitching(false);
+      ifMounted(() => setSwitching(false));
     }
-  }, []);
+  }, [ifMounted]);
 
   return {
     entries,
