@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type Database from "better-sqlite3";
 import { openDatabase } from "../db/connection.js";
 import { runMigrations } from "../db/migrate.js";
@@ -219,6 +219,73 @@ describe("sessions routes", () => {
       const res = await app.request("/api/sessions/not-a-number/messages");
 
       expect(res.status).toBe(404);
+    });
+  });
+
+  describe("POST /api/sessions/:id/end", () => {
+    afterEach(() => {
+      vi.useRealTimers();
+    });
+
+    it("records ended_at (ISO 8601) on the session and returns it", async () => {
+      const app = createApp(db);
+      const session = await readJson<Session>(
+        await app.request("/api/sessions", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ type: "morning" }),
+        }),
+      );
+      vi.useFakeTimers();
+      vi.setSystemTime(new Date("2026-07-06T09:30:00+09:00"));
+
+      const res = await app.request(`/api/sessions/${session.id}/end`, {
+        method: "POST",
+      });
+
+      expect(res.status).toBe(200);
+      const body = await readJson<Session>(res);
+      expect(body).toMatchObject({
+        id: session.id,
+        ended_at: new Date("2026-07-06T09:30:00+09:00").toISOString(),
+      });
+    });
+
+    it("returns 404 for a non-existent session id", async () => {
+      const app = createApp(db);
+
+      const res = await app.request("/api/sessions/9999/end", {
+        method: "POST",
+      });
+
+      expect(res.status).toBe(404);
+      const body = await readJson<{ error: string }>(res);
+      expect(typeof body.error).toBe("string");
+    });
+
+    it("is idempotent: ending an already-ended session returns 200 with the original ended_at", async () => {
+      const app = createApp(db);
+      const session = await readJson<Session>(
+        await app.request("/api/sessions", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ type: "evening" }),
+        }),
+      );
+      vi.useFakeTimers();
+      vi.setSystemTime(new Date("2026-07-06T18:00:00+09:00"));
+      const first = await readJson<Session>(
+        await app.request(`/api/sessions/${session.id}/end`, { method: "POST" }),
+      );
+
+      vi.setSystemTime(new Date("2026-07-06T19:00:00+09:00"));
+      const res = await app.request(`/api/sessions/${session.id}/end`, {
+        method: "POST",
+      });
+
+      expect(res.status).toBe(200);
+      const body = await readJson<Session>(res);
+      expect(body).toEqual(first);
     });
   });
 });

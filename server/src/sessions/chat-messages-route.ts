@@ -128,6 +128,7 @@ export function registerChatMessageRoute(
       tasks,
       recentDecisions,
       now: new Date(),
+      sessionType: session.type,
     });
     const messages = toClaudeMessages(listMessagesBySessionId(db, id));
 

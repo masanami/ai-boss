@@ -39,6 +39,33 @@ export function insertSession(
   return session;
 }
 
+/**
+ * Sets `ended_at` to the current time and returns the updated session.
+ * Idempotent: if the session is already ended, its existing `ended_at` is
+ * left untouched and the session is simply returned as-is (Issue #47 —
+ * `ended_at` is a UI-only marker, not consulted by the detection engine, so
+ * re-ending has no side effect worth guarding against beyond not clobbering
+ * the original timestamp). Returns undefined when the session does not
+ * exist.
+ */
+export function endSession(
+  db: Database.Database,
+  id: number,
+): Session | undefined {
+  const session = findSessionById(db, id);
+  if (!session) {
+    return undefined;
+  }
+  if (session.ended_at !== null) {
+    return session;
+  }
+
+  const now = new Date().toISOString();
+  db.prepare("UPDATE sessions SET ended_at = ? WHERE id = ?").run(now, id);
+
+  return findSessionById(db, id);
+}
+
 export interface ListSessionsFilter {
   type?: SessionType;
 }
