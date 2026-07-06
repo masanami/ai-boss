@@ -1,11 +1,12 @@
 import { describe, expect, it, vi } from "vitest";
 
-const { anthropicCtor, streamMock } = vi.hoisted(() => {
+const { anthropicCtor, streamMock, createMock } = vi.hoisted(() => {
   const streamMock = vi.fn();
+  const createMock = vi.fn();
   const anthropicCtor = vi.fn().mockImplementation(() => ({
-    messages: { stream: streamMock },
+    messages: { stream: streamMock, create: createMock },
   }));
-  return { anthropicCtor, streamMock };
+  return { anthropicCtor, streamMock, createMock };
 });
 
 vi.mock("@anthropic-ai/sdk", () => ({ default: anthropicCtor }));
@@ -16,6 +17,7 @@ const {
   DEFAULT_MODEL,
   streamBossMessage,
   buildToolResultMessage,
+  createBossMessage,
 } = await import("./claude-client.js");
 
 interface FakeMessage {
@@ -165,6 +167,69 @@ describe("streamBossMessage", () => {
 
     const result = await streamBossMessage(client, {
       messages: [{ role: "user", content: "タスクを更新して" }],
+    });
+
+    expect(result).toEqual(finalMessage);
+  });
+});
+
+describe("createBossMessage", () => {
+  it("calls messages.create with the default model when no model is given", async () => {
+    createMock.mockResolvedValue({ content: [] });
+    const client = createClaudeClient({ ANTHROPIC_API_KEY: "sk-ant-test-key" });
+
+    await createBossMessage(client, {
+      messages: [{ role: "user", content: "進言内容" }],
+    });
+
+    expect(createMock).toHaveBeenCalledWith(
+      expect.objectContaining({ model: "claude-sonnet-5" }),
+    );
+  });
+
+  it("passes system, messages, tools, toolChoice, and maxTokens through unchanged", async () => {
+    createMock.mockResolvedValue({ content: [] });
+    const client = createClaudeClient({ ANTHROPIC_API_KEY: "sk-ant-test-key" });
+    const messages: Parameters<typeof createBossMessage>[1]["messages"] = [
+      { role: "user", content: "進言内容" },
+    ];
+    const tools: NonNullable<Parameters<typeof createBossMessage>[1]["tools"]> = [
+      {
+        name: "submit_verdict",
+        description: "裁定を提出する",
+        input_schema: { type: "object", properties: {} },
+      },
+    ];
+
+    await createBossMessage(client, {
+      system: "あなたはボスです",
+      messages,
+      tools,
+      toolChoice: { type: "tool", name: "submit_verdict" },
+      maxTokens: 2048,
+    });
+
+    expect(createMock).toHaveBeenCalledWith({
+      model: "claude-sonnet-5",
+      max_tokens: 2048,
+      system: "あなたはボスです",
+      messages,
+      tools,
+      tool_choice: { type: "tool", name: "submit_verdict" },
+    });
+  });
+
+  it("resolves with the message returned by messages.create, including tool_use blocks", async () => {
+    const finalMessage = {
+      content: [
+        { type: "tool_use", id: "tool_1", name: "submit_verdict", input: { verdict: "upheld" } },
+      ],
+    };
+    createMock.mockResolvedValue(finalMessage);
+    const client = createClaudeClient({ ANTHROPIC_API_KEY: "sk-ant-test-key" });
+
+    const result = await createBossMessage(client, {
+      messages: [{ role: "user", content: "進言内容" }],
     });
 
     expect(result).toEqual(finalMessage);

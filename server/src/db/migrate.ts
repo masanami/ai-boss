@@ -1,6 +1,6 @@
 import type Database from "better-sqlite3";
 
-const LATEST_VERSION = 1;
+const LATEST_VERSION = 2;
 
 const MIGRATIONS: Record<number, string> = {
   1: `
@@ -81,6 +81,11 @@ const MIGRATIONS: Record<number, string> = {
       expected_minutes INTEGER,
       created_at TEXT NOT NULL
     );
+  `,
+  // 進言 → 再裁定（#48）: ボスの再裁定文を appeals に記録するための追加列。
+  // v1 の appeals テーブル定義は変更しない（既存 CHECK 制約はそのまま）。
+  2: `
+    ALTER TABLE appeals ADD COLUMN response TEXT;
   `,
 };
 

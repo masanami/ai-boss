@@ -101,6 +101,19 @@ describe("runMigrations", () => {
     expect(row.category).toBe("work");
   });
 
+  it("gives appeals a nullable response column (v2)", () => {
+    expect(columnNames(db, "appeals")).toContain("response");
+
+    const decisionId = insertDecision(db, insertSession(db));
+    expect(() =>
+      db
+        .prepare(
+          "INSERT INTO appeals (decision_id, content, verdict, response, created_at) VALUES (?, ?, ?, NULL, ?)",
+        )
+        .run(decisionId, "進言内容", "upheld", NOW),
+    ).not.toThrow();
+  });
+
   it("is idempotent: running migrations twice does not raise an error", () => {
     expect(() => runMigrations(db)).not.toThrow();
     expect(tableNames(db).sort()).toEqual(
