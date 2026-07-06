@@ -134,4 +134,18 @@ describe("AppLayout", () => {
       screen.queryByRole("main", { name: "ボスとの対話" }),
     ).not.toBeInTheDocument();
   });
+
+  it("switches the main area to the settings view when the settings nav item is clicked", () => {
+    render(<AppLayout />);
+
+    const settingsButton = screen.getByRole("button", { name: "設定" });
+    expect(settingsButton).toBeEnabled();
+
+    fireEvent.click(settingsButton);
+
+    expect(screen.getByRole("main", { name: "設定" })).toBeInTheDocument();
+    expect(
+      screen.queryByRole("main", { name: "ボスとの対話" }),
+    ).not.toBeInTheDocument();
+  });
 });
