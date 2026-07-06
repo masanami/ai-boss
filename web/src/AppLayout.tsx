@@ -2,11 +2,12 @@ import { useState } from "react";
 import ChatView from "./ChatView";
 import CheckinPanel from "./CheckinPanel";
 import ConnectionStatus from "./ConnectionStatus";
+import DecisionLog from "./DecisionLog";
 import TaskBoard from "./TaskBoard";
 import { useHealthCheck } from "./use-health-check";
 import "./AppLayout.css";
 
-type AppView = "chat" | "tasks";
+type AppView = "chat" | "tasks" | "decisions";
 
 interface NavItem {
   label: string;
@@ -16,7 +17,7 @@ interface NavItem {
 const NAV_ITEMS: NavItem[] = [
   { label: "チャット", view: "chat" },
   { label: "タスク", view: "tasks" },
-  { label: "決定ログ", view: null },
+  { label: "決定ログ", view: "decisions" },
   { label: "設定", view: null },
 ];
 
@@ -50,13 +51,19 @@ function AppLayout() {
             ))}
           </ul>
         </nav>
-        {activeView === "chat" ? (
+        {activeView === "chat" && (
           <main className="app-main" aria-label="ボスとの対話">
             <ChatView />
           </main>
-        ) : (
+        )}
+        {activeView === "tasks" && (
           <main className="app-main" aria-label="タスクボード">
             <TaskBoard />
+          </main>
+        )}
+        {activeView === "decisions" && (
+          <main className="app-main" aria-label="決定ログ">
+            <DecisionLog />
           </main>
         )}
         <aside className="app-side-panel" aria-label="サイドパネル">

@@ -1,0 +1,172 @@
+.decision-log {
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+}
+
+.decision-log-status,
+.decision-log-empty {
+  color: var(--color-text-muted);
+}
+
+.decision-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+}
+
+.decision-card {
+  background-color: var(--color-bg-elevated);
+  border: 1px solid var(--color-border);
+  border-radius: 8px;
+  padding: 0.85rem 1rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+}
+
+.decision-card-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  font-size: 0.75rem;
+  color: var(--color-text-muted);
+}
+
+.decision-status {
+  font-size: 0.7rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  padding: 0.15rem 0.5rem;
+  border-radius: 999px;
+  border: 1px solid var(--color-border);
+}
+
+.decision-status-active {
+  color: var(--color-accent);
+  border-color: var(--color-accent);
+}
+
+.decision-status-revised {
+  color: var(--color-text-muted);
+}
+
+.decision-status-withdrawn {
+  color: var(--color-danger);
+  border-color: var(--color-danger);
+}
+
+.decision-content {
+  margin: 0;
+  font-size: 0.95rem;
+}
+
+.decision-rationale,
+.decision-task {
+  margin: 0;
+  font-size: 0.8rem;
+  color: var(--color-text-muted);
+}
+
+.decision-appeals {
+  list-style: none;
+  margin: 0.25rem 0 0;
+  padding: 0.5rem 0.75rem;
+  border-left: 2px solid var(--color-border);
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.appeal-item {
+  display: flex;
+  flex-direction: column;
+  gap: 0.15rem;
+}
+
+.appeal-content {
+  margin: 0;
+  font-size: 0.85rem;
+}
+
+.appeal-verdict {
+  margin: 0;
+  font-size: 0.75rem;
+  font-weight: 600;
+}
+
+.appeal-verdict-upheld {
+  color: var(--color-accent);
+}
+
+.appeal-verdict-revised {
+  color: var(--color-text-muted);
+}
+
+.appeal-response {
+  margin: 0;
+  font-size: 0.85rem;
+  color: var(--color-text-muted);
+}
+
+.decision-appeal-action button {
+  background-color: var(--color-accent);
+  color: var(--color-bg);
+  border: none;
+  border-radius: 6px;
+  padding: 0.4rem 0.85rem;
+  font-size: 0.8rem;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.decision-appeal-action button:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.appeal-form {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.appeal-form label {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  font-size: 0.8rem;
+  color: var(--color-text-muted);
+}
+
+.appeal-form textarea {
+  background-color: var(--color-bg);
+  color: var(--color-text);
+  border: 1px solid var(--color-border);
+  border-radius: 6px;
+  padding: 0.4rem 0.5rem;
+  font-family: inherit;
+  font-size: 0.85rem;
+  resize: vertical;
+}
+
+.appeal-form-actions {
+  display: flex;
+  gap: 0.5rem;
+}
+
+.appeal-form-actions button:last-child {
+  background-color: transparent;
+  color: var(--color-text-muted);
+  border: 1px solid var(--color-border);
+}
+
+.appeal-form [role="alert"] {
+  margin: 0;
+  color: var(--color-danger);
+  font-size: 0.8rem;
+}
