@@ -5,6 +5,8 @@ import "./ChatView.css";
 
 const ROLE_LABELS = { user: "自分", boss: "ボス" } as const;
 
+const SESSION_TYPE_LABELS = { morning: "朝会中", evening: "夕会中" } as const;
+
 function toolNoticeText(tool: ChatToolEvent): string {
   if (tool.isError) {
     return `タスク操作に失敗しました（${tool.name}）`;
@@ -36,7 +38,18 @@ function ChatEntryItem({ entry }: { entry: ChatEntry }) {
 }
 
 function ChatView() {
-  const { entries, status, sending, streamingText, error, send } = useChat();
+  const {
+    entries,
+    status,
+    sessionType,
+    sending,
+    switching,
+    streamingText,
+    error,
+    send,
+    startSession,
+    endSession,
+  } = useChat();
   const [draft, setDraft] = useState("");
   const bottomRef = useRef<HTMLDivElement>(null);
 
@@ -51,7 +64,7 @@ function ChatView() {
     return <p className="chat-status">会話履歴の読み込みに失敗しました</p>;
   }
 
-  const canSend = !sending && draft.trim().length > 0;
+  const canSend = !sending && !switching && draft.trim().length > 0;
 
   const handleSubmit = (event: React.FormEvent) => {
     event.preventDefault();
@@ -65,6 +78,39 @@ function ChatView() {
 
   return (
     <div className="chat-view">
+      <div className="chat-session-bar">
+        {sessionType === "adhoc" ? (
+          <>
+            <button
+              type="button"
+              onClick={() => void startSession("morning")}
+              disabled={switching || sending}
+            >
+              朝会を開始
+            </button>
+            <button
+              type="button"
+              onClick={() => void startSession("evening")}
+              disabled={switching || sending}
+            >
+              夕会を開始
+            </button>
+          </>
+        ) : (
+          <>
+            <span className="chat-session-badge">
+              {SESSION_TYPE_LABELS[sessionType]}
+            </span>
+            <button
+              type="button"
+              onClick={() => void endSession()}
+              disabled={switching || sending}
+            >
+              セッションを終了
+            </button>
+          </>
+        )}
+      </div>
       <ul className="chat-timeline" aria-label="会話履歴">
         {entries.map((entry) => (
           <ChatEntryItem key={entry.key} entry={entry} />
@@ -89,7 +135,7 @@ function ChatView() {
           onChange={(event) => setDraft(event.target.value)}
           placeholder="ボスに相談する…"
           aria-label="メッセージ"
-          disabled={sending}
+          disabled={sending || switching}
         />
         <button type="submit" disabled={!canSend}>
           {sending ? "送信中…" : "送信"}

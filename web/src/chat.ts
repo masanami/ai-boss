@@ -1,8 +1,10 @@
 export type ChatRole = "user" | "boss";
 
+export type SessionType = "morning" | "evening" | "adhoc";
+
 export interface ChatSession {
   id: number;
-  type: "morning" | "evening" | "adhoc";
+  type: SessionType;
   started_at: string;
   ended_at: string | null;
   summary: string | null;

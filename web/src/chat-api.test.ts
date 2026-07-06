@@ -1,7 +1,8 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
-  createAdhocSession,
-  fetchLatestAdhocSession,
+  createSession,
+  endSession,
+  fetchLatestSession,
   fetchSessionMessages,
   sendChatMessage,
 } from "./chat-api";
@@ -56,8 +57,8 @@ afterEach(() => {
   vi.unstubAllGlobals();
 });
 
-describe("fetchLatestAdhocSession", () => {
-  it("returns the first session of the adhoc-filtered list", async () => {
+describe("fetchLatestSession", () => {
+  it("returns the first session of the type-filtered list", async () => {
     const fetchMock = vi.fn().mockResolvedValue({
       ok: true,
       status: 200,
@@ -65,11 +66,24 @@ describe("fetchLatestAdhocSession", () => {
     });
     vi.stubGlobal("fetch", fetchMock);
 
-    await expect(fetchLatestAdhocSession()).resolves.toEqual(SAMPLE_SESSION);
+    await expect(fetchLatestSession("adhoc")).resolves.toEqual(SAMPLE_SESSION);
     expect(fetchMock).toHaveBeenCalledWith("/api/sessions?type=adhoc");
   });
 
-  it("returns null when no adhoc session exists", async () => {
+  it("filters by the given session type", async () => {
+    const morningSession: ChatSession = { ...SAMPLE_SESSION, type: "morning" };
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      json: () => Promise.resolve([morningSession]),
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(fetchLatestSession("morning")).resolves.toEqual(morningSession);
+    expect(fetchMock).toHaveBeenCalledWith("/api/sessions?type=morning");
+  });
+
+  it("returns null when no session of the given type exists", async () => {
     vi.stubGlobal(
       "fetch",
       vi.fn().mockResolvedValue({
@@ -79,7 +93,7 @@ describe("fetchLatestAdhocSession", () => {
       }),
     );
 
-    await expect(fetchLatestAdhocSession()).resolves.toBeNull();
+    await expect(fetchLatestSession("adhoc")).resolves.toBeNull();
   });
 
   it("throws the server-provided error message on failure", async () => {
@@ -92,11 +106,11 @@ describe("fetchLatestAdhocSession", () => {
       }),
     );
 
-    await expect(fetchLatestAdhocSession()).rejects.toThrow("invalid type");
+    await expect(fetchLatestSession("adhoc")).rejects.toThrow("invalid type");
   });
 });
 
-describe("createAdhocSession", () => {
+describe("createSession", () => {
   it("POSTs an adhoc session and returns the created record", async () => {
     const fetchMock = vi.fn().mockResolvedValue({
       ok: true,
@@ -105,12 +119,62 @@ describe("createAdhocSession", () => {
     });
     vi.stubGlobal("fetch", fetchMock);
 
-    await expect(createAdhocSession()).resolves.toEqual(SAMPLE_SESSION);
+    await expect(createSession("adhoc")).resolves.toEqual(SAMPLE_SESSION);
     expect(fetchMock).toHaveBeenCalledWith("/api/sessions", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ type: "adhoc" }),
     });
+  });
+
+  it("POSTs a morning session when requested", async () => {
+    const morningSession: ChatSession = { ...SAMPLE_SESSION, type: "morning" };
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      status: 201,
+      json: () => Promise.resolve(morningSession),
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(createSession("morning")).resolves.toEqual(morningSession);
+    expect(fetchMock).toHaveBeenCalledWith("/api/sessions", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ type: "morning" }),
+    });
+  });
+});
+
+describe("endSession", () => {
+  it("POSTs to the session's /end endpoint and returns the updated record", async () => {
+    const endedSession: ChatSession = {
+      ...SAMPLE_SESSION,
+      ended_at: "2026-07-05T10:00:00.000Z",
+    };
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      json: () => Promise.resolve(endedSession),
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(endSession(1)).resolves.toEqual(endedSession);
+    expect(fetchMock).toHaveBeenCalledWith("/api/sessions/1/end", {
+      method: "POST",
+    });
+  });
+
+  it("throws the server-provided error message on failure", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue({
+        ok: false,
+        status: 404,
+        json: () => Promise.resolve({ error: "session 99 not found" }),
+      }),
+    );
+
+    await expect(endSession(99)).rejects.toThrow("session 99 not found");
   });
 });
 
