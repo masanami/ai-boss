@@ -68,6 +68,14 @@ export interface WorkingHours {
   end: string;
 }
 
+/**
+ * "HH:mm" 形式（ゼロパディング必須、00:00〜23:59）の検証に使う正規表現。
+ * DBから読む側（scheduler/detection-settings.ts）と書く側
+ * （settings/settings-validation.ts）の両方がこれを共有し、受理条件が
+ * 乖離しないようにする。
+ */
+export const TIME_PATTERN = /^([01]\d|2[0-3]):([0-5]\d)$/;
+
 export interface DetectionSettings {
   workingHours: WorkingHours;
   unstarted: ThresholdScaleSettings;

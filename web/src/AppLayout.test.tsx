@@ -18,11 +18,14 @@ afterEach(() => {
 });
 
 describe("AppLayout", () => {
-  it("renders the four nav placeholder items", () => {
+  it("renders the five nav placeholder items", () => {
     render(<AppLayout />);
 
     expect(
       screen.getByRole("navigation", { name: "メインナビゲーション" }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: "ダッシュボード" }),
     ).toBeInTheDocument();
     expect(
       screen.getByRole("button", { name: "チャット" }),
@@ -34,12 +37,28 @@ describe("AppLayout", () => {
     expect(screen.getByRole("button", { name: "設定" })).toBeInTheDocument();
   });
 
-  it("renders the main area with a boss dialogue placeholder", () => {
+  it("renders the dashboard as the default main view", () => {
     render(<AppLayout />);
+
+    expect(
+      screen.getByRole("main", { name: "ダッシュボード" }),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByRole("main", { name: "ボスとの対話" }),
+    ).not.toBeInTheDocument();
+  });
+
+  it("switches the main area to the boss dialogue when the chat nav item is clicked", () => {
+    render(<AppLayout />);
+
+    fireEvent.click(screen.getByRole("button", { name: "チャット" }));
 
     expect(
       screen.getByRole("main", { name: "ボスとの対話" }),
     ).toBeInTheDocument();
+    expect(
+      screen.queryByRole("main", { name: "ダッシュボード" }),
+    ).not.toBeInTheDocument();
   });
 
   it("renders the right side panel with today's tasks and progress placeholders", () => {
@@ -111,7 +130,7 @@ describe("AppLayout", () => {
     ).not.toBeInTheDocument();
   });
 
-  it("switches back to the chat placeholder when the chat nav item is clicked", () => {
+  it("switches to the chat placeholder from another view when the chat nav item is clicked", () => {
     render(<AppLayout />);
 
     fireEvent.click(screen.getByRole("button", { name: "タスク" }));
@@ -119,6 +138,17 @@ describe("AppLayout", () => {
 
     expect(
       screen.getByRole("main", { name: "ボスとの対話" }),
+    ).toBeInTheDocument();
+  });
+
+  it("switches back to the dashboard when the dashboard nav item is clicked", () => {
+    render(<AppLayout />);
+
+    fireEvent.click(screen.getByRole("button", { name: "タスク" }));
+    fireEvent.click(screen.getByRole("button", { name: "ダッシュボード" }));
+
+    expect(
+      screen.getByRole("main", { name: "ダッシュボード" }),
     ).toBeInTheDocument();
   });
 
@@ -130,6 +160,20 @@ describe("AppLayout", () => {
     expect(
       screen.getByRole("main", { name: "決定ログ" }),
     ).toBeInTheDocument();
+    expect(
+      screen.queryByRole("main", { name: "ボスとの対話" }),
+    ).not.toBeInTheDocument();
+  });
+
+  it("switches the main area to the settings view when the settings nav item is clicked", () => {
+    render(<AppLayout />);
+
+    const settingsButton = screen.getByRole("button", { name: "設定" });
+    expect(settingsButton).toBeEnabled();
+
+    fireEvent.click(settingsButton);
+
+    expect(screen.getByRole("main", { name: "設定" })).toBeInTheDocument();
     expect(
       screen.queryByRole("main", { name: "ボスとの対話" }),
     ).not.toBeInTheDocument();
