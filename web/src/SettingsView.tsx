@@ -67,15 +67,7 @@ function SettingsView() {
     });
   };
 
-  if (status === "loading") {
-    return (
-      <section className="settings-view" aria-label="設定">
-        <p>読み込み中…</p>
-      </section>
-    );
-  }
-
-  if (status === "error" || form === null) {
+  if (status === "error") {
     return (
       <section className="settings-view" aria-label="設定">
         <p role="alert">設定の取得に失敗しました</p>
@@ -83,10 +75,23 @@ function SettingsView() {
     );
   }
 
+  // status === "ready" 直後、form を初期化する useEffect が走るまでの
+  // 1フレームは form === null のため、エラーではなく読み込み表示を維持する
+  if (status === "loading" || form === null) {
+    return (
+      <section className="settings-view" aria-label="設定">
+        <p>読み込み中…</p>
+      </section>
+    );
+  }
+
   return (
     <section className="settings-view" aria-label="設定">
       <form onSubmit={handleSubmit}>
-        <fieldset>
+        {/* 保存中は全フィールドを disabled にする。保存完了時に settings 再取得の
+            useEffect が form を丸ごと上書きするため、保存中の編集を許すと
+            その内容が無警告で消えてしまう */}
+        <fieldset disabled={isSaving}>
           <legend>ボス人格</legend>
           <label>
             ボスの名前
@@ -147,7 +152,7 @@ function SettingsView() {
           </label>
         </fieldset>
 
-        <fieldset>
+        <fieldset disabled={isSaving}>
           <legend>セッション時刻</legend>
           <label>
             朝会の時刻
@@ -177,7 +182,7 @@ function SettingsView() {
           </label>
         </fieldset>
 
-        <fieldset>
+        <fieldset disabled={isSaving}>
           <legend>勤務時間帯</legend>
           <label>
             勤務開始
@@ -201,7 +206,7 @@ function SettingsView() {
           </label>
         </fieldset>
 
-        <fieldset>
+        <fieldset disabled={isSaving}>
           <legend>検知閾値</legend>
           <label>
             未着手のフォールバック（分）
@@ -295,7 +300,7 @@ function SettingsView() {
           </label>
         </fieldset>
 
-        <fieldset>
+        <fieldset disabled={isSaving}>
           <legend>モデル</legend>
           <label>
             モデル

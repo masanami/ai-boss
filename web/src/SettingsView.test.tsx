@@ -41,6 +41,8 @@ function stubGet(settings: Settings = SAMPLE_SETTINGS) {
 describe("SettingsView", () => {
   afterEach(() => {
     vi.unstubAllGlobals();
+    vi.doUnmock("./use-settings");
+    vi.resetModules();
   });
 
   it("shows a loading indicator while settings are loading", () => {
@@ -52,6 +54,71 @@ describe("SettingsView", () => {
     render(<SettingsView />);
 
     expect(screen.getByText("読み込み中…")).toBeInTheDocument();
+  });
+
+  it("keeps showing the loading view (not the error) when settings are ready but the form is not yet initialized", async () => {
+    // 実フックでは settings 到着後、form を初期化する useEffect が走るまでの
+    // 1フレームだけ status === "ready" かつ form === null になる。この過渡
+    // フレームで誤ってエラー表示にならないことを、フックのモックで固定化
+    // した同状態により検証する。
+    vi.doMock("./use-settings", () => ({
+      useSettings: () => ({
+        settings: null,
+        status: "ready" as const,
+        saveError: null,
+        isSaving: false,
+        saveSettings: vi.fn(),
+      }),
+    }));
+    const { default: MockedSettingsView } = await import("./SettingsView");
+
+    render(<MockedSettingsView />);
+
+    expect(screen.getByText("読み込み中…")).toBeInTheDocument();
+    expect(
+      screen.queryByText("設定の取得に失敗しました"),
+    ).not.toBeInTheDocument();
+  });
+
+  it("disables the form fields while saving so in-flight edits are not silently overwritten", async () => {
+    const fetchMock = stubGet();
+    let releaseSave: (() => void) | undefined;
+    fetchMock.mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          releaseSave = () =>
+            resolve({
+              ok: true,
+              status: 200,
+              json: () => Promise.resolve(SAMPLE_SETTINGS),
+            });
+        }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(<SettingsView />);
+    await waitFor(() =>
+      expect(screen.getByLabelText("ボスの名前")).toHaveValue("ボス"),
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "保存" }));
+
+    // 各 fieldset から1フィールドずつ、保存中は編集不可であることを確認する
+    await waitFor(() =>
+      expect(screen.getByLabelText("ボスの名前")).toBeDisabled(),
+    );
+    expect(screen.getByLabelText("追加の指示")).toBeDisabled();
+    expect(screen.getByLabelText("朝会の時刻")).toBeDisabled();
+    expect(screen.getByLabelText("勤務開始")).toBeDisabled();
+    expect(
+      screen.getByLabelText("未着手のフォールバック（分）"),
+    ).toBeDisabled();
+    expect(screen.getByLabelText("モデル")).toBeDisabled();
+
+    releaseSave?.();
+    await waitFor(() =>
+      expect(screen.getByLabelText("ボスの名前")).toBeEnabled(),
+    );
   });
 
   it("shows an error message when loading settings fails", async () => {
