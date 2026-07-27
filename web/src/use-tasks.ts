@@ -13,6 +13,7 @@ export interface UseTasksResult {
   status: TasksLoadStatus;
   addTask: (input: NewTaskInput) => Promise<void>;
   editTask: (id: number, patch: TaskPatchInput) => Promise<void>;
+  refresh: () => Promise<void>;
 }
 
 /**
@@ -24,26 +25,20 @@ export function useTasks(): UseTasksResult {
   const [tasks, setTasks] = useState<Task[]>([]);
   const [status, setStatus] = useState<TasksLoadStatus>("loading");
 
-  useEffect(() => {
-    let cancelled = false;
-
-    fetchTasks()
-      .then((fetched) => {
-        if (!cancelled) {
-          setTasks(fetched);
-          setStatus("ready");
-        }
-      })
-      .catch(() => {
-        if (!cancelled) {
-          setStatus("error");
-        }
-      });
-
-    return () => {
-      cancelled = true;
-    };
+  // 一覧の再取得。読み込み済みの表示を消してちらつかせないよう、
+  // status は成功/失敗の結果だけ更新する（loading には戻さない）。
+  const refresh = useCallback(async () => {
+    try {
+      setTasks(await fetchTasks());
+      setStatus("ready");
+    } catch {
+      setStatus("error");
+    }
   }, []);
+
+  useEffect(() => {
+    void refresh();
+  }, [refresh]);
 
   const addTask = useCallback(async (input: NewTaskInput) => {
     const created = await createTaskRequest(input);
@@ -55,5 +50,5 @@ export function useTasks(): UseTasksResult {
     setTasks((prev) => prev.map((task) => (task.id === id ? updated : task)));
   }, []);
 
-  return { tasks, status, addTask, editTask };
+  return { tasks, status, addTask, editTask, refresh };
 }

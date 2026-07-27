@@ -1,7 +1,8 @@
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import TaskBoard from "./TaskBoard";
 import type { Task } from "./task";
+import type { UseTasksResult } from "./use-tasks";
 
 function makeTask(overrides: Partial<Task>): Task {
   return {
@@ -21,32 +22,29 @@ function makeTask(overrides: Partial<Task>): Task {
   };
 }
 
-describe("TaskBoard", () => {
-  afterEach(() => {
-    vi.unstubAllGlobals();
-  });
+// tasks 状態は AppLayout にリフトアップされたので、TaskBoard には
+// UseTasksResult 相当を props で渡す（Issue #70）。
+function makeTasksState(overrides: Partial<UseTasksResult> = {}): UseTasksResult {
+  return {
+    tasks: [],
+    status: "ready",
+    addTask: vi.fn().mockResolvedValue(undefined),
+    editTask: vi.fn().mockResolvedValue(undefined),
+    refresh: vi.fn().mockResolvedValue(undefined),
+    ...overrides,
+  };
+}
 
-  it("distributes tasks into their status columns", async () => {
+describe("TaskBoard", () => {
+  it("distributes tasks into their status columns", () => {
     const tasks = [
       makeTask({ id: 1, title: "todoのタスク", status: "todo" }),
       makeTask({ id: 2, title: "進行中のタスク", status: "in_progress" }),
       makeTask({ id: 3, title: "完了したタスク", status: "done" }),
       makeTask({ id: 4, title: "中止したタスク", status: "dropped" }),
     ];
-    vi.stubGlobal(
-      "fetch",
-      vi.fn().mockResolvedValue({
-        ok: true,
-        status: 200,
-        json: () => Promise.resolve(tasks),
-      }),
-    );
 
-    render(<TaskBoard />);
-
-    await waitFor(() =>
-      expect(screen.getByText("todoのタスク")).toBeInTheDocument(),
-    );
+    render(<TaskBoard tasksState={makeTasksState({ tasks })} />);
 
     const todoColumn = screen.getByRole("region", { name: "未着手" });
     expect(within(todoColumn).getByText("todoのタスク")).toBeInTheDocument();
@@ -65,87 +63,47 @@ describe("TaskBoard", () => {
     ).toBeInTheDocument();
   });
 
-  it("shows the boss comment on a task card", async () => {
-    const tasks = [
-      makeTask({ id: 1, boss_comment: "早めに着手しろ" }),
-    ];
-    vi.stubGlobal(
-      "fetch",
-      vi.fn().mockResolvedValue({
-        ok: true,
-        status: 200,
-        json: () => Promise.resolve(tasks),
-      }),
-    );
+  it("shows the boss comment on a task card", () => {
+    const tasks = [makeTask({ id: 1, boss_comment: "早めに着手しろ" })];
 
-    render(<TaskBoard />);
+    render(<TaskBoard tasksState={makeTasksState({ tasks })} />);
 
-    await waitFor(() =>
-      expect(
-        screen.getByText("ボスコメント: 早めに着手しろ"),
-      ).toBeInTheDocument(),
+    expect(
+      screen.getByText("ボスコメント: 早めに着手しろ"),
+    ).toBeInTheDocument();
+  });
+
+  it("shows an alert when the task list failed to load", () => {
+    render(<TaskBoard tasksState={makeTasksState({ status: "error" })} />);
+
+    expect(screen.getByRole("alert")).toHaveTextContent(
+      "タスクの取得に失敗しました",
     );
   });
 
-  it("adds a newly created task to the todo column", async () => {
-    const createdTask = makeTask({
-      id: 5,
-      title: "新しいタスク",
-      status: "todo",
-    });
-    const fetchMock = vi.fn();
-    fetchMock.mockResolvedValueOnce({
-      ok: true,
-      status: 200,
-      json: () => Promise.resolve([]),
-    });
-    fetchMock.mockResolvedValueOnce({
-      ok: true,
-      status: 201,
-      json: () => Promise.resolve(createdTask),
-    });
-    vi.stubGlobal("fetch", fetchMock);
+  it("calls addTask with the form input when a task is created", async () => {
+    const tasksState = makeTasksState();
 
-    render(<TaskBoard />);
-
-    await waitFor(() =>
-      expect(
-        screen.getByRole("region", { name: "未着手" }),
-      ).toBeInTheDocument(),
-    );
+    render(<TaskBoard tasksState={tasksState} />);
 
     fireEvent.change(screen.getByLabelText("タイトル"), {
       target: { value: "新しいタスク" },
     });
     fireEvent.click(screen.getByRole("button", { name: "追加" }));
 
-    await waitFor(() => {
-      const todoColumn = screen.getByRole("region", { name: "未着手" });
-      expect(within(todoColumn).getByText("新しいタスク")).toBeInTheDocument();
-    });
+    await waitFor(() =>
+      expect(tasksState.addTask).toHaveBeenCalledWith(
+        expect.objectContaining({ title: "新しいタスク" }),
+      ),
+    );
   });
 
   it("shows an alert when creating a task fails", async () => {
-    const fetchMock = vi.fn();
-    fetchMock.mockResolvedValueOnce({
-      ok: true,
-      status: 200,
-      json: () => Promise.resolve([]),
+    const tasksState = makeTasksState({
+      addTask: vi.fn().mockRejectedValue(new Error("title is required")),
     });
-    fetchMock.mockResolvedValueOnce({
-      ok: false,
-      status: 400,
-      json: () => Promise.resolve({ error: "title is required" }),
-    });
-    vi.stubGlobal("fetch", fetchMock);
 
-    render(<TaskBoard />);
-
-    await waitFor(() =>
-      expect(
-        screen.getByRole("region", { name: "未着手" }),
-      ).toBeInTheDocument(),
-    );
+    render(<TaskBoard tasksState={tasksState} />);
 
     fireEvent.change(screen.getByLabelText("タイトル"), {
       target: { value: "失敗するタスク" },
@@ -157,40 +115,30 @@ describe("TaskBoard", () => {
     );
   });
 
-  it("moves a task to the new column when its status is changed", async () => {
+  it("calls editTask when a task's status is changed", async () => {
     const task = makeTask({ id: 1, title: "todoのタスク", status: "todo" });
-    const updatedTask = { ...task, status: "in_progress" as const };
-    const fetchMock = vi.fn();
-    fetchMock.mockResolvedValueOnce({
-      ok: true,
-      status: 200,
-      json: () => Promise.resolve([task]),
-    });
-    fetchMock.mockResolvedValueOnce({
-      ok: true,
-      status: 200,
-      json: () => Promise.resolve(updatedTask),
-    });
-    vi.stubGlobal("fetch", fetchMock);
+    const tasksState = makeTasksState({ tasks: [task] });
 
-    render(<TaskBoard />);
-
-    await waitFor(() =>
-      expect(screen.getByText("todoのタスク")).toBeInTheDocument(),
-    );
+    render(<TaskBoard tasksState={tasksState} />);
 
     fireEvent.change(screen.getByLabelText("ステータス"), {
       target: { value: "in_progress" },
     });
 
-    await waitFor(() => {
-      const inProgressColumn = screen.getByRole("region", { name: "進行中" });
-      expect(
-        within(inProgressColumn).getByText("todoのタスク"),
-      ).toBeInTheDocument();
-    });
+    await waitFor(() =>
+      expect(tasksState.editTask).toHaveBeenCalledWith(1, {
+        status: "in_progress",
+      }),
+    );
+  });
 
-    const todoColumn = screen.getByRole("region", { name: "未着手" });
-    expect(within(todoColumn).queryByText("todoのタスク")).not.toBeInTheDocument();
+  it("refreshes the shared task list on mount", () => {
+    const tasksState = makeTasksState();
+
+    render(<TaskBoard tasksState={tasksState} />);
+
+    // タブ切替（再マウント）のたびに再取得していた従来挙動の維持。
+    // チャットでボスが tool use で作成・更新したタスクをボード表示時に拾う。
+    expect(tasksState.refresh).toHaveBeenCalledTimes(1);
   });
 });

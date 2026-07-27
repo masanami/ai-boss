@@ -1,0 +1,30 @@
+.today-summary-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+  font-size: 0.85rem;
+}
+
+.today-summary-progress-bar {
+  height: 10px;
+  border-radius: 999px;
+  background-color: var(--color-bg);
+  border: 1px solid var(--color-border);
+  overflow: hidden;
+}
+
+.today-summary-progress-bar-fill {
+  height: 100%;
+  border-radius: 999px;
+  background-color: var(--color-accent);
+  transition: width 0.3s ease;
+}
+
+.today-summary-progress-text {
+  margin: 0.5rem 0 0;
+  font-size: 0.8rem;
+  color: var(--color-text-muted);
+}
