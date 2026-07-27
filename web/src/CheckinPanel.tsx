@@ -1,8 +1,8 @@
 import { useEffect, useMemo, useState } from "react";
 import { selectDefaultTask } from "./select-default-task";
 import { useCheckinPanel } from "./use-checkin-panel";
-import { useTasks } from "./use-tasks";
 import type { ActivityEvent, CheckinInput } from "./activity-event";
+import type { Task } from "./task";
 import "./CheckinPanel.css";
 
 const BREAK_PRESET_MINUTES = [5, 15, 30] as const;
@@ -24,8 +24,13 @@ function formatTime(iso: string): string {
   });
 }
 
-function CheckinPanel() {
-  const { tasks } = useTasks();
+interface CheckinPanelProps {
+  /** AppLayout にリフトアップされた共有 tasks（Issue #70）。タスクボードの
+   * 作成・ステータス変更がリロードなしで「着手するタスク」に反映される。 */
+  tasks: Task[];
+}
+
+function CheckinPanel({ tasks }: CheckinPanelProps) {
   const { events, status, isOnBreak, submitError, isSubmitting, submitCheckin } =
     useCheckinPanel();
 

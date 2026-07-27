@@ -6,7 +6,9 @@ import Dashboard from "./Dashboard";
 import DecisionLog from "./DecisionLog";
 import SettingsView from "./SettingsView";
 import TaskBoard from "./TaskBoard";
+import TodaySummary from "./TodaySummary";
 import { useHealthCheck } from "./use-health-check";
+import { useTasks } from "./use-tasks";
 import "./AppLayout.css";
 
 type AppView = "dashboard" | "chat" | "tasks" | "decisions" | "settings";
@@ -26,6 +28,9 @@ const NAV_ITEMS: NavItem[] = [
 
 function AppLayout() {
   const healthStatus = useHealthCheck();
+  // tasks はタスクボード・チェックイン・サイドパネルで共有するため、
+  // 共通の親であるここに1回だけ持つ（リフトアップ、Issue #70）。
+  const tasksState = useTasks();
   // ダッシュボードを既定ビューにする（Issue #60 の明示的な仮定: ダッシュボード
   // はアプリの顔。チャット中心の仕様とはナビ1クリックで両立させる）。
   const [activeView, setActiveView] = useState<AppView>("dashboard");
@@ -68,7 +73,7 @@ function AppLayout() {
         )}
         {activeView === "tasks" && (
           <main className="app-main" aria-label="タスクボード">
-            <TaskBoard />
+            <TaskBoard tasksState={tasksState} />
           </main>
         )}
         {activeView === "decisions" && (
@@ -82,15 +87,8 @@ function AppLayout() {
           </main>
         )}
         <aside className="app-side-panel" aria-label="サイドパネル">
-          <CheckinPanel />
-          <section>
-            <h2>今日のタスク</h2>
-            <p>タスクはまだありません（準備中）</p>
-          </section>
-          <section>
-            <h2>進捗</h2>
-            <p>進捗はまだありません（準備中）</p>
-          </section>
+          <CheckinPanel tasks={tasksState.tasks} />
+          <TodaySummary tasks={tasksState.tasks} status={tasksState.status} />
         </aside>
       </div>
     </div>

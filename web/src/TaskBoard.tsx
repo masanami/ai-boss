@@ -1,8 +1,8 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import TaskCard from "./TaskCard";
 import TaskForm from "./TaskForm";
-import { useTasks } from "./use-tasks";
 import type { TaskStatus } from "./task";
+import type { UseTasksResult } from "./use-tasks";
 import "./TaskBoard.css";
 
 const COLUMNS: { status: TaskStatus; label: string }[] = [
@@ -12,9 +12,21 @@ const COLUMNS: { status: TaskStatus; label: string }[] = [
   { status: "dropped", label: "中止" },
 ];
 
-function TaskBoard() {
-  const { tasks, status, addTask, editTask } = useTasks();
+interface TaskBoardProps {
+  /** AppLayout にリフトアップされた共有 tasks 状態（Issue #70）。 */
+  tasksState: UseTasksResult;
+}
+
+function TaskBoard({ tasksState }: TaskBoardProps) {
+  const { tasks, status, addTask, editTask, refresh } = tasksState;
   const [actionError, setActionError] = useState<string | null>(null);
+
+  useEffect(() => {
+    // ボード表示（マウント）のたびに共有 tasks を再取得する。旧実装が
+    // マウント時 fetch だった挙動の維持で、チャットのボス tool use による
+    // タスク作成・更新をボードを開いたときに拾う。
+    void refresh();
+  }, [refresh]);
 
   // Resolves to whether the action succeeded so callers (e.g. TaskForm)
   // can keep user input when it failed.

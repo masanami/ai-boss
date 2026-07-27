@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   fireEvent,
   render,
@@ -6,19 +6,9 @@ import {
   waitFor,
   within,
 } from "@testing-library/react";
+import CheckinPanel from "./CheckinPanel";
 import type { ActivityEvent } from "./activity-event";
 import type { Task } from "./task";
-
-const { useTasksMock } = vi.hoisted(() => ({ useTasksMock: vi.fn() }));
-
-// 「選択中タスクが selectableTasks から外れる」ケースをテストで決定的に再現する
-// ためモック化する。既定（beforeEach）では実実装へ委譲するので他のテストの挙動
-// は変わらない。
-vi.mock("./use-tasks", () => ({ useTasks: useTasksMock }));
-
-const { useTasks: actualUseTasks } =
-  await vi.importActual<typeof import("./use-tasks")>("./use-tasks");
-const { default: CheckinPanel } = await import("./CheckinPanel");
 
 function makeTask(overrides: Partial<Task> & { id: number }): Task {
   return {
@@ -54,21 +44,15 @@ interface CheckinResult {
   body: unknown;
 }
 
+// tasks は AppLayout の共有状態から props で渡されるようになった（Issue #70）
+// ため、fetch モックが受けるのはチェックイン系 API のみ。
 function createFetchMock(options: {
-  tasks?: Task[];
   events?: ActivityEvent[];
   onCheckin?: (body: unknown) => CheckinResult;
-}) {
-  const { tasks = [], events = [], onCheckin } = options;
+} = {}) {
+  const { events = [], onCheckin } = options;
 
   return vi.fn((url: string, init?: RequestInit) => {
-    if (url === "/api/tasks" && init === undefined) {
-      return Promise.resolve({
-        ok: true,
-        status: 200,
-        json: () => Promise.resolve(tasks),
-      });
-    }
     if (url === "/api/activity/today") {
       return Promise.resolve({
         ok: true,
@@ -100,11 +84,6 @@ function createFetchMock(options: {
 }
 
 describe("CheckinPanel", () => {
-  beforeEach(() => {
-    useTasksMock.mockReset();
-    useTasksMock.mockImplementation(actualUseTasks);
-  });
-
   afterEach(() => {
     vi.unstubAllGlobals();
   });
@@ -114,9 +93,9 @@ describe("CheckinPanel", () => {
       makeTask({ id: 1, title: "低優先タスク", priority: "low" }),
       makeTask({ id: 2, title: "高優先タスク", priority: "high" }),
     ];
-    vi.stubGlobal("fetch", createFetchMock({ tasks }));
+    vi.stubGlobal("fetch", createFetchMock());
 
-    render(<CheckinPanel />);
+    render(<CheckinPanel tasks={tasks} />);
 
     await waitFor(() =>
       expect(
@@ -132,10 +111,10 @@ describe("CheckinPanel", () => {
 
   it("sends a task_start checkin with the selected task and note", async () => {
     const tasks = [makeTask({ id: 3, title: "資料作成", priority: "high" })];
-    const fetchMock = createFetchMock({ tasks });
+    const fetchMock = createFetchMock();
     vi.stubGlobal("fetch", fetchMock);
 
-    render(<CheckinPanel />);
+    render(<CheckinPanel tasks={tasks} />);
     await waitFor(() =>
       expect(
         screen.getByRole("combobox", { name: "着手するタスク" }),
@@ -163,10 +142,10 @@ describe("CheckinPanel", () => {
   });
 
   it("sends a break_start checkin with the default 15-minute preset", async () => {
-    const fetchMock = createFetchMock({});
+    const fetchMock = createFetchMock();
     vi.stubGlobal("fetch", fetchMock);
 
-    render(<CheckinPanel />);
+    render(<CheckinPanel tasks={[]} />);
     await waitFor(() =>
       expect(screen.getByRole("button", { name: "休憩" })).toBeEnabled(),
     );
@@ -189,10 +168,10 @@ describe("CheckinPanel", () => {
   });
 
   it("sends a break_start checkin with a custom minute value", async () => {
-    const fetchMock = createFetchMock({});
+    const fetchMock = createFetchMock();
     vi.stubGlobal("fetch", fetchMock);
 
-    render(<CheckinPanel />);
+    render(<CheckinPanel tasks={[]} />);
     await waitFor(() =>
       expect(screen.getByRole("button", { name: "休憩" })).toBeEnabled(),
     );
@@ -228,7 +207,7 @@ describe("CheckinPanel", () => {
     const fetchMock = createFetchMock({ events });
     vi.stubGlobal("fetch", fetchMock);
 
-    render(<CheckinPanel />);
+    render(<CheckinPanel tasks={[]} />);
 
     await waitFor(() =>
       expect(
@@ -258,7 +237,6 @@ describe("CheckinPanel", () => {
   it("shows an error message when the checkin submission fails", async () => {
     const tasks = [makeTask({ id: 4, title: "資料作成", priority: "high" })];
     const fetchMock = createFetchMock({
-      tasks,
       onCheckin: () => ({
         ok: false,
         status: 404,
@@ -267,7 +245,7 @@ describe("CheckinPanel", () => {
     });
     vi.stubGlobal("fetch", fetchMock);
 
-    render(<CheckinPanel />);
+    render(<CheckinPanel tasks={tasks} />);
     await waitFor(() =>
       expect(
         screen.getByRole("combobox", { name: "着手するタスク" }),
@@ -292,9 +270,9 @@ describe("CheckinPanel", () => {
         created_at: createdAt,
       }),
     ];
-    vi.stubGlobal("fetch", createFetchMock({ tasks, events }));
+    vi.stubGlobal("fetch", createFetchMock({ events }));
 
-    render(<CheckinPanel />);
+    render(<CheckinPanel tasks={tasks} />);
 
     // The rendered time is formatted in the local timezone, so the expected
     // value is derived the same way rather than hardcoded (which would be
@@ -312,10 +290,10 @@ describe("CheckinPanel", () => {
 
   it("normalizes a whitespace-only note to null before sending", async () => {
     const tasks = [makeTask({ id: 6, title: "資料作成", priority: "high" })];
-    const fetchMock = createFetchMock({ tasks });
+    const fetchMock = createFetchMock();
     vi.stubGlobal("fetch", fetchMock);
 
-    render(<CheckinPanel />);
+    render(<CheckinPanel tasks={tasks} />);
     await waitFor(() =>
       expect(
         screen.getByRole("combobox", { name: "着手するタスク" }),
@@ -339,9 +317,9 @@ describe("CheckinPanel", () => {
   });
 
   it("disables the break button when the custom minute value is not a positive integer", async () => {
-    vi.stubGlobal("fetch", createFetchMock({}));
+    vi.stubGlobal("fetch", createFetchMock());
 
-    render(<CheckinPanel />);
+    render(<CheckinPanel tasks={[]} />);
     await waitFor(() =>
       expect(screen.getByRole("button", { name: "休憩" })).toBeEnabled(),
     );
@@ -361,9 +339,9 @@ describe("CheckinPanel", () => {
 
   it("clears the note field and shows a success message after a successful checkin", async () => {
     const tasks = [makeTask({ id: 7, title: "資料作成", priority: "high" })];
-    vi.stubGlobal("fetch", createFetchMock({ tasks }));
+    vi.stubGlobal("fetch", createFetchMock());
 
-    render(<CheckinPanel />);
+    render(<CheckinPanel tasks={tasks} />);
     await waitFor(() =>
       expect(
         screen.getByRole("combobox", { name: "着手するタスク" }),
@@ -381,17 +359,9 @@ describe("CheckinPanel", () => {
   it("resets the selection to the default task when the selected task leaves the selectable list", async () => {
     const taskA = makeTask({ id: 1, title: "タスクA", priority: "high" });
     const taskB = makeTask({ id: 2, title: "タスクB", priority: "low" });
-    vi.stubGlobal("fetch", createFetchMock({}));
+    vi.stubGlobal("fetch", createFetchMock());
 
-    let tasks = [taskA, taskB];
-    useTasksMock.mockImplementation(() => ({
-      tasks,
-      status: "ready",
-      addTask: vi.fn(),
-      editTask: vi.fn(),
-    }));
-
-    const { rerender } = render(<CheckinPanel />);
+    const { rerender } = render(<CheckinPanel tasks={[taskA, taskB]} />);
     const combobox = screen.getByRole("combobox", { name: "着手するタスク" });
     await waitFor(() => expect(combobox).toHaveValue("1"));
 
@@ -399,23 +369,39 @@ describe("CheckinPanel", () => {
     expect(combobox).toHaveValue("2");
 
     // 選択中のタスクBが完了して selectable から外れる → デフォルト（タスクA）へ戻る
-    tasks = [taskA, makeTask({ id: 2, title: "タスクB", priority: "low", status: "done" })];
-    rerender(<CheckinPanel />);
+    rerender(
+      <CheckinPanel
+        tasks={[
+          taskA,
+          makeTask({ id: 2, title: "タスクB", priority: "low", status: "done" }),
+        ]}
+      />,
+    );
 
     await waitFor(() => expect(combobox).toHaveValue("1"));
+  });
+
+  it("reflects tasks added to the shared list without a reload", async () => {
+    const taskA = makeTask({ id: 1, title: "タスクA", priority: "high" });
+    vi.stubGlobal("fetch", createFetchMock());
+
+    const { rerender } = render(<CheckinPanel tasks={[taskA]} />);
+    const combobox = screen.getByRole("combobox", { name: "着手するタスク" });
+    await waitFor(() => expect(combobox).toHaveValue("1"));
+
+    // タスクボード側で作成 → 共有 tasks が更新される（Issue #70）
+    const created = makeTask({ id: 2, title: "新しいタスク" });
+    rerender(<CheckinPanel tasks={[taskA, created]} />);
+
+    expect(
+      within(combobox).getByRole("option", { name: "新しいタスク" }),
+    ).toBeInTheDocument();
   });
 
   it("disables the checkin buttons while a submission is in flight (double-click guard)", async () => {
     const tasks = [makeTask({ id: 5, title: "資料作成", priority: "high" })];
     let releasePost: (() => void) | undefined;
     const fetchMock = vi.fn((url: string, init?: RequestInit) => {
-      if (url === "/api/tasks" && init === undefined) {
-        return Promise.resolve({
-          ok: true,
-          status: 200,
-          json: () => Promise.resolve(tasks),
-        });
-      }
       if (url === "/api/activity/today") {
         return Promise.resolve({
           ok: true,
@@ -437,7 +423,7 @@ describe("CheckinPanel", () => {
     });
     vi.stubGlobal("fetch", fetchMock);
 
-    render(<CheckinPanel />);
+    render(<CheckinPanel tasks={tasks} />);
     await waitFor(() =>
       expect(screen.getByRole("button", { name: "着手" })).toBeEnabled(),
     );
@@ -458,7 +444,7 @@ describe("CheckinPanel", () => {
   it("shows an error message when today's activity fails to load", async () => {
     vi.stubGlobal("fetch", vi.fn().mockRejectedValue(new Error("network error")));
 
-    render(<CheckinPanel />);
+    render(<CheckinPanel tasks={[]} />);
 
     await waitFor(() =>
       expect(screen.getByText("活動の取得に失敗しました")).toBeInTheDocument(),
