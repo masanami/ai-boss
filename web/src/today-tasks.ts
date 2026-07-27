@@ -8,16 +8,20 @@ import type { Task } from "./task";
  */
 export function selectTodayTasks(tasks: Task[], now: Date): Task[] {
   return tasks.filter((task) => {
-    if (task.status === "todo" || task.status === "in_progress") {
-      return true;
+    switch (task.status) {
+      case "todo":
+      case "in_progress":
+        return true;
+      case "done":
+        return (
+          task.completed_at !== null &&
+          isSameLocalDay(new Date(task.completed_at), now)
+        );
+      case "dropped":
+        return false;
+      default:
+        // TaskStatus に新しい値が追加されたら型エラーで気づけるようにする
+        return task.status satisfies never;
     }
-    if (task.status === "done") {
-      return (
-        task.completed_at !== null &&
-        isSameLocalDay(new Date(task.completed_at), now)
-      );
-    }
-    // dropped
-    return false;
   });
 }
