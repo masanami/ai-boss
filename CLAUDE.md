@@ -82,8 +82,11 @@ AI が「上司（ボス）」を演じるセルフマネジメント支援ア�
 # 依存インストール（ルートで workspaces 一括）
 npm install
 
-# 開発サーバー（server + web 並行起動）
+# 開発サーバー（server + web 並行起動、Vite ホットリロード）
 npm run dev
+
+# 本番相当の起動（自動で build → ビルド成果物を server が一体配信、http://localhost:8787）
+npm run start
 
 # 品質ゲート
 npm run lint

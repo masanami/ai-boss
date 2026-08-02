@@ -1,4 +1,6 @@
 import { Hono } from "hono";
+import { serveStatic } from "@hono/node-server/serve-static";
+import { join } from "node:path";
 import type Database from "better-sqlite3";
 import { createTasksRouter } from "./tasks/tasks-routes.js";
 import { createSessionsRouter } from "./sessions/sessions-routes.js";
@@ -17,6 +19,16 @@ function checkDatabaseConnection(db: Database.Database): boolean {
   }
 }
 
+export interface CreateAppOptions {
+  /**
+   * Directory of the built web frontend (`web/dist`). When set, its files are
+   * served on the same origin as `/api`, with an SPA fallback to `index.html`
+   * for unknown non-API paths. When omitted (dev / tests), the app serves the
+   * API only and the Vite dev server handles the frontend.
+   */
+  staticRoot?: string;
+}
+
 /**
  * Creates the Hono application. Routes are namespaced under `/api`.
  *
@@ -27,6 +39,7 @@ function checkDatabaseConnection(db: Database.Database): boolean {
 export function createApp(
   db: Database.Database,
   env: NodeJS.ProcessEnv = process.env,
+  options: CreateAppOptions = {},
 ): Hono {
   const api = new Hono();
 
@@ -44,6 +57,21 @@ export function createApp(
 
   const app = new Hono();
   app.route("/api", api);
+
+  if (options.staticRoot) {
+    const { staticRoot } = options;
+    const serveIndexHtml = serveStatic({ path: join(staticRoot, "index.html") });
+
+    app.use("*", serveStatic({ root: staticRoot }));
+    app.get("*", async (c, next) => {
+      // Unknown API paths must stay 404 for clients; the SPA fallback is only
+      // for frontend routes handled by React on the client side.
+      if (c.req.path === "/api" || c.req.path.startsWith("/api/")) {
+        return c.notFound();
+      }
+      return (await serveIndexHtml(c, next)) ?? c.notFound();
+    });
+  }
 
   return app;
 }

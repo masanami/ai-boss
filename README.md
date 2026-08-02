@@ -36,3 +36,14 @@ AIが「上司（ボス）」を演じるセルフマネジメント支援アプ
 # Anthropic API キーをサーバー側 .env に設定（リポジトリにはコミットしない）
 echo "ANTHROPIC_API_KEY=sk-ant-..." > server/.env
 ```
+
+## 起動
+
+```bash
+# 日常利用（本番相当）: 自動で build し、ビルド成果物を server が一体配信する
+npm run start
+# → http://localhost:8787 を開く（API・SSE も同一オリジンで動作）
+
+# 開発（Vite ホットリロード + server 並行起動）
+npm run dev
+```

@@ -1,4 +1,7 @@
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeEach, describe, expect, it } from "vitest";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import type Database from "better-sqlite3";
 import { openDatabase } from "./db/connection.js";
 import { runMigrations } from "./db/migrate.js";
@@ -40,5 +43,63 @@ describe("createApp", () => {
     const res = await app.request("/api/health");
 
     expect(await res.json()).toEqual({ status: "ok", db: false });
+  });
+
+  describe("static serving (staticRoot option)", () => {
+    const staticRoot = mkdtempSync(join(tmpdir(), "ai-boss-web-dist-"));
+
+    writeFileSync(join(staticRoot, "index.html"), "<html>ai-boss</html>");
+    mkdirSync(join(staticRoot, "assets"));
+    writeFileSync(join(staticRoot, "assets", "app.js"), "console.log('ok');");
+
+    afterAll(() => {
+      rmSync(staticRoot, { recursive: true, force: true });
+    });
+
+    it("serves index.html from GET /", async () => {
+      const app = createApp(db, process.env, { staticRoot });
+
+      const res = await app.request("/");
+
+      expect(res.status).toBe(200);
+      expect(res.headers.get("content-type")).toContain("text/html");
+      expect(await res.text()).toBe("<html>ai-boss</html>");
+    });
+
+    it("serves an asset file with its content type", async () => {
+      const app = createApp(db, process.env, { staticRoot });
+
+      const res = await app.request("/assets/app.js");
+
+      expect(res.status).toBe(200);
+      expect(res.headers.get("content-type")).toContain("javascript");
+      expect(await res.text()).toBe("console.log('ok');");
+    });
+
+    it("falls back to index.html for an unknown non-API path (SPA routing)", async () => {
+      const app = createApp(db, process.env, { staticRoot });
+
+      const res = await app.request("/some/spa/route");
+
+      expect(res.status).toBe(200);
+      expect(await res.text()).toBe("<html>ai-boss</html>");
+    });
+
+    it("still serves API routes with precedence over static files", async () => {
+      const app = createApp(db, process.env, { staticRoot });
+
+      const res = await app.request("/api/health");
+
+      expect(res.status).toBe(200);
+      expect(await res.json()).toEqual({ status: "ok", db: true });
+    });
+
+    it("returns 404 for an unknown /api path instead of index.html", async () => {
+      const app = createApp(db, process.env, { staticRoot });
+
+      const res = await app.request("/api/unknown");
+
+      expect(res.status).toBe(404);
+    });
   });
 });
