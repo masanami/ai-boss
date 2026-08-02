@@ -1,4 +1,6 @@
 import "dotenv/config";
+import { existsSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 import { serve } from "@hono/node-server";
 import { createApp } from "./app.js";
 import { loadConfig } from "./config.js";
@@ -10,10 +12,25 @@ const config = loadConfig(process.env);
 const db = openDatabase(config.dbPath);
 runMigrations(db);
 
-const app = createApp(db);
+// Resolved relative to this module (not cwd) so it works both compiled
+// (server/dist/index.js) and under tsx watch (server/src/index.ts).
+const webDistPath = fileURLToPath(new URL("../../web/dist", import.meta.url));
+const staticRoot = existsSync(webDistPath) ? webDistPath : undefined;
+
+if (!staticRoot) {
+  console.warn(
+    `web のビルド成果物が見つかりません（${webDistPath}）。API のみ起動します。` +
+      "フロントエンドも配信するには `npm run build` を実行してください（`npm run start` は自動でビルドします）。",
+  );
+}
+
+const app = createApp(db, process.env, { staticRoot });
 
 serve({ fetch: app.fetch, port: config.port }, (info) => {
   console.log(`ai-boss server listening on port ${info.port}`);
+  if (staticRoot) {
+    console.log(`web assets served from ${staticRoot}`);
+  }
 });
 
 // Slacking-detection scheduler (Issue #38): started only from this
