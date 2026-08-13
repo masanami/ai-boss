@@ -1,0 +1,510 @@
+import { describe, expect, it, vi } from "vitest";
+import { z } from "zod";
+import type Anthropic from "@anthropic-ai/sdk";
+import { BOSS_TOOLS } from "../../boss/boss-tools.js";
+import { SUBMIT_VERDICT_TOOL } from "../../decisions/verdict-tool.js";
+
+const { queryMock, toolMock, createSdkMcpServerMock } = vi.hoisted(() => {
+  const toolMock = vi.fn(
+    (
+      name: string,
+      description: string,
+      inputSchema: Record<string, unknown>,
+      handler: (args: unknown) => Promise<unknown>,
+    ) => ({ name, description, inputSchema, handler }),
+  );
+  const createSdkMcpServerMock = vi.fn((options: { name: string; tools: unknown[] }) => ({
+    type: "sdk" as const,
+    name: options.name,
+    tools: options.tools,
+  }));
+  const queryMock = vi.fn();
+  return { queryMock, toolMock, createSdkMcpServerMock };
+});
+
+vi.mock("@anthropic-ai/claude-agent-sdk", () => ({
+  query: queryMock,
+  tool: toolMock,
+  createSdkMcpServer: createSdkMcpServerMock,
+}));
+
+const {
+  streamClaudeCodeMessage,
+  createClaudeCodeMessage,
+  buildClaudeCodePrompt,
+  TOOL_ZOD_SHAPES,
+} = await import("./claude-code-backend.js");
+
+// ---------------------------------------------------------------------------
+// Test helpers
+// ---------------------------------------------------------------------------
+
+async function* toAsyncIterable<T>(items: T[]): AsyncGenerator<T> {
+  for (const item of items) {
+    yield item;
+  }
+}
+
+function assistantTextMessage(text: string) {
+  return {
+    type: "assistant" as const,
+    message: { content: [{ type: "text", text }] },
+    parent_tool_use_id: null,
+  };
+}
+
+function assistantToolUseMessage(id: string, name: string, input: unknown) {
+  return {
+    type: "assistant" as const,
+    message: { content: [{ type: "tool_use", id, name, input }] },
+    parent_tool_use_id: null,
+  };
+}
+
+function textDeltaEvent(text: string) {
+  return {
+    type: "stream_event" as const,
+    event: { type: "content_block_delta", delta: { type: "text_delta", text } },
+    parent_tool_use_id: null,
+  };
+}
+
+function resultMessage(subtype: "success" | "error_max_turns" = "success") {
+  return { type: "result" as const, subtype };
+}
+
+function lastQueryOptions(): Record<string, unknown> {
+  const call = queryMock.mock.calls.at(-1) as [{ prompt: string; options: Record<string, unknown> }];
+  return call[0].options;
+}
+
+function registeredTools(): Array<{ name: string; handler: (args: unknown) => Promise<unknown> }> {
+  const call = createSdkMcpServerMock.mock.calls.at(-1) as [{ tools: Array<{ name: string; handler: (args: unknown) => Promise<unknown> }> }];
+  return call[0].tools;
+}
+
+function findHandler(name: string) {
+  const found = registeredTools().find((t) => t.name === name);
+  if (!found) throw new Error(`tool ${name} was not registered`);
+  return found.handler;
+}
+
+// ---------------------------------------------------------------------------
+// buildClaudeCodePrompt
+// ---------------------------------------------------------------------------
+
+describe("buildClaudeCodePrompt", () => {
+  it("returns the plain text of a single user message unchanged (no role prefix)", () => {
+    const prompt = buildClaudeCodePrompt([{ role: "user", content: "こんにちは" }]);
+
+    expect(prompt).toBe("こんにちは");
+  });
+
+  it("formats multi-turn history with role-labeled lines", () => {
+    const prompt = buildClaudeCodePrompt([
+      { role: "user", content: "進捗どうですか" },
+      { role: "assistant", content: "順調だ" },
+      { role: "user", content: "了解です" },
+    ]);
+
+    expect(prompt).toBe("User: 進捗どうですか\n\nBoss: 順調だ\n\nUser: 了解です");
+  });
+
+  it("returns an empty string for an empty message list", () => {
+    expect(buildClaudeCodePrompt([])).toBe("");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// TOOL_ZOD_SHAPES ⇔ JSON Schema alignment
+// ---------------------------------------------------------------------------
+
+describe("TOOL_ZOD_SHAPES alignment with the JSON Schema tool definitions", () => {
+  const jsonSchemaTools: Anthropic.Tool[] = [...BOSS_TOOLS, SUBMIT_VERDICT_TOOL];
+
+  it.each(jsonSchemaTools.map((toolDef) => [toolDef.name, toolDef] as const))(
+    "%s: Zod shape keys and required-ness match the JSON Schema",
+    (name, toolDef) => {
+      const shape = TOOL_ZOD_SHAPES[name as keyof typeof TOOL_ZOD_SHAPES];
+      expect(shape, `no Zod shape registered for "${name}"`).toBeDefined();
+
+      const schema = toolDef.input_schema as {
+        properties?: Record<string, unknown>;
+        required?: string[];
+      };
+      const jsonKeys = Object.keys(schema.properties ?? {}).sort();
+      const zodKeys = Object.keys(shape).sort();
+      expect(zodKeys).toEqual(jsonKeys);
+
+      const requiredKeys = new Set(schema.required ?? []);
+      for (const key of zodKeys) {
+        const field = (shape as Record<string, z.ZodTypeAny>)[key];
+        const isOptionalInZod = field.isOptional();
+        const isRequiredInJson = requiredKeys.has(key);
+        expect(isOptionalInZod, `field "${key}"`).toBe(!isRequiredInJson);
+      }
+
+      // Regression guard (self-review round 2): the Zod shapes were found to
+      // be missing the JSON Schema's field `description`s in an earlier
+      // round of this ticket's own self-review — assert they carry them
+      // through (via `.unwrap()` for `.optional()`-wrapped fields, since
+      // `.describe()` was applied to the inner type before `.optional()`).
+      for (const key of zodKeys) {
+        const jsonDescription = (schema.properties?.[key] as { description?: string } | undefined)
+          ?.description;
+        if (jsonDescription === undefined) {
+          continue;
+        }
+        const field = (shape as Record<string, z.ZodTypeAny>)[key];
+        const unwrapped: z.ZodTypeAny = field.isOptional()
+          ? (field as unknown as { unwrap: () => z.ZodTypeAny }).unwrap()
+          : field;
+        expect(unwrapped.description, `field "${key}" description`).toBe(jsonDescription);
+      }
+    },
+  );
+});
+
+// ---------------------------------------------------------------------------
+// streamClaudeCodeMessage
+// ---------------------------------------------------------------------------
+
+describe("streamClaudeCodeMessage", () => {
+  it("passes model/systemPrompt/tools:[]/settingSources:[]/strictMcpConfig/allowedTools/mcpServers (FR-06, AC-05, AC-08)", async () => {
+    queryMock.mockReturnValueOnce(toAsyncIterable([assistantTextMessage("了解"), resultMessage()]));
+
+    await streamClaudeCodeMessage({
+      model: "claude-opus-4-8",
+      system: "あなたはボスです",
+      messages: [{ role: "user", content: "進捗どうですか" }],
+      tools: BOSS_TOOLS,
+    });
+
+    const options = lastQueryOptions();
+    expect(options.model).toBe("claude-opus-4-8");
+    expect(options.systemPrompt).toBe("あなたはボスです");
+    expect(options.tools).toEqual([]);
+    expect(options.settingSources).toEqual([]);
+    expect(options.strictMcpConfig).toBe(true);
+    expect(options.allowedTools).toEqual([
+      "mcp__ai-boss__create_task",
+      "mcp__ai-boss__update_task",
+      "mcp__ai-boss__record_decision",
+    ]);
+    expect(Object.keys(options.mcpServers as Record<string, unknown>)).toEqual(["ai-boss"]);
+    // Runaway-loop guard (self-review): claude-code has no MAX_TOOL_ROUNDS
+    // equivalent from the facade side (see `streamBossMessage`'s doc
+    // comment), so `maxTurns` here is the only defense-in-depth cap.
+    expect(typeof options.maxTurns).toBe("number");
+    expect(options.maxTurns).toBeGreaterThan(0);
+  });
+
+  it("registers no MCP server / allowedTools when no tools are given (dashboard comment / notification body)", async () => {
+    queryMock.mockReturnValueOnce(toAsyncIterable([assistantTextMessage("今日も一日頑張れ"), resultMessage()]));
+
+    await streamClaudeCodeMessage({
+      model: "claude-sonnet-5",
+      system: "system",
+      messages: [{ role: "user", content: "ひとことをくれ" }],
+    });
+
+    const options = lastQueryOptions();
+    expect(options.mcpServers).toBeUndefined();
+    expect(options.allowedTools).toBeUndefined();
+  });
+
+  it("relays text deltas from stream_event content_block_delta text_delta messages to onTextDelta, in order (FR-04)", async () => {
+    queryMock.mockReturnValueOnce(
+      toAsyncIterable([
+        textDeltaEvent("今日は"),
+        textDeltaEvent("頑張ろう"),
+        assistantTextMessage("今日は頑張ろう"),
+        resultMessage(),
+      ]),
+    );
+    const onTextDelta = vi.fn();
+
+    await streamClaudeCodeMessage(
+      { model: "claude-sonnet-5", messages: [{ role: "user", content: "進捗どうですか" }] },
+      { onTextDelta },
+    );
+
+    expect(onTextDelta).toHaveBeenNthCalledWith(1, "今日は");
+    expect(onTextDelta).toHaveBeenNthCalledWith(2, "頑張ろう");
+    expect(lastQueryOptions().includePartialMessages).toBe(true);
+  });
+
+  it("does not request includePartialMessages when no onTextDelta is given", async () => {
+    queryMock.mockReturnValueOnce(toAsyncIterable([assistantTextMessage("ok"), resultMessage()]));
+
+    await streamClaudeCodeMessage({ model: "claude-sonnet-5", messages: [{ role: "user", content: "hi" }] });
+
+    expect(lastQueryOptions().includePartialMessages).toBe(false);
+  });
+
+  it("falls back to a single onTextDelta call with the full text when includePartialMessages was requested but no stream_event delta ever arrived (前提・仮定4 の縮退仕様, self-review)", async () => {
+    // No `stream_event`/`content_block_delta` messages in this fake stream —
+    // simulates a running Agent SDK version that doesn't actually emit
+    // partial messages despite `includePartialMessages: true`.
+    queryMock.mockReturnValueOnce(
+      toAsyncIterable([assistantTextMessage("今日は頑張ろう"), resultMessage()]),
+    );
+    const onTextDelta = vi.fn();
+
+    await streamClaudeCodeMessage(
+      { model: "claude-sonnet-5", messages: [{ role: "user", content: "進捗どうですか" }] },
+      { onTextDelta },
+    );
+
+    expect(onTextDelta).toHaveBeenCalledTimes(1);
+    expect(onTextDelta).toHaveBeenCalledWith("今日は頑張ろう");
+  });
+
+  it("does not double-fire the degraded fallback when stream_event deltas did arrive normally", async () => {
+    queryMock.mockReturnValueOnce(
+      toAsyncIterable([
+        textDeltaEvent("今日は"),
+        textDeltaEvent("頑張ろう"),
+        assistantTextMessage("今日は頑張ろう"),
+        resultMessage(),
+      ]),
+    );
+    const onTextDelta = vi.fn();
+
+    await streamClaudeCodeMessage(
+      { model: "claude-sonnet-5", messages: [{ role: "user", content: "進捗どうですか" }] },
+      { onTextDelta },
+    );
+
+    expect(onTextDelta).toHaveBeenCalledTimes(2);
+  });
+
+  it("does not fire the degraded fallback when there is no text content at all (e.g. tool-only turn, no onTextDelta call needed)", async () => {
+    queryMock.mockImplementationOnce(() => toAsyncIterable([resultMessage()]));
+    const onTextDelta = vi.fn();
+
+    await streamClaudeCodeMessage(
+      { model: "claude-sonnet-5", messages: [{ role: "user", content: "タスクを作って" }] },
+      { onTextDelta },
+    );
+
+    expect(onTextDelta).not.toHaveBeenCalled();
+  });
+
+  it("executes a DB-writing tool via the MCP handler exactly once, notifies onToolEvent once with FR-04's payload, and reflects the tool_use block in the final content (AC-03)", async () => {
+    const executeTool = vi.fn().mockResolvedValue({ content: '{"id":1,"title":"資料作成"}', isError: false });
+    const onToolEvent = vi.fn();
+    const onTextDelta = vi.fn();
+
+    // Build a bespoke async generator so we can `await handler(...)` at the
+    // right point in the sequence (after the tool_use message, before the
+    // follow-up text) — mirroring FR-04's "text → tool → 次ラウンドのtext" order.
+    // `findHandler` reads from `createSdkMcpServerMock`'s calls, which is
+    // already populated by the time `query()` runs (the MCP server is built
+    // before `query()` is invoked — see `runClaudeCodeQuery`).
+    async function* fakeStream() {
+      yield assistantToolUseMessage("toolu_1", "create_task", { title: "資料作成" });
+      const handler = findHandler("create_task");
+      await handler({ title: "資料作成" });
+      yield textDeltaEvent("タスクを作成した");
+      yield assistantTextMessage("タスクを作成した");
+      yield resultMessage();
+    }
+    queryMock.mockImplementationOnce(() => fakeStream());
+
+    const result = await streamClaudeCodeMessage(
+      {
+        model: "claude-sonnet-5",
+        messages: [{ role: "user", content: "タスクを作って" }],
+        tools: BOSS_TOOLS,
+      },
+      { executeTool, onToolEvent, onTextDelta },
+    );
+
+    expect(executeTool).toHaveBeenCalledTimes(1);
+    expect(executeTool).toHaveBeenCalledWith("create_task", { title: "資料作成" });
+    expect(onToolEvent).toHaveBeenCalledTimes(1);
+    expect(onToolEvent).toHaveBeenCalledWith({
+      name: "create_task",
+      input: { title: "資料作成" },
+      result: '{"id":1,"title":"資料作成"}',
+      isError: false,
+    });
+    expect(onTextDelta).toHaveBeenCalledWith("タスクを作成した");
+    expect(result.content).toEqual([
+      { type: "tool_use", id: "toolu_1", name: "create_task", input: { title: "資料作成" } },
+      { type: "text", text: "タスクを作成した" },
+    ]);
+  });
+
+  it("throws when the tool handler is invoked without an executeTool callback (defensive)", async () => {
+    queryMock.mockImplementationOnce(() => toAsyncIterable([resultMessage()]));
+
+    await streamClaudeCodeMessage({
+      model: "claude-sonnet-5",
+      messages: [{ role: "user", content: "タスクを作って" }],
+      tools: BOSS_TOOLS,
+    });
+
+    const handler = findHandler("create_task");
+    await expect(handler({ title: "x" })).rejects.toThrow(/executeTool/);
+  });
+
+  it("throws (does not return a partially-successful message) when the result subtype is not success (補足決定「FR-10とエラーハンドリングの整合」)", async () => {
+    queryMock.mockReturnValueOnce(
+      toAsyncIterable([assistantTextMessage("途中経過"), resultMessage("error_max_turns")]),
+    );
+
+    await expect(
+      streamClaudeCodeMessage({ model: "claude-sonnet-5", messages: [{ role: "user", content: "hi" }] }),
+    ).rejects.toThrow(/error_max_turns/);
+  });
+
+  it("surfaces the submit_verdict tool_use block without executing anything (no executeTool call) — AC-04", async () => {
+    const executeTool = vi.fn();
+
+    queryMock.mockImplementationOnce(() =>
+      toAsyncIterable([
+        assistantToolUseMessage("toolu_v1", "submit_verdict", {
+          verdict: "upheld",
+          response: "維持する",
+        }),
+        resultMessage(),
+      ]),
+    );
+
+    const result = await streamClaudeCodeMessage(
+      {
+        model: "claude-sonnet-5",
+        messages: [{ role: "user", content: "進言内容" }],
+        tools: [SUBMIT_VERDICT_TOOL],
+      },
+      { executeTool },
+    );
+
+    expect(executeTool).not.toHaveBeenCalled();
+    expect(result.content).toEqual([
+      { type: "tool_use", id: "toolu_v1", name: "submit_verdict", input: { verdict: "upheld", response: "維持する" } },
+    ]);
+  });
+
+  it("strips the MCP-qualified prefix (mcp__ai-boss__submit_verdict) from the tool_use name it surfaces, so requestVerdict's bare-name match still works (self-review regression guard for AC-04)", async () => {
+    // The model calls in-process MCP tools by their fully-qualified name
+    // (see `mcpToolName`/`allowedTools`), so a real Agent SDK run would
+    // yield an assistant `tool_use` block named `mcp__ai-boss__submit_verdict`
+    // — not the bare `submit_verdict` the other tests above assert against
+    // for simplicity. Without stripping this prefix back off, `requestVerdict`
+    // (`claude-client.ts`) would never match `toolName === "submit_verdict"`
+    // and re-adjudication would always resolve to `{called: false}` (HTTP 500).
+    queryMock.mockImplementationOnce(() =>
+      toAsyncIterable([
+        assistantToolUseMessage("toolu_v1", "mcp__ai-boss__submit_verdict", {
+          verdict: "upheld",
+          response: "維持する",
+        }),
+        resultMessage(),
+      ]),
+    );
+
+    const result = await streamClaudeCodeMessage({
+      model: "claude-sonnet-5",
+      messages: [{ role: "user", content: "進言内容" }],
+      tools: [SUBMIT_VERDICT_TOOL],
+    });
+
+    expect(result.content).toEqual([
+      { type: "tool_use", id: "toolu_v1", name: "submit_verdict", input: { verdict: "upheld", response: "維持する" } },
+    ]);
+  });
+
+  it("strips the MCP-qualified prefix from executed-tool tool_use blocks too (create_task)", async () => {
+    const executeTool = vi.fn().mockResolvedValue({ content: "{}", isError: false });
+
+    async function* fakeStream() {
+      yield assistantToolUseMessage("toolu_1", "mcp__ai-boss__create_task", { title: "資料作成" });
+      await findHandler("create_task")({ title: "資料作成" });
+      yield resultMessage();
+    }
+    queryMock.mockImplementationOnce(() => fakeStream());
+
+    const result = await streamClaudeCodeMessage(
+      { model: "claude-sonnet-5", messages: [{ role: "user", content: "タスクを作って" }], tools: BOSS_TOOLS },
+      { executeTool },
+    );
+
+    expect(result.content).toEqual([
+      { type: "tool_use", id: "toolu_1", name: "create_task", input: { title: "資料作成" } },
+    ]);
+  });
+
+  it("the submit_verdict MCP handler itself never calls executeTool and returns an ack without side effects", async () => {
+    const executeTool = vi.fn();
+    queryMock.mockImplementationOnce(() => toAsyncIterable([resultMessage()]));
+
+    await streamClaudeCodeMessage(
+      { model: "claude-sonnet-5", messages: [{ role: "user", content: "進言内容" }], tools: [SUBMIT_VERDICT_TOOL] },
+      { executeTool },
+    );
+
+    const handler = findHandler("submit_verdict");
+    const callToolResult = (await handler({ verdict: "upheld", response: "維持する" })) as {
+      content: Array<{ type: string; text: string }>;
+    };
+
+    expect(executeTool).not.toHaveBeenCalled();
+    expect(callToolResult.content[0]?.type).toBe("text");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// createClaudeCodeMessage
+// ---------------------------------------------------------------------------
+
+describe("createClaudeCodeMessage", () => {
+  it("does not stream (includePartialMessages is false) and resolves with the final content", async () => {
+    queryMock.mockReturnValueOnce(
+      toAsyncIterable([assistantTextMessage("今日も一日決めた通りにやれ"), resultMessage()]),
+    );
+
+    const result = await createClaudeCodeMessage({
+      model: "claude-sonnet-5",
+      system: "system",
+      messages: [{ role: "user", content: "ひとことをくれ" }],
+    });
+
+    expect(lastQueryOptions().includePartialMessages).toBe(false);
+    expect(result.content).toEqual([{ type: "text", text: "今日も一日決めた通りにやれ" }]);
+  });
+
+  it("aborts the query's AbortController immediately when the given signal is already aborted (AC-11)", async () => {
+    queryMock.mockReturnValueOnce(toAsyncIterable([resultMessage()]));
+    const controller = new AbortController();
+    controller.abort();
+
+    await createClaudeCodeMessage(
+      { model: "claude-sonnet-5", messages: [{ role: "user", content: "hi" }] },
+      { signal: controller.signal },
+    );
+
+    const options = lastQueryOptions();
+    expect((options.abortController as AbortController).signal.aborted).toBe(true);
+  });
+
+  it("aborts the query's AbortController when the given signal aborts mid-flight (AC-11)", async () => {
+    const controller = new AbortController();
+    let capturedAbortController: AbortController | undefined;
+    queryMock.mockImplementationOnce(() => {
+      capturedAbortController = lastQueryOptions().abortController as AbortController;
+      return toAsyncIterable([resultMessage()]);
+    });
+
+    const promise = createClaudeCodeMessage(
+      { model: "claude-sonnet-5", messages: [{ role: "user", content: "hi" }] },
+      { signal: controller.signal },
+    );
+    controller.abort();
+    await promise;
+
+    expect(capturedAbortController?.signal.aborted).toBe(true);
+  });
+});

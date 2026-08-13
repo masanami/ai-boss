@@ -1,9 +1,10 @@
 import type Anthropic from "@anthropic-ai/sdk";
 import type { LlmBackend } from "../config.js";
 import { createApiClient, streamApiMessage, createApiMessage } from "./backends/api-backend.js";
+import { streamClaudeCodeMessage, createClaudeCodeMessage } from "./backends/claude-code-backend.js";
 
 /**
- * Facade over the LLM backends (`api` today, `claude-code` from Issue #79)
+ * Facade over the LLM backends (`api` and, since Issue #79, `claude-code`)
  * used for boss dialogue (chat), re-adjudication (appeals), dashboard
  * comment generation, and notification copy generation.
  *
@@ -44,8 +45,9 @@ export class LlmTimeoutError extends Error {
   }
 }
 
-/** Discriminated union over the LLM backends. `claude-code` is a placeholder
- * until Issue #79 implements it — no fields beyond the discriminant. */
+/** Discriminated union over the LLM backends. `claude-code` carries no
+ * fields beyond the discriminant — the Agent SDK's `query()` (Issue #79) is
+ * stateless per call and needs no client handle, unlike `Anthropic`. */
 export type BossLlmClient = { backend: "api"; client: Anthropic } | { backend: "claude-code" };
 
 export interface BossTextBlock {
@@ -154,25 +156,97 @@ function isToolUseBlock(block: BossContentBlock): block is BossToolUseBlock {
   return block.type === "tool_use";
 }
 
+/**
+ * Dispatches a single streaming round. For `claude-code`, the whole call
+ * (Agent SDK `query()`, including its own in-process MCP tool execution) is
+ * wrapped in {@link runWithTimeoutAndRetry} (AC-11 · non-functional
+ * requirement "信頼性"): the 120s/2-retries policy lives here, at the
+ * facade layer, rather than being delegated to the SDK/CLI's own client
+ * options (unlike the `api` backend — see that function's doc comment for
+ * why doubling up would be wrong). `hasSideEffect` becomes `true` the moment
+ * `executeTool` **or** `onTextDelta` is invoked at all (regardless of
+ * `executeTool`'s result), which is intentionally conservative: once a
+ * DB-writing tool call has been dispatched, or any text has already been
+ * streamed to the caller (which relays it via SSE and accumulates it into
+ * the message that gets persisted — see `chat-messages-route.ts`'s
+ * `fullText`), a later failure in that same attempt must not trigger a
+ * retry. Retrying would re-run the whole `query()` from scratch, which would
+ * either duplicate the DB write, or duplicate already-relayed text
+ * (self-review: without tracking `onTextDelta` too, a mid-stream failure
+ * followed by a successful retry would leave the persisted message
+ * containing the first attempt's partial text followed by the second
+ * attempt's full text). See the non-functional requirement's point 3 and
+ * `callbacks.executeTool`'s doc comment.
+ */
 async function dispatchStream(
   client: BossLlmClient,
   request: ClaudeMessageRequest,
-  onTextDelta?: OnTextDelta,
+  callbacks?: StreamBossMessageCallbacks,
 ): Promise<BossLlmMessage> {
   if (client.backend === "claude-code") {
-    // Placeholder until Issue #79 implements the claude-code backend.
-    throw new Error("claude-code backend is not implemented yet (see Issue #79)");
+    const resolved = resolveRequest(request);
+    let sideEffectOccurred = false;
+    const trackedOnTextDelta: OnTextDelta | undefined = callbacks?.onTextDelta
+      ? (textDelta) => {
+          sideEffectOccurred = true;
+          callbacks.onTextDelta!(textDelta);
+        }
+      : undefined;
+    const trackedExecuteTool: BossToolExecutor | undefined = callbacks?.executeTool
+      ? async (name, input) => {
+          sideEffectOccurred = true;
+          return callbacks.executeTool!(name, input);
+        }
+      : undefined;
+    return runWithTimeoutAndRetry(
+      (signal) =>
+        streamClaudeCodeMessage(
+          {
+            model: resolved.model,
+            system: resolved.system,
+            messages: resolved.messages,
+            tools: resolved.tools,
+          },
+          {
+            onTextDelta: trackedOnTextDelta,
+            onToolEvent: callbacks?.onToolEvent,
+            executeTool: trackedExecuteTool,
+            signal,
+          },
+        ),
+      () => sideEffectOccurred,
+    );
   }
-  return streamApiMessage(client.client, resolveRequest(request), onTextDelta);
+  return streamApiMessage(client.client, resolveRequest(request), callbacks?.onTextDelta);
 }
 
+/**
+ * Dispatches a single non-streaming round (`createBossMessage` /
+ * `requestVerdict`). Never executes a DB-writing tool itself — `submit_verdict`
+ * has no execution function (see `backends/claude-code-backend.ts`'s doc
+ * comment) and the dashboard-comment / notification-body callers pass no
+ * tools at all — so `hasSideEffect` is always `false` here: every failure is
+ * safe to retry (AC-11).
+ */
 async function dispatchCreate(
   client: BossLlmClient,
   request: ClaudeMessageRequest,
 ): Promise<BossLlmMessage> {
   if (client.backend === "claude-code") {
-    // Placeholder until Issue #79 implements the claude-code backend.
-    throw new Error("claude-code backend is not implemented yet (see Issue #79)");
+    const resolved = resolveRequest(request);
+    return runWithTimeoutAndRetry(
+      (signal) =>
+        createClaudeCodeMessage(
+          {
+            model: resolved.model,
+            system: resolved.system,
+            messages: resolved.messages,
+            tools: resolved.tools,
+          },
+          { signal },
+        ),
+      () => false,
+    );
   }
   return createApiMessage(client.client, resolveRequest(request));
 }
@@ -189,32 +263,37 @@ async function dispatchCreate(
  * unexecuted `tool_use` blocks if the round cap was hit, or if no
  * `executeTool` was given at all).
  *
- * NOTE for Issue #79 (claude-code backend): this loop is written
- * backend-agnostically and currently only ever executes for the `api`
- * backend in practice, because {@link dispatchStream}'s `claude-code` branch
- * throws before returning. Per docs/features/claude-code-backend.md 補足決定
- * 「ツール実行主体の一本化」(2), the future `claude-code` `dispatchStream`
- * implementation executes tools itself via in-process MCP handlers — it
- * MUST NOT surface already-executed tools as unexecuted `tool_use` blocks in
- * its returned `BossLlmMessage`, or this loop will re-execute them (double
- * side effects / duplicate `onToolEvent` notifications). If that invariant
- * can't be guaranteed, gate this loop's tool-execution branch on
- * `client.backend === "api"` instead.
+ * This loop only ever runs for the `api` backend. For `claude-code` (Issue
+ * #79), per docs/features/claude-code-backend.md 補足決定「ツール実行主体の
+ * 一本化」(2), the Agent SDK's own in-process MCP handlers are the tool
+ * execution site (`backends/claude-code-backend.ts`), and its `query()` call
+ * already runs its own internal multi-turn tool loop — so this function
+ * makes exactly one {@link dispatchStream} call for `claude-code` and
+ * returns its result directly, instead of gating the loop body per-round on
+ * `client.backend`. This is the "invariant can't be guaranteed, gate on
+ * `client.backend === 'api'` instead" fallback the original design note
+ * called for: gating the whole loop (not just the tool-execution branch)
+ * sidesteps the double-execution risk entirely, at the cost of this
+ * function's returned `BossLlmMessage.content` reflecting the *entire*
+ * claude-code turn (all assistant text/tool_use blocks across every
+ * SDK-internal round) rather than strictly "the last round's message" — no
+ * caller relies on that distinction today (see the backend module's doc
+ * comment).
  */
 export async function streamBossMessage(
   client: BossLlmClient,
   request: ClaudeMessageRequest,
   callbacks?: StreamBossMessageCallbacks,
 ): Promise<BossLlmMessage> {
+  if (client.backend === "claude-code") {
+    return dispatchStream(client, request, callbacks);
+  }
+
   const messages: Anthropic.MessageParam[] = [...request.messages];
   let finalMessage: BossLlmMessage = { content: [] };
 
   for (let round = 0; round < MAX_TOOL_ROUNDS; round++) {
-    finalMessage = await dispatchStream(
-      client,
-      { ...request, messages },
-      callbacks?.onTextDelta,
-    );
+    finalMessage = await dispatchStream(client, { ...request, messages }, callbacks);
 
     const toolUseBlocks = finalMessage.content.filter(isToolUseBlock);
     if (toolUseBlocks.length === 0 || !callbacks?.executeTool) {
@@ -296,6 +375,14 @@ export type VerdictOutcome<T> =
  * appeals route) don't need to reach into `message.content` themselves.
  * `validate` is injected by the caller to avoid this module depending on any
  * particular domain (e.g. `decisions/`) — see the ticket's DI requirement.
+ *
+ * Uses the *last* matching `tool_use` block rather than the first: the `api`
+ * backend forces a single tool call via `toolChoice` so there is normally
+ * only one match, but `claude-code` has no `tool_choice` equivalent (FR-07 —
+ * relies on a prompt instruction instead) and its returned message reflects
+ * every round of a multi-turn Agent SDK query, so a model that calls the
+ * tool more than once (e.g. retrying after its own malformed first attempt)
+ * should have its most recent call win.
  */
 export async function requestVerdict<T>(
   client: BossLlmClient,
@@ -304,9 +391,12 @@ export async function requestVerdict<T>(
   validate: (input: unknown) => { valid: true; data: T } | { valid: false; error: string },
 ): Promise<VerdictOutcome<T>> {
   const message = await createBossMessage(client, request);
-  const toolUse = message.content.find(
-    (block): block is BossToolUseBlock => isToolUseBlock(block) && block.name === toolName,
-  );
+  let toolUse: BossToolUseBlock | undefined;
+  for (const block of message.content) {
+    if (isToolUseBlock(block) && block.name === toolName) {
+      toolUse = block;
+    }
+  }
   if (!toolUse) {
     return { called: false };
   }
@@ -353,9 +443,9 @@ function rejectOnAbort(signal: AbortSignal, error: Error): Promise<never> {
 
 /**
  * Runs `attempt` under a unified timeout + exponential-backoff retry policy
- * (AC-11 — a common mechanism intended for the future `claude-code` backend,
- * implemented and tested standalone in this ticket; not wired into any
- * production call site yet). Do **not** apply this to the `api` backend: it
+ * (AC-11). Wired into {@link dispatchStream}/{@link dispatchCreate}'s
+ * `claude-code` branches (Issue #79) — see their doc comments for the
+ * `hasSideEffect` contract each passes. Do **not** apply this to the `api` backend: it
  * already delegates its timeout/retry policy to the Anthropic SDK's own
  * `timeout`/`maxRetries` client options (see `backends/api-backend.ts`), and
  * wrapping it here too would compound retries (up to 3 × 3 = 9 attempts) —

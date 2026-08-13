@@ -11,6 +11,23 @@ const { anthropicCtor, streamMock, createMock } = vi.hoisted(() => {
 
 vi.mock("@anthropic-ai/sdk", () => ({ default: anthropicCtor }));
 
+const { streamClaudeCodeMessageMock, createClaudeCodeMessageMock } = vi.hoisted(() => ({
+  streamClaudeCodeMessageMock: vi.fn(),
+  createClaudeCodeMessageMock: vi.fn(),
+}));
+
+// The `claude-code` backend's own behavior (Agent SDK message normalization,
+// MCP tool wiring, etc.) is covered independently in
+// `backends/claude-code-backend.test.ts`. Here we only verify how the facade
+// (`claude-client.ts`) *wires into* that backend: single-dispatch (no
+// MAX_TOOL_ROUNDS loop), callback forwarding, and the AC-11 timeout/retry
+// policy — so the backend module itself is mocked rather than the raw
+// `@anthropic-ai/claude-agent-sdk`.
+vi.mock("./backends/claude-code-backend.js", () => ({
+  streamClaudeCodeMessage: streamClaudeCodeMessageMock,
+  createClaudeCodeMessage: createClaudeCodeMessageMock,
+}));
+
 const {
   createClaudeClient,
   MissingApiKeyError,
@@ -23,6 +40,10 @@ const {
   requestVerdict,
   runWithTimeoutAndRetry,
 } = await import("./claude-client.js");
+
+function claudeCodeClient() {
+  return createClaudeClient({}, "claude-code");
+}
 
 interface FakeMessage {
   content: unknown[];
@@ -62,6 +83,8 @@ beforeEach(() => {
   anthropicCtor.mockClear();
   streamMock.mockReset();
   createMock.mockReset();
+  streamClaudeCodeMessageMock.mockReset();
+  createClaudeCodeMessageMock.mockReset();
 });
 
 describe("createClaudeClient", () => {
@@ -426,6 +449,28 @@ describe("requestVerdict", () => {
     expect(outcome).toEqual({ called: true, result: { valid: false, error: "invalid verdict" } });
   });
 
+  it("uses the last matching tool_use block when the tool was called more than once (e.g. a multi-turn claude-code response)", async () => {
+    createMock.mockResolvedValue({
+      content: [
+        { type: "tool_use", id: "tool_1", name: "submit_verdict", input: { verdict: "revised", response: "第一稿" } },
+        { type: "tool_use", id: "tool_2", name: "submit_verdict", input: { verdict: "upheld", response: "最終稿" } },
+      ],
+    });
+    const client = apiClient();
+
+    const outcome = await requestVerdict(
+      client,
+      { messages: [{ role: "user", content: "進言内容" }] },
+      "submit_verdict",
+      validate,
+    );
+
+    expect(outcome).toEqual({
+      called: true,
+      result: { valid: true, data: { verdict: "upheld", response: "最終稿" } },
+    });
+  });
+
   it("returns { called: false } when the tool was not called", async () => {
     createMock.mockResolvedValue(textMessage("検討中"));
     const client = apiClient();
@@ -535,5 +580,187 @@ describe("runWithTimeoutAndRetry", () => {
 
     await expect(promise).rejects.toThrow(LlmTimeoutError);
     expect(attempt).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("streamBossMessage (claude-code backend wiring)", () => {
+  it("makes exactly one dispatch call — no MAX_TOOL_ROUNDS loop — even when the backend's result still contains a tool_use block", async () => {
+    streamClaudeCodeMessageMock.mockResolvedValue({
+      content: [{ type: "tool_use", id: "toolu_1", name: "create_task", input: { title: "資料作成" } }],
+    });
+    const executeTool = vi.fn().mockResolvedValue({ content: "ok", isError: false });
+
+    const result = await streamBossMessage(
+      claudeCodeClient(),
+      { messages: [{ role: "user", content: "タスクを作って" }], tools: [] },
+      { executeTool },
+    );
+
+    expect(streamClaudeCodeMessageMock).toHaveBeenCalledTimes(1);
+    // The outer facade loop never calls `executeTool` itself for claude-code
+    // — the backend's own in-process MCP handler is the execution site
+    // (would otherwise double-execute the tool the backend already ran).
+    expect(executeTool).not.toHaveBeenCalled();
+    expect(result.content).toEqual([
+      { type: "tool_use", id: "toolu_1", name: "create_task", input: { title: "資料作成" } },
+    ]);
+  });
+
+  it("forwards model/system/messages/tools and onTextDelta/onToolEvent/executeTool through to the backend", async () => {
+    streamClaudeCodeMessageMock.mockResolvedValue({ content: [{ type: "text", text: "了解" }] });
+    const onTextDelta = vi.fn();
+    const onToolEvent = vi.fn();
+    const executeTool = vi.fn();
+    const tools = [{ name: "create_task", description: "", input_schema: { type: "object" as const, properties: {} } }];
+
+    await streamBossMessage(
+      claudeCodeClient(),
+      { model: "claude-opus-4-8", system: "あなたはボスです", messages: [{ role: "user", content: "hi" }], tools },
+      { onTextDelta, onToolEvent, executeTool },
+    );
+
+    expect(streamClaudeCodeMessageMock).toHaveBeenCalledWith(
+      { model: "claude-opus-4-8", system: "あなたはボスです", messages: [{ role: "user", content: "hi" }], tools },
+      expect.objectContaining({ onToolEvent }),
+    );
+    // `onTextDelta` is wrapped (to track "text already streamed" for AC-11's
+    // retry-safety — see dispatchStream's doc comment), so the backend
+    // receives a *different* function reference; assert it still relays to
+    // the original callback instead of comparing references.
+    const passedOptions = streamClaudeCodeMessageMock.mock.calls[0][1] as {
+      executeTool: typeof executeTool;
+      onTextDelta: (delta: string) => void;
+    };
+    expect(typeof passedOptions.executeTool).toBe("function");
+    passedOptions.onTextDelta("今日は");
+    expect(onTextDelta).toHaveBeenCalledWith("今日は");
+  });
+
+  it("retries once with exponential backoff after a transient failure with no side effect (AC-11)", async () => {
+    vi.useFakeTimers();
+    try {
+      streamClaudeCodeMessageMock
+        .mockRejectedValueOnce(new Error("transient"))
+        .mockResolvedValueOnce({ content: [{ type: "text", text: "ok" }] });
+
+      const promise = streamBossMessage(claudeCodeClient(), {
+        messages: [{ role: "user", content: "hi" }],
+      });
+      await vi.advanceTimersByTimeAsync(1_000);
+
+      await expect(promise).resolves.toEqual({ content: [{ type: "text", text: "ok" }] });
+      expect(streamClaudeCodeMessageMock).toHaveBeenCalledTimes(2);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("does not retry once a DB-writing tool has been executed during the failed attempt (AC-11 — no duplicate side effects)", async () => {
+    const executeTool = vi.fn().mockResolvedValue({ content: "ok", isError: false });
+    streamClaudeCodeMessageMock.mockImplementationOnce(
+      async (_request: unknown, options: { executeTool?: typeof executeTool }) => {
+        await options.executeTool?.("create_task", { title: "x" });
+        throw new Error("failed after the tool already ran");
+      },
+    );
+
+    await expect(
+      streamBossMessage(
+        claudeCodeClient(),
+        { messages: [{ role: "user", content: "タスクを作って" }] },
+        { executeTool },
+      ),
+    ).rejects.toThrow("failed after the tool already ran");
+
+    expect(streamClaudeCodeMessageMock).toHaveBeenCalledTimes(1);
+    expect(executeTool).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not retry once text has already been streamed to the caller during the failed attempt (self-review — no duplicated text on retry)", async () => {
+    const onTextDelta = vi.fn();
+    streamClaudeCodeMessageMock.mockImplementationOnce(
+      async (_request: unknown, options: { onTextDelta?: (delta: string) => void }) => {
+        options.onTextDelta?.("今日は");
+        throw new Error("failed mid-stream, after text was already relayed");
+      },
+    );
+
+    await expect(
+      streamBossMessage(
+        claudeCodeClient(),
+        { messages: [{ role: "user", content: "進捗どうですか" }] },
+        { onTextDelta },
+      ),
+    ).rejects.toThrow("failed mid-stream, after text was already relayed");
+
+    // A retry here would have called streamClaudeCodeMessage a 2nd time and
+    // relayed "今日は" to `onTextDelta` again, duplicating it in both the SSE
+    // stream and the persisted message (`fullText` accumulation in
+    // chat-messages-route.ts).
+    expect(streamClaudeCodeMessageMock).toHaveBeenCalledTimes(1);
+    expect(onTextDelta).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("createBossMessage / requestVerdict (claude-code backend wiring)", () => {
+  it("createBossMessage forwards model/system/messages/tools to the backend and resolves with its content", async () => {
+    createClaudeCodeMessageMock.mockResolvedValue({
+      content: [{ type: "tool_use", id: "toolu_v1", name: "submit_verdict", input: { verdict: "upheld", response: "維持する" } }],
+    });
+
+    const result = await createBossMessage(claudeCodeClient(), {
+      model: "claude-sonnet-5",
+      messages: [{ role: "user", content: "進言内容" }],
+      tools: [{ name: "submit_verdict", description: "", input_schema: { type: "object", properties: {} } }],
+    });
+
+    expect(createClaudeCodeMessageMock).toHaveBeenCalledWith(
+      {
+        model: "claude-sonnet-5",
+        system: undefined,
+        messages: [{ role: "user", content: "進言内容" }],
+        tools: [{ name: "submit_verdict", description: "", input_schema: { type: "object", properties: {} } }],
+      },
+      expect.objectContaining({ signal: expect.any(AbortSignal) }),
+    );
+    expect(result.content).toEqual([
+      { type: "tool_use", id: "toolu_v1", name: "submit_verdict", input: { verdict: "upheld", response: "維持する" } },
+    ]);
+  });
+
+  it("requestVerdict validates the tool_use block returned by the claude-code backend, same as the api backend", async () => {
+    createClaudeCodeMessageMock.mockResolvedValue({
+      content: [{ type: "tool_use", id: "toolu_v1", name: "submit_verdict", input: { verdict: "upheld", response: "維持する" } }],
+    });
+    const validate = vi.fn().mockReturnValue({ valid: true, data: { verdict: "upheld" } });
+
+    const outcome = await requestVerdict(
+      claudeCodeClient(),
+      { messages: [{ role: "user", content: "進言内容" }] },
+      "submit_verdict",
+      validate,
+    );
+
+    expect(validate).toHaveBeenCalledWith({ verdict: "upheld", response: "維持する" });
+    expect(outcome).toEqual({ called: true, result: { valid: true, data: { verdict: "upheld" } } });
+  });
+
+  it("retries createBossMessage on a transient failure (no tool execution on this path, always safe to retry — AC-11)", async () => {
+    vi.useFakeTimers();
+    try {
+      createClaudeCodeMessageMock
+        .mockRejectedValueOnce(new Error("transient"))
+        .mockResolvedValueOnce({ content: [{ type: "text", text: "今日も一日決めた通りにやれ" }] });
+
+      const promise = createBossMessage(claudeCodeClient(), {
+        messages: [{ role: "user", content: "ひとことをくれ" }],
+      });
+      await vi.advanceTimersByTimeAsync(1_000);
+
+      await expect(promise).resolves.toEqual({ content: [{ type: "text", text: "今日も一日決めた通りにやれ" }] });
+      expect(createClaudeCodeMessageMock).toHaveBeenCalledTimes(2);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });
