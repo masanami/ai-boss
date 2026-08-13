@@ -32,7 +32,9 @@ const {
   streamClaudeCodeMessage,
   createClaudeCodeMessage,
   buildClaudeCodePrompt,
+  buildClaudeCodeEnv,
   TOOL_ZOD_SHAPES,
+  ClaudeCodeUnavailableError,
 } = await import("./claude-code-backend.js");
 
 // ---------------------------------------------------------------------------
@@ -43,6 +45,18 @@ async function* toAsyncIterable<T>(items: T[]): AsyncGenerator<T> {
   for (const item of items) {
     yield item;
   }
+}
+
+/** An async iterable whose first `next()` call rejects with `err` — used to
+ * simulate a query stream that fails before yielding anything (AC-07's
+ * "例外経路"), without an unreachable `yield` after a `throw` (which trips
+ * `require-yield`). */
+function rejectingStream(err: unknown): AsyncIterable<unknown> {
+  return {
+    [Symbol.asyncIterator]() {
+      return { next: () => Promise.reject(err) };
+    },
+  };
 }
 
 function assistantTextMessage(text: string) {
@@ -112,6 +126,46 @@ describe("buildClaudeCodePrompt", () => {
 
   it("returns an empty string for an empty message list", () => {
     expect(buildClaudeCodePrompt([])).toBe("");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// buildClaudeCodeEnv (FR-09, AC-06)
+// ---------------------------------------------------------------------------
+
+describe("buildClaudeCodeEnv", () => {
+  it("excludes ANTHROPIC_API_KEY from a process.env-based copy", () => {
+    const env = buildClaudeCodeEnv({ ANTHROPIC_API_KEY: "sk-ant-should-be-excluded", PATH: "/usr/bin" });
+
+    expect(env.ANTHROPIC_API_KEY).toBeUndefined();
+    expect("ANTHROPIC_API_KEY" in env).toBe(false);
+  });
+
+  it("adds DISABLE_TELEMETRY=1 and CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1", () => {
+    const env = buildClaudeCodeEnv({});
+
+    expect(env.DISABLE_TELEMETRY).toBe("1");
+    expect(env.CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC).toBe("1");
+  });
+
+  it("preserves PATH/HOME and other existing variables needed to run/authenticate the subprocess", () => {
+    const env = buildClaudeCodeEnv({
+      PATH: "/usr/bin:/bin",
+      HOME: "/Users/owner",
+      CLAUDE_CONFIG_DIR: "/Users/owner/.claude",
+    });
+
+    expect(env.PATH).toBe("/usr/bin:/bin");
+    expect(env.HOME).toBe("/Users/owner");
+    expect(env.CLAUDE_CONFIG_DIR).toBe("/Users/owner/.claude");
+  });
+
+  it("does not mutate the given process.env object", () => {
+    const processEnv = { ANTHROPIC_API_KEY: "sk-ant-test", PATH: "/usr/bin" };
+
+    buildClaudeCodeEnv(processEnv);
+
+    expect(processEnv.ANTHROPIC_API_KEY).toBe("sk-ant-test");
   });
 });
 
@@ -197,6 +251,24 @@ describe("streamClaudeCodeMessage", () => {
     // comment), so `maxTurns` here is the only defense-in-depth cap.
     expect(typeof options.maxTurns).toBe("number");
     expect(options.maxTurns).toBeGreaterThan(0);
+  });
+
+  it("forwards the given env to query()'s env option, and disables session persistence (FR-09/AC-06, FR-15/AC-13)", async () => {
+    queryMock.mockReturnValueOnce(toAsyncIterable([assistantTextMessage("了解"), resultMessage()]));
+    const env = { PATH: "/usr/bin", DISABLE_TELEMETRY: "1" };
+
+    await streamClaudeCodeMessage(
+      { model: "claude-sonnet-5", messages: [{ role: "user", content: "hi" }] },
+      { env },
+    );
+
+    const options = lastQueryOptions();
+    expect(options.env).toBe(env);
+    // FR-15 / AC-13: the option name `persistSession` was confirmed in the
+    // installed SDK version's type declarations (sdk.d.ts, `Options.persistSession`
+    // — "When false, disables session persistence to disk... @default true").
+    // No FR-15 deviation to record: the SDK does provide the disable option.
+    expect(options.persistSession).toBe(false);
   });
 
   it("registers no MCP server / allowedTools when no tools are given (dashboard comment / notification body)", async () => {
@@ -358,6 +430,80 @@ describe("streamClaudeCodeMessage", () => {
     await expect(
       streamClaudeCodeMessage({ model: "claude-sonnet-5", messages: [{ role: "user", content: "hi" }] }),
     ).rejects.toThrow(/error_max_turns/);
+  });
+
+  it("does not reclassify a non-success result subtype as ClaudeCodeUnavailableError (it's an in-turn execution failure, not an environment unavailability — FR-11)", async () => {
+    queryMock.mockReturnValueOnce(toAsyncIterable([resultMessage("error_max_turns")]));
+
+    await expect(
+      streamClaudeCodeMessage({ model: "claude-sonnet-5", messages: [{ role: "user", content: "hi" }] }),
+    ).rejects.not.toBeInstanceOf(ClaudeCodeUnavailableError);
+  });
+
+  // AC-07's "例外経路" (as opposed to the "非成功結果メッセージ" path covered
+  // by the two tests above): a failure thrown while iterating the query
+  // stream itself (subprocess/environment failure), reclassified as FR-11's
+  // dedicated error type.
+  describe("execution-environment failures (AC-07 例外経路, FR-11)", () => {
+    it("reclassifies an ENOENT spawn failure as ClaudeCodeUnavailableError with reason 'not_installed'", async () => {
+      const enoent = Object.assign(new Error("spawn claude ENOENT"), { code: "ENOENT" });
+      queryMock.mockImplementationOnce(() => rejectingStream(enoent));
+
+      const promise = streamClaudeCodeMessage({
+        model: "claude-sonnet-5",
+        messages: [{ role: "user", content: "hi" }],
+      });
+
+      await expect(promise).rejects.toBeInstanceOf(ClaudeCodeUnavailableError);
+      await expect(promise).rejects.toMatchObject({ reason: "not_installed" });
+    });
+
+    it("reclassifies an unrecognized mid-stream failure (e.g. not logged in / expired credentials) as ClaudeCodeUnavailableError with reason 'unknown'", async () => {
+      queryMock.mockImplementationOnce(() =>
+        rejectingStream(new Error("Claude Code exited with status 1")),
+      );
+
+      const promise = streamClaudeCodeMessage({
+        model: "claude-sonnet-5",
+        messages: [{ role: "user", content: "hi" }],
+      });
+
+      await expect(promise).rejects.toBeInstanceOf(ClaudeCodeUnavailableError);
+      await expect(promise).rejects.toMatchObject({ reason: "unknown" });
+    });
+
+    it("preserves the ClaudeCodeUnavailableError class name for the caller's 'log class name only' discipline", async () => {
+      queryMock.mockImplementationOnce(() =>
+        rejectingStream(Object.assign(new Error("spawn claude ENOENT"), { code: "ENOENT" })),
+      );
+
+      try {
+        await streamClaudeCodeMessage({
+          model: "claude-sonnet-5",
+          messages: [{ role: "user", content: "hi" }],
+        });
+        expect.unreachable("expected streamClaudeCodeMessage to reject");
+      } catch (err) {
+        expect(err).toBeInstanceOf(Error);
+        expect((err as Error).name).toBe("ClaudeCodeUnavailableError");
+      }
+    });
+
+    it("reclassifies a synchronous throw from query() itself — e.g. the Agent SDK's bundled native binary not found — as ClaudeCodeUnavailableError (self-review: query() must run inside the try, not before it)", async () => {
+      queryMock.mockImplementationOnce(() => {
+        throw new Error(
+          "Native CLI binary for darwin-arm64 not found. Reinstall @anthropic-ai/claude-agent-sdk without --omit=optional, or set options.pathToClaudeCodeExecutable.",
+        );
+      });
+
+      const promise = streamClaudeCodeMessage({
+        model: "claude-sonnet-5",
+        messages: [{ role: "user", content: "hi" }],
+      });
+
+      await expect(promise).rejects.toBeInstanceOf(ClaudeCodeUnavailableError);
+      await expect(promise).rejects.toMatchObject({ reason: "unknown" });
+    });
   });
 
   it("surfaces the submit_verdict tool_use block without executing anything (no executeTool call) — AC-04", async () => {

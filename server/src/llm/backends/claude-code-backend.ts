@@ -171,6 +171,108 @@ class ClaudeCodeBackendError extends Error {
   }
 }
 
+// ---------------------------------------------------------------------------
+// FR-09 / AC-06: 実行環境の環境変数構築
+// ---------------------------------------------------------------------------
+
+/**
+ * FR-09 / AC-06: builds the subprocess environment the Agent SDK's
+ * `query()` `env` option receives. Per `sdk.d.ts`'s `Options.env` doc
+ * comment, "When set, this value REPLACES the subprocess environment
+ * entirely — it is not merged with `process.env`", so this must be a full
+ * `process.env`-shaped copy (preserving `PATH`/`HOME`/Claude Code config-dir
+ * variables the subprocess needs to run and authenticate), not a sparse
+ * override object, and `ANTHROPIC_API_KEY` must be deleted from *this* copy
+ * rather than merely omitted from an override (omitting it from a sparse
+ * override would leave it inherited).
+ *
+ * クリティカル設計決定「セキュリティ・認証情報の取り扱い」: `claude-code`
+ * バックエンドはサブスクリプション認証を強制するため、`ANTHROPIC_API_KEY`
+ * を子プロセス環境から明示的に除外する（FR-12 の課金意図に反する無断切替
+ * 禁止とも整合）。非機能要件「セキュリティ・プライバシー」: テレメトリ・
+ * 自動アップデート確認を無効化する環境変数を付与する
+ * （`CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1` は自動アップデート確認も
+ * 止めるが、実行系は npm 依存としてバージョン管理されるため意図した挙動）。
+ */
+export function buildClaudeCodeEnv(
+  processEnv: NodeJS.ProcessEnv,
+): Record<string, string | undefined> {
+  const env: NodeJS.ProcessEnv = { ...processEnv };
+  delete env.ANTHROPIC_API_KEY;
+  return {
+    ...env,
+    DISABLE_TELEMETRY: "1",
+    CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: "1",
+  };
+}
+
+// ---------------------------------------------------------------------------
+// FR-11: 実行環境不備の専用エラー型
+// ---------------------------------------------------------------------------
+
+/**
+ * Distinguishes an execution-environment failure (Claude Code not
+ * installed) from other, unclassified failures caught while running the
+ * Agent SDK query. `"unknown"` also covers "not logged in / expired
+ * credentials": the installed SDK version (0.3.231) exposes no dedicated
+ * result subtype or error code for that case (verified by searching
+ * `sdk.d.ts`/`sdk.mjs` for login/authentication-specific signals — none
+ * found), so it cannot be distinguished from other unclassified failures
+ * without guessing at stderr text. This is a recorded, deliberate
+ * limitation (see the ticket's SDK-option research comment), not an
+ * oversight — `reason` still lets a caller that wants to special-case "not
+ * installed" do so.
+ */
+export type ClaudeCodeUnavailableReason = "not_installed" | "unknown";
+
+/**
+ * FR-11: dedicated error type for claude-code execution-*environment*
+ * unavailability (not installed / not logged in), as opposed to an in-turn
+ * execution failure such as hitting the max-turns cap (which keeps using
+ * `ClaudeCodeBackendError` — see the `result` message handling in
+ * `runClaudeCodeQuery` below). The 4 existing call sites' generic `Error`
+ * catches (chat/appeals routes → HTTP 500; dashboard comment / notification
+ * body → template fallback) handle this without any change, since they all
+ * catch `Error` broadly (補足決定「FR-10 とエラーハンドリングの整合」).
+ *
+ * Every site that logs an error like this logs `error.name` only, never
+ * `.message`/`.reason` (the existing "log class name only" discipline — see
+ * `notifier.ts` and the chat/appeals routes' catch comments), so `reason` is
+ * for programmatic use only and is never written to a log.
+ */
+export class ClaudeCodeUnavailableError extends Error {
+  readonly reason: ClaudeCodeUnavailableReason;
+
+  constructor(reason: ClaudeCodeUnavailableReason, message: string) {
+    super(message);
+    this.name = "ClaudeCodeUnavailableError";
+    this.reason = reason;
+  }
+}
+
+/** Classifies an error caught while iterating the Agent SDK's query stream
+ * (i.e. a failure of the subprocess/environment itself, not a deliberate
+ * `throw` from this module's own "non-success result" handling — see the
+ * `instanceof ClaudeCodeBackendError` re-throw guard in `runClaudeCodeQuery`)
+ * into a {@link ClaudeCodeUnavailableError}. Node's `child_process.spawn`
+ * (which the Agent SDK's subprocess transport uses under the hood) sets
+ * `.code === "ENOENT"` on the error it raises when the executable cannot be
+ * found — the standard, well-known signal for "not installed". */
+function toClaudeCodeUnavailableError(err: unknown): ClaudeCodeUnavailableError {
+  const code = err instanceof Error ? (err as NodeJS.ErrnoException).code : undefined;
+  if (code === "ENOENT") {
+    return new ClaudeCodeUnavailableError(
+      "not_installed",
+      "claude-code backend: the Claude Code executable was not found (ENOENT) — is it installed?",
+    );
+  }
+  const detail = err instanceof Error ? err.message : String(err);
+  return new ClaudeCodeUnavailableError(
+    "unknown",
+    `claude-code backend: query failed before completion (${detail})`,
+  );
+}
+
 function buildExecutedTool(name: string, description: string, shape: Record<string, z.ZodTypeAny>, hooks: McpHooks) {
   return tool(name, description, shape, async (args) => {
     if (!hooks.executeTool) {
@@ -266,6 +368,11 @@ export interface ClaudeCodeDispatchOptions {
    * per attempt and wired to abort when this signal aborts, since the Agent
    * SDK's `query()` takes an `AbortController`, not a raw `AbortSignal`. */
   signal?: AbortSignal;
+  /** FR-09 / AC-06: the subprocess environment (built once by
+   * `createClaudeClient` via {@link buildClaudeCodeEnv} and carried on
+   * `BossLlmClient`'s `claude-code` variant — see `claude-client.ts`),
+   * forwarded verbatim to the Agent SDK's `query()` `env` option. */
+  env?: Record<string, string | undefined>;
 }
 
 /**
@@ -298,73 +405,106 @@ async function runClaudeCodeQuery(
     }
   }
 
-  const stream = query({
-    prompt: buildClaudeCodePrompt(request.messages),
-    options: {
-      model: request.model,
-      systemPrompt: request.system,
-      abortController,
-      // FR-06 (multi-layer built-in tool disablement):
-      // 1. `tools: []` — explicit built-in tool set, empty = all disabled.
-      // 2. `settingSources: []` — do not load settings-file-declared tools/MCP.
-      // 3. `strictMcpConfig: true` — only the `mcpServers` passed here (no
-      //    project/user/plugin MCP).
-      // 4. `allowedTools` — auto-approve only our own MCP tools (does not by
-      //    itself restrict availability; combined with 1-3 above per the
-      //    ticket's explicit instruction not to rely on the allow-list alone).
-      tools: [],
-      settingSources: [],
-      strictMcpConfig: true,
-      allowedTools: allowedTools.length > 0 ? allowedTools : undefined,
-      mcpServers: mcpServer ? { [MCP_SERVER_NAME]: mcpServer } : undefined,
-      includePartialMessages: Boolean(options.onTextDelta),
-      maxTurns: MAX_AGENT_TURNS,
-    },
-  });
-
   const content: BossContentBlock[] = [];
   let sawSuccessResult = false;
   let textDeltaRelayed = false;
 
-  for await (const message of stream) {
-    if (message.type === "stream_event") {
-      const { event } = message;
-      if (
-        options.onTextDelta &&
-        event.type === "content_block_delta" &&
-        event.delta.type === "text_delta"
-      ) {
-        options.onTextDelta(event.delta.text);
-        textDeltaRelayed = true;
-      }
-      continue;
-    }
-    if (message.type === "assistant") {
-      for (const block of message.message.content) {
-        if (block.type === "text") {
-          content.push({ type: "text", text: block.text });
-        } else if (block.type === "tool_use") {
-          content.push({
-            type: "tool_use",
-            id: block.id,
-            name: unqualifyToolName(block.name),
-            input: block.input,
-          });
+  try {
+    // self-review (code-reviewer): `query()` itself must be inside this
+    // try — the Agent SDK validates/resolves its bundled native executable
+    // synchronously when `query()` is called (before any message is
+    // iterated), so a "Claude Code is not installed" failure — FR-11's
+    // primary trigger — throws here, not from the `for await` below. Calling
+    // it outside the try would let that specific failure escape
+    // classification into `ClaudeCodeUnavailableError` entirely.
+    const stream = query({
+      prompt: buildClaudeCodePrompt(request.messages),
+      options: {
+        model: request.model,
+        systemPrompt: request.system,
+        abortController,
+        // FR-06 (multi-layer built-in tool disablement):
+        // 1. `tools: []` — explicit built-in tool set, empty = all disabled.
+        // 2. `settingSources: []` — do not load settings-file-declared tools/MCP.
+        // 3. `strictMcpConfig: true` — only the `mcpServers` passed here (no
+        //    project/user/plugin MCP).
+        // 4. `allowedTools` — auto-approve only our own MCP tools (does not by
+        //    itself restrict availability; combined with 1-3 above per the
+        //    ticket's explicit instruction not to rely on the allow-list alone).
+        tools: [],
+        settingSources: [],
+        strictMcpConfig: true,
+        allowedTools: allowedTools.length > 0 ? allowedTools : undefined,
+        mcpServers: mcpServer ? { [MCP_SERVER_NAME]: mcpServer } : undefined,
+        includePartialMessages: Boolean(options.onTextDelta),
+        maxTurns: MAX_AGENT_TURNS,
+        // FR-09 / AC-06: replaces (not merges with) the subprocess env — see
+        // `buildClaudeCodeEnv`'s doc comment. Left `undefined` only in tests
+        // that call the backend directly without going through
+        // `createClaudeClient` (the Agent SDK then falls back to inheriting
+        // `process.env` unchanged, per its own doc comment — production
+        // callers always go through the facade, which always supplies this).
+        env: options.env,
+        // FR-15 / AC-13: disable Claude Code's session-history persistence to
+        // `~/.claude/projects/` — conversation state is the app's own SQLite,
+        // per the "補足決定" that conversation state stays stateless/DB-backed.
+        persistSession: false,
+      },
+    });
+
+    for await (const message of stream) {
+      if (message.type === "stream_event") {
+        const { event } = message;
+        if (
+          options.onTextDelta &&
+          event.type === "content_block_delta" &&
+          event.delta.type === "text_delta"
+        ) {
+          options.onTextDelta(event.delta.text);
+          textDeltaRelayed = true;
         }
+        continue;
       }
-      continue;
-    }
-    if (message.type === "result") {
-      // 補足決定「FR-10 とエラーハンドリングの整合」: Agent SDK が例外では
-      // なく非成功の結果メッセージ（is_error 相当）を返す経路もすべて
-      // Error へ変換し、不完全な応答を成功として返さない。
-      if (message.subtype !== "success") {
-        throw new ClaudeCodeBackendError(
-          `claude-code backend query did not complete successfully (${message.subtype})`,
-        );
+      if (message.type === "assistant") {
+        for (const block of message.message.content) {
+          if (block.type === "text") {
+            content.push({ type: "text", text: block.text });
+          } else if (block.type === "tool_use") {
+            content.push({
+              type: "tool_use",
+              id: block.id,
+              name: unqualifyToolName(block.name),
+              input: block.input,
+            });
+          }
+        }
+        continue;
       }
-      sawSuccessResult = true;
+      if (message.type === "result") {
+        // 補足決定「FR-10 とエラーハンドリングの整合」: Agent SDK が例外では
+        // なく非成功の結果メッセージ（is_error 相当）を返す経路もすべて
+        // Error へ変換し、不完全な応答を成功として返さない。This is an
+        // in-turn execution failure (e.g. max turns reached), not an
+        // execution-*environment* unavailability (FR-11) — so it stays a
+        // `ClaudeCodeBackendError`, not `ClaudeCodeUnavailableError`.
+        if (message.subtype !== "success") {
+          throw new ClaudeCodeBackendError(
+            `claude-code backend query did not complete successfully (${message.subtype})`,
+          );
+        }
+        sawSuccessResult = true;
+      }
     }
+  } catch (err) {
+    // FR-11: an error thrown by the async iteration itself (as opposed to
+    // the deliberate `ClaudeCodeBackendError` throw just above, which must
+    // pass through unclassified) means the subprocess/environment failed —
+    // not installed, not logged in, or crashed — so it is reclassified as
+    // `ClaudeCodeUnavailableError` (AC-07's "例外経路").
+    if (err instanceof ClaudeCodeBackendError) {
+      throw err;
+    }
+    throw toClaudeCodeUnavailableError(err);
   }
 
   if (!sawSuccessResult) {
@@ -404,7 +544,7 @@ export function streamClaudeCodeMessage(
 
 export function createClaudeCodeMessage(
   request: ClaudeCodeMessageRequest,
-  options: Pick<ClaudeCodeDispatchOptions, "signal"> = {},
+  options: Pick<ClaudeCodeDispatchOptions, "signal" | "env"> = {},
 ): Promise<BossLlmMessage> {
   return runClaudeCodeQuery(request, options);
 }

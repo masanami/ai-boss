@@ -1,7 +1,19 @@
 import type Anthropic from "@anthropic-ai/sdk";
 import type { LlmBackend } from "../config.js";
 import { createApiClient, streamApiMessage, createApiMessage } from "./backends/api-backend.js";
-import { streamClaudeCodeMessage, createClaudeCodeMessage } from "./backends/claude-code-backend.js";
+import {
+  streamClaudeCodeMessage,
+  createClaudeCodeMessage,
+  buildClaudeCodeEnv,
+} from "./backends/claude-code-backend.js";
+
+/** Re-exported so callers/tests can reference the FR-11 error type without
+ * reaching into `backends/claude-code-backend.js` directly — the facade is
+ * the intended public surface (補足決定「FR-10 とエラーハンドリングの整合」
+ * already documents `ClaudeCodeUnavailableError` as this module's `api`
+ * counterpart to `MissingApiKeyError`). */
+export { ClaudeCodeUnavailableError } from "./backends/claude-code-backend.js";
+export type { ClaudeCodeUnavailableReason } from "./backends/claude-code-backend.js";
 
 /**
  * Facade over the LLM backends (`api` and, since Issue #79, `claude-code`)
@@ -45,10 +57,20 @@ export class LlmTimeoutError extends Error {
   }
 }
 
-/** Discriminated union over the LLM backends. `claude-code` carries no
- * fields beyond the discriminant — the Agent SDK's `query()` (Issue #79) is
- * stateless per call and needs no client handle, unlike `Anthropic`. */
-export type BossLlmClient = { backend: "api"; client: Anthropic } | { backend: "claude-code" };
+/** Discriminated union over the LLM backends. `claude-code` carries the
+ * subprocess environment (FR-09 / AC-06 — built by {@link createClaudeClient}
+ * via `buildClaudeCodeEnv` once per client, rather than read directly from
+ * `process.env` inside the backend module on every `query()` call) instead
+ * of a client handle: the Agent SDK's `query()` (Issue #79) is stateless per
+ * call and needs no equivalent of `Anthropic`. self-review (design-reviewer):
+ * `createClaudeClient` itself runs per request today (all 4 call sites
+ * construct a fresh client per chat/appeal/comment/notification call), so
+ * this env is in practice rebuilt from the live `process.env` on every call
+ * too — "once here" refers to "once per client, not once per `query()`
+ * invocation on that client", not "once for the process's lifetime". */
+export type BossLlmClient =
+  | { backend: "api"; client: Anthropic }
+  | { backend: "claude-code"; env: Record<string, string | undefined> };
 
 export interface BossTextBlock {
   type: "text";
@@ -79,7 +101,7 @@ export function createClaudeClient(
   backend: LlmBackend = "api",
 ): BossLlmClient {
   if (backend === "claude-code") {
-    return { backend: "claude-code" };
+    return { backend: "claude-code", env: buildClaudeCodeEnv(env) };
   }
 
   const apiKey = env.ANTHROPIC_API_KEY;
@@ -212,6 +234,7 @@ async function dispatchStream(
             onToolEvent: callbacks?.onToolEvent,
             executeTool: trackedExecuteTool,
             signal,
+            env: client.env,
           },
         ),
       () => sideEffectOccurred,
@@ -243,7 +266,7 @@ async function dispatchCreate(
             messages: resolved.messages,
             tools: resolved.tools,
           },
-          { signal },
+          { signal, env: client.env },
         ),
       () => false,
     );

@@ -23,15 +23,24 @@ const { streamClaudeCodeMessageMock, createClaudeCodeMessageMock } = vi.hoisted(
 // MAX_TOOL_ROUNDS loop), callback forwarding, and the AC-11 timeout/retry
 // policy — so the backend module itself is mocked rather than the raw
 // `@anthropic-ai/claude-agent-sdk`.
-vi.mock("./backends/claude-code-backend.js", () => ({
-  streamClaudeCodeMessage: streamClaudeCodeMessageMock,
-  createClaudeCodeMessage: createClaudeCodeMessageMock,
-}));
+vi.mock("./backends/claude-code-backend.js", async (importOriginal) => {
+  // `buildClaudeCodeEnv` (FR-09/AC-06) is real production logic exercised
+  // via `createClaudeClient` in this file's tests — only the query-dispatch
+  // functions are mocked (their own behavior is covered independently in
+  // `backends/claude-code-backend.test.ts`, per this file's header comment).
+  const actual = await importOriginal<typeof import("./backends/claude-code-backend.js")>();
+  return {
+    ...actual,
+    streamClaudeCodeMessage: streamClaudeCodeMessageMock,
+    createClaudeCodeMessage: createClaudeCodeMessageMock,
+  };
+});
 
 const {
   createClaudeClient,
   MissingApiKeyError,
   LlmTimeoutError,
+  ClaudeCodeUnavailableError,
   DEFAULT_MODEL,
   MAX_TOOL_ROUNDS,
   streamBossMessage,
@@ -103,11 +112,44 @@ describe("createClaudeClient", () => {
     });
   });
 
-  it("returns { backend: 'claude-code' } without checking ANTHROPIC_API_KEY (FR-10)", () => {
+  it("returns { backend: 'claude-code', env } without checking ANTHROPIC_API_KEY (FR-10)", () => {
     const result = createClaudeClient({}, "claude-code");
 
-    expect(result).toEqual({ backend: "claude-code" });
+    expect(result).toEqual({
+      backend: "claude-code",
+      env: {
+        DISABLE_TELEMETRY: "1",
+        CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: "1",
+      },
+    });
     expect(anthropicCtor).not.toHaveBeenCalled();
+  });
+
+  // FR-09 / AC-06: env exclusion/injection/inheritance is real production
+  // logic (`buildClaudeCodeEnv`, not mocked in this file — see the
+  // `vi.mock("./backends/claude-code-backend.js", ...)` header comment), so
+  // asserting it here through `createClaudeClient`'s public surface exercises
+  // the actual implementation rather than a stand-in.
+  it("excludes ANTHROPIC_API_KEY, adds the telemetry-disable vars, and preserves PATH/HOME (FR-09, AC-06)", () => {
+    const result = createClaudeClient(
+      {
+        PATH: "/usr/bin:/bin",
+        HOME: "/Users/owner",
+        ANTHROPIC_API_KEY: "sk-ant-should-be-excluded",
+        SOME_OTHER_VAR: "kept",
+      },
+      "claude-code",
+    );
+
+    expect(result.backend).toBe("claude-code");
+    const env = (result as { backend: "claude-code"; env: Record<string, string | undefined> }).env;
+    expect(env.ANTHROPIC_API_KEY).toBeUndefined();
+    expect(env.PATH).toBe("/usr/bin:/bin");
+    expect(env.HOME).toBe("/Users/owner");
+    expect(env.SOME_OTHER_VAR).toBe("kept");
+    expect(env.DISABLE_TELEMETRY).toBe("1");
+    expect(env.CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC).toBe("1");
+    expect("ANTHROPIC_API_KEY" in env).toBe(false);
   });
 });
 
@@ -636,6 +678,32 @@ describe("streamBossMessage (claude-code backend wiring)", () => {
     expect(onTextDelta).toHaveBeenCalledWith("今日は");
   });
 
+  // self-review (code-reviewer): the FR-09/AC-06 env-exclusion wiring
+  // (`client.env` → `streamClaudeCodeMessage`'s options) had no facade-level
+  // assertion — removing `env: client.env` from `dispatchStream` would have
+  // left the whole suite green while silently re-inheriting the full
+  // `process.env` (including `ANTHROPIC_API_KEY`) in the subprocess.
+  it("forwards the client's built env (FR-09/AC-06) to the backend, not just callbacks", async () => {
+    streamClaudeCodeMessageMock.mockResolvedValue({ content: [{ type: "text", text: "了解" }] });
+    const client = createClaudeClient(
+      { ANTHROPIC_API_KEY: "sk-ant-should-be-excluded", PATH: "/usr/bin" },
+      "claude-code",
+    );
+
+    await streamBossMessage(client, { messages: [{ role: "user", content: "hi" }] });
+
+    expect(streamClaudeCodeMessageMock).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        env: {
+          PATH: "/usr/bin",
+          DISABLE_TELEMETRY: "1",
+          CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: "1",
+        },
+      }),
+    );
+  });
+
   it("retries once with exponential backoff after a transient failure with no side effect (AC-11)", async () => {
     vi.useFakeTimers();
     try {
@@ -700,6 +768,37 @@ describe("streamBossMessage (claude-code backend wiring)", () => {
     expect(streamClaudeCodeMessageMock).toHaveBeenCalledTimes(1);
     expect(onTextDelta).toHaveBeenCalledTimes(1);
   });
+
+  // FR-12 / AC-07's "api への自動切替が発生しない" clause — self-review
+  // (code-reviewer/design-reviewer): the design guarantees this structurally
+  // (dispatchStream never branches to the `api` backend once `client.backend
+  // === "claude-code"`), but nothing pinned the invariant with a failure
+  // scenario. Uses the api-backend mocks already declared at this file's top
+  // (`anthropicCtor`/`streamMock`).
+  it("does not fall back to the api backend when claude-code fails, even after retries are exhausted (FR-12, AC-07)", async () => {
+    vi.useFakeTimers();
+    try {
+      streamClaudeCodeMessageMock.mockRejectedValue(
+        new ClaudeCodeUnavailableError(
+          "not_installed",
+          "claude-code backend: the Claude Code executable was not found (ENOENT) — is it installed?",
+        ),
+      );
+
+      const promise = streamBossMessage(claudeCodeClient(), {
+        messages: [{ role: "user", content: "hi" }],
+      });
+      promise.catch(() => {});
+      await vi.advanceTimersByTimeAsync(1_000 + 2_000 + 1);
+
+      await expect(promise).rejects.toThrow();
+      expect(anthropicCtor).not.toHaveBeenCalled();
+      expect(streamMock).not.toHaveBeenCalled();
+      expect(createMock).not.toHaveBeenCalled();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
 });
 
 describe("createBossMessage / requestVerdict (claude-code backend wiring)", () => {
@@ -721,7 +820,13 @@ describe("createBossMessage / requestVerdict (claude-code backend wiring)", () =
         messages: [{ role: "user", content: "進言内容" }],
         tools: [{ name: "submit_verdict", description: "", input_schema: { type: "object", properties: {} } }],
       },
-      expect.objectContaining({ signal: expect.any(AbortSignal) }),
+      expect.objectContaining({
+        signal: expect.any(AbortSignal),
+        // self-review (code-reviewer): dispatchCreate's `env: client.env`
+        // forwarding (FR-09/AC-06) had no facade-level assertion either —
+        // see the equivalent note on dispatchStream's wiring test above.
+        env: { DISABLE_TELEMETRY: "1", CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: "1" },
+      }),
     );
     expect(result.content).toEqual([
       { type: "tool_use", id: "toolu_v1", name: "submit_verdict", input: { verdict: "upheld", response: "維持する" } },
