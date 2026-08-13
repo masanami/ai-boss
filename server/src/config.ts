@@ -1,6 +1,12 @@
 const DEFAULT_PORT = 8787;
 const DEFAULT_DB_PATH = "./data/ai-boss.db";
-const DEFAULT_LLM_BACKEND: LlmBackend = "api";
+/** Default backend used by `loadConfig`, re-exported so callers that need a
+ * fallback outside of `loadConfig` (e.g. `app.ts`'s
+ * `CreateAppOptions.llmBackend`) don't hardcode the `"api"` literal. Note
+ * `llm/claude-client.ts`'s own `createClaudeClient` default is a separate,
+ * independently-hardcoded `"api"` fallback for callers outside `app.ts`
+ * (`server/src/llm/` is out of this ticket's scope). */
+export const DEFAULT_LLM_BACKEND: LlmBackend = "api";
 const ALLOWED_LLM_BACKENDS = ["api", "claude-code"] as const;
 
 export type LlmBackend = (typeof ALLOWED_LLM_BACKENDS)[number];

@@ -11,6 +11,7 @@ import {
 import { insertAppeal } from "./appeals-repository.js";
 import { resolveBossSettings } from "../boss/boss-settings.js";
 import { buildPersonaPrompt } from "../boss/persona-prompt.js";
+import type { LlmBackend } from "../config.js";
 import {
   createClaudeClient,
   requestVerdict,
@@ -66,11 +67,16 @@ function buildAppealUserMessage(
  * objection to a decision, re-adjudicated by the boss (Claude, forced to
  * call `submit_verdict` in a single round — no streaming, no task tools;
  * see the ticket's explicit assumptions).
+ *
+ * `llmBackend` is threaded down from `loadConfig(env).llmBackend`, with no
+ * default here (the default lives at the single `app.ts` boundary — see
+ * `CreateAppOptions.llmBackend`'s doc comment).
  */
 export function registerAppealsRoute(
   router: Hono,
   db: Database.Database,
   env: NodeJS.ProcessEnv,
+  llmBackend: LlmBackend,
 ): void {
   router.post("/:id/appeals", async (c) => {
     const rawId = c.req.param("id");
@@ -97,7 +103,7 @@ export function registerAppealsRoute(
 
     let client: BossLlmClient;
     try {
-      client = createClaudeClient(env);
+      client = createClaudeClient(env, llmBackend);
     } catch (err) {
       const message =
         err instanceof Error

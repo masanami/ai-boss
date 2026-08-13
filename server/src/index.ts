@@ -24,7 +24,7 @@ if (!staticRoot) {
   );
 }
 
-const app = createApp(db, process.env, { staticRoot });
+const app = createApp(db, process.env, { staticRoot, llmBackend: config.llmBackend });
 
 serve({ fetch: app.fetch, port: config.port }, (info) => {
   console.log(`ai-boss server listening on port ${info.port}`);

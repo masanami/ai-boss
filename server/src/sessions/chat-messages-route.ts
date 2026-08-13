@@ -9,6 +9,7 @@ import { listRecentDecisions } from "../decisions/decisions-repository.js";
 import { resolveBossSettings } from "../boss/boss-settings.js";
 import { buildPersonaPrompt } from "../boss/persona-prompt.js";
 import { BOSS_TOOLS, executeBossTool } from "../boss/boss-tools.js";
+import type { LlmBackend } from "../config.js";
 import {
   createClaudeClient,
   streamBossMessage,
@@ -69,11 +70,16 @@ function buildFallbackText(toolSummaries: string[]): string {
  * Registers `POST /:id/messages` on the given sessions router. Kept in its
  * own module because the SSE + tool-use orchestration is substantially
  * larger than the other session endpoints in `sessions-routes.ts`.
+ *
+ * `llmBackend` is threaded down from `loadConfig(env).llmBackend`, with no
+ * default here (the default lives at the single `app.ts` boundary — see
+ * `CreateAppOptions.llmBackend`'s doc comment).
  */
 export function registerChatMessageRoute(
   router: Hono,
   db: Database.Database,
   env: NodeJS.ProcessEnv,
+  llmBackend: LlmBackend,
 ): void {
   router.post("/:id/messages", async (c) => {
     const rawId = c.req.param("id");
@@ -92,7 +98,7 @@ export function registerChatMessageRoute(
 
     let client: BossLlmClient;
     try {
-      client = createClaudeClient(env);
+      client = createClaudeClient(env, llmBackend);
     } catch (err) {
       const message =
         err instanceof Error

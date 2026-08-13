@@ -139,6 +139,40 @@ describe("POST /api/decisions/:id/appeals", () => {
     expect(requestVerdictMock).not.toHaveBeenCalled();
   });
 
+  it("defaults to the api backend when no llmBackend option is passed to createApp", async () => {
+    const decision = createActiveDecision();
+    requestVerdictMock.mockResolvedValue(
+      calledWithValidVerdict({ verdict: "upheld", response: "維持する" }),
+    );
+    const app = createApp(db, env);
+
+    const res = await app.request(`/api/decisions/${decision.id}/appeals`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ content: "他を優先させてほしい" }),
+    });
+
+    expect(res.status).toBe(200);
+    expect(createClaudeClientMock).toHaveBeenCalledWith(env, "api");
+  });
+
+  it("passes the configured llmBackend (loadConfig 由来) through to createClaudeClient", async () => {
+    const decision = createActiveDecision();
+    requestVerdictMock.mockResolvedValue(
+      calledWithValidVerdict({ verdict: "upheld", response: "維持する" }),
+    );
+    const app = createApp(db, env, { llmBackend: "claude-code" });
+
+    const res = await app.request(`/api/decisions/${decision.id}/appeals`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ content: "他を優先させてほしい" }),
+    });
+
+    expect(res.status).toBe(200);
+    expect(createClaudeClientMock).toHaveBeenCalledWith(env, "claude-code");
+  });
+
   it("returns 500 without leaking the api key when the Claude client cannot be created", async () => {
     const decision = createActiveDecision();
     createClaudeClientMock.mockImplementationOnce(() => {

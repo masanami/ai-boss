@@ -138,6 +138,40 @@ describe("POST /api/sessions/:id/messages", () => {
     expect(streamBossMessageMock).not.toHaveBeenCalled();
   });
 
+  it("defaults to the api backend when no llmBackend option is passed to createApp", async () => {
+    const session = await createSession();
+    streamBossMessageMock.mockResolvedValue(fakeTextMessage("了解した"));
+    const app = createApp(db, env);
+
+    const res = await app.request(`/api/sessions/${session.id}/messages`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ content: "こんにちは" }),
+    });
+    expect(res.status).toBe(200);
+    const events = parseSseEvents(await res.text());
+    expect(events.find((e) => e.event === "done")).toBeDefined();
+
+    expect(createClaudeClientMock).toHaveBeenCalledWith(env, "api");
+  });
+
+  it("passes the configured llmBackend (loadConfig 由来) through to createClaudeClient", async () => {
+    const session = await createSession();
+    streamBossMessageMock.mockResolvedValue(fakeTextMessage("了解した"));
+    const app = createApp(db, env, { llmBackend: "claude-code" });
+
+    const res = await app.request(`/api/sessions/${session.id}/messages`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ content: "こんにちは" }),
+    });
+    expect(res.status).toBe(200);
+    const events = parseSseEvents(await res.text());
+    expect(events.find((e) => e.event === "done")).toBeDefined();
+
+    expect(createClaudeClientMock).toHaveBeenCalledWith(env, "claude-code");
+  });
+
   it("returns 500 JSON without leaking the api key when the Claude client cannot be created", async () => {
     const session = await createSession();
     createClaudeClientMock.mockImplementationOnce(() => {
