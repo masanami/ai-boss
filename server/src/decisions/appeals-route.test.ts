@@ -1,6 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type Database from "better-sqlite3";
-import type Anthropic from "@anthropic-ai/sdk";
 import { openDatabase } from "../db/connection.js";
 import { runMigrations } from "../db/migrate.js";
 import { insertSession } from "../sessions/sessions-repository.js";
@@ -13,10 +12,11 @@ import {
 import { listAppealsByDecisionId } from "./appeals-repository.js";
 import type { Decision } from "./decision.js";
 import type { Appeal } from "./appeal.js";
+import type { VerdictInput } from "./verdict-tool.js";
 
-const { createClaudeClientMock, createBossMessageMock } = vi.hoisted(() => ({
+const { createClaudeClientMock, requestVerdictMock } = vi.hoisted(() => ({
   createClaudeClientMock: vi.fn(),
-  createBossMessageMock: vi.fn(),
+  requestVerdictMock: vi.fn(),
 }));
 
 vi.mock("../llm/claude-client.js", async (importOriginal) => {
@@ -25,7 +25,7 @@ vi.mock("../llm/claude-client.js", async (importOriginal) => {
   return {
     ...actual,
     createClaudeClient: createClaudeClientMock,
-    createBossMessage: createBossMessageMock,
+    requestVerdict: requestVerdictMock,
   };
 });
 
@@ -42,14 +42,16 @@ interface AppealResponseBody {
   revisedDecision?: Decision;
 }
 
-function verdictToolUseMessage(input: Record<string, unknown>): Anthropic.Message {
-  return {
-    content: [{ type: "tool_use", id: "tool_1", name: "submit_verdict", input }],
-  } as unknown as Anthropic.Message;
+function calledWithValidVerdict(data: VerdictInput) {
+  return { called: true as const, result: { valid: true as const, data } };
 }
 
-function textOnlyMessage(): Anthropic.Message {
-  return { content: [{ type: "text", text: "検討中", citations: null }] } as unknown as Anthropic.Message;
+function calledWithInvalidVerdict(error: string) {
+  return { called: true as const, result: { valid: false as const, error } };
+}
+
+function notCalled() {
+  return { called: false as const };
 }
 
 async function readJson<T>(res: Response): Promise<T> {
@@ -64,7 +66,7 @@ describe("POST /api/decisions/:id/appeals", () => {
     db = openDatabase(":memory:");
     runMigrations(db);
     createClaudeClientMock.mockReset();
-    createBossMessageMock.mockReset();
+    requestVerdictMock.mockReset();
     createClaudeClientMock.mockReturnValue({});
   });
 
@@ -96,7 +98,7 @@ describe("POST /api/decisions/:id/appeals", () => {
     expect(res.status).toBe(404);
     const body = await readJson<ErrorBody>(res);
     expect(typeof body.error).toBe("string");
-    expect(createBossMessageMock).not.toHaveBeenCalled();
+    expect(requestVerdictMock).not.toHaveBeenCalled();
   });
 
   it("returns 409 when the decision is not active (already revised)", async () => {
@@ -108,7 +110,7 @@ describe("POST /api/decisions/:id/appeals", () => {
     expect(res.status).toBe(409);
     const body = await readJson<ErrorBody>(res);
     expect(typeof body.error).toBe("string");
-    expect(createBossMessageMock).not.toHaveBeenCalled();
+    expect(requestVerdictMock).not.toHaveBeenCalled();
   });
 
   it("returns 409 when the decision is withdrawn", async () => {
@@ -118,7 +120,7 @@ describe("POST /api/decisions/:id/appeals", () => {
     const res = await postAppeal(decision.id);
 
     expect(res.status).toBe(409);
-    expect(createBossMessageMock).not.toHaveBeenCalled();
+    expect(requestVerdictMock).not.toHaveBeenCalled();
   });
 
   it("returns 400 when content is missing", async () => {
@@ -134,7 +136,7 @@ describe("POST /api/decisions/:id/appeals", () => {
     expect(res.status).toBe(400);
     const body = await readJson<ErrorBody>(res);
     expect(typeof body.error).toBe("string");
-    expect(createBossMessageMock).not.toHaveBeenCalled();
+    expect(requestVerdictMock).not.toHaveBeenCalled();
   });
 
   it("returns 500 without leaking the api key when the Claude client cannot be created", async () => {
@@ -152,7 +154,7 @@ describe("POST /api/decisions/:id/appeals", () => {
 
   it("returns 500 and makes no DB changes when the Claude call fails", async () => {
     const decision = createActiveDecision();
-    createBossMessageMock.mockRejectedValue(
+    requestVerdictMock.mockRejectedValue(
       new Error("connection reset with request id abc123"),
     );
 
@@ -167,7 +169,7 @@ describe("POST /api/decisions/:id/appeals", () => {
 
   it("returns 500 and makes no DB changes when Claude does not call submit_verdict", async () => {
     const decision = createActiveDecision();
-    createBossMessageMock.mockResolvedValue(textOnlyMessage());
+    requestVerdictMock.mockResolvedValue(notCalled());
 
     const res = await postAppeal(decision.id);
 
@@ -178,8 +180,8 @@ describe("POST /api/decisions/:id/appeals", () => {
 
   it("returns 500 and makes no DB changes when the verdict is invalid", async () => {
     const decision = createActiveDecision();
-    createBossMessageMock.mockResolvedValue(
-      verdictToolUseMessage({ verdict: "maybe", response: "検討中" }),
+    requestVerdictMock.mockResolvedValue(
+      calledWithInvalidVerdict(`verdict must be one of: upheld, revised`),
     );
 
     const res = await postAppeal(decision.id);
@@ -191,8 +193,8 @@ describe("POST /api/decisions/:id/appeals", () => {
 
   it("returns 500 and makes no DB changes when verdict is revised but revised_content is missing", async () => {
     const decision = createActiveDecision();
-    createBossMessageMock.mockResolvedValue(
-      verdictToolUseMessage({ verdict: "revised", response: "修正する" }),
+    requestVerdictMock.mockResolvedValue(
+      calledWithInvalidVerdict("revised_content is required when verdict is 'revised'"),
     );
 
     const res = await postAppeal(decision.id);
@@ -204,8 +206,8 @@ describe("POST /api/decisions/:id/appeals", () => {
 
   it("persists an upheld appeal, keeps the decision active, and returns {appeal, decision}", async () => {
     const decision = createActiveDecision();
-    createBossMessageMock.mockResolvedValue(
-      verdictToolUseMessage({
+    requestVerdictMock.mockResolvedValue(
+      calledWithValidVerdict({
         verdict: "upheld",
         response: "検討したが決定は維持する",
       }),
@@ -246,12 +248,12 @@ describe("POST /api/decisions/:id/appeals", () => {
       task_id: task.id,
       content: "今日中に資料作成を終える",
     });
-    createBossMessageMock.mockResolvedValue(
-      verdictToolUseMessage({
+    requestVerdictMock.mockResolvedValue(
+      calledWithValidVerdict({
         verdict: "revised",
         response: "検討の結果、修正する",
-        revised_content: "明日までに資料作成を終える",
-        revised_rationale: "進言の内容が妥当なため",
+        revisedContent: "明日までに資料作成を終える",
+        revisedRationale: "進言の内容が妥当なため",
       }),
     );
 
@@ -278,12 +280,12 @@ describe("POST /api/decisions/:id/appeals", () => {
 
   it("returns 409 and makes no DB changes when the decision stopped being active while the Claude call was in flight (race guard)", async () => {
     const decision = createActiveDecision();
-    createBossMessageMock.mockImplementationOnce(async () => {
+    requestVerdictMock.mockImplementationOnce(async () => {
       // Simulates a second request (or the boss itself) revising the same
       // decision while this request's ~120s Claude round-trip is still
       // pending — the initial active check happened before this point.
       updateDecisionStatus(db, decision.id, "revised");
-      return verdictToolUseMessage({ verdict: "upheld", response: "維持する" });
+      return calledWithValidVerdict({ verdict: "upheld", response: "維持する" });
     });
 
     const res = await postAppeal(decision.id);
@@ -296,11 +298,11 @@ describe("POST /api/decisions/:id/appeals", () => {
   it("carries a null task_id through to the revised decision when the original decision has no related task", async () => {
     const decision = createActiveDecision();
     expect(decision.task_id).toBeNull();
-    createBossMessageMock.mockResolvedValue(
-      verdictToolUseMessage({
+    requestVerdictMock.mockResolvedValue(
+      calledWithValidVerdict({
         verdict: "revised",
         response: "検討の結果、修正する",
-        revised_content: "資料作成は明日に延ばす",
+        revisedContent: "資料作成は明日に延ばす",
       }),
     );
 
@@ -312,13 +314,13 @@ describe("POST /api/decisions/:id/appeals", () => {
 
   it("forces submit_verdict via tool_choice and passes only that tool (no task tools)", async () => {
     const decision = createActiveDecision();
-    createBossMessageMock.mockResolvedValue(
-      verdictToolUseMessage({ verdict: "upheld", response: "維持する" }),
+    requestVerdictMock.mockResolvedValue(
+      calledWithValidVerdict({ verdict: "upheld", response: "維持する" }),
     );
 
     await postAppeal(decision.id, "他を優先させてほしい");
 
-    expect(createBossMessageMock).toHaveBeenCalledWith(
+    expect(requestVerdictMock).toHaveBeenCalledWith(
       expect.anything(),
       expect.objectContaining({
         tools: [expect.objectContaining({ name: "submit_verdict" })],
@@ -330,8 +332,10 @@ describe("POST /api/decisions/:id/appeals", () => {
           }),
         ]),
       }),
+      "submit_verdict",
+      expect.any(Function),
     );
-    const callArgs = createBossMessageMock.mock.calls[0][1];
+    const callArgs = requestVerdictMock.mock.calls[0][1];
     expect(callArgs.messages[0].content).toContain("他を優先させてほしい");
   });
 });
@@ -366,8 +370,8 @@ describe("GET /api/decisions with appeals", () => {
     const decisionB = insertDecision(db, { session_id: session.id, content: "決定B" });
 
     createClaudeClientMock.mockReturnValue({});
-    createBossMessageMock.mockResolvedValue(
-      verdictToolUseMessage({ verdict: "upheld", response: "維持する" }),
+    requestVerdictMock.mockResolvedValue(
+      calledWithValidVerdict({ verdict: "upheld", response: "維持する" }),
     );
     const app = createApp(db, { ANTHROPIC_API_KEY: "sk-ant-test-key" });
     await app.request(`/api/decisions/${decisionA.id}/appeals`, {
