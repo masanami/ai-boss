@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { loadConfig } from "./config.js";
+import { loadConfig, resolveLlmBackend } from "./config.js";
 
 describe("loadConfig", () => {
   beforeEach(() => {
@@ -102,5 +102,21 @@ describe("loadConfig", () => {
     loadConfig({ LLM_BACKEND: "claude-code" });
 
     expect(console.warn).not.toHaveBeenCalled();
+  });
+});
+
+describe("resolveLlmBackend", () => {
+  it("resolves to api when LLM_BACKEND is not set (Issue #79 — used directly by boss-comment.ts/notification-body.ts)", () => {
+    expect(resolveLlmBackend({})).toBe("api");
+  });
+
+  it("resolves to claude-code when LLM_BACKEND=claude-code", () => {
+    expect(resolveLlmBackend({ LLM_BACKEND: "claude-code" })).toBe("claude-code");
+  });
+
+  it("throws with an error message including the allowed values for an invalid value", () => {
+    expect(() => resolveLlmBackend({ LLM_BACKEND: "invalid-value" })).toThrow(
+      /api.*claude-code|claude-code.*api/,
+    );
   });
 });
