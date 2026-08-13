@@ -35,13 +35,11 @@ export interface CreateAppOptions {
    * {@link DEFAULT_LLM_BACKEND} for callers that don't pass it (most tests).
    *
    * Dashboard comment / notification-body generation are not wired to this
-   * option: those two call sites (`dashboard/boss-comment.ts`,
-   * `notifications/notification-body.ts`) still call `createClaudeClient(env)`
-   * with no backend argument, so they currently always resolve to
-   * `createClaudeClient`'s own `"api"` default regardless of `LLM_BACKEND`.
-   * Issue #81 only covers their type annotations (no logic change, per its
-   * explicit scope); wiring their backend selection is unassigned follow-up
-   * work, not #81's.
+   * option — but they are still backend-aware: those two call sites
+   * (`dashboard/boss-comment.ts`, `notifications/notification-body.ts`)
+   * resolve the backend themselves via `resolveLlmBackend(env)` (Issue #79),
+   * since they already receive the full `env` independently of this
+   * `createApp` option.
    */
   llmBackend?: LlmBackend;
 }

@@ -38,7 +38,20 @@ function isLlmBackend(value: string): value is LlmBackend {
   return (ALLOWED_LLM_BACKENDS as readonly string[]).includes(value);
 }
 
-function resolveLlmBackend(env: NodeJS.ProcessEnv): LlmBackend {
+/**
+ * Exported (beyond `loadConfig`'s own use) so call sites that only ever
+ * receive `env` directly — not the already-loaded `AppConfig` — can resolve
+ * the backend themselves. Used by `dashboard/boss-comment.ts` and
+ * `notifications/notification-body.ts` (Issue #79): those two call
+ * `createClaudeClient(env, resolveLlmBackend(env))` instead of relying on
+ * its `"api"` default, so `LLM_BACKEND=claude-code` actually takes effect
+ * for them too (`app.ts`'s `CreateAppOptions.llmBackend` only threads
+ * through to the chat/decisions routers — see its doc comment). Re-running
+ * the same validation `loadConfig` already performed at startup is
+ * redundant but harmless (pure, no side effects) — `env.LLM_BACKEND` is
+ * guaranteed valid or absent by the time any request handler runs.
+ */
+export function resolveLlmBackend(env: NodeJS.ProcessEnv): LlmBackend {
   if (env.LLM_BACKEND === undefined) {
     return DEFAULT_LLM_BACKEND;
   }

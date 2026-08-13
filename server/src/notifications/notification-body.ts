@@ -1,6 +1,7 @@
 import type Database from "better-sqlite3";
 import { resolveBossSettings } from "../boss/boss-settings.js";
 import { buildPersonaPrompt } from "../boss/persona-prompt.js";
+import { resolveLlmBackend } from "../config.js";
 import {
   createClaudeClient,
   streamBossMessage,
@@ -172,7 +173,7 @@ export async function generateNotificationBody(
   // いずれで失敗しても、フォールバック定型文で必ず文面を返す
   // （resolveBossSettings は db.prepare を呼ぶため DB 例外もここで保護する）。
   try {
-    const client: BossLlmClient = createClaudeClient(env);
+    const client: BossLlmClient = createClaudeClient(env, resolveLlmBackend(env));
     const { model, persona } = resolveBossSettings(db);
     const system = buildPersonaPrompt(persona, {
       tasks: request.task ? [request.task] : [],
