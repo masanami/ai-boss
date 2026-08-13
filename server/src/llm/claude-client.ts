@@ -15,6 +15,18 @@ import {
 export { ClaudeCodeUnavailableError } from "./backends/claude-code-backend.js";
 export type { ClaudeCodeUnavailableReason } from "./backends/claude-code-backend.js";
 
+/** FR-13 / AC-12: re-exported (like `ClaudeCodeUnavailableError` above) so
+ * `server/src/index.ts`'s startup hook reaches the `claude-code` backend
+ * through the facade rather than importing `backends/claude-code-backend.js`
+ * directly — `server/src/llm/` treats this module as the intended public
+ * surface (see this file's own doc comment and
+ * docs/features/claude-code-backend.md's "アーキテクチャ決定"; self-review:
+ * design-reviewer caught the direct import as the one non-facade caller). */
+export {
+  checkClaudeCodeAvailability,
+  nodeExecFileForAvailabilityCheck,
+} from "./backends/claude-code-backend.js";
+
 /**
  * Facade over the LLM backends (`api` and, since Issue #79, `claude-code`)
  * used for boss dialogue (chat), re-adjudication (appeals), dashboard

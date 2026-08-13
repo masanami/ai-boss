@@ -1,3 +1,4 @@
+import { createRequire } from "node:module";
 import { z } from "zod";
 import { query, tool, createSdkMcpServer } from "@anthropic-ai/claude-agent-sdk";
 import type Anthropic from "@anthropic-ai/sdk";
@@ -10,6 +11,7 @@ import type {
 } from "../claude-client.js";
 import { TASK_PRIORITIES, TASK_STATUSES } from "../../tasks/task.js";
 import { APPEAL_VERDICTS } from "../../decisions/appeal.js";
+import { createTimedExecFile, type ExecFileFn } from "../../lib/exec-file.js";
 
 /**
  * `claude-code` backend (Issue #79): calls the Claude Agent SDK
@@ -205,6 +207,177 @@ export function buildClaudeCodeEnv(
     CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: "1",
   };
 }
+
+// ---------------------------------------------------------------------------
+// FR-13 / AC-12: Claude Code 実行バイナリのパス共有・起動時可用性確認
+// ---------------------------------------------------------------------------
+
+/**
+ * Resolves the same Claude Code executable path the Agent SDK's `query()`
+ * falls back to when `pathToClaudeCodeExecutable` is left unset. Confirmed by
+ * reading the installed SDK (v0.3.231, `node_modules/@anthropic-ai/claude-
+ * agent-sdk/sdk.mjs`): when `options.pathToClaudeCodeExecutable` is absent it
+ * builds a short list of package-name candidates and does
+ * `require.resolve('<candidate>/claude')` (`.exe` on win32) relative to its
+ * own module location, returning the first one whose file actually exists —
+ * matching `manifest.json`'s `platforms` map and the sibling
+ * `@anthropic-ai/claude-agent-sdk-<platform>-<arch>` optional-dependency
+ * packages (`os`/`cpu` package.json fields, single `claude`/`claude.exe`
+ * binary file). The SDK does not export this resolution as a public API, so
+ * it is reimplemented here (not called into) — `require.resolve` follows
+ * Node's normal `node_modules` walk-up, so calling it from *this* module
+ * resolves to the exact same absolute file the SDK's own internal call
+ * would, since both live under the same installed dependency tree. This is
+ * the "採用オプション名" recorded on the ticket: `pathToClaudeCodeExecutable`
+ * is the SDK's only path-override option — see {@link CLAUDE_CODE_EXECUTABLE_PATH}
+ * below, whose value `runClaudeCodeQuery` now passes explicitly, so the
+ * availability check (`checkClaudeCodeAvailability`) and the backend's real
+ * `query()` call are provably checking/spawning the *same* binary — one
+ * resolved value shared by both, not two independently-matching resolution
+ * algorithms that could drift apart in a future SDK version.
+ *
+ * Every platform except `"linux"`/`"android"` has exactly one candidate in
+ * the SDK's own list (identical to what this function builds), so this
+ * function is an exact reimplementation for them, including the `"win32"`
+ * `.exe` case this module still supports for parity/testability even though
+ * this app only ships on macOS (CLAUDE.md's "macOS ローカル完結"). `"linux"`
+ * and `"android"` are the two platforms where the SDK picks among *multiple*
+ * candidates (musl-vs-glibc preference on Linux, an Android-specific
+ * package) — reimplementing that selection logic is out of scope (YAGNI:
+ * this app never runs there), and guessing wrong would be strictly worse
+ * than doing nothing: an explicitly-set `pathToClaudeCodeExecutable`
+ * *overrides* the SDK's own (correct) multi-candidate resolution entirely,
+ * so a wrong guess here could hand the SDK a glibc binary on a musl host
+ * (self-review: code-reviewer/design-reviewer both flagged this). This
+ * function returns `undefined` for those two platforms instead, which falls
+ * through to the SDK's own internal resolution unchanged (pre-#83 behavior).
+ *
+ * `deps` is DI for the unit tests (see `claude-code-backend.test.ts`);
+ * production callers use the defaults, which read the real
+ * `process.platform`/`process.arch` and a real `require.resolve` anchored at
+ * this module.
+ */
+export function resolveClaudeCodeExecutablePath(deps: {
+  platform?: NodeJS.Platform;
+  arch?: string;
+  resolve?: (specifier: string) => string;
+} = {}): string | undefined {
+  const platform = deps.platform ?? process.platform;
+  if (platform === "linux" || platform === "android") {
+    return undefined;
+  }
+  const arch = deps.arch ?? process.arch;
+  const resolve = deps.resolve ?? createRequire(import.meta.url).resolve;
+  const ext = platform === "win32" ? ".exe" : "";
+  try {
+    return resolve(`@anthropic-ai/claude-agent-sdk-${platform}-${arch}/claude${ext}`);
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * Computed once at module load (this value is process-invariant — the host
+ * platform/arch and installed dependency tree don't change during a run),
+ * rather than re-resolved on every `runClaudeCodeQuery`/`checkClaudeCodeAvailability`
+ * call. This is also what makes the "same binary" guarantee structural
+ * rather than "two calls to a pure function that happen to agree": both
+ * consumers below read this one constant (self-review: code-reviewer).
+ */
+export const CLAUDE_CODE_EXECUTABLE_PATH = resolveClaudeCodeExecutablePath();
+
+export interface ClaudeCodeAvailabilityCheckDeps {
+  execFile: ExecFileFn;
+  /** Overridable for tests; defaults to returning {@link CLAUDE_CODE_EXECUTABLE_PATH}. */
+  resolveExecutablePath?: () => string | undefined;
+}
+
+/**
+ * FR-13 / AC-12: best-effort startup check of the `claude-code` backend's
+ * execution environment. Runs the shared executable path's `--version`
+ * (never a token-consuming call — no prompt is sent) and never throws: every
+ * failure mode — the path could not be resolved at all, `execFile` rejects
+ * with `ENOENT` (not installed), a non-zero exit, or a timeout (the injected
+ * `execFile` is expected to enforce one explicitly, matching `notifier.ts`'s
+ * `nodeSystemExecFile` pattern — see {@link nodeExecFileForAvailabilityCheck}
+ * below) — is caught and logged as a warning only, so the caller
+ * (`server/src/index.ts`) can call this without blocking or failing startup.
+ * Fail-fast at startup is reserved for `LLM_BACKEND` itself being invalid
+ * (FR-02) — this check is explicitly best-effort (FR-13). The whole body
+ * (including the `resolveExecutablePath()` call, not just the `execFile`
+ * call) is wrapped in a single `try` so this "never rejects" guarantee is
+ * structural rather than resting on every individual line inside happening
+ * to already be guarded (self-review: design-reviewer) — `server/src/index.ts`
+ * additionally never awaits this call and attaches its own `.catch`, as
+ * defense in depth.
+ *
+ * Per the codebase's "log class name only" discipline (see `notifier.ts`,
+ * and this module's own `ClaudeCodeUnavailableError` doc comment), only
+ * `err.name`/`typeof err` is logged, never `.message` or a stack — the
+ * checked executable path is also logged (it is a local npm-installed
+ * filesystem path, not user/secret data) so the warning stays diagnosable
+ * without violating that discipline.
+ */
+export async function checkClaudeCodeAvailability(
+  deps: ClaudeCodeAvailabilityCheckDeps,
+): Promise<void> {
+  try {
+    const resolveExecutablePath = deps.resolveExecutablePath ?? (() => CLAUDE_CODE_EXECUTABLE_PATH);
+    const executablePath = resolveExecutablePath();
+    if (!executablePath) {
+      console.warn(
+        "claude-code バックエンド: Claude Code 実行バイナリのパスを解決できませんでした。起動時の可用性確認をスキップします（サーバーの起動は継続します）。",
+      );
+      return;
+    }
+    try {
+      await deps.execFile(executablePath, ["--version"]);
+    } catch (err) {
+      console.warn(
+        `claude-code バックエンド: 起動時の可用性確認に失敗しました（対象: ${executablePath}）。サーバーの起動は継続します。`,
+        err instanceof Error ? err.name : typeof err,
+      );
+    }
+  } catch (err) {
+    console.warn(
+      "claude-code バックエンド: 起動時の可用性確認中に予期しないエラーが発生しました。サーバーの起動は継続します。",
+      err instanceof Error ? err.name : typeof err,
+    );
+  }
+}
+
+/** Timeout for the real availability-check `execFile` (FR-13 requires an
+ * explicit timeout, same discipline as `notifier.ts`'s `EXEC_TIMEOUT_MS`).
+ * Deliberately generous rather than short: this is a fire-and-forget startup
+ * probe that `server/src/index.ts` never awaits before `serve()`, so a
+ * longer budget costs nothing (self-review: code-reviewer measured the
+ * bundled binary's own cold-start `--version` invocation at ~3.4s on a local
+ * run with a cold filesystem cache — the previous 5s budget left too little
+ * margin and risked a false "unavailable" warning on an otherwise-healthy
+ * install; sized well above that observed cold-start cost instead). */
+const AVAILABILITY_CHECK_TIMEOUT_MS = 20_000;
+
+/**
+ * Real `execFile` wiring for {@link checkClaudeCodeAvailability}, used only
+ * by `server/src/index.ts`'s production startup hook. Passes
+ * `buildClaudeCodeEnv(process.env)` (computed once, at the same "startup, not
+ * per-request" granularity as this whole check) so the probe's subprocess
+ * environment excludes `ANTHROPIC_API_KEY` and carries the telemetry-off
+ * variables, matching every other spawn of this same binary
+ * (`runClaudeCodeQuery`'s `query()` call) even though `--version` itself
+ * performs no inference and has no billing/auth consequence today
+ * (self-review: code-reviewer — keeps the policy uniform against future
+ * changes to what this probe runs). Left untested at this layer — same
+ * convention as `notifier.ts`'s own `nodeSystemExecFile` and
+ * `server/src/index.ts`'s scheduler wiring — `createTimedExecFile`'s timeout/
+ * env wiring is covered by `lib/exec-file.test.ts`, and the branching logic
+ * this is used in (`checkClaudeCodeAvailability`) is covered by
+ * `claude-code-backend.test.ts` with an injected fake.
+ */
+export const nodeExecFileForAvailabilityCheck: ExecFileFn = createTimedExecFile(
+  AVAILABILITY_CHECK_TIMEOUT_MS,
+  { env: buildClaudeCodeEnv(process.env) },
+);
 
 // ---------------------------------------------------------------------------
 // FR-11: 実行環境不備の専用エラー型
@@ -423,6 +596,14 @@ async function runClaudeCodeQuery(
         model: request.model,
         systemPrompt: request.system,
         abortController,
+        // FR-13: the same module-level constant the startup availability
+        // check (`checkClaudeCodeAvailability`) probes — see
+        // `CLAUDE_CODE_EXECUTABLE_PATH`'s doc comment. `undefined` when
+        // unresolvable (e.g. installed with `--omit=optional`, or on a
+        // platform this module deliberately doesn't resolve for) falls back
+        // to the SDK's own internal resolution/error, i.e. unchanged pre-#83
+        // behavior.
+        pathToClaudeCodeExecutable: CLAUDE_CODE_EXECUTABLE_PATH,
         // FR-06 (multi-layer built-in tool disablement):
         // 1. `tools: []` — explicit built-in tool set, empty = all disabled.
         // 2. `settingSources: []` — do not load settings-file-declared tools/MCP.

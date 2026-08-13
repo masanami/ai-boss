@@ -7,10 +7,31 @@ import { loadConfig } from "./config.js";
 import { openDatabase } from "./db/connection.js";
 import { runMigrations } from "./db/migrate.js";
 import { startScheduler } from "./scheduler/scheduler.js";
+import {
+  checkClaudeCodeAvailability,
+  nodeExecFileForAvailabilityCheck,
+} from "./llm/claude-client.js";
 
 const config = loadConfig(process.env);
 const db = openDatabase(config.dbPath);
 runMigrations(db);
+
+if (config.llmBackend === "claude-code") {
+  // FR-13 / AC-12: best-effort, non-blocking — never awaited so it cannot
+  // delay `serve()` below (fail-fast at startup is reserved for LLM_BACKEND
+  // itself being invalid, FR-02; this check only warns and lets the server
+  // start regardless of the result). `checkClaudeCodeAvailability` is
+  // documented to catch every failure mode internally and never reject, but
+  // that guarantee shouldn't rest on this call site trusting it blindly
+  // (self-review: code-reviewer/design-reviewer) — `.catch()` here makes
+  // "never blocks/never crashes startup" structural even if that internal
+  // guarantee were ever violated by a future edit. This call is intentionally
+  // left untested at this wiring layer, same convention as the scheduler
+  // startup call below.
+  checkClaudeCodeAvailability({ execFile: nodeExecFileForAvailabilityCheck }).catch(() => {
+    // Unreachable in practice (see comment above) — defense in depth only.
+  });
+}
 
 // Resolved relative to this module (not cwd) so it works both compiled
 // (server/dist/index.js) and under tsx watch (server/src/index.ts).

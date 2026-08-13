@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { z } from "zod";
 import type Anthropic from "@anthropic-ai/sdk";
 import { BOSS_TOOLS } from "../../boss/boss-tools.js";
@@ -35,6 +35,9 @@ const {
   buildClaudeCodeEnv,
   TOOL_ZOD_SHAPES,
   ClaudeCodeUnavailableError,
+  resolveClaudeCodeExecutablePath,
+  CLAUDE_CODE_EXECUTABLE_PATH,
+  checkClaudeCodeAvailability,
 } = await import("./claude-code-backend.js");
 
 // ---------------------------------------------------------------------------
@@ -652,5 +655,184 @@ describe("createClaudeCodeMessage", () => {
     await promise;
 
     expect(capturedAbortController?.signal.aborted).toBe(true);
+  });
+
+  it("passes CLAUDE_CODE_EXECUTABLE_PATH (the same shared constant the startup check reads) to query()'s pathToClaudeCodeExecutable option (FR-13)", async () => {
+    queryMock.mockReturnValueOnce(toAsyncIterable([resultMessage()]));
+
+    await createClaudeCodeMessage({
+      model: "claude-sonnet-5",
+      messages: [{ role: "user", content: "hi" }],
+    });
+
+    const options = lastQueryOptions();
+    // Two separate assertions, deliberately: `"in"` checks the *key* was
+    // forwarded at all — this still catches a regression where
+    // `runClaudeCodeQuery` stops passing `pathToClaudeCodeExecutable`
+    // entirely, even in an environment where `CLAUDE_CODE_EXECUTABLE_PATH`
+    // happens to be `undefined` (e.g. on Linux, which
+    // `resolveClaudeCodeExecutablePath` now deliberately bails out on — see
+    // its own describe block below), where a plain `.toBe(undefined)`
+    // equality check alone couldn't distinguish "key present with value
+    // undefined" from "key absent" (self-review round 2: code-reviewer
+    // caught the equality-only version of this test as passing vacuously in
+    // that case). The equality check separately catches "forwarded a
+    // different value than the shared constant".
+    expect("pathToClaudeCodeExecutable" in options).toBe(true);
+    expect(options.pathToClaudeCodeExecutable).toBe(CLAUDE_CODE_EXECUTABLE_PATH);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// resolveClaudeCodeExecutablePath (FR-13)
+// ---------------------------------------------------------------------------
+
+describe("resolveClaudeCodeExecutablePath", () => {
+  it("resolves the platform/arch-specific optional-dependency package's bundled binary (darwin-arm64)", () => {
+    const resolve = vi.fn().mockReturnValue("/fake/node_modules/@anthropic-ai/claude-agent-sdk-darwin-arm64/claude");
+
+    const path = resolveClaudeCodeExecutablePath({ platform: "darwin", arch: "arm64", resolve });
+
+    expect(resolve).toHaveBeenCalledWith("@anthropic-ai/claude-agent-sdk-darwin-arm64/claude");
+    expect(path).toBe("/fake/node_modules/@anthropic-ai/claude-agent-sdk-darwin-arm64/claude");
+  });
+
+  it("appends .exe on win32", () => {
+    const resolve = vi.fn().mockReturnValue("C:\\fake\\claude.exe");
+
+    resolveClaudeCodeExecutablePath({ platform: "win32", arch: "x64", resolve });
+
+    expect(resolve).toHaveBeenCalledWith("@anthropic-ai/claude-agent-sdk-win32-x64/claude.exe");
+  });
+
+  it("returns undefined (does not throw) when the platform package cannot be resolved (e.g. installed with --omit=optional)", () => {
+    const resolve = vi.fn(() => {
+      throw Object.assign(new Error("Cannot find module"), { code: "MODULE_NOT_FOUND" });
+    });
+
+    const path = resolveClaudeCodeExecutablePath({ platform: "darwin", arch: "arm64", resolve });
+
+    expect(path).toBeUndefined();
+  });
+
+  // self-review (code-reviewer/design-reviewer): the SDK itself picks among
+  // *multiple* package-name candidates only for linux (musl-vs-glibc
+  // preference) and android (a dedicated package) — this function does not
+  // reimplement that selection, so it must bail out to `undefined` (falling
+  // through to the SDK's own correct internal resolution) rather than risk
+  // handing the SDK a mismatched-libc binary via the now-explicit
+  // `pathToClaudeCodeExecutable` option.
+  it.each(["linux", "android"] as const)(
+    "returns undefined without calling resolve on %s (musl/glibc or android package selection is not reimplemented — YAGNI, this app is macOS-only)",
+    (platform) => {
+      const resolve = vi.fn().mockReturnValue("/should-not-be-used");
+
+      const path = resolveClaudeCodeExecutablePath({ platform, arch: "x64", resolve });
+
+      expect(path).toBeUndefined();
+      expect(resolve).not.toHaveBeenCalled();
+    },
+  );
+});
+
+// ---------------------------------------------------------------------------
+// checkClaudeCodeAvailability (FR-13, AC-12)
+// ---------------------------------------------------------------------------
+
+describe("checkClaudeCodeAvailability", () => {
+  beforeEach(() => {
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it("execFile's the shared backend executable path (not PATH 'claude') with --version, and does not warn on success", async () => {
+    const execFile = vi.fn().mockResolvedValue({ stdout: "2.1.231 (Claude Code)", stderr: "" });
+    const resolveExecutablePath = vi.fn().mockReturnValue("/opt/claude-agent-sdk-darwin-arm64/claude");
+
+    await checkClaudeCodeAvailability({ execFile, resolveExecutablePath });
+
+    expect(execFile).toHaveBeenCalledWith("/opt/claude-agent-sdk-darwin-arm64/claude", ["--version"]);
+    expect(execFile.mock.calls[0]![0]).not.toBe("claude");
+    expect(console.warn).not.toHaveBeenCalled();
+  });
+
+  it("logs a warning and does not throw when execFile rejects with ENOENT (not installed)", async () => {
+    const execFile = vi.fn().mockRejectedValue(Object.assign(new Error("spawn claude ENOENT"), { code: "ENOENT" }));
+    const resolveExecutablePath = vi.fn().mockReturnValue("/opt/claude-agent-sdk-darwin-arm64/claude");
+
+    await expect(
+      checkClaudeCodeAvailability({ execFile, resolveExecutablePath }),
+    ).resolves.toBeUndefined();
+    expect(console.warn).toHaveBeenCalled();
+  });
+
+  it("logs a warning and does not throw when execFile rejects with a non-zero exit", async () => {
+    const execFile = vi
+      .fn()
+      .mockRejectedValue(Object.assign(new Error("Command failed"), { code: 1 }));
+    const resolveExecutablePath = vi.fn().mockReturnValue("/opt/claude-agent-sdk-darwin-arm64/claude");
+
+    await expect(
+      checkClaudeCodeAvailability({ execFile, resolveExecutablePath }),
+    ).resolves.toBeUndefined();
+    expect(console.warn).toHaveBeenCalled();
+  });
+
+  it("logs a warning and does not throw when execFile rejects with a timeout", async () => {
+    const execFile = vi
+      .fn()
+      .mockRejectedValue(Object.assign(new Error("Command timed out"), { killed: true, signal: "SIGTERM" }));
+    const resolveExecutablePath = vi.fn().mockReturnValue("/opt/claude-agent-sdk-darwin-arm64/claude");
+
+    await expect(
+      checkClaudeCodeAvailability({ execFile, resolveExecutablePath }),
+    ).resolves.toBeUndefined();
+    expect(console.warn).toHaveBeenCalled();
+  });
+
+  it("logs a warning and skips execFile entirely when the executable path cannot be resolved", async () => {
+    const execFile = vi.fn();
+    const resolveExecutablePath = vi.fn().mockReturnValue(undefined);
+
+    await checkClaudeCodeAvailability({ execFile, resolveExecutablePath });
+
+    expect(execFile).not.toHaveBeenCalled();
+    expect(console.warn).toHaveBeenCalled();
+  });
+
+  it("logs a warning and does not throw when resolveExecutablePath itself throws synchronously (structural 'never rejects' guarantee — self-review: design-reviewer)", async () => {
+    const execFile = vi.fn();
+    const resolveExecutablePath = vi.fn(() => {
+      throw new Error("unexpected synchronous failure");
+    });
+
+    await expect(
+      checkClaudeCodeAvailability({ execFile, resolveExecutablePath }),
+    ).resolves.toBeUndefined();
+    expect(execFile).not.toHaveBeenCalled();
+    expect(console.warn).toHaveBeenCalled();
+  });
+
+  it("uses CLAUDE_CODE_EXECUTABLE_PATH by default when resolveExecutablePath is not supplied", async () => {
+    const execFile = vi.fn().mockResolvedValue({ stdout: "", stderr: "" });
+
+    await checkClaudeCodeAvailability({ execFile });
+
+    // Deterministic regardless of the host environment (whether the optional
+    // platform package is installed or not — self-review: code-reviewer/
+    // design-reviewer flagged an earlier version of this test as relying on
+    // "some real path was resolved", which fails differently depending on
+    // install state). `resolveClaudeCodeExecutablePath`'s own DI-based tests
+    // above cover the resolution algorithm's correctness in isolation; this
+    // test only exercises that the *default* wiring reads the shared
+    // constant.
+    if (CLAUDE_CODE_EXECUTABLE_PATH === undefined) {
+      expect(execFile).not.toHaveBeenCalled();
+    } else {
+      expect(execFile).toHaveBeenCalledWith(CLAUDE_CODE_EXECUTABLE_PATH, ["--version"]);
+    }
   });
 });
