@@ -3,6 +3,7 @@ import type Database from "better-sqlite3";
 import { listDecisions } from "./decisions-repository.js";
 import { listAppealsGroupedByDecisionId } from "./appeals-repository.js";
 import { registerAppealsRoute } from "./appeals-route.js";
+import type { LlmBackend } from "../config.js";
 
 /**
  * Creates the decisions sub-router, mounted under `/api/decisions` by the
@@ -11,12 +12,15 @@ import { registerAppealsRoute } from "./appeals-route.js";
  * through the boss's `record_decision` tool (see `boss/decision-tool.ts`) —
  * only appeals-driven revisions are written here.
  *
- * `env` is threaded through to the appeals route (Claude API key
- * resolution), mirroring `createSessionsRouter`'s pattern for the chat route.
+ * `env`/`llmBackend` are threaded through to the appeals route (Claude
+ * client resolution) with no defaults — the only caller, `app.ts`, always
+ * resolves and passes both explicitly (see `CreateAppOptions.llmBackend`'s
+ * doc comment for where the default lives).
  */
 export function createDecisionsRouter(
   db: Database.Database,
   env: NodeJS.ProcessEnv,
+  llmBackend: LlmBackend,
 ): Hono {
   const decisions = new Hono();
 
@@ -29,7 +33,7 @@ export function createDecisionsRouter(
     return c.json(withAppeals);
   });
 
-  registerAppealsRoute(decisions, db, env);
+  registerAppealsRoute(decisions, db, env, llmBackend);
 
   return decisions;
 }
