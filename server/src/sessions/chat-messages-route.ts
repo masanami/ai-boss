@@ -10,22 +10,15 @@ import { resolveBossSettings } from "../boss/boss-settings.js";
 import { buildPersonaPrompt } from "../boss/persona-prompt.js";
 import { BOSS_TOOLS, executeBossTool } from "../boss/boss-tools.js";
 import {
-  buildToolResultMessage,
   createClaudeClient,
   streamBossMessage,
+  type BossLlmClient,
+  type BossToolExecutor,
 } from "../llm/claude-client.js";
 import { findSessionById } from "./sessions-repository.js";
 import { insertMessage, listMessagesBySessionId } from "./messages-repository.js";
 import { validateChatMessageInput } from "./sessions-validation.js";
 import type { Message } from "./message.js";
-
-/**
- * Hard cap on the number of Claude round-trips within a single chat turn.
- * Guards against a runaway tool-use loop (explicit assumption, Issue #27):
- * once reached, the turn is finalized with whatever text has been streamed
- * so far — no further Claude call is made.
- */
-const MAX_TOOL_ROUNDS = 5;
 
 /** Sanitized message surfaced to the client; never includes raw error details
  * (which may contain request internals) per the critical API-key/error
@@ -37,12 +30,6 @@ function toClaudeMessages(messages: Message[]): Anthropic.MessageParam[] {
     role: message.role === "boss" ? "assistant" : "user",
     content: message.content,
   }));
-}
-
-function isToolUseBlock(
-  block: Anthropic.ContentBlock,
-): block is Anthropic.ToolUseBlock {
-  return block.type === "tool_use";
 }
 
 /**
@@ -103,7 +90,7 @@ export function registerChatMessageRoute(
       return c.json({ error: validation.error }, 400);
     }
 
-    let client: Anthropic;
+    let client: BossLlmClient;
     try {
       client = createClaudeClient(env);
     } catch (err) {
@@ -144,54 +131,38 @@ export function registerChatMessageRoute(
           });
         };
 
-        for (let round = 0; round < MAX_TOOL_ROUNDS; round++) {
-          const finalMessage = await streamBossMessage(
-            client,
-            { model, system, messages, tools: BOSS_TOOLS },
+        const executeTool: BossToolExecutor = (name, input) =>
+          executeBossTool(db, id, name, input);
+
+        // The tool loop (MAX_TOOL_ROUNDS · execute · continue) now lives
+        // inside streamBossMessage (Issue #78, "ツール実行主体の一本化").
+        // This route only relays SSE events from the callbacks it fires.
+        await streamBossMessage(
+          client,
+          { model, system, messages, tools: BOSS_TOOLS },
+          {
             onTextDelta,
-          );
-
-          const toolUseBlocks = finalMessage.content.filter(isToolUseBlock);
-          if (toolUseBlocks.length === 0) {
-            break;
-          }
-
-          messages.push({
-            role: "assistant",
-            content:
-              finalMessage.content as unknown as Anthropic.MessageParam["content"],
-          });
-
-          const toolResultBlocks: Anthropic.ToolResultBlockParam[] = [];
-          for (const block of toolUseBlocks) {
-            const result = executeBossTool(db, id, block.name, block.input);
-            const summary = summarizeToolExecution(block.name, result);
-            if (summary !== null) {
-              toolSummaries.push(summary);
-            }
-            await stream.writeSSE({
-              event: "tool",
-              data: JSON.stringify({
-                name: block.name,
-                input: block.input,
-                result: result.content,
-                isError: result.isError,
-              }),
-            });
-
-            const toolResultMessage = buildToolResultMessage(
-              block.id,
-              result.content,
-              { isError: result.isError },
-            );
-            // buildToolResultMessage always builds an array-form content, so
-            // the blocks can be collected without a runtime guard.
-            toolResultBlocks.push(
-              ...(toolResultMessage.content as Anthropic.ToolResultBlockParam[]),
-            );
-          }
-          messages.push({ role: "user", content: toolResultBlocks });
-        }
+            executeTool,
+            onToolEvent: async (event) => {
+              const summary = summarizeToolExecution(event.name, {
+                content: event.result,
+                isError: event.isError,
+              });
+              if (summary !== null) {
+                toolSummaries.push(summary);
+              }
+              await stream.writeSSE({
+                event: "tool",
+                data: JSON.stringify({
+                  name: event.name,
+                  input: event.input,
+                  result: event.result,
+                  isError: event.isError,
+                }),
+              });
+            },
+          },
+        );
 
         const bossMessage = insertMessage(db, {
           session_id: id,

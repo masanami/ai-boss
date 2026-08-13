@@ -1,8 +1,13 @@
 import type Database from "better-sqlite3";
-import type Anthropic from "@anthropic-ai/sdk";
 import { resolveBossSettings } from "../boss/boss-settings.js";
 import { buildPersonaPrompt } from "../boss/persona-prompt.js";
-import { createClaudeClient, streamBossMessage } from "../llm/claude-client.js";
+import {
+  createClaudeClient,
+  streamBossMessage,
+  type BossLlmClient,
+  type BossLlmMessage,
+  type BossTextBlock,
+} from "../llm/claude-client.js";
 import type { Task } from "../tasks/task.js";
 
 /**
@@ -83,11 +88,9 @@ function buildUserInstruction(request: NotificationBodyRequest): string {
   ].join("\n");
 }
 
-function extractText(message: Anthropic.Message): string {
+function extractText(message: BossLlmMessage): string {
   return message.content
-    .filter(
-      (block): block is Anthropic.TextBlock => block.type === "text",
-    )
+    .filter((block): block is BossTextBlock => block.type === "text")
     .map((block) => block.text)
     .join("")
     .trim();
@@ -169,7 +172,7 @@ export async function generateNotificationBody(
   // いずれで失敗しても、フォールバック定型文で必ず文面を返す
   // （resolveBossSettings は db.prepare を呼ぶため DB 例外もここで保護する）。
   try {
-    const client: Anthropic = createClaudeClient(env);
+    const client: BossLlmClient = createClaudeClient(env);
     const { model, persona } = resolveBossSettings(db);
     const system = buildPersonaPrompt(persona, {
       tasks: request.task ? [request.task] : [],

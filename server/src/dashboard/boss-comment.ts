@@ -1,8 +1,12 @@
 import type Database from "better-sqlite3";
-import type Anthropic from "@anthropic-ai/sdk";
 import { resolveBossSettings } from "../boss/boss-settings.js";
 import { buildPersonaPrompt } from "../boss/persona-prompt.js";
-import { createClaudeClient, createBossMessage } from "../llm/claude-client.js";
+import {
+  createClaudeClient,
+  createBossMessage,
+  type BossLlmMessage,
+  type BossTextBlock,
+} from "../llm/claude-client.js";
 import { listTasks } from "../tasks/tasks-repository.js";
 import { toDateKey } from "../detection/time-utils.js";
 import { getCachedBossComment, setCachedBossComment } from "./boss-comment-cache.js";
@@ -28,9 +32,9 @@ const USER_INSTRUCTION =
   "今日一日のモチベーションになる短い一言にすること。出力は本文のみとし、前置き・説明・" +
   "カギ括弧などの装飾は付けないこと。1文の短い文章にすること。";
 
-function extractText(message: Anthropic.Message): string {
+function extractText(message: BossLlmMessage): string {
   return message.content
-    .filter((block): block is Anthropic.TextBlock => block.type === "text")
+    .filter((block): block is BossTextBlock => block.type === "text")
     .map((block) => block.text)
     .join("")
     .trim();
