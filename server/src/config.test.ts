@@ -67,4 +67,40 @@ describe("loadConfig", () => {
       .join(" ");
     expect(allLoggedArgs).not.toContain(secretKey);
   });
+
+  it("defaults llmBackend to api when LLM_BACKEND is not set", () => {
+    const config = loadConfig({});
+
+    expect(config.llmBackend).toBe("api");
+  });
+
+  it("uses llmBackend as api when LLM_BACKEND=api is set", () => {
+    const config = loadConfig({ LLM_BACKEND: "api" });
+
+    expect(config.llmBackend).toBe("api");
+  });
+
+  it("uses llmBackend as claude-code when LLM_BACKEND=claude-code is set", () => {
+    const config = loadConfig({ LLM_BACKEND: "claude-code" });
+
+    expect(config.llmBackend).toBe("claude-code");
+  });
+
+  it("throws with an error message including the allowed values when LLM_BACKEND is invalid", () => {
+    expect(() => loadConfig({ LLM_BACKEND: "invalid-value" })).toThrow(
+      /api.*claude-code|claude-code.*api/,
+    );
+  });
+
+  it("throws with an error message including the allowed values when LLM_BACKEND is an empty string", () => {
+    expect(() => loadConfig({ LLM_BACKEND: "" })).toThrow(
+      /api.*claude-code|claude-code.*api/,
+    );
+  });
+
+  it("does not warn about ANTHROPIC_API_KEY when llmBackend is claude-code", () => {
+    loadConfig({ LLM_BACKEND: "claude-code" });
+
+    expect(console.warn).not.toHaveBeenCalled();
+  });
 });

@@ -1,10 +1,15 @@
 const DEFAULT_PORT = 8787;
 const DEFAULT_DB_PATH = "./data/ai-boss.db";
+const DEFAULT_LLM_BACKEND: LlmBackend = "api";
+const ALLOWED_LLM_BACKENDS = ["api", "claude-code"] as const;
+
+export type LlmBackend = (typeof ALLOWED_LLM_BACKENDS)[number];
 
 export interface AppConfig {
   port: number;
   dbPath: string;
   hasAnthropicApiKey: boolean;
+  llmBackend: LlmBackend;
 }
 
 function resolvePort(env: NodeJS.ProcessEnv): number {
@@ -23,16 +28,37 @@ function resolvePort(env: NodeJS.ProcessEnv): number {
   return parsed;
 }
 
+function isLlmBackend(value: string): value is LlmBackend {
+  return (ALLOWED_LLM_BACKENDS as readonly string[]).includes(value);
+}
+
+function resolveLlmBackend(env: NodeJS.ProcessEnv): LlmBackend {
+  if (env.LLM_BACKEND === undefined) {
+    return DEFAULT_LLM_BACKEND;
+  }
+
+  if (isLlmBackend(env.LLM_BACKEND)) {
+    return env.LLM_BACKEND;
+  }
+
+  throw new Error(
+    `LLM_BACKEND の値 "${env.LLM_BACKEND}" は不正です。許容値は ${ALLOWED_LLM_BACKENDS.join(
+      " / ",
+    )} のいずれかです。`,
+  );
+}
+
 export function loadConfig(env: NodeJS.ProcessEnv): AppConfig {
   const port = resolvePort(env);
   const dbPath = env.DB_PATH ?? DEFAULT_DB_PATH;
   const hasAnthropicApiKey = Boolean(env.ANTHROPIC_API_KEY);
+  const llmBackend = resolveLlmBackend(env);
 
-  if (!hasAnthropicApiKey) {
+  if (!hasAnthropicApiKey && llmBackend === "api") {
     console.warn(
-      "ANTHROPIC_API_KEY is not set. Claude API 連携機能は動作しません（本チケットでは未使用）。",
+      "ANTHROPIC_API_KEY is not set. Claude API 連携機能は動作しません。",
     );
   }
 
-  return { port, dbPath, hasAnthropicApiKey };
+  return { port, dbPath, hasAnthropicApiKey, llmBackend };
 }
