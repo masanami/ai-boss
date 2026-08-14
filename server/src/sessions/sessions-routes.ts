@@ -13,9 +13,48 @@ import { validateCreateSessionInput } from "./sessions-validation.js";
 import { listMessagesBySessionId } from "./messages-repository.js";
 import { registerChatMessageRoute } from "./chat-messages-route.js";
 import type { LlmBackend } from "../config.js";
+import { generateDailyReport } from "../reports/generate-daily-report.js";
 
 function isValidSessionType(value: string): value is SessionType {
   return SESSION_TYPES.includes(value as SessionType);
+}
+
+/**
+ * Upper bound (ms) for the daily-report generation step triggered by the
+ * evening-end hook below — distinct from the LLM client's own ~120s policy
+ * (docs/features/daily-report.md「機能全体の設計 > 夕会終了フック」). Kept
+ * separate from `extractEveningSummary`'s own default (no timeout) so only
+ * this HTTP-request-bound call site is capped.
+ */
+const EVENING_END_REPORT_TIMEOUT_MS = 20_000;
+
+/**
+ * Best-effort daily-report generation fired when a `type = evening` session
+ * transitions from unended to ended for the first time (see call site
+ * below for the "first transition" check). Mirrors the
+ * `notifications/notification-body.ts` contract: never throws, so the
+ * caller (`POST /:id/end`) always returns 200 regardless of generation
+ * outcome (prerequisite-not-met / LLM failure / timeout / unexpected
+ * exception). Errors are logged with the error's class name only (same
+ * convention as `notification-body.ts` / `extract-evening-summary.ts`) to
+ * avoid leaking request internals into logs.
+ */
+async function triggerDailyReportGeneration(
+  db: Database.Database,
+  env: NodeJS.ProcessEnv,
+  eveningSessionId: number,
+): Promise<void> {
+  try {
+    await generateDailyReport(db, env, new Date(), {
+      eveningSessionId,
+      timeoutMs: EVENING_END_REPORT_TIMEOUT_MS,
+    });
+  } catch (err) {
+    console.error(
+      "session end: daily report generation failed:",
+      err instanceof Error ? err.name : typeof err,
+    );
+  }
 }
 
 /**
@@ -68,13 +107,29 @@ export function createSessionsRouter(
     return c.json(created.session, 201);
   });
 
-  sessions.post("/:id/end", (c) => {
+  sessions.post("/:id/end", async (c) => {
     const rawId = c.req.param("id");
     const id = Number(rawId);
+
+    // Captured before `endSession` so we can tell a first-time ended_at
+    // transition (NULL -> value) apart from a re-end of an already-ended
+    // session — `endSession` itself is idempotent and returns the existing
+    // row unchanged on re-end (docs/features/daily-report.md「夕会終了
+    // フック」). Only the first transition triggers report generation.
+    const before = findSessionById(db, id);
 
     const session = endSession(db, id);
     if (!session) {
       return c.json({ error: `session ${rawId} not found` }, 404);
+    }
+
+    const isFirstEnding = before !== undefined && before.ended_at === null;
+    if (isFirstEnding && session.type === "evening") {
+      // (a) the session's ended_at update above is already committed before
+      // (b) this synchronous, request-scoped generation call — the ordering
+      // required by the spec's "実行境界" (best-effort: never blocks the
+      // 200 response on generation outcome).
+      await triggerDailyReportGeneration(db, env, session.id);
     }
 
     return c.json(session, 200);
