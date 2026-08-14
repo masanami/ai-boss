@@ -440,6 +440,90 @@ describe("useChat", () => {
   });
 });
 
+describe("useChat mount restoration (Issue #93: surviving a tab switch/reload)", () => {
+  it("restores today's open morning session as active on mount, keeping today's adhoc conversation as the return-to snapshot", async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(jsonResponse([MORNING_SESSION_TODAY, SESSION])) // fetchSessions()
+      .mockResolvedValueOnce(jsonResponse(MORNING_HISTORY)) // active (morning) messages
+      .mockResolvedValueOnce(jsonResponse(HISTORY)); // today's adhoc messages (snapshot)
+    vi.stubGlobal("fetch", fetchMock);
+
+    const { result } = renderHook(() => useChat());
+
+    await waitFor(() => expect(result.current.status).toBe("ready"));
+    expect(result.current.sessionType).toBe("morning");
+    expect(result.current.entries).toEqual([
+      { kind: "message", key: "message-30", role: "user", content: "今日の予定です" },
+    ]);
+    expect(fetchMock).toHaveBeenNthCalledWith(1, "/api/sessions");
+    expect(fetchMock).toHaveBeenNthCalledWith(2, "/api/sessions/20/messages");
+    expect(fetchMock).toHaveBeenNthCalledWith(3, "/api/sessions/1/messages");
+  });
+
+  it("returns to today's adhoc conversation when ending a meeting that was restored on mount", async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(jsonResponse([MORNING_SESSION_TODAY, SESSION]))
+      .mockResolvedValueOnce(jsonResponse(MORNING_HISTORY))
+      .mockResolvedValueOnce(jsonResponse(HISTORY))
+      .mockResolvedValueOnce(
+        jsonResponse({ ...MORNING_SESSION_TODAY, ended_at: "2026-07-05T01:00:00.000Z" }),
+      ); // end
+    vi.stubGlobal("fetch", fetchMock);
+
+    const { result } = renderHook(() => useChat());
+    await waitFor(() => expect(result.current.status).toBe("ready"));
+    expect(result.current.sessionType).toBe("morning");
+
+    await act(async () => {
+      await result.current.endSession();
+    });
+
+    expect(fetchMock).toHaveBeenNthCalledWith(4, "/api/sessions/20/end", {
+      method: "POST",
+    });
+    expect(result.current.sessionType).toBe("adhoc");
+    expect(result.current.entries).toEqual([
+      { kind: "message", key: "message-1", role: "user", content: "おはようございます" },
+      { kind: "message", key: "message-2", role: "boss", content: "今日は A 案件からだ。" },
+    ]);
+  });
+
+  it("falls back to restoring today's adhoc session when today's morning session is already ended", async () => {
+    const endedMorning = { ...MORNING_SESSION_TODAY, ended_at: "2026-07-05T09:00:00.000Z" };
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(jsonResponse([endedMorning, SESSION]))
+      .mockResolvedValueOnce(jsonResponse(HISTORY));
+    vi.stubGlobal("fetch", fetchMock);
+
+    const { result } = renderHook(() => useChat());
+
+    await waitFor(() => expect(result.current.status).toBe("ready"));
+    expect(result.current.sessionType).toBe("adhoc");
+    expect(result.current.entries).toEqual([
+      { kind: "message", key: "message-1", role: "user", content: "おはようございます" },
+      { kind: "message", key: "message-2", role: "boss", content: "今日は A 案件からだ。" },
+    ]);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  it("does not restore a morning session from a previous day on mount", async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(jsonResponse([MORNING_SESSION_YESTERDAY]));
+    vi.stubGlobal("fetch", fetchMock);
+
+    const { result } = renderHook(() => useChat());
+
+    await waitFor(() => expect(result.current.status).toBe("ready"));
+    expect(result.current.sessionType).toBe("adhoc");
+    expect(result.current.entries).toEqual([]);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+});
+
 describe("useChat session switching", () => {
   it("creates a new morning session when none exists for today", async () => {
     const fetchMock = vi
