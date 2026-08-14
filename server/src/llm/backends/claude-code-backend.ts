@@ -48,6 +48,28 @@ function mcpToolName(name: string): string {
 }
 
 /**
+ * FR-06 / AC-05 (layer 5 — deny-by-default permission handler): builds the
+ * `canUseTool` callback passed to `query()`. `allowedTools` only
+ * auto-approves our own MCP tools; it does not by itself reject a request
+ * for anything else, and the spec's multi-layer decision explicitly forbids
+ * relying on the allow-list alone. This handler is the app-owned boundary
+ * where any tool request outside the fully-qualified allow-list is denied —
+ * which also makes AC-05's "未許可ツールの使用要求は拒否する" verifiable in
+ * unit tests without depending on SDK-internal behavior.
+ */
+function buildCanUseTool(allowedTools: readonly string[]) {
+  return async (toolName: string): Promise<{ behavior: "allow" } | { behavior: "deny"; message: string }> =>
+    allowedTools.includes(toolName)
+      ? { behavior: "allow" }
+      : {
+          behavior: "deny",
+          message: `Tool "${toolName}" is not permitted: this app only allows its own MCP tools (${
+            allowedTools.length > 0 ? allowedTools.join(", ") : "none for this request"
+          }).`,
+        };
+}
+
+/**
  * The model calls in-process MCP tools by their fully-qualified name
  * (`mcp__<server>__<tool>` — see `mcpToolName`/`allowedTools` above and
  * `sdk.d.ts`'s `disallowedTools`/`mcp_call` doc comments for the same
@@ -612,10 +634,14 @@ async function runClaudeCodeQuery(
         // 4. `allowedTools` — auto-approve only our own MCP tools (does not by
         //    itself restrict availability; combined with 1-3 above per the
         //    ticket's explicit instruction not to rely on the allow-list alone).
+        // 5. `canUseTool` — deny-by-default permission handler for anything
+        //    outside the allow-list (AC-05's rejection boundary — see
+        //    `buildCanUseTool`).
         tools: [],
         settingSources: [],
         strictMcpConfig: true,
         allowedTools: allowedTools.length > 0 ? allowedTools : undefined,
+        canUseTool: buildCanUseTool(allowedTools),
         mcpServers: mcpServer ? { [MCP_SERVER_NAME]: mcpServer } : undefined,
         includePartialMessages: Boolean(options.onTextDelta),
         maxTurns: MAX_AGENT_TURNS,

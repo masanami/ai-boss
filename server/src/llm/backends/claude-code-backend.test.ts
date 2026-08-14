@@ -288,6 +288,73 @@ describe("streamClaudeCodeMessage", () => {
     expect(options.allowedTools).toBeUndefined();
   });
 
+  // AC-05（未許可ツールの使用要求の拒否）: FR-06 の多層方式は許可リスト
+  // （allowedTools＝自動承認）のみに依存しない。第 5 層として自前の
+  // `canUseTool` ハンドラを渡し、許可リスト外のツール使用要求を deny する。
+  // 拒否判定はこのハンドラ（自コード境界）で検証できる。
+  describe("canUseTool — 未許可ツールの使用要求の拒否 (FR-06, AC-05)", () => {
+    type CanUseToolFn = (
+      toolName: string,
+      input: Record<string, unknown>,
+    ) => Promise<{ behavior: string; message?: string }>;
+
+    it("passes a canUseTool handler that denies built-in and foreign MCP tools", async () => {
+      queryMock.mockReturnValueOnce(toAsyncIterable([assistantTextMessage("了解"), resultMessage()]));
+
+      await streamClaudeCodeMessage({
+        model: "claude-sonnet-5",
+        messages: [{ role: "user", content: "進捗どうですか" }],
+        tools: BOSS_TOOLS,
+      });
+
+      const canUseTool = lastQueryOptions().canUseTool as CanUseToolFn;
+      expect(typeof canUseTool).toBe("function");
+
+      const bash = await canUseTool("Bash", { command: "echo hi" });
+      expect(bash.behavior).toBe("deny");
+      expect(bash.message).toContain("Bash");
+
+      const foreignMcp = await canUseTool("mcp__other-server__do_thing", {});
+      expect(foreignMcp.behavior).toBe("deny");
+      expect(foreignMcp.message).toContain("mcp__other-server__do_thing");
+    });
+
+    it("allows exactly the app-defined fully-qualified MCP tools", async () => {
+      queryMock.mockReturnValueOnce(toAsyncIterable([assistantTextMessage("了解"), resultMessage()]));
+
+      await streamClaudeCodeMessage({
+        model: "claude-sonnet-5",
+        messages: [{ role: "user", content: "進捗どうですか" }],
+        tools: BOSS_TOOLS,
+      });
+
+      const options = lastQueryOptions();
+      const canUseTool = options.canUseTool as CanUseToolFn;
+      for (const allowed of options.allowedTools as string[]) {
+        const result = await canUseTool(allowed, {});
+        expect(result.behavior).toBe("allow");
+      }
+      // 素名（MCP 完全修飾でない自ツール名）は許可リスト外なので deny
+      const bareName = await canUseTool("create_task", {});
+      expect(bareName.behavior).toBe("deny");
+    });
+
+    it("denies every tool when the call site provides no tools (dashboard comment / notification body)", async () => {
+      queryMock.mockReturnValueOnce(toAsyncIterable([assistantTextMessage("今日も一日頑張れ"), resultMessage()]));
+
+      await streamClaudeCodeMessage({
+        model: "claude-sonnet-5",
+        system: "system",
+        messages: [{ role: "user", content: "ひとことをくれ" }],
+      });
+
+      const canUseTool = lastQueryOptions().canUseTool as CanUseToolFn;
+      expect(typeof canUseTool).toBe("function");
+      expect((await canUseTool("Bash", {})).behavior).toBe("deny");
+      expect((await canUseTool("mcp__ai-boss__create_task", {})).behavior).toBe("deny");
+    });
+  });
+
   it("relays text deltas from stream_event content_block_delta text_delta messages to onTextDelta, in order (FR-04)", async () => {
     queryMock.mockReturnValueOnce(
       toAsyncIterable([
