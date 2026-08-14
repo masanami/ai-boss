@@ -4,9 +4,9 @@ import { readJsonBody } from "../lib/read-json-body.js";
 import { SESSION_TYPES } from "./session.js";
 import type { SessionType } from "./session.js";
 import {
+  createSession,
   endSession,
   findSessionById,
-  insertSession,
   listSessions,
 } from "./sessions-repository.js";
 import { validateCreateSessionInput } from "./sessions-validation.js";
@@ -54,8 +54,18 @@ export function createSessionsRouter(
       return c.json({ error: result.error }, 400);
     }
 
-    const session = insertSession(db, result.data);
-    return c.json(session, 201);
+    const created = createSession(db, result.data);
+    if (!created.ok) {
+      return c.json(
+        {
+          error: "本日の夕会セッションは既に作成されています",
+          code: created.code,
+        },
+        409,
+      );
+    }
+
+    return c.json(created.session, 201);
   });
 
   sessions.post("/:id/end", (c) => {
