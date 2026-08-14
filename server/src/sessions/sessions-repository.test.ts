@@ -150,6 +150,23 @@ describe("sessions repository", () => {
     it("returns undefined when the session does not exist", () => {
       expect(updateSessionSummary(db, 9999, "要約")).toBeUndefined();
     });
+
+    // 同時終了レース: 2 つの POST /:id/end が両方 summary === null を読んでから
+    // それぞれ生成を終えると、後着の無条件 UPDATE が先着の要約を潰しうる。
+    // WHERE summary IS NULL の compare-and-set で先着を守る。
+    it("keeps the first stored summary when a second update races in", () => {
+      const session = insertSession(db, { type: "morning" });
+
+      const first = updateSessionSummary(db, session.id, "先に保存された要約");
+      const second = updateSessionSummary(db, session.id, "後から来た要約");
+
+      expect(first).toMatchObject({ summary: "先に保存された要約" });
+      // 後着は上書きせず、保存済みの行（先着の要約）を返す
+      expect(second).toMatchObject({ summary: "先に保存された要約" });
+      expect(findSessionById(db, session.id)).toMatchObject({
+        summary: "先に保存された要約",
+      });
+    });
   });
 
   describe("listRecentSessionSummaries", () => {

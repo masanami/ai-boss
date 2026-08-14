@@ -98,11 +98,16 @@ export function listSessions(
 }
 
 /**
- * Sets `summary` on the given session and returns the updated row. Returns
- * `undefined` when the session does not exist. Callers (`sessions-routes.ts`
- * `POST /:id/end`) are responsible for not calling this when a summary is
- * already present (re-generation/overwrite guard lives at the route layer,
- * not here — see that route's doc comment).
+ * Sets `summary` on the given session **only when it is still null**, and
+ * returns the current row. Returns `undefined` when the session does not
+ * exist.
+ *
+ * The `WHERE summary IS NULL` guard makes this a compare-and-set: two
+ * concurrent `POST /:id/end` requests can both observe `summary === null`
+ * before either finishes generating, and an unconditional UPDATE would let
+ * the slower one overwrite the summary the faster one already stored. Losing
+ * that race is not an error — the row already holds a valid summary, so the
+ * caller simply gets the stored one back.
  */
 export function updateSessionSummary(
   db: Database.Database,
@@ -114,8 +119,12 @@ export function updateSessionSummary(
     return undefined;
   }
 
-  db.prepare("UPDATE sessions SET summary = ? WHERE id = ?").run(summary, id);
+  db.prepare(
+    "UPDATE sessions SET summary = ? WHERE id = ? AND summary IS NULL",
+  ).run(summary, id);
 
+  // Re-read regardless of whether this call won the race: on a loss the row
+  // holds the summary stored by the winner, which is what callers must use.
   return findSessionById(db, id);
 }
 

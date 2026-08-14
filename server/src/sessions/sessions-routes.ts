@@ -78,9 +78,14 @@ export function createSessionsRouter(
 
     // adhoc sessions are never summarized (decision 3, Issue #96 — no natural
     // "end" trigger in the UI for them). Sessions that already carry a
-    // summary are left untouched: re-ending must not re-generate/overwrite
-    // (avoids a redundant LLM call and an overwrite hazard on idempotent
-    // re-end calls).
+    // summary skip generation: re-ending must not re-generate (avoids a
+    // redundant LLM call on idempotent re-end calls).
+    //
+    // This pre-check is an optimization, not the overwrite guard: two
+    // concurrent requests can both read `summary === null` here and both
+    // generate. The authoritative guard is the `WHERE summary IS NULL`
+    // compare-and-set inside `updateSessionSummary`, whose returned row is
+    // the stored one whether this call won or lost the race.
     if (session.type !== "adhoc" && session.summary === null) {
       const summary = await generateSessionSummary(db, env, llmBackend, id);
       if (summary !== null) {
