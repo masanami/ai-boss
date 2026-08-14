@@ -1,7 +1,18 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import ChatView from "./ChatView";
+import { useChat, type UseChatResult } from "./use-chat";
 import type { ChatMessage, ChatSession } from "./chat";
+
+// ChatView no longer calls useChat itself (Issue #93: the hook is lifted up
+// to AppLayout so the conversation survives a tab switch). This harness
+// mirrors how AppLayout wires the two together, so the bulk of the existing
+// fetch-driven scenarios below keep exercising the real hook + component
+// integration unchanged.
+function ChatViewHarness() {
+  const chatState = useChat();
+  return <ChatView chatState={chatState} />;
+}
 
 const SESSION: ChatSession = {
   id: 1,
@@ -78,6 +89,44 @@ afterEach(() => {
   vi.unstubAllGlobals();
 });
 
+function makeChatState(overrides: Partial<UseChatResult> = {}): UseChatResult {
+  return {
+    entries: [],
+    status: "ready",
+    sessionType: "adhoc",
+    sending: false,
+    switching: false,
+    streamingText: "",
+    error: null,
+    send: vi.fn(),
+    startSession: vi.fn(),
+    endSession: vi.fn(),
+    ...overrides,
+  };
+}
+
+describe("ChatView (rendering purely from the chatState prop)", () => {
+  it("renders entries and the session badge from the given chatState, without calling fetch", () => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(
+      <ChatView
+        chatState={makeChatState({
+          sessionType: "morning",
+          entries: [
+            { kind: "message", key: "message-1", role: "user", content: "今日の予定です" },
+          ],
+        })}
+      />,
+    );
+
+    expect(screen.getByText("今日の予定です")).toBeInTheDocument();
+    expect(screen.getByText("朝会中")).toBeInTheDocument();
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+});
+
 describe("ChatView", () => {
   it("shows a loading state while the history is being restored", () => {
     vi.stubGlobal(
@@ -85,7 +134,7 @@ describe("ChatView", () => {
       vi.fn(() => new Promise(() => {})),
     );
 
-    render(<ChatView />);
+    render(<ChatViewHarness />);
 
     expect(screen.getByText("会話履歴を読み込み中…")).toBeInTheDocument();
   });
@@ -99,7 +148,7 @@ describe("ChatView", () => {
         .mockResolvedValueOnce(jsonResponse(HISTORY)),
     );
 
-    render(<ChatView />);
+    render(<ChatViewHarness />);
 
     await waitFor(() =>
       expect(screen.getByText("おはようございます")).toBeInTheDocument(),
@@ -115,7 +164,7 @@ describe("ChatView", () => {
       vi.fn().mockRejectedValue(new Error("network error")),
     );
 
-    render(<ChatView />);
+    render(<ChatViewHarness />);
 
     await waitFor(() =>
       expect(
@@ -138,7 +187,7 @@ describe("ChatView", () => {
         ),
     );
 
-    render(<ChatView />);
+    render(<ChatViewHarness />);
     await waitFor(() =>
       expect(screen.getByLabelText("メッセージ")).toBeEnabled(),
     );
@@ -158,7 +207,7 @@ describe("ChatView", () => {
   it("renders the message input as a multi-line textarea", async () => {
     vi.stubGlobal("fetch", vi.fn().mockResolvedValueOnce(jsonResponse([])));
 
-    render(<ChatView />);
+    render(<ChatViewHarness />);
     await waitFor(() =>
       expect(screen.getByLabelText("メッセージ")).toBeEnabled(),
     );
@@ -180,7 +229,7 @@ describe("ChatView", () => {
         ),
     );
 
-    render(<ChatView />);
+    render(<ChatViewHarness />);
     await waitFor(() =>
       expect(screen.getByLabelText("メッセージ")).toBeEnabled(),
     );
@@ -202,7 +251,7 @@ describe("ChatView", () => {
       .mockResolvedValueOnce(jsonResponse([]));
     vi.stubGlobal("fetch", fetchMock);
 
-    render(<ChatView />);
+    render(<ChatViewHarness />);
     await waitFor(() =>
       expect(screen.getByLabelText("メッセージ")).toBeEnabled(),
     );
@@ -235,7 +284,7 @@ describe("ChatView", () => {
       .mockResolvedValueOnce(jsonResponse([]));
     vi.stubGlobal("fetch", fetchMock);
 
-    render(<ChatView />);
+    render(<ChatViewHarness />);
     await waitFor(() =>
       expect(screen.getByLabelText("メッセージ")).toBeEnabled(),
     );
@@ -256,7 +305,7 @@ describe("ChatView", () => {
       .mockResolvedValueOnce(jsonResponse([]));
     vi.stubGlobal("fetch", fetchMock);
 
-    render(<ChatView />);
+    render(<ChatViewHarness />);
     await waitFor(() =>
       expect(screen.getByLabelText("メッセージ")).toBeEnabled(),
     );
@@ -284,7 +333,7 @@ describe("ChatView", () => {
         ),
     );
 
-    render(<ChatView />);
+    render(<ChatViewHarness />);
     await waitFor(() =>
       expect(screen.getByLabelText("メッセージ")).toBeEnabled(),
     );
@@ -304,7 +353,7 @@ describe("ChatView", () => {
   it("disables the send button while the draft is empty", async () => {
     vi.stubGlobal("fetch", vi.fn().mockResolvedValueOnce(jsonResponse([])));
 
-    render(<ChatView />);
+    render(<ChatViewHarness />);
     await waitFor(() =>
       expect(screen.getByRole("button", { name: "送信" })).toBeInTheDocument(),
     );
@@ -327,7 +376,7 @@ describe("ChatView", () => {
         .mockImplementationOnce(() => new Promise(() => {})),
     );
 
-    render(<ChatView />);
+    render(<ChatViewHarness />);
     await waitFor(() =>
       expect(screen.getByLabelText("メッセージ")).toBeEnabled(),
     );
@@ -366,7 +415,7 @@ describe("ChatView", () => {
         ),
     );
 
-    render(<ChatView />);
+    render(<ChatViewHarness />);
     await waitFor(() =>
       expect(screen.getByLabelText("メッセージ")).toBeEnabled(),
     );
@@ -397,7 +446,7 @@ describe("ChatView", () => {
         ),
     );
 
-    render(<ChatView />);
+    render(<ChatViewHarness />);
     await waitFor(() =>
       expect(screen.getByLabelText("メッセージ")).toBeEnabled(),
     );
@@ -417,7 +466,7 @@ describe("ChatView", () => {
   it("shows the morning/evening start buttons while chatting adhoc", async () => {
     vi.stubGlobal("fetch", vi.fn().mockResolvedValueOnce(jsonResponse([])));
 
-    render(<ChatView />);
+    render(<ChatViewHarness />);
 
     await waitFor(() =>
       expect(
@@ -439,7 +488,7 @@ describe("ChatView", () => {
         .mockResolvedValueOnce(jsonResponse(MORNING_SESSION, 201)), // create
     );
 
-    render(<ChatView />);
+    render(<ChatViewHarness />);
     await waitFor(() =>
       expect(
         screen.getByRole("button", { name: "朝会を開始" }),
@@ -470,7 +519,7 @@ describe("ChatView", () => {
         ),
     );
 
-    render(<ChatView />);
+    render(<ChatViewHarness />);
     await waitFor(() =>
       expect(
         screen.getByRole("button", { name: "朝会を開始" }),
@@ -503,7 +552,7 @@ describe("ChatView", () => {
         .mockResolvedValueOnce(jsonResponse(eveningSession, 201)),
     );
 
-    render(<ChatView />);
+    render(<ChatViewHarness />);
     await waitFor(() =>
       expect(
         screen.getByRole("button", { name: "夕会を開始" }),
@@ -527,7 +576,7 @@ describe("ChatView", () => {
         .mockImplementationOnce(() => new Promise(() => {})), // startSession's list lookup never resolves
     );
 
-    render(<ChatView />);
+    render(<ChatViewHarness />);
     await waitFor(() =>
       expect(
         screen.getByRole("button", { name: "朝会を開始" }),
@@ -553,7 +602,7 @@ describe("ChatView", () => {
         .mockImplementationOnce(() => new Promise(() => {})), // createSession("adhoc") never resolves
     );
 
-    render(<ChatView />);
+    render(<ChatViewHarness />);
     await waitFor(() =>
       expect(screen.getByLabelText("メッセージ")).toBeEnabled(),
     );

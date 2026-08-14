@@ -4,10 +4,12 @@ import {
   endSession as endSessionRequest,
   fetchLatestSession,
   fetchSessionMessages,
+  fetchSessions,
   sendChatMessage,
 } from "./chat-api";
 import type { ChatMessage, ChatToolEvent, SessionType } from "./chat";
 import { isSameLocalDay } from "./is-same-local-day";
+import { selectRestoreSessions } from "./select-restore-session";
 
 export type ChatLoadStatus = "loading" | "ready" | "error";
 
@@ -71,10 +73,18 @@ async function loadTodaysSession(
  * Chat state for the conversation with the boss, covering the adhoc
  * conversation plus morning/evening sessions.
  *
- * On mount, restores the history of the latest adhoc session, but only if it
- * was started today (local day) — adhoc chat is scoped to a daily window, so
- * a session from a previous day is left alone and a fresh one is created
- * lazily on the first send instead.
+ * On mount, restores today's (local day) session that should be considered
+ * "active": an unfinished morning/evening session if one is open, otherwise
+ * today's adhoc session. This is what lets a morning/evening conversation
+ * survive a tab switch (Issue #93 lifts this hook up to `AppLayout` so it is
+ * not remounted when the chat tab is left) or a page reload. A session from
+ * a previous day is left alone either way — adhoc chat is scoped to a daily
+ * window, so a stale one is created lazily on the first send instead.
+ *
+ * When a morning/evening session is restored as active, today's adhoc
+ * session (if any) is also fetched and kept in `adhocSnapshotRef` so ending
+ * the restored meeting can return to the adhoc conversation without an
+ * extra round-trip, exactly like `startSession` already does.
  */
 export function useChat(): UseChatResult {
   const [entries, setEntries] = useState<ChatEntry[]>([]);
@@ -126,12 +136,41 @@ export function useChat(): UseChatResult {
   useEffect(() => {
     let cancelled = false;
 
-    loadTodaysSession("adhoc")
-      .then(({ session, messages }) => {
+    fetchSessions()
+      .then(async (sessions) => {
+        const { active, adhoc } = selectRestoreSessions(sessions, new Date());
+
+        if (active !== null && active.type !== "adhoc") {
+          // An unfinished morning/evening session takes priority: restore it
+          // as active, and separately restore today's adhoc conversation (if
+          // any) into the snapshot so `endSession` has somewhere to return.
+          const [activeMessages, adhocMessages] = await Promise.all([
+            fetchSessionMessages(active.id),
+            adhoc !== null ? fetchSessionMessages(adhoc.id) : Promise.resolve([]),
+          ]);
+          if (cancelled) {
+            return;
+          }
+          sessionIdRef.current = active.id;
+          adhocSnapshotRef.current = {
+            sessionId: adhoc?.id ?? null,
+            entries: adhocMessages.map(messageEntry),
+          };
+          setSessionType(active.type);
+          setEntries(activeMessages.map(messageEntry));
+          setStatus("ready");
+          return;
+        }
+
+        // No open meeting today: fall back to restoring the adhoc
+        // conversation, exactly like before this feature (adhocSnapshotRef
+        // stays null, matching the "started fresh in adhoc" state).
+        const messages =
+          active !== null ? await fetchSessionMessages(active.id) : [];
         if (cancelled) {
           return;
         }
-        sessionIdRef.current = session?.id ?? null;
+        sessionIdRef.current = active?.id ?? null;
         setEntries(messages.map(messageEntry));
         setStatus("ready");
       })

@@ -7,6 +7,7 @@ import {
   within,
 } from "@testing-library/react";
 import AppLayout from "./AppLayout";
+import type { ChatMessage, ChatSession } from "./chat";
 import type { Task } from "./task";
 
 function makeTask(overrides: Partial<Task> & { id: number }): Task {
@@ -32,8 +33,16 @@ function createRoutedFetchMock(options: {
   tasks?: Task[];
   onCreateTask?: (body: unknown) => Task;
   onPatchTask?: (id: number, body: unknown) => Task;
+  sessions?: ChatSession[];
+  sessionMessages?: Record<number, ChatMessage[]>;
 } = {}) {
-  const { tasks = [], onCreateTask, onPatchTask } = options;
+  const {
+    tasks = [],
+    onCreateTask,
+    onPatchTask,
+    sessions = [],
+    sessionMessages = {},
+  } = options;
 
   const jsonResponse = (status: number, body: unknown) =>
     Promise.resolve({
@@ -79,6 +88,15 @@ function createRoutedFetchMock(options: {
         ),
       );
     }
+    // chatState (Issue #93: useChat is lifted up to AppLayout, so it fetches
+    // on mount regardless of which view is active).
+    if (url === "/api/sessions" && method === "GET") {
+      return jsonResponse(200, sessions);
+    }
+    const messagesMatch = /^\/api\/sessions\/(\d+)\/messages$/.exec(url);
+    if (messagesMatch && method === "GET") {
+      return jsonResponse(200, sessionMessages[Number(messagesMatch[1])] ?? []);
+    }
     return Promise.reject(new Error(`unexpected fetch call: ${method} ${url}`));
   });
 }
@@ -96,6 +114,7 @@ beforeEach(() => {
 
 afterEach(() => {
   vi.unstubAllGlobals();
+  vi.useRealTimers();
 });
 
 describe("AppLayout", () => {
@@ -336,6 +355,66 @@ describe("AppLayout", () => {
     expect(
       screen.queryByRole("main", { name: "ボスとの対話" }),
     ).not.toBeInTheDocument();
+  });
+
+  it("keeps the chat conversation across a chat -> tasks -> chat round trip (Issue #93)", async () => {
+    // The chat conversation is now lifted up to AppLayout (Issue #93), so
+    // switching away from and back to the chat tab must not lose it — this
+    // is the direct regression test for the bug the ticket fixes.
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(new Date(2026, 6, 5, 12, 0, 0));
+
+    const chatSession: ChatSession = {
+      id: 7,
+      type: "adhoc",
+      started_at: new Date(2026, 6, 5, 9, 0, 0).toISOString(),
+      ended_at: null,
+      summary: null,
+    };
+    const chatMessages: ChatMessage[] = [
+      {
+        id: 1,
+        session_id: 7,
+        role: "user",
+        content: "おはようございます",
+        created_at: chatSession.started_at,
+      },
+    ];
+    vi.stubGlobal(
+      "fetch",
+      createRoutedFetchMock({
+        sessions: [chatSession],
+        sessionMessages: { 7: chatMessages },
+      }),
+    );
+
+    render(<AppLayout />);
+    // Let the dashboard's (default view's) own mount fetches settle first,
+    // so their later state updates don't land outside act() once the test
+    // has moved on to the chat/tasks views below.
+    await waitFor(() =>
+      expect(
+        within(screen.getByRole("complementary", { name: "サイドパネル" })).getByText(
+          "0 / 0 件完了（0%）",
+        ),
+      ).toBeInTheDocument(),
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "チャット" }));
+    await waitFor(() =>
+      expect(screen.getByText("おはようございます")).toBeInTheDocument(),
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "タスク" }));
+    await waitFor(() =>
+      expect(screen.getByRole("main", { name: "タスクボード" })).toBeInTheDocument(),
+    );
+    expect(screen.queryByText("おはようございます")).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "チャット" }));
+    await waitFor(() =>
+      expect(screen.getByText("おはようございます")).toBeInTheDocument(),
+    );
   });
 
   it("switches the main area to the settings view when the settings nav item is clicked", () => {

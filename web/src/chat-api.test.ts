@@ -4,6 +4,7 @@ import {
   endSession,
   fetchLatestSession,
   fetchSessionMessages,
+  fetchSessions,
   sendChatMessage,
 } from "./chat-api";
 import type { ChatMessage, ChatSession, ChatToolEvent } from "./chat";
@@ -107,6 +108,34 @@ describe("fetchLatestSession", () => {
     );
 
     await expect(fetchLatestSession("adhoc")).rejects.toThrow("invalid type");
+  });
+});
+
+describe("fetchSessions", () => {
+  it("fetches the unfiltered session list", async () => {
+    const morningSession: ChatSession = { ...SAMPLE_SESSION, id: 2, type: "morning" };
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      json: () => Promise.resolve([morningSession, SAMPLE_SESSION]),
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(fetchSessions()).resolves.toEqual([morningSession, SAMPLE_SESSION]);
+    expect(fetchMock).toHaveBeenCalledWith("/api/sessions");
+  });
+
+  it("throws the server-provided error message on failure", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue({
+        ok: false,
+        status: 500,
+        json: () => Promise.resolve({ error: "database is locked" }),
+      }),
+    );
+
+    await expect(fetchSessions()).rejects.toThrow("database is locked");
   });
 });
 
