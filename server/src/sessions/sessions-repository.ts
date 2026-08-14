@@ -1,4 +1,5 @@
 import type Database from "better-sqlite3";
+import { toDateKey } from "../detection/time-utils.js";
 import type { Session, SessionType } from "./session.js";
 
 export interface NewSessionRecord {
@@ -64,6 +65,54 @@ export function endSession(
   db.prepare("UPDATE sessions SET ended_at = ? WHERE id = ?").run(now, id);
 
   return findSessionById(db, id);
+}
+
+export type CreateSessionResult =
+  | { ok: true; session: Session }
+  | { ok: false; code: "evening_session_already_exists" };
+
+/**
+ * Whether an evening session whose `started_at` falls on `today`'s local
+ * calendar date already exists, regardless of whether it has ended
+ * (`ended_at`). A finished evening session still counts: the product rule is
+ * "resume the existing evening session to redo the day's evening chat"
+ * (docs/features/daily-report.md), not "one evening session while one is
+ * open".
+ */
+function hasTodaysEveningSession(db: Database.Database, today: string): boolean {
+  return listSessions(db, { type: "evening" }).some(
+    (session) => toDateKey(new Date(session.started_at)) === today,
+  );
+}
+
+/**
+ * Creates a new session, atomically enforcing "at most one evening session
+ * per local calendar day" (docs/features/daily-report.md — "夕会の1日1回制限の
+ * 原子性"). The existence check and the INSERT run inside a single
+ * `db.transaction`, so a concurrent request cannot interleave between the
+ * check and the write on this single-process/single-writer SQLite
+ * connection. Morning and adhoc sessions are never limited and always
+ * succeed. This is the entry point `POST /api/sessions` should call; the
+ * plain `insertSession` above stays unrestricted for other call sites
+ * (schedulers, tests, other repositories) that need to seed sessions without
+ * the daily-limit check.
+ */
+export function createSession(
+  db: Database.Database,
+  record: NewSessionRecord,
+): CreateSessionResult {
+  const attempt = db.transaction((): CreateSessionResult => {
+    if (record.type === "evening") {
+      const today = toDateKey(new Date());
+      if (hasTodaysEveningSession(db, today)) {
+        return { ok: false, code: "evening_session_already_exists" };
+      }
+    }
+
+    return { ok: true, session: insertSession(db, record) };
+  });
+
+  return attempt();
 }
 
 export interface ListSessionsFilter {
