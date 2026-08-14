@@ -7,6 +7,11 @@ const ROLE_LABELS = { user: "自分", boss: "ボス" } as const;
 
 const SESSION_TYPE_LABELS = { morning: "朝会中", evening: "夕会中" } as const;
 
+const SESSION_END_LABELS = {
+  morning: "朝会を終了",
+  evening: "夕会を終了",
+} as const;
+
 function toolNoticeText(tool: ChatToolEvent): string {
   if (tool.isError) {
     return `タスク操作に失敗しました（${tool.name}）`;
@@ -52,10 +57,23 @@ function ChatView() {
   } = useChat();
   const [draft, setDraft] = useState("");
   const bottomRef = useRef<HTMLDivElement>(null);
+  const inputRef = useRef<HTMLTextAreaElement>(null);
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView?.({ block: "end" });
   }, [entries, streamingText]);
+
+  // Grow the input with its content. Resetting to "auto" first lets it shrink
+  // again when lines are removed; the min/max bounds live in ChatView.css so
+  // the clamp is expressed once.
+  useEffect(() => {
+    const input = inputRef.current;
+    if (input === null) {
+      return;
+    }
+    input.style.height = "auto";
+    input.style.height = `${input.scrollHeight}px`;
+  }, [draft]);
 
   if (status === "loading") {
     return <p className="chat-status">会話履歴を読み込み中…</p>;
@@ -66,14 +84,34 @@ function ChatView() {
 
   const canSend = !sending && !switching && draft.trim().length > 0;
 
-  const handleSubmit = (event: React.FormEvent) => {
-    event.preventDefault();
+  const submitDraft = () => {
     if (!canSend) {
       return;
     }
     const content = draft.trim();
     setDraft("");
     void send(content);
+  };
+
+  const handleSubmit = (event: React.FormEvent) => {
+    event.preventDefault();
+    submitDraft();
+  };
+
+  const handleKeyDown = (event: React.KeyboardEvent<HTMLTextAreaElement>) => {
+    // Shift+Enter is the newline; plain Enter always means "send", so it never
+    // inserts a line break even when the draft is not sendable yet.
+    if (event.key !== "Enter" || event.shiftKey) {
+      return;
+    }
+    // An Enter that commits an IME conversion (Japanese input) must reach the
+    // IME, not the send handler. `keyCode === 229` is the same signal for
+    // engines that do not report `isComposing`.
+    if (event.nativeEvent.isComposing || event.keyCode === 229) {
+      return;
+    }
+    event.preventDefault();
+    submitDraft();
   };
 
   return (
@@ -106,7 +144,7 @@ function ChatView() {
               onClick={() => void endSession()}
               disabled={switching || sending}
             >
-              セッションを終了
+              {SESSION_END_LABELS[sessionType]}
             </button>
           </>
         )}
@@ -129,10 +167,12 @@ function ChatView() {
         </p>
       )}
       <form className="chat-input" onSubmit={handleSubmit}>
-        <input
-          type="text"
+        <textarea
+          ref={inputRef}
+          rows={1}
           value={draft}
           onChange={(event) => setDraft(event.target.value)}
+          onKeyDown={handleKeyDown}
           placeholder="ボスに相談する…"
           aria-label="メッセージ"
           disabled={sending || switching}

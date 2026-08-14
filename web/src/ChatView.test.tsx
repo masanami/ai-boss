@@ -155,6 +155,152 @@ describe("ChatView", () => {
     expect(screen.getByLabelText("メッセージ")).toHaveValue("");
   });
 
+  it("renders the message input as a multi-line textarea", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValueOnce(jsonResponse([])));
+
+    render(<ChatView />);
+    await waitFor(() =>
+      expect(screen.getByLabelText("メッセージ")).toBeEnabled(),
+    );
+
+    expect(screen.getByLabelText("メッセージ").tagName).toBe("TEXTAREA");
+  });
+
+  it("sends the draft when Enter is pressed without a modifier", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi
+        .fn()
+        .mockResolvedValueOnce(jsonResponse([SESSION]))
+        .mockResolvedValueOnce(jsonResponse([]))
+        .mockResolvedValueOnce(
+          sseResponse([
+            `event: done\ndata: ${JSON.stringify(BOSS_REPLY)}\n\n`,
+          ]),
+        ),
+    );
+
+    render(<ChatView />);
+    await waitFor(() =>
+      expect(screen.getByLabelText("メッセージ")).toBeEnabled(),
+    );
+
+    const input = screen.getByLabelText("メッセージ");
+    fireEvent.change(input, { target: { value: "相談があります" } });
+    fireEvent.keyDown(input, { key: "Enter" });
+
+    await waitFor(() =>
+      expect(screen.getByText("B 案件は後回しにしろ。")).toBeInTheDocument(),
+    );
+    expect(input).toHaveValue("");
+  });
+
+  it("does not send the draft when Shift+Enter is pressed (newline)", async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(jsonResponse([SESSION]))
+      .mockResolvedValueOnce(jsonResponse([]));
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(<ChatView />);
+    await waitFor(() =>
+      expect(screen.getByLabelText("メッセージ")).toBeEnabled(),
+    );
+    fetchMock.mockClear();
+
+    const input = screen.getByLabelText("メッセージ");
+    fireEvent.change(input, { target: { value: "一行目" } });
+
+    // jsdom は keydown の既定動作（textarea への改行挿入）を実行しないため、
+    // 「送信されないこと」だけを見ると preventDefault する実装でも通ってしまう。
+    // キャンセル可能なイベントを dispatch し、既定動作が妨げられていない
+    // （＝ブラウザなら改行が挿入される）ことまで検証する。
+    const shiftEnter = new KeyboardEvent("keydown", {
+      key: "Enter",
+      shiftKey: true,
+      bubbles: true,
+      cancelable: true,
+    });
+    fireEvent(input, shiftEnter);
+
+    expect(shiftEnter.defaultPrevented).toBe(false);
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(input).toHaveValue("一行目");
+  });
+
+  it("does not send the draft when Enter confirms an IME composition", async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(jsonResponse([SESSION]))
+      .mockResolvedValueOnce(jsonResponse([]));
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(<ChatView />);
+    await waitFor(() =>
+      expect(screen.getByLabelText("メッセージ")).toBeEnabled(),
+    );
+    fetchMock.mockClear();
+
+    const input = screen.getByLabelText("メッセージ");
+    fireEvent.change(input, { target: { value: "そうだん" } });
+    fireEvent.keyDown(input, { key: "Enter", isComposing: true });
+
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(input).toHaveValue("そうだん");
+  });
+
+  it("does not send on Enter while the draft is whitespace only", async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(jsonResponse([SESSION]))
+      .mockResolvedValueOnce(jsonResponse([]));
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(<ChatView />);
+    await waitFor(() =>
+      expect(screen.getByLabelText("メッセージ")).toBeEnabled(),
+    );
+    fetchMock.mockClear();
+
+    const input = screen.getByLabelText("メッセージ");
+    fireEvent.change(input, { target: { value: "   \n  " } });
+    fireEvent.keyDown(input, { key: "Enter" });
+
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(screen.getByRole("button", { name: "送信" })).toBeDisabled();
+  });
+
+  it("keeps the newlines of a multi-line message when rendering it", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi
+        .fn()
+        .mockResolvedValueOnce(jsonResponse([SESSION]))
+        .mockResolvedValueOnce(jsonResponse([]))
+        .mockResolvedValueOnce(
+          sseResponse([
+            `event: done\ndata: ${JSON.stringify(BOSS_REPLY)}\n\n`,
+          ]),
+        ),
+    );
+
+    render(<ChatView />);
+    await waitFor(() =>
+      expect(screen.getByLabelText("メッセージ")).toBeEnabled(),
+    );
+
+    const input = screen.getByLabelText("メッセージ");
+    fireEvent.change(input, { target: { value: "一行目\n二行目" } });
+    fireEvent.keyDown(input, { key: "Enter" });
+
+    // The default text normalizer collapses the newline, so the raw
+    // textContent is what proves it survived rendering (`white-space:
+    // pre-wrap` in ChatView.css turns it into a visible line break).
+    const bubble = await screen.findByText("一行目 二行目");
+    expect(bubble).toHaveClass("chat-message-content");
+    expect(bubble.textContent).toBe("一行目\n二行目");
+  });
+
   it("disables the send button while the draft is empty", async () => {
     vi.stubGlobal("fetch", vi.fn().mockResolvedValueOnce(jsonResponse([])));
 
@@ -304,7 +450,7 @@ describe("ChatView", () => {
 
     await waitFor(() => expect(screen.getByText("朝会中")).toBeInTheDocument());
     expect(
-      screen.getByRole("button", { name: "セッションを終了" }),
+      screen.getByRole("button", { name: "朝会を終了" }),
     ).toBeInTheDocument();
     expect(
       screen.queryByRole("button", { name: "朝会を開始" }),
@@ -333,7 +479,7 @@ describe("ChatView", () => {
     fireEvent.click(screen.getByRole("button", { name: "朝会を開始" }));
     await waitFor(() => expect(screen.getByText("朝会中")).toBeInTheDocument());
 
-    fireEvent.click(screen.getByRole("button", { name: "セッションを終了" }));
+    fireEvent.click(screen.getByRole("button", { name: "朝会を終了" }));
 
     await waitFor(() =>
       expect(
@@ -367,6 +513,9 @@ describe("ChatView", () => {
     fireEvent.click(screen.getByRole("button", { name: "夕会を開始" }));
 
     await waitFor(() => expect(screen.getByText("夕会中")).toBeInTheDocument());
+    expect(
+      screen.getByRole("button", { name: "夕会を終了" }),
+    ).toBeInTheDocument();
   });
 
   it("disables the send button and message input while a session switch is in flight", async () => {
