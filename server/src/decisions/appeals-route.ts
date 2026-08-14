@@ -1,6 +1,5 @@
 import type { Hono } from "hono";
 import type Database from "better-sqlite3";
-import type Anthropic from "@anthropic-ai/sdk";
 import { readJsonBody } from "../lib/read-json-body.js";
 import { listTasks, findTaskById } from "../tasks/tasks-repository.js";
 import {
@@ -12,9 +11,19 @@ import {
 import { insertAppeal } from "./appeals-repository.js";
 import { resolveBossSettings } from "../boss/boss-settings.js";
 import { buildPersonaPrompt } from "../boss/persona-prompt.js";
-import { createClaudeClient, createBossMessage } from "../llm/claude-client.js";
+import type { LlmBackend } from "../config.js";
+import {
+  createClaudeClient,
+  requestVerdict,
+  type BossLlmClient,
+  type VerdictOutcome,
+} from "../llm/claude-client.js";
 import { validateAppealInput } from "./appeals-validation.js";
-import { SUBMIT_VERDICT_TOOL, parseVerdictToolInput } from "./verdict-tool.js";
+import {
+  SUBMIT_VERDICT_TOOL,
+  parseVerdictToolInput,
+  type VerdictInput,
+} from "./verdict-tool.js";
 import type { Decision } from "./decision.js";
 import type { Appeal } from "./appeal.js";
 
@@ -32,12 +41,6 @@ const GENERIC_VERDICT_ERROR_MESSAGE = "ボスの再裁定中にエラーが発�
  * transaction so the two writes can't race each other.
  */
 class DecisionNoLongerActiveError extends Error {}
-
-function isToolUseBlock(
-  block: Anthropic.ContentBlock,
-): block is Anthropic.ToolUseBlock {
-  return block.type === "tool_use";
-}
 
 function buildAppealUserMessage(
   decision: Decision,
@@ -64,11 +67,16 @@ function buildAppealUserMessage(
  * objection to a decision, re-adjudicated by the boss (Claude, forced to
  * call `submit_verdict` in a single round — no streaming, no task tools;
  * see the ticket's explicit assumptions).
+ *
+ * `llmBackend` is threaded down from `loadConfig(env).llmBackend`, with no
+ * default here (the default lives at the single `app.ts` boundary — see
+ * `CreateAppOptions.llmBackend`'s doc comment).
  */
 export function registerAppealsRoute(
   router: Hono,
   db: Database.Database,
   env: NodeJS.ProcessEnv,
+  llmBackend: LlmBackend,
 ): void {
   router.post("/:id/appeals", async (c) => {
     const rawId = c.req.param("id");
@@ -93,9 +101,9 @@ export function registerAppealsRoute(
       return c.json({ error: validation.error }, 400);
     }
 
-    let client: Anthropic;
+    let client: BossLlmClient;
     try {
-      client = createClaudeClient(env);
+      client = createClaudeClient(env, llmBackend);
     } catch (err) {
       const message =
         err instanceof Error
@@ -120,15 +128,20 @@ export function registerAppealsRoute(
       validation.data.content,
     );
 
-    let finalMessage: Anthropic.Message;
+    let verdictOutcome: VerdictOutcome<VerdictInput>;
     try {
-      finalMessage = await createBossMessage(client, {
-        model,
-        system,
-        messages: [{ role: "user", content: userMessage }],
-        tools: [SUBMIT_VERDICT_TOOL],
-        toolChoice: { type: "tool", name: "submit_verdict" },
-      });
+      verdictOutcome = await requestVerdict(
+        client,
+        {
+          model,
+          system,
+          messages: [{ role: "user", content: userMessage }],
+          tools: [SUBMIT_VERDICT_TOOL],
+          toolChoice: { type: "tool", name: "submit_verdict" },
+        },
+        "submit_verdict",
+        parseVerdictToolInput,
+      );
     } catch (err) {
       // Only log the error's class name — see chat-messages-route.ts for the
       // same critical discipline (Claude API errors may embed request
@@ -140,19 +153,17 @@ export function registerAppealsRoute(
       return c.json({ error: GENERIC_VERDICT_ERROR_MESSAGE }, 500);
     }
 
-    const toolUse = finalMessage.content.find(isToolUseBlock);
-    if (!toolUse) {
+    if (!verdictOutcome.called) {
       console.error("appeal verdict response did not call submit_verdict");
       return c.json({ error: GENERIC_VERDICT_ERROR_MESSAGE }, 500);
     }
 
-    const parsed = parseVerdictToolInput(toolUse.input);
-    if (!parsed.valid) {
-      console.error("appeal verdict tool input invalid:", parsed.error);
+    if (!verdictOutcome.result.valid) {
+      console.error("appeal verdict tool input invalid:", verdictOutcome.result.error);
       return c.json({ error: GENERIC_VERDICT_ERROR_MESSAGE }, 500);
     }
 
-    const { verdict, response, revisedContent, revisedRationale } = parsed.data;
+    const { verdict, response, revisedContent, revisedRationale } = verdictOutcome.result.data;
 
     let transactionResult: {
       appeal: Appeal;

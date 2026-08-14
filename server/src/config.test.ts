@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { loadConfig } from "./config.js";
+import { loadConfig, resolveLlmBackend } from "./config.js";
 
 describe("loadConfig", () => {
   beforeEach(() => {
@@ -66,5 +66,57 @@ describe("loadConfig", () => {
       .flat()
       .join(" ");
     expect(allLoggedArgs).not.toContain(secretKey);
+  });
+
+  it("defaults llmBackend to api when LLM_BACKEND is not set", () => {
+    const config = loadConfig({});
+
+    expect(config.llmBackend).toBe("api");
+  });
+
+  it("uses llmBackend as api when LLM_BACKEND=api is set", () => {
+    const config = loadConfig({ LLM_BACKEND: "api" });
+
+    expect(config.llmBackend).toBe("api");
+  });
+
+  it("uses llmBackend as claude-code when LLM_BACKEND=claude-code is set", () => {
+    const config = loadConfig({ LLM_BACKEND: "claude-code" });
+
+    expect(config.llmBackend).toBe("claude-code");
+  });
+
+  it("throws with an error message including the allowed values when LLM_BACKEND is invalid", () => {
+    expect(() => loadConfig({ LLM_BACKEND: "invalid-value" })).toThrow(
+      /api.*claude-code|claude-code.*api/,
+    );
+  });
+
+  it("throws with an error message including the allowed values when LLM_BACKEND is an empty string", () => {
+    expect(() => loadConfig({ LLM_BACKEND: "" })).toThrow(
+      /api.*claude-code|claude-code.*api/,
+    );
+  });
+
+  it("does not warn about ANTHROPIC_API_KEY when llmBackend is claude-code", () => {
+    loadConfig({ LLM_BACKEND: "claude-code" });
+
+    expect(console.warn).not.toHaveBeenCalled();
+  });
+});
+
+describe("resolveLlmBackend", () => {
+  it("resolves to api when LLM_BACKEND is not set (Issue #79 — used directly by boss-comment.ts/notification-body.ts)", () => {
+    expect(resolveLlmBackend({})).toBe("api");
+  });
+
+  it("resolves to claude-code when LLM_BACKEND=claude-code", () => {
+    expect(resolveLlmBackend({ LLM_BACKEND: "claude-code" })).toBe("claude-code");
+  });
+
+  it("throws with an error message including the allowed values for an invalid value", () => {
+    expect(() => resolveLlmBackend({ LLM_BACKEND: "invalid-value" })).toThrow(
+      /api.*claude-code|claude-code.*api/,
+    );
   });
 });

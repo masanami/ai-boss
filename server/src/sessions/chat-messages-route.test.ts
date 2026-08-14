@@ -1,6 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type Database from "better-sqlite3";
-import type Anthropic from "@anthropic-ai/sdk";
 import { openDatabase } from "../db/connection.js";
 import { runMigrations } from "../db/migrate.js";
 import { listTasks } from "../tasks/tasks-repository.js";
@@ -53,20 +52,28 @@ function parseSseEvents(raw: string): SseEvent[] {
     });
 }
 
-function fakeTextMessage(text: string): Anthropic.Message {
-  return {
-    content: text ? [{ type: "text", text, citations: null }] : [],
-  } as unknown as Anthropic.Message;
+interface FakeBossLlmMessage {
+  content: unknown[];
 }
 
-function fakeToolUseMessage(
-  id: string,
-  name: string,
-  input: Record<string, unknown>,
-): Anthropic.Message {
+interface StreamBossMessageCallbacks {
+  onTextDelta?: (delta: string) => void;
+  onToolEvent?: (event: {
+    name: string;
+    input: unknown;
+    result: string;
+    isError: boolean;
+  }) => void | Promise<void>;
+  executeTool?: (
+    name: string,
+    input: unknown,
+  ) => { content: string; isError: boolean } | Promise<{ content: string; isError: boolean }>;
+}
+
+function fakeTextMessage(text: string): FakeBossLlmMessage {
   return {
-    content: [{ type: "tool_use", id, name, input }],
-  } as unknown as Anthropic.Message;
+    content: text ? [{ type: "text", text }] : [],
+  };
 }
 
 async function readJson<T>(res: Response): Promise<T> {
@@ -131,6 +138,40 @@ describe("POST /api/sessions/:id/messages", () => {
     expect(streamBossMessageMock).not.toHaveBeenCalled();
   });
 
+  it("defaults to the api backend when no llmBackend option is passed to createApp", async () => {
+    const session = await createSession();
+    streamBossMessageMock.mockResolvedValue(fakeTextMessage("了解した"));
+    const app = createApp(db, env);
+
+    const res = await app.request(`/api/sessions/${session.id}/messages`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ content: "こんにちは" }),
+    });
+    expect(res.status).toBe(200);
+    const events = parseSseEvents(await res.text());
+    expect(events.find((e) => e.event === "done")).toBeDefined();
+
+    expect(createClaudeClientMock).toHaveBeenCalledWith(env, "api");
+  });
+
+  it("passes the configured llmBackend (loadConfig 由来) through to createClaudeClient", async () => {
+    const session = await createSession();
+    streamBossMessageMock.mockResolvedValue(fakeTextMessage("了解した"));
+    const app = createApp(db, env, { llmBackend: "claude-code" });
+
+    const res = await app.request(`/api/sessions/${session.id}/messages`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ content: "こんにちは" }),
+    });
+    expect(res.status).toBe(200);
+    const events = parseSseEvents(await res.text());
+    expect(events.find((e) => e.event === "done")).toBeDefined();
+
+    expect(createClaudeClientMock).toHaveBeenCalledWith(env, "claude-code");
+  });
+
   it("returns 500 JSON without leaking the api key when the Claude client cannot be created", async () => {
     const session = await createSession();
     createClaudeClientMock.mockImplementationOnce(() => {
@@ -178,11 +219,13 @@ describe("POST /api/sessions/:id/messages", () => {
 
   it("streams text deltas and a final done event with the persisted boss message", async () => {
     const session = await createSession();
-    streamBossMessageMock.mockImplementation(async (_client, _request, onTextDelta) => {
-      onTextDelta?.("今日は");
-      onTextDelta?.("資料作成からだ");
-      return fakeTextMessage("今日は資料作成からだ");
-    });
+    streamBossMessageMock.mockImplementation(
+      async (_client, _request, callbacks: StreamBossMessageCallbacks) => {
+        callbacks.onTextDelta?.("今日は");
+        callbacks.onTextDelta?.("資料作成からだ");
+        return fakeTextMessage("今日は資料作成からだ");
+      },
+    );
     const app = createApp(db, env);
 
     const res = await app.request(`/api/sessions/${session.id}/messages`, {
@@ -249,7 +292,11 @@ describe("POST /api/sessions/:id/messages", () => {
           expect.objectContaining({ role: "user", content: "進捗どうですか" }),
         ]),
       }),
-      expect.any(Function),
+      expect.objectContaining({
+        onTextDelta: expect.any(Function),
+        executeTool: expect.any(Function),
+        onToolEvent: expect.any(Function),
+      }),
     );
     expect(streamBossMessageMock.mock.calls[0][1].system).toContain("資料作成");
   });
@@ -277,20 +324,29 @@ describe("POST /api/sessions/:id/messages", () => {
       expect.objectContaining({
         system: expect.stringContaining("朝会（計画セッション）"),
       }),
-      expect.any(Function),
+      expect.objectContaining({
+        onTextDelta: expect.any(Function),
+        executeTool: expect.any(Function),
+        onToolEvent: expect.any(Function),
+      }),
     );
   });
 
-  it("executes a create_task tool call, emits a tool event, and continues the conversation", async () => {
+  it("executes a create_task tool call via the streamBossMessage callbacks, emits a tool event, and finalizes with the resulting text", async () => {
     const session = await createSession();
-    streamBossMessageMock
-      .mockImplementationOnce(async () =>
-        fakeToolUseMessage("tool_1", "create_task", { title: "資料作成" }),
-      )
-      .mockImplementationOnce(async (_client, _request, onTextDelta) => {
-        onTextDelta?.("タスクを作成した");
+    streamBossMessageMock.mockImplementation(
+      async (_client, _request, callbacks: StreamBossMessageCallbacks) => {
+        const result = await callbacks.executeTool!("create_task", { title: "資料作成" });
+        await callbacks.onToolEvent?.({
+          name: "create_task",
+          input: { title: "資料作成" },
+          result: result.content,
+          isError: result.isError,
+        });
+        callbacks.onTextDelta?.("タスクを作成した");
         return fakeTextMessage("タスクを作成した");
-      });
+      },
+    );
     const app = createApp(db, env);
 
     const res = await app.request(`/api/sessions/${session.id}/messages`, {
@@ -300,7 +356,7 @@ describe("POST /api/sessions/:id/messages", () => {
     });
 
     const events = parseSseEvents(await res.text());
-    expect(streamBossMessageMock).toHaveBeenCalledTimes(2);
+    expect(streamBossMessageMock).toHaveBeenCalledTimes(1);
 
     const tasks = listTasks(db);
     expect(tasks).toHaveLength(1);
@@ -320,28 +376,25 @@ describe("POST /api/sessions/:id/messages", () => {
     const doneEvent = events.find((e) => e.event === "done");
     const bossMessage = JSON.parse(doneEvent!.data) as Message;
     expect(bossMessage.content).toBe("タスクを作成した");
-
-    // second round's request must include the assistant tool_use turn and
-    // the tool_result turn so Claude can see what happened
-    const secondCallRequest = streamBossMessageMock.mock.calls[1][1];
-    const roles = secondCallRequest.messages.map(
-      (m: { role: string }) => m.role,
-    );
-    expect(roles).toEqual(["user", "assistant", "user"]);
   });
 
-  it("executes a record_decision tool call, persists it under the session's id, and emits a tool event", async () => {
+  it("executes a record_decision tool call via the streamBossMessage callbacks, persists it under the session's id, and emits a tool event", async () => {
     const session = await createSession();
-    streamBossMessageMock
-      .mockImplementationOnce(async () =>
-        fakeToolUseMessage("tool_1", "record_decision", {
+    streamBossMessageMock.mockImplementation(
+      async (_client, _request, callbacks: StreamBossMessageCallbacks) => {
+        const result = await callbacks.executeTool!("record_decision", {
           content: "資料作成を最優先にする",
-        }),
-      )
-      .mockImplementationOnce(async (_client, _request, onTextDelta) => {
-        onTextDelta?.("そう決めた");
+        });
+        await callbacks.onToolEvent?.({
+          name: "record_decision",
+          input: { content: "資料作成を最優先にする" },
+          result: result.content,
+          isError: result.isError,
+        });
+        callbacks.onTextDelta?.("そう決めた");
         return fakeTextMessage("そう決めた");
-      });
+      },
+    );
     const app = createApp(db, env);
 
     const res = await app.request(`/api/sessions/${session.id}/messages`, {
@@ -351,7 +404,7 @@ describe("POST /api/sessions/:id/messages", () => {
     });
 
     const events = parseSseEvents(await res.text());
-    expect(streamBossMessageMock).toHaveBeenCalledTimes(2);
+    expect(streamBossMessageMock).toHaveBeenCalledTimes(1);
 
     const decisions = listDecisions(db);
     expect(decisions).toHaveLength(1);
@@ -381,11 +434,18 @@ describe("POST /api/sessions/:id/messages", () => {
 
   it("marks the tool result as an error and does not persist a decision when record_decision content is missing", async () => {
     const session = await createSession();
-    streamBossMessageMock
-      .mockImplementationOnce(async () =>
-        fakeToolUseMessage("tool_1", "record_decision", {}),
-      )
-      .mockImplementationOnce(async () => fakeTextMessage("わかった"));
+    streamBossMessageMock.mockImplementation(
+      async (_client, _request, callbacks: StreamBossMessageCallbacks) => {
+        const result = await callbacks.executeTool!("record_decision", {});
+        await callbacks.onToolEvent?.({
+          name: "record_decision",
+          input: {},
+          result: result.content,
+          isError: result.isError,
+        });
+        return fakeTextMessage("わかった");
+      },
+    );
     const app = createApp(db, env);
 
     const res = await app.request(`/api/sessions/${session.id}/messages`, {
@@ -398,17 +458,27 @@ describe("POST /api/sessions/:id/messages", () => {
     const toolEvent = events.find((e) => e.event === "tool");
     const toolPayload = JSON.parse(toolEvent!.data) as { isError: boolean };
     expect(toolPayload.isError).toBe(true);
-    expect(streamBossMessageMock).toHaveBeenCalledTimes(2);
+    expect(streamBossMessageMock).toHaveBeenCalledTimes(1);
     expect(listDecisions(db)).toHaveLength(0);
   });
 
-  it("marks the tool result as an error and still continues when the tool call is invalid", async () => {
+  it("marks the tool result as an error and still finalizes when the tool call is invalid", async () => {
     const session = await createSession();
-    streamBossMessageMock
-      .mockImplementationOnce(async () =>
-        fakeToolUseMessage("tool_1", "update_task", { id: 9999, priority: "high" }),
-      )
-      .mockImplementationOnce(async () => fakeTextMessage("わかった"));
+    streamBossMessageMock.mockImplementation(
+      async (_client, _request, callbacks: StreamBossMessageCallbacks) => {
+        const result = await callbacks.executeTool!("update_task", {
+          id: 9999,
+          priority: "high",
+        });
+        await callbacks.onToolEvent?.({
+          name: "update_task",
+          input: { id: 9999, priority: "high" },
+          result: result.content,
+          isError: result.isError,
+        });
+        return fakeTextMessage("わかった");
+      },
+    );
     const app = createApp(db, env);
 
     const res = await app.request(`/api/sessions/${session.id}/messages`, {
@@ -421,13 +491,27 @@ describe("POST /api/sessions/:id/messages", () => {
     const toolEvent = events.find((e) => e.event === "tool");
     const toolPayload = JSON.parse(toolEvent!.data) as { isError: boolean };
     expect(toolPayload.isError).toBe(true);
-    expect(streamBossMessageMock).toHaveBeenCalledTimes(2);
+    expect(streamBossMessageMock).toHaveBeenCalledTimes(1);
   });
 
-  it("stops after 5 rounds when Claude keeps requesting tool use, finalizing with the accumulated text", async () => {
+  it("persists a tool-summary fallback text (and reflects it in the done event) when tools ran but no text was streamed", async () => {
     const session = await createSession();
-    streamBossMessageMock.mockImplementation(async () =>
-      fakeToolUseMessage("tool_x", "create_task", { title: "無限タスク" }),
+    streamBossMessageMock.mockImplementation(
+      async (_client, _request, callbacks: StreamBossMessageCallbacks) => {
+        const result = await callbacks.executeTool!("create_task", { title: "無限タスク" });
+        await callbacks.onToolEvent?.({
+          name: "create_task",
+          input: { title: "無限タスク" },
+          result: result.content,
+          isError: result.isError,
+        });
+        // No onTextDelta call at all — simulates the round-cap case where
+        // the facade's tool loop exhausted MAX_TOOL_ROUNDS without ever
+        // producing text (that loop itself is now tested in
+        // claude-client.test.ts; this test only pins the route's own
+        // buildFallbackText(toolSummaries) persistence/SSE contract).
+        return fakeTextMessage("");
+      },
     );
     const app = createApp(db, env);
 
@@ -438,13 +522,13 @@ describe("POST /api/sessions/:id/messages", () => {
     });
     const events = parseSseEvents(await res.text());
 
-    expect(streamBossMessageMock).toHaveBeenCalledTimes(5);
-    expect(listTasks(db)).toHaveLength(5);
+    expect(listTasks(db)).toHaveLength(1);
 
     const doneEvent = events.find((e) => e.event === "done");
     const bossMessage = JSON.parse(doneEvent!.data) as Message;
-    expect(bossMessage.content).not.toBe("");
-    expect(bossMessage.content).toContain("タスク「無限タスク」を作成");
+    expect(bossMessage.content).toBe(
+      "タスク「無限タスク」を作成した。詳細はタスクボードで確認してくれ。",
+    );
 
     const persisted = db
       .prepare("SELECT * FROM messages WHERE session_id = ? AND role = 'boss'")
@@ -473,8 +557,8 @@ describe("POST /api/sessions/:id/messages", () => {
   it("persists the partial boss text when the stream fails midway", async () => {
     const session = await createSession();
     streamBossMessageMock.mockImplementationOnce(
-      async (_client, _request, onTextDelta) => {
-        (onTextDelta as (delta: string) => void)("途中までの応答");
+      async (_client, _request, callbacks: StreamBossMessageCallbacks) => {
+        callbacks.onTextDelta?.("途中までの応答");
         throw new Error("connection reset with request id xyz789");
       },
     );

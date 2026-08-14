@@ -9,6 +9,7 @@ import { createCheckinsRouter } from "./activity/checkins-routes.js";
 import { createDecisionsRouter } from "./decisions/decisions-routes.js";
 import { createDashboardRouter } from "./dashboard/dashboard-routes.js";
 import { createSettingsRouter } from "./settings/settings-routes.js";
+import { DEFAULT_LLM_BACKEND, type LlmBackend } from "./config.js";
 
 function checkDatabaseConnection(db: Database.Database): boolean {
   try {
@@ -27,14 +28,29 @@ export interface CreateAppOptions {
    * API only and the Vite dev server handles the frontend.
    */
   staticRoot?: string;
+  /**
+   * LLM backend for the chat (`sessions`) and re-adjudication (`decisions`)
+   * routes, resolved by the caller via `loadConfig(env).llmBackend`
+   * (`index.ts`) and threaded through to `createClaudeClient`. Defaults to
+   * {@link DEFAULT_LLM_BACKEND} for callers that don't pass it (most tests).
+   *
+   * Dashboard comment / notification-body generation are not wired to this
+   * option — but they are still backend-aware: those two call sites
+   * (`dashboard/boss-comment.ts`, `notifications/notification-body.ts`)
+   * resolve the backend themselves via `resolveLlmBackend(env)` (Issue #79),
+   * since they already receive the full `env` independently of this
+   * `createApp` option.
+   */
+  llmBackend?: LlmBackend;
 }
 
 /**
  * Creates the Hono application. Routes are namespaced under `/api`.
  *
- * `env` defaults to `process.env` and is only consulted by the chat message
- * route (Claude API key resolution); it is threaded through explicitly so
- * tests can inject a fake environment without mutating global state.
+ * `env` defaults to `process.env` and is threaded through explicitly (so
+ * tests can inject a fake environment without mutating global state) to
+ * every router that needs Claude client resolution: sessions (chat),
+ * decisions (re-adjudication), and dashboard (boss comment).
  */
 export function createApp(
   db: Database.Database,
@@ -42,16 +58,17 @@ export function createApp(
   options: CreateAppOptions = {},
 ): Hono {
   const api = new Hono();
+  const llmBackend: LlmBackend = options.llmBackend ?? DEFAULT_LLM_BACKEND;
 
   api.get("/health", (c) => {
     return c.json({ status: "ok", db: checkDatabaseConnection(db) });
   });
 
   api.route("/tasks", createTasksRouter(db));
-  api.route("/sessions", createSessionsRouter(db, env));
+  api.route("/sessions", createSessionsRouter(db, env, llmBackend));
   api.route("/checkins", createCheckinsRouter(db));
   api.route("/activity", createActivityRouter(db));
-  api.route("/decisions", createDecisionsRouter(db, env));
+  api.route("/decisions", createDecisionsRouter(db, env, llmBackend));
   api.route("/dashboard", createDashboardRouter(db, env));
   api.route("/settings", createSettingsRouter(db));
 

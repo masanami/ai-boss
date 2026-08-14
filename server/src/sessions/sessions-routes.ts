@@ -12,6 +12,7 @@ import {
 import { validateCreateSessionInput } from "./sessions-validation.js";
 import { listMessagesBySessionId } from "./messages-repository.js";
 import { registerChatMessageRoute } from "./chat-messages-route.js";
+import type { LlmBackend } from "../config.js";
 
 function isValidSessionType(value: string): value is SessionType {
   return SESSION_TYPES.includes(value as SessionType);
@@ -19,11 +20,14 @@ function isValidSessionType(value: string): value is SessionType {
 
 /**
  * Creates the sessions sub-router, mounted under `/api/sessions` by the
- * caller.
+ * caller. `env`/`llmBackend` have no defaults here — the only caller,
+ * `app.ts`, always resolves and passes both explicitly (see
+ * `CreateAppOptions.llmBackend`'s doc comment for where the default lives).
  */
 export function createSessionsRouter(
   db: Database.Database,
-  env: NodeJS.ProcessEnv = process.env,
+  env: NodeJS.ProcessEnv,
+  llmBackend: LlmBackend,
 ): Hono {
   const sessions = new Hono();
 
@@ -77,7 +81,7 @@ export function createSessionsRouter(
     return c.json(listMessagesBySessionId(db, id));
   });
 
-  registerChatMessageRoute(sessions, db, env);
+  registerChatMessageRoute(sessions, db, env, llmBackend);
 
   return sessions;
 }
