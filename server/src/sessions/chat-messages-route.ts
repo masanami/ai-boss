@@ -16,7 +16,7 @@ import {
   type BossLlmClient,
   type BossToolExecutor,
 } from "../llm/claude-client.js";
-import { findSessionById } from "./sessions-repository.js";
+import { findSessionById, listRecentSessionSummaries } from "./sessions-repository.js";
 import { insertMessage, listMessagesBySessionId } from "./messages-repository.js";
 import { validateChatMessageInput } from "./sessions-validation.js";
 import type { Message } from "./message.js";
@@ -116,10 +116,15 @@ export function registerChatMessageRoute(
 
     const tasks = listTasks(db);
     const recentDecisions = listRecentDecisions(db, 5);
+    // Same "5 most recent" convention as recentDecisions above (Issue #96 —
+    // 直近の報告履歴の参照). Feeds AC-2: the boss can refer back to recent
+    // morning/evening reports without the user re-explaining them.
+    const recentSessionSummaries = listRecentSessionSummaries(db, 5);
     const { model, persona } = resolveBossSettings(db);
     const system = buildPersonaPrompt(persona, {
       tasks,
       recentDecisions,
+      recentSessionSummaries,
       now: new Date(),
       sessionType: session.type,
     });

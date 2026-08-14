@@ -8,10 +8,12 @@ import {
   findSessionById,
   insertSession,
   listSessions,
+  updateSessionSummary,
 } from "./sessions-repository.js";
 import { validateCreateSessionInput } from "./sessions-validation.js";
 import { listMessagesBySessionId } from "./messages-repository.js";
 import { registerChatMessageRoute } from "./chat-messages-route.js";
+import { generateSessionSummary } from "./session-summary.js";
 import type { LlmBackend } from "../config.js";
 
 function isValidSessionType(value: string): value is SessionType {
@@ -58,13 +60,35 @@ export function createSessionsRouter(
     return c.json(session, 201);
   });
 
-  sessions.post("/:id/end", (c) => {
+  // Issue #96: summary generation runs synchronously here (awaited before the
+  // response) rather than fire-and-forget, mirroring
+  // `dashboard-routes.ts`'s `await getOrGenerateBossComment(...)` precedent
+  // of an in-request LLM call. This makes AC-1 ("ending saves a summary")
+  // deterministically testable at the route layer, at the cost of the end
+  // button taking a few extra seconds to respond (explicit trade-off, see
+  // the Issue #96 PR description).
+  sessions.post("/:id/end", async (c) => {
     const rawId = c.req.param("id");
     const id = Number(rawId);
 
     const session = endSession(db, id);
     if (!session) {
       return c.json({ error: `session ${rawId} not found` }, 404);
+    }
+
+    // adhoc sessions are never summarized (decision 3, Issue #96 — no natural
+    // "end" trigger in the UI for them). Sessions that already carry a
+    // summary are left untouched: re-ending must not re-generate/overwrite
+    // (avoids a redundant LLM call and an overwrite hazard on idempotent
+    // re-end calls).
+    if (session.type !== "adhoc" && session.summary === null) {
+      const summary = await generateSessionSummary(db, env, llmBackend, id);
+      if (summary !== null) {
+        const updated = updateSessionSummary(db, id, summary);
+        if (updated) {
+          return c.json(updated, 200);
+        }
+      }
     }
 
     return c.json(session, 200);

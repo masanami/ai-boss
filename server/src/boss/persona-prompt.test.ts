@@ -179,6 +179,87 @@ describe("buildPersonaPrompt", () => {
     expect(prompt).toContain("A案件を最優先にする");
   });
 
+  describe("直近の報告履歴（recentSessionSummaries）", () => {
+    it("recentSessionSummaries が省略されているとき、報告履歴なしの文言を含む（後方互換）", () => {
+      const prompt = buildPersonaPrompt(DEFAULT_PERSONA_SETTINGS, {
+        tasks: [],
+        recentDecisions: [],
+        now,
+      });
+
+      expect(prompt).toContain("直近の報告履歴はまだありません");
+    });
+
+    it("recentSessionSummaries が空配列のとき、報告履歴なしの文言を含む", () => {
+      const prompt = buildPersonaPrompt(DEFAULT_PERSONA_SETTINGS, {
+        tasks: [],
+        recentDecisions: [],
+        recentSessionSummaries: [],
+        now,
+      });
+
+      expect(prompt).toContain("直近の報告履歴はまだありません");
+    });
+
+    it("recentSessionSummaries があるとき、日付・種別ラベル・内容がプロンプトに含まれる", () => {
+      const prompt = buildPersonaPrompt(DEFAULT_PERSONA_SETTINGS, {
+        tasks: [],
+        recentDecisions: [],
+        recentSessionSummaries: [
+          {
+            type: "morning",
+            content: "資料作成を最優先にすることを決定した",
+            reportedAt: "2026-01-15T09:00:00.000Z",
+          },
+        ],
+        now,
+      });
+
+      expect(prompt).toContain("2026-01-15");
+      expect(prompt).toContain("朝会");
+      expect(prompt).toContain("資料作成を最優先にすることを決定した");
+    });
+
+    it("type: evening は「夕会」ラベルで表示される", () => {
+      const prompt = buildPersonaPrompt(DEFAULT_PERSONA_SETTINGS, {
+        tasks: [],
+        recentDecisions: [],
+        recentSessionSummaries: [
+          { type: "evening", content: "今日の進捗", reportedAt: "2026-01-15T09:00:00.000Z" },
+        ],
+        now,
+      });
+
+      expect(prompt).toContain("夕会");
+    });
+
+    it("type: adhoc は「相談」ラベルで表示される", () => {
+      const prompt = buildPersonaPrompt(DEFAULT_PERSONA_SETTINGS, {
+        tasks: [],
+        recentDecisions: [],
+        recentSessionSummaries: [
+          { type: "adhoc", content: "相談内容", reportedAt: "2026-01-15T09:00:00.000Z" },
+        ],
+        now,
+      });
+
+      expect(prompt).toContain("相談");
+    });
+
+    it("「直近の決定:」セクションの直後に「直近の報告履歴:」セクションが続く", () => {
+      const prompt = buildPersonaPrompt(DEFAULT_PERSONA_SETTINGS, {
+        tasks: [],
+        recentDecisions: [],
+        now,
+      });
+
+      const decisionsIndex = prompt.indexOf("直近の決定:");
+      const summariesIndex = prompt.indexOf("直近の報告履歴:");
+      expect(decisionsIndex).toBeGreaterThan(-1);
+      expect(summariesIndex).toBeGreaterThan(decisionsIndex);
+    });
+  });
+
   it.each([
     [4, "夜"],
     [5, "朝"],

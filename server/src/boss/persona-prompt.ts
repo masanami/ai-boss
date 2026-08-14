@@ -38,6 +38,18 @@ export interface RecentDecision {
   decidedAt: string;
 }
 
+/**
+ * 直近の報告履歴（セッション要約）の表示に必要な最小情報。`sessions.summary`
+ * （Issue #96 `session-summary.ts` が生成）を `sessions-repository.ts` の
+ * `listRecentSessionSummaries` がこの形にマッピングして渡す。`RecentDecision`
+ * と同じ「呼び出し側でマッピングして渡す」流儀。
+ */
+export interface RecentSessionSummary {
+  type: SessionType;
+  content: string;
+  reportedAt: string;
+}
+
 export type PromptPurpose = "chat" | "notification";
 
 export interface PersonaPromptContext {
@@ -45,6 +57,13 @@ export interface PersonaPromptContext {
   tasks: Task[];
   /** 直近の決定（新しい順を想定） */
   recentDecisions: RecentDecision[];
+  /**
+   * 直近の報告履歴（朝会/夕会の要約、新しい順を想定）。任意プロパティ:
+   * 既存の呼び出し元（`notification-body.ts` / `boss-comment.ts`）は
+   * decisions と違い当面これを渡さないため、未指定時は空配列として扱う
+   * （後方互換）。
+   */
+  recentSessionSummaries?: RecentSessionSummary[];
   /** 現在時刻（時間帯ヒントの算出に使う。呼び出し側が注入する） */
   now: Date;
   /** 用途。省略時は "chat"（通知文面は "notification" でより短い文章を要求） */
@@ -146,6 +165,33 @@ function formatDecisionSection(decisions: RecentDecision[]): string {
   return decisions.map(formatDecisionLine).join("\n");
 }
 
+// resolveStrictnessDescription と同じ防御的フォールバックの作法: DB 由来の
+// `type` が将来 SessionType の想定外の値を持っていても "undefined" を
+// プロンプトに出さない。
+const SESSION_TYPE_LABELS: Record<SessionType, string> = {
+  morning: "朝会",
+  evening: "夕会",
+  adhoc: "相談",
+};
+
+function resolveSessionTypeLabel(type: SessionType): string {
+  return SESSION_TYPE_LABELS[type] ?? "セッション";
+}
+
+// 日時は formatDecisionLine と同じく保存されている ISO 文字列をそのまま出す。
+// 先頭10文字へ切り詰めると UTC 基準の日付になり、JST 午前9時より前に行った
+// セッションが前日として提示されてしまう（保存値は toISOString() 由来の UTC）。
+function formatSessionSummaryLine(summary: RecentSessionSummary): string {
+  return `- ${summary.reportedAt} ${resolveSessionTypeLabel(summary.type)}: ${summary.content}`;
+}
+
+function formatSessionSummarySection(summaries: RecentSessionSummary[]): string {
+  if (summaries.length === 0) {
+    return "直近の報告履歴はまだありません。";
+  }
+  return summaries.map(formatSessionSummaryLine).join("\n");
+}
+
 // 朝会/夕会のガイドはシステムプロンプトによる誘導のみで実現し、ステップ管理の
 // 状態機械はサーバーに持たない（Issue #47 明示的な仮定）。
 const MORNING_FLOW_INSTRUCTION =
@@ -193,6 +239,7 @@ export function buildPersonaPrompt(
     TIME_OF_DAY_HINTS[timeOfDay],
     `現在のタスク一覧:\n${formatTaskSection(context.tasks)}`,
     `直近の決定:\n${formatDecisionSection(context.recentDecisions)}`,
+    `直近の報告履歴:\n${formatSessionSummarySection(context.recentSessionSummaries ?? [])}`,
   ];
 
   if (settings.customInstructions) {
