@@ -210,8 +210,20 @@ describe("ChatView", () => {
 
     const input = screen.getByLabelText("メッセージ");
     fireEvent.change(input, { target: { value: "一行目" } });
-    fireEvent.keyDown(input, { key: "Enter", shiftKey: true });
 
+    // jsdom は keydown の既定動作（textarea への改行挿入）を実行しないため、
+    // 「送信されないこと」だけを見ると preventDefault する実装でも通ってしまう。
+    // キャンセル可能なイベントを dispatch し、既定動作が妨げられていない
+    // （＝ブラウザなら改行が挿入される）ことまで検証する。
+    const shiftEnter = new KeyboardEvent("keydown", {
+      key: "Enter",
+      shiftKey: true,
+      bubbles: true,
+      cancelable: true,
+    });
+    fireEvent(input, shiftEnter);
+
+    expect(shiftEnter.defaultPrevented).toBe(false);
     expect(fetchMock).not.toHaveBeenCalled();
     expect(input).toHaveValue("一行目");
   });
