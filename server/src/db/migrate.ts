@@ -1,6 +1,6 @@
 import type Database from "better-sqlite3";
 
-const LATEST_VERSION = 2;
+const LATEST_VERSION = 3;
 
 const MIGRATIONS: Record<number, string> = {
   1: `
@@ -86,6 +86,19 @@ const MIGRATIONS: Record<number, string> = {
   // v1 の appeals テーブル定義は変更しない（既存 CHECK 制約はそのまま）。
   2: `
     ALTER TABLE appeals ADD COLUMN response TEXT;
+  `,
+  // 日報生成（#100 / #106）: 1日1行・再生成は同日行の UPSERT（上書き）で保存する
+  // daily_reports テーブルを新設。既存テーブルの変更は行わない
+  // （docs/features/daily-report.md「クリティカル設計決定 > DB スキーマ」）。
+  3: `
+    CREATE TABLE IF NOT EXISTS daily_reports (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      date TEXT NOT NULL UNIQUE,           -- ローカル日付キー（toDateKey 形式）
+      content TEXT NOT NULL,               -- 日報 Markdown 全文
+      evening_session_id INTEGER NOT NULL REFERENCES sessions(id),
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
   `,
 };
 
