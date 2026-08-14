@@ -60,6 +60,15 @@ function createRoutedFetchMock(options: {
     if (url === "/api/activity/today") {
       return jsonResponse(200, []);
     }
+    if (url === "/api/reports" && method === "GET") {
+      return jsonResponse(200, []);
+    }
+    if (/^\/api\/reports\/\d{4}-\d{2}-\d{2}$/.test(url) && method === "GET") {
+      return jsonResponse(404, {
+        error: "report not found",
+        code: "report_not_found",
+      });
+    }
     if (url === "/api/tasks" && method === "GET") {
       return jsonResponse(200, tasks);
     }
@@ -99,7 +108,7 @@ afterEach(() => {
 });
 
 describe("AppLayout", () => {
-  it("renders the five nav placeholder items", () => {
+  it("renders the six nav placeholder items", () => {
     render(<AppLayout />);
 
     expect(
@@ -115,6 +124,7 @@ describe("AppLayout", () => {
     expect(
       screen.getByRole("button", { name: "決定ログ" }),
     ).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "日報" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "設定" })).toBeInTheDocument();
   });
 
@@ -333,6 +343,19 @@ describe("AppLayout", () => {
     expect(
       screen.getByRole("main", { name: "決定ログ" }),
     ).toBeInTheDocument();
+    expect(
+      screen.queryByRole("main", { name: "ボスとの対話" }),
+    ).not.toBeInTheDocument();
+  });
+
+  it("switches the main area to the daily report view when the report nav item is clicked", () => {
+    // 既定の（解決しない）fetch スタブのままでよい: main のラベル切り替えだけを
+    // 確認する（決定ログ・設定の既存スイッチテストと同じ作法）。
+    render(<AppLayout />);
+
+    fireEvent.click(screen.getByRole("button", { name: "日報" }));
+
+    expect(screen.getByRole("main", { name: "日報" })).toBeInTheDocument();
     expect(
       screen.queryByRole("main", { name: "ボスとの対話" }),
     ).not.toBeInTheDocument();
