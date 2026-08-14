@@ -30,7 +30,6 @@
       "Bash(gh pr:*)",
       "Bash(gh api:*)",
       "Bash(gh repo view:*)",
-      "Bash(bash /Users/masami/.claude/plugins/cache/masanami-harness/claude-harness/:*)",
       "Bash(bash \"/Users/masami/.claude/plugins/cache/masanami-harness/claude-harness/3.2.0/scripts/analyze-project.sh\":*)",
       "Bash(bash \"/Users/masami/.claude/plugins/cache/masanami-harness/claude-harness/3.2.0/scripts/check-e2e-traceability.sh\":*)",
       "Bash(bash \"/Users/masami/.claude/plugins/cache/masanami-harness/claude-harness/3.2.0/scripts/check-subtask-completion.sh\":*)",
