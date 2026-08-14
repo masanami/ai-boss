@@ -3,6 +3,7 @@ import ChatView from "./ChatView";
 import CheckinPanel from "./CheckinPanel";
 import ConnectionStatus from "./ConnectionStatus";
 import Dashboard from "./Dashboard";
+import DailyReportView from "./DailyReportView";
 import DecisionLog from "./DecisionLog";
 import SettingsView from "./SettingsView";
 import TaskBoard from "./TaskBoard";
@@ -11,7 +12,13 @@ import { useHealthCheck } from "./use-health-check";
 import { useTasks } from "./use-tasks";
 import "./AppLayout.css";
 
-type AppView = "dashboard" | "chat" | "tasks" | "decisions" | "settings";
+type AppView =
+  | "dashboard"
+  | "chat"
+  | "tasks"
+  | "decisions"
+  | "reports"
+  | "settings";
 
 interface NavItem {
   label: string;
@@ -23,6 +30,7 @@ const NAV_ITEMS: NavItem[] = [
   { label: "チャット", view: "chat" },
   { label: "タスク", view: "tasks" },
   { label: "決定ログ", view: "decisions" },
+  { label: "日報", view: "reports" },
   { label: "設定", view: "settings" },
 ];
 
@@ -79,6 +87,11 @@ function AppLayout() {
         {activeView === "decisions" && (
           <main className="app-main" aria-label="決定ログ">
             <DecisionLog />
+          </main>
+        )}
+        {activeView === "reports" && (
+          <main className="app-main" aria-label="日報">
+            <DailyReportView />
           </main>
         )}
         {activeView === "settings" && (
