@@ -226,6 +226,35 @@ describe("buildPersonaPrompt", () => {
     expect(prompt).toContain("通知文面として使われる");
   });
 
+  it("purpose が daily-report のとき、submit_evening_summary ツールでの3値提出を促す指示を含み、Markdown構造を指示しない", () => {
+    const prompt = buildPersonaPrompt(DEFAULT_PERSONA_SETTINGS, {
+      tasks: [],
+      recentDecisions: [],
+      now,
+      purpose: "daily-report",
+    });
+
+    expect(prompt).toContain("submit_evening_summary");
+    expect(prompt).toContain("報告の要点");
+    expect(prompt).toContain("ボスの講評");
+    expect(prompt).toContain("翌日への持ち越し");
+    expect(prompt).not.toContain("#");
+    expect(prompt).not.toContain("通知文面として使われる");
+  });
+
+  it("purpose が daily-report のとき、チャット向けの共通指示（見積もり確認）・セッションフロー指示を含まない", () => {
+    const prompt = buildPersonaPrompt(DEFAULT_PERSONA_SETTINGS, {
+      tasks: [],
+      recentDecisions: [],
+      now,
+      purpose: "daily-report",
+      sessionType: "evening",
+    });
+
+    expect(prompt).not.toContain("チャットからタスクを新規作成する");
+    expect(prompt).not.toContain("夕会（報告セッション）");
+  });
+
   describe("sessionType によるセッションフロー指示", () => {
     it("sessionType: 'morning' のとき、優先順位・ノルマの決定を促す文言を含む", () => {
       const prompt = buildPersonaPrompt(DEFAULT_PERSONA_SETTINGS, {
