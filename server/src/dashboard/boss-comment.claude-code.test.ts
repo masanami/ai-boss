@@ -3,6 +3,7 @@ import type Database from "better-sqlite3";
 import { openDatabase } from "../db/connection.js";
 import { runMigrations } from "../db/migrate.js";
 import { getCachedBossComment } from "./boss-comment-cache.js";
+import { computeTaskFingerprint } from "./task-fingerprint.js";
 
 /**
  * AC-10 (Issue #79): exercises `getOrGenerateBossComment` end-to-end through
@@ -68,7 +69,11 @@ describe("getOrGenerateBossComment (claude-code backend, end-to-end via the real
     const comment = await getOrGenerateBossComment(db, env, now);
 
     expect(comment).toBe("今日も一日決めた通りにやれ");
-    expect(getCachedBossComment(db, "2026-07-06")).toBe("今日も一日決めた通りにやれ");
+    // This suite never creates tasks, so the fingerprint is the stable
+    // "zero tasks" value (Issue #121).
+    expect(getCachedBossComment(db, "2026-07-06", computeTaskFingerprint([]))).toBe(
+      "今日も一日決めた通りにやれ",
+    );
   });
 
   it("includes the FR-14 short-text instruction in the prompt sent to the Agent SDK", async () => {
@@ -89,7 +94,7 @@ describe("getOrGenerateBossComment (claude-code backend, end-to-end via the real
     const comment = await getOrGenerateBossComment(db, env, now);
 
     expect(comment).toBe("今日も決めたことを淡々とこなせ。");
-    expect(getCachedBossComment(db, "2026-07-06")).toBeUndefined();
+    expect(getCachedBossComment(db, "2026-07-06", computeTaskFingerprint([]))).toBeUndefined();
   });
 
   it("accepts a response exactly at the 全角80字 limit (boundary)", async () => {
