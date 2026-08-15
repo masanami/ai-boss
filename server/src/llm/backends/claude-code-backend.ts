@@ -336,6 +336,25 @@ export interface ClaudeCodeAvailabilityCheckDeps {
 }
 
 /**
+ * Static, secret-free guidance shown whenever the `claude-code` backend
+ * (the default since Issue #118) turns out to be unavailable — either at
+ * startup ({@link checkClaudeCodeAvailability}, best-effort) or at request
+ * time ({@link ClaudeCodeUnavailableError}, surfaced by `claude-client.ts`'s
+ * `dispatchStream`/`dispatchCreate`). Defined here (not in `claude-client.ts`)
+ * and re-exported by that module's facade, because `claude-client.ts` already
+ * imports from this module — defining it there and importing it back here
+ * would create a circular import.
+ *
+ * Deliberately static: per the "log class name only" discipline (see
+ * `ClaudeCodeUnavailableError`'s own doc comment above), callers never log
+ * `err.message`, so this is the only way to surface actionable guidance
+ * without risking request/environment details leaking into logs.
+ */
+export const CLAUDE_CODE_UNAVAILABLE_HINT =
+  "claude-code バックエンド（既定）が利用できません。Claude Code のインストール・ログイン状態を確認してください。" +
+  "Claude API 経路へ戻すには server/.env に LLM_BACKEND=api を設定し、ANTHROPIC_API_KEY を設定してください。";
+
+/**
  * FR-13 / AC-12: best-effort startup check of the `claude-code` backend's
  * execution environment. Runs the shared executable path's `--version`
  * (never a token-consuming call — no prompt is sent) and never throws: every
@@ -370,6 +389,7 @@ export async function checkClaudeCodeAvailability(
     if (!executablePath) {
       console.warn(
         "claude-code バックエンド: Claude Code 実行バイナリのパスを解決できませんでした。起動時の可用性確認をスキップします（サーバーの起動は継続します）。",
+        CLAUDE_CODE_UNAVAILABLE_HINT,
       );
       return;
     }
@@ -379,12 +399,14 @@ export async function checkClaudeCodeAvailability(
       console.warn(
         `claude-code バックエンド: 起動時の可用性確認に失敗しました（対象: ${executablePath}）。サーバーの起動は継続します。`,
         err instanceof Error ? err.name : typeof err,
+        CLAUDE_CODE_UNAVAILABLE_HINT,
       );
     }
   } catch (err) {
     console.warn(
       "claude-code バックエンド: 起動時の可用性確認中に予期しないエラーが発生しました。サーバーの起動は継続します。",
       err instanceof Error ? err.name : typeof err,
+      CLAUDE_CODE_UNAVAILABLE_HINT,
     );
   }
 }

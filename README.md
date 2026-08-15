@@ -16,7 +16,7 @@ AIが「上司（ボス）」を演じるセルフマネジメント支援アプ
 | フロントエンド | Vite + React + TypeScript |
 | バックエンド | Node.js + Hono（REST + SSE） |
 | DB | SQLite（better-sqlite3、完全ローカル保存） |
-| LLM | Claude API（`@anthropic-ai/sdk`） |
+| LLM | Claude Code（`@anthropic-ai/claude-agent-sdk`、既定・サブスクリプション認証） / Claude API（`@anthropic-ai/sdk`、`LLM_BACKEND=api` で切替・従量課金） |
 | 通知 | macOS 通知センター |
 
 対象OS: macOS
@@ -32,9 +32,14 @@ AIが「上司（ボス）」を演じるセルフマネジメント支援アプ
 
 ## セットアップ（予定）
 
+LLM バックエンドは既定で `claude-code`（Claude Code のログイン済み環境が前提・サブスクリプション認証、`ANTHROPIC_API_KEY` 不要）を使う。従来の Claude API 従量課金経路に切り替えるには、サーバー側 `.env` に `LLM_BACKEND=api` と `ANTHROPIC_API_KEY` を設定する（詳細は `server/.env.example`）。
+
 ```bash
-# Anthropic API キーをサーバー側 .env に設定（リポジトリにはコミットしない）
-echo "ANTHROPIC_API_KEY=sk-ant-..." > server/.env
+# 従来の Claude API 従量課金経路を使う場合のみ（リポジトリにはコミットしない）
+cat <<'EOF' > server/.env
+LLM_BACKEND=api
+ANTHROPIC_API_KEY=sk-ant-...
+EOF
 ```
 
 ## 起動

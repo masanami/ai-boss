@@ -98,7 +98,7 @@ describe("extractEveningSummary", () => {
       calledWithValid({ reportSummary: "a", bossComment: "b", carryOver: "なし" }),
     );
 
-    await extractEveningSummary(db, env, eveningMessages, now);
+    await extractEveningSummary(db, { ...env, LLM_BACKEND: "api" }, eveningMessages, now);
 
     expect(requestVerdictMock).toHaveBeenCalledTimes(1);
     const [, request, toolName] = requestVerdictMock.mock.calls[0];

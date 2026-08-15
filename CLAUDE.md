@@ -20,7 +20,7 @@ AI が「上司（ボス）」を演じるセルフマネジメント支援ア�
 | Frontend | Vite + React + TypeScript（`web/`） |
 | Backend | Node.js + Hono（REST + SSE）+ node-cron（`server/`） |
 | DB | SQLite（better-sqlite3、完全ローカル保存） |
-| LLM | Claude API（`@anthropic-ai/sdk`、既定モデル claude-sonnet-5・設定で変更可） |
+| LLM | 既定: Claude Code（`@anthropic-ai/claude-agent-sdk`、サブスクリプション認証・`ANTHROPIC_API_KEY` 不要）。`LLM_BACKEND=api` で Claude API（`@anthropic-ai/sdk`、従量課金）へ切替可（既定モデル claude-sonnet-5・設定で変更可、両バックエンド共通） |
 | Test | Vitest（unit / integration） |
 | Infra | macOS ローカル実行のみ。通知は terminal-notifier 優先 / osascript フォールバック |
 | Package | npm（workspaces: `server/` + `web/`） |

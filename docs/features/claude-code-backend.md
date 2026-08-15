@@ -2,7 +2,9 @@
 
 ## 概要
 
-LLM 呼び出しのバックエンドとして、現行の Claude API 直呼び（`@anthropic-ai/sdk`）に加え、Claude Agent SDK（`@anthropic-ai/claude-agent-sdk`、内部で Claude Code を実行）を選択可能にする。選択は `server/.env` の `LLM_BACKEND` で行い、既定は現行どおり Claude API とする。
+LLM 呼び出しのバックエンドとして、現行の Claude API 直呼び（`@anthropic-ai/sdk`）に加え、Claude Agent SDK（`@anthropic-ai/claude-agent-sdk`、内部で Claude Code を実行）を選択可能にする。選択は `server/.env` の `LLM_BACKEND` で行う。
+
+> **変更履歴（Issue #118）**: 本機能導入時（本チケット群）は既定を現行どおり `api` としていたが、Issue #118 で既定を `claude-code` に変更した。以下の FR-01・AC-01 は導入当時の記述（既定 `api`）のまま残し、変更箇所には注記を付す（過去の受入基準の記録を書き換えないため）。現在の既定・後方互換の仕様は Issue #118 のチケット本文および `server/src/config.ts` の `DEFAULT_LLM_BACKEND` を正とする。
 
 ## 背景・目的
 
@@ -15,7 +17,7 @@ ai-boss のオーナー（macOS ローカルで Claude Code を利用中のシ�
 
 ## 機能要件
 
-- [ ] FR-01: `server/.env` の `LLM_BACKEND` でバックエンドを選択できる。許容値は `api` と `claude-code` の 2 値。未設定時は `api` として動作する（後方互換）。
+- [ ] FR-01: `server/.env` の `LLM_BACKEND` でバックエンドを選択できる。許容値は `api` と `claude-code` の 2 値。未設定時は `api` として動作する（後方互換）。**（Issue #118 で変更）** 未設定時の既定は `claude-code` になった（`DEFAULT_LLM_BACKEND`）。`api` は `LLM_BACKEND=api` を明示すれば引き続き動作する（後方互換は維持、既定値のみ変更）。
 - [ ] FR-02: `LLM_BACKEND` が許容値以外の場合、サーバー起動時にエラーで停止し、許容値を含むメッセージを表示する（誤設定のまま意図しない課金経路で動くことを防ぐ）。
 - [ ] FR-03: `claude-code` バックエンドは、既存 4 呼び出し箇所（チャット `server/src/sessions/chat-messages-route.ts`・再裁定 `server/src/decisions/appeals-route.ts`・ダッシュボードコメント `server/src/dashboard/boss-comment.ts`・通知文面 `server/src/notifications/notification-body.ts`）のすべてで動作する（検証は AC-03・AC-04・AC-10 が対応する）。
 - [ ] FR-04: チャットの SSE 挙動は両バックエンドで同一の外部仕様とする。イベント契約（現行実装・`web/src` のクライアント型と同一）: `event: text`（データ `{text}`＝delta）、`event: tool`（データ `{name, input, result, isError}`。ツール ID を外部ペイロードに追加しない）、正常完了時 `event: done`（保存済みボスメッセージ）、ストリーム障害時 `event: error`。イベント順序は「text（0 回以上）→ tool（ツール使用時）→ 次ラウンドの text → … → done」とし、最終メッセージを DB に保存する。Agent SDK 出力からこの契約への変換規則はバックエンド内に閉じる。ただし Agent SDK が partial message 相当の逐次イベントを提供しない場合に限り、「前提・仮定（明示）」4 の縮退仕様（1 応答 1 text イベント）に従い、縮退時も本要件を満たすとみなす。
@@ -116,7 +118,7 @@ server/src/llm/
 
 ## 受入基準
 
-- [ ] AC-01: `LLM_BACKEND` 未設定で起動した場合、現行と同一の挙動（api バックエンド）で全既存テストが通過する。
+- [ ] AC-01: `LLM_BACKEND` 未設定で起動した場合、現行と同一の挙動（api バックエンド）で全既存テストが通過する。**（Issue #118 で変更）** `LLM_BACKEND` 未設定時の既定バックエンドは `claude-code` になった。`api` バックエンドでの動作は `LLM_BACKEND=api` を明示した場合に検証する（後方互換のテストは維持）。
 - [ ] AC-02: `LLM_BACKEND=不正値` で起動した場合、サーバーが起動せず、許容値（`api` / `claude-code`）を含むエラーメッセージが表示される。
 - [ ] AC-03: `LLM_BACKEND=claude-code` かつ `ANTHROPIC_API_KEY` 未設定で、チャット送信 → text delta の SSE 受信 → カスタムツール実行 → 応答保存、の一連が動作する（Agent SDK はモック。結合確認は walkthrough で実施）。ツール副作用（DB 書き込み）が 1 ツール呼び出しにつき一度だけ実行され、`event: tool` が 1 ツール実行につき一度だけ・FR-04 のペイロードと順序で送出されることを併せて検証する。「前提・仮定（明示）」4 の縮退仕様が発動した場合は「1 応答 1 text イベントの SSE 受信」で本基準を満たすとみなす。
 - [ ] AC-04: `claude-code` バックエンドで再裁定を実行し、submit_verdict ツール入力が現行と同じ検証（`parseVerdictToolInput`）を通過して裁定が保存される。検証と保存が 1 リクエストにつき一度だけ実行されることを併せて検証する。ツール未呼び出し時は HTTP 500 が返る。

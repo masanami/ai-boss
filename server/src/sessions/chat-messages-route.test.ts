@@ -139,7 +139,7 @@ describe("POST /api/sessions/:id/messages", () => {
     expect(streamBossMessageMock).not.toHaveBeenCalled();
   });
 
-  it("defaults to the api backend when no llmBackend option is passed to createApp", async () => {
+  it("defaults to the claude-code backend (DEFAULT_LLM_BACKEND, Issue #118) when no llmBackend option is passed to createApp", async () => {
     const session = await createSession();
     streamBossMessageMock.mockResolvedValue(fakeTextMessage("了解した"));
     const app = createApp(db, env);
@@ -153,7 +153,7 @@ describe("POST /api/sessions/:id/messages", () => {
     const events = parseSseEvents(await res.text());
     expect(events.find((e) => e.event === "done")).toBeDefined();
 
-    expect(createClaudeClientMock).toHaveBeenCalledWith(env, "api");
+    expect(createClaudeClientMock).toHaveBeenCalledWith(env, "claude-code");
   });
 
   it("passes the configured llmBackend (loadConfig 由来) through to createClaudeClient", async () => {

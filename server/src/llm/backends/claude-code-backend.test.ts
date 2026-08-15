@@ -39,6 +39,7 @@ const {
   resolveClaudeCodeExecutablePath,
   CLAUDE_CODE_EXECUTABLE_PATH,
   checkClaudeCodeAvailability,
+  CLAUDE_CODE_UNAVAILABLE_HINT,
 } = await import("./claude-code-backend.js");
 
 // ---------------------------------------------------------------------------
@@ -943,6 +944,31 @@ describe("checkClaudeCodeAvailability", () => {
 
     expect(execFile).not.toHaveBeenCalled();
     expect(console.warn).toHaveBeenCalled();
+  });
+
+  it("includes the LLM_BACKEND=api switch-back guidance (Issue #118) in every warning this function logs", async () => {
+    // Path-unresolvable case.
+    await checkClaudeCodeAvailability({
+      execFile: vi.fn(),
+      resolveExecutablePath: () => undefined,
+    });
+    // execFile-rejects case.
+    await checkClaudeCodeAvailability({
+      execFile: vi.fn().mockRejectedValue(Object.assign(new Error("spawn claude ENOENT"), { code: "ENOENT" })),
+      resolveExecutablePath: () => "/opt/claude-agent-sdk-darwin-arm64/claude",
+    });
+    // Unexpected synchronous-throw case.
+    await checkClaudeCodeAvailability({
+      execFile: vi.fn(),
+      resolveExecutablePath: () => {
+        throw new Error("unexpected synchronous failure");
+      },
+    });
+
+    expect(console.warn).toHaveBeenCalledTimes(3);
+    for (const call of vi.mocked(console.warn).mock.calls) {
+      expect(call).toContain(CLAUDE_CODE_UNAVAILABLE_HINT);
+    }
   });
 
   it("logs a warning and does not throw when resolveExecutablePath itself throws synchronously (structural 'never rejects' guarantee — self-review: design-reviewer)", async () => {

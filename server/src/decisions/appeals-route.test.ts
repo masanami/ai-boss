@@ -139,7 +139,7 @@ describe("POST /api/decisions/:id/appeals", () => {
     expect(requestVerdictMock).not.toHaveBeenCalled();
   });
 
-  it("defaults to the api backend when no llmBackend option is passed to createApp", async () => {
+  it("defaults to the claude-code backend (DEFAULT_LLM_BACKEND, Issue #118) when no llmBackend option is passed to createApp", async () => {
     const decision = createActiveDecision();
     requestVerdictMock.mockResolvedValue(
       calledWithValidVerdict({ verdict: "upheld", response: "維持する" }),
@@ -153,7 +153,7 @@ describe("POST /api/decisions/:id/appeals", () => {
     });
 
     expect(res.status).toBe(200);
-    expect(createClaudeClientMock).toHaveBeenCalledWith(env, "api");
+    expect(createClaudeClientMock).toHaveBeenCalledWith(env, "claude-code");
   });
 
   it("passes the configured llmBackend (loadConfig 由来) through to createClaudeClient", async () => {
