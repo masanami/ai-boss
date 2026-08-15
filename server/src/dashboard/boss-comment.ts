@@ -9,14 +9,18 @@ import {
   type BossTextBlock,
 } from "../llm/claude-client.js";
 import { listTasks } from "../tasks/tasks-repository.js";
+import type { Task } from "../tasks/task.js";
 import { toDateKey } from "../detection/time-utils.js";
 import { getCachedBossComment, setCachedBossComment } from "./boss-comment-cache.js";
+import { computeTaskFingerprint } from "./task-fingerprint.js";
 
 /**
  * ダッシュボードの「今日のひとこと」生成（Issue #58）。人格プロンプト生成器
- * （purpose: "notification"）＋ Claude クライアントで生成し、ローカル日付
- * 単位で `boss-comment-cache.ts` にキャッシュする。同日 2 回目以降のリクエスト
- * では Claude API を呼ばない。
+ * （purpose: "notification"）＋ Claude クライアントで生成し、`boss-comment-cache.ts`
+ * にキャッシュする。キャッシュキーはローカル日付**とタスク状態フィンガープリント
+ * の両方**（Issue #121。`task-fingerprint.ts`）: 同日中でもタスクが作成・更新
+ * されればフィンガープリントが変わり Claude を再度呼ぶ。日付・フィンガープリント
+ * の両方が前回と一致するリクエストに限り Claude を呼ばずキャッシュを返す。
  *
  * `notification-body.ts` と同じ契約: API キー未設定・API エラー・空応答の
  * いずれでも例外を投げず、必ず `FALLBACK_COMMENT` を返す（呼び出し元＝
@@ -83,13 +87,14 @@ async function generateBossComment(
   db: Database.Database,
   env: NodeJS.ProcessEnv,
   now: Date,
+  tasks: Task[],
 ): Promise<GenerationResult> {
   try {
     const backend = resolveLlmBackend(env);
     const client = createClaudeClient(env, backend);
     const { model, persona } = resolveBossSettings(db);
     const system = buildPersonaPrompt(persona, {
-      tasks: listTasks(db),
+      tasks,
       recentDecisions: [],
       now,
       purpose: "notification",
@@ -133,6 +138,14 @@ async function generateBossComment(
  * 今日のひとことをキャッシュから取得する。キャッシュが無ければ Claude で
  * 生成し、成功した場合のみキャッシュへ保存する（フォールバック文言は
  * キャッシュしない）。
+ *
+ * キャッシュキーは日付に加えてタスク状態のフィンガープリント（Issue #121）
+ * も使う。この関数の内部では `listTasks(db)` を一度だけ読み、その結果を
+ * フィンガープリント算出と LLM への `buildPersonaPrompt` 入力の両方に
+ * 使い回す（この関数内での読み取りの一貫性を保証し、この関数内での
+ * 二重クエリを避ける — Issue #121 の要件どおり、この関数の公開シグネチャは
+ * 変えていないため、呼び出し元 `dashboard-routes.ts` 側が別途行う
+ * `listTasks(db)`（進捗計算用）とは別の読み取りになる）。
  */
 export async function getOrGenerateBossComment(
   db: Database.Database,
@@ -140,15 +153,17 @@ export async function getOrGenerateBossComment(
   now: Date,
 ): Promise<string> {
   const todayKey = toDateKey(now);
+  const tasks = listTasks(db);
+  const fingerprint = computeTaskFingerprint(tasks);
 
-  const cached = getCachedBossComment(db, todayKey);
+  const cached = getCachedBossComment(db, todayKey, fingerprint);
   if (cached !== undefined) {
     return cached;
   }
 
-  const result = await generateBossComment(db, env, now);
+  const result = await generateBossComment(db, env, now, tasks);
   if (result.succeeded) {
-    setCachedBossComment(db, todayKey, result.text);
+    setCachedBossComment(db, todayKey, fingerprint, result.text);
   }
   return result.text;
 }

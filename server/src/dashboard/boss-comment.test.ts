@@ -3,7 +3,9 @@ import type Database from "better-sqlite3";
 import type Anthropic from "@anthropic-ai/sdk";
 import { openDatabase } from "../db/connection.js";
 import { runMigrations } from "../db/migrate.js";
+import { insertTask } from "../tasks/tasks-repository.js";
 import { getCachedBossComment } from "./boss-comment-cache.js";
+import { computeTaskFingerprint } from "./task-fingerprint.js";
 
 const { createClaudeClientMock, createBossMessageMock } = vi.hoisted(() => ({
   createClaudeClientMock: vi.fn(),
@@ -79,7 +81,9 @@ describe("getOrGenerateBossComment", () => {
 
     await getOrGenerateBossComment(db, env, now);
 
-    expect(getCachedBossComment(db, "2026-07-06")).toBe("今日も一日決めた通りにやれ");
+    expect(getCachedBossComment(db, "2026-07-06", computeTaskFingerprint([]))).toBe(
+      "今日も一日決めた通りにやれ",
+    );
   });
 
   it("does not call the Claude API again on a second same-day request (cache hit)", async () => {
@@ -144,5 +148,63 @@ describe("getOrGenerateBossComment", () => {
 
     expect(secondComment).toBe("回復後のひとこと");
     expect(createBossMessageMock).toHaveBeenCalledTimes(2);
+  });
+
+  // Issue #121 (reproduces #98): the cache key used to be date-only, so a
+  // task created after the first same-day request kept serving the stale
+  // "no tasks" comment. The fingerprint (id, updated_at) must change once a
+  // task exists, invalidating the cache even though the date hasn't changed.
+  it("regenerates on the same day once a task is created (Issue #121, reproduces #98)", async () => {
+    const first = new Date(2026, 6, 6, 8, 0);
+    const second = new Date(2026, 6, 6, 9, 0);
+    createBossMessageMock
+      .mockResolvedValueOnce(fakeTextMessage("タスクが無いときのひとこと"))
+      .mockResolvedValueOnce(fakeTextMessage("タスクがあるときのひとこと"));
+
+    const firstComment = await getOrGenerateBossComment(db, env, first);
+
+    insertTask(db, {
+      title: "新しいタスク",
+      description: null,
+      category: "work",
+      priority: null,
+      due_at: null,
+      status: "todo",
+      boss_comment: null,
+      estimated_minutes: null,
+    });
+
+    const secondComment = await getOrGenerateBossComment(db, env, second);
+
+    expect(firstComment).toBe("タスクが無いときのひとこと");
+    expect(secondComment).toBe("タスクがあるときのひとこと");
+    expect(secondComment).not.toBe(firstComment);
+    expect(createBossMessageMock).toHaveBeenCalledTimes(2);
+  });
+
+  // Cache validity with a non-empty, unchanged task set (fingerprint
+  // stability): the existing "cache hit" test above only covers the
+  // zero-tasks case, so this confirms the fingerprint itself doesn't churn
+  // when nothing about the tasks changes.
+  it("does not call the Claude API again when task state is unchanged, with existing tasks present", async () => {
+    insertTask(db, {
+      title: "既存タスク",
+      description: null,
+      category: "work",
+      priority: null,
+      due_at: null,
+      status: "todo",
+      boss_comment: null,
+      estimated_minutes: null,
+    });
+    const first = new Date(2026, 6, 6, 8, 0);
+    const second = new Date(2026, 6, 6, 20, 0);
+    createBossMessageMock.mockResolvedValue(fakeTextMessage("今日も一日決めた通りにやれ"));
+
+    const firstComment = await getOrGenerateBossComment(db, env, first);
+    const secondComment = await getOrGenerateBossComment(db, env, second);
+
+    expect(secondComment).toBe(firstComment);
+    expect(createBossMessageMock).toHaveBeenCalledTimes(1);
   });
 });
