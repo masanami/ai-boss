@@ -26,6 +26,9 @@ function TaskBoard({ tasksState }: TaskBoardProps) {
   const [dragOverStatus, setDragOverStatus] = useState<TaskStatus | null>(
     null,
   );
+  // ドラッグ中のタスク id（TaskCard から通知される）。ハイライトを「実際に
+  // ステータスが変わるドロップ」だけに限定するために保持する。
+  const [draggingTaskId, setDraggingTaskId] = useState<number | null>(null);
 
   useEffect(() => {
     // ボード表示（マウント）のたびに共有 tasks を再取得する。旧実装が
@@ -56,7 +59,18 @@ function TaskBoard({ tasksState }: TaskBoardProps) {
     event.dataTransfer.dropEffect = "move";
   };
 
+  // ハイライトは handleDrop が実際に更新する組み合わせだけに出す。外部から
+  // のドラッグ（draggingTaskId が null）・未知のタスク・同一カラムへのドロップ
+  // は drop が何もしないため、光らせると「落とせば動く」という誤った期待を
+  // 与える（レビュー指摘）。判定条件は handleDrop の早期 return と対で保つ。
   const handleDragEnter = (columnStatus: TaskStatus) => {
+    if (draggingTaskId === null) {
+      return;
+    }
+    const dragging = tasks.find((candidate) => candidate.id === draggingTaskId);
+    if (dragging === undefined || dragging.status === columnStatus) {
+      return;
+    }
     setDragOverStatus(columnStatus);
   };
 
@@ -79,6 +93,7 @@ function TaskBoard({ tasksState }: TaskBoardProps) {
   ) => {
     event.preventDefault();
     setDragOverStatus(null);
+    setDraggingTaskId(null);
 
     const raw = event.dataTransfer.getData(TASK_DRAG_DATA_TYPE);
     const id = Number(raw);
@@ -130,6 +145,7 @@ function TaskBoard({ tasksState }: TaskBoardProps) {
                         runAction(editTask(id, { status: newStatus }))
                       }
                       onEdit={(id, patch) => runAction(editTask(id, patch))}
+                      onDraggingChange={setDraggingTaskId}
                     />
                   </li>
                 ))}

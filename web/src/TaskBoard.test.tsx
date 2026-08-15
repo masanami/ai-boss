@@ -224,27 +224,107 @@ describe("TaskBoard", () => {
     expect(within(todoColumn).getByText("todoのタスク")).toBeInTheDocument();
   });
 
-  it("highlights the target column while dragging over it", () => {
-    const tasksState = makeTasksState();
+  it("highlights the target column while dragging a card over a different column", () => {
+    const task = makeTask({ id: 1, title: "todoのタスク", status: "todo" });
+    const tasksState = makeTasksState({ tasks: [task] });
 
     render(<TaskBoard tasksState={tasksState} />);
 
-    const dataTransfer = makeDataTransfer(1);
+    const dataTransfer = makeDataTransfer();
+    const card = screen.getByText("todoのタスク").closest(".task-card");
     const inProgressColumn = screen.getByRole("region", { name: "進行中" });
 
+    fireEvent.dragStart(card as Element, { dataTransfer });
     fireEvent.dragEnter(inProgressColumn, { dataTransfer });
 
     expect(inProgressColumn).toHaveClass("task-column-drag-over");
   });
 
-  it("clears the drag highlight on dragleave without a drop", () => {
-    const tasksState = makeTasksState();
+  // ハイライトは drop が実際に更新する組み合わせだけに出す。光ったのに何も
+  // 起きない状態を作らない（PR #125 レビュー指摘）。
+  it("does not highlight the column the dragged card already belongs to", () => {
+    const task = makeTask({ id: 1, title: "todoのタスク", status: "todo" });
+    const tasksState = makeTasksState({ tasks: [task] });
 
     render(<TaskBoard tasksState={tasksState} />);
 
+    const dataTransfer = makeDataTransfer();
+    const card = screen.getByText("todoのタスク").closest(".task-card");
+    const todoColumn = screen.getByRole("region", { name: "未着手" });
+
+    fireEvent.dragStart(card as Element, { dataTransfer });
+    fireEvent.dragEnter(todoColumn, { dataTransfer });
+
+    expect(todoColumn).not.toHaveClass("task-column-drag-over");
+  });
+
+  it("does not highlight any column for a drag that did not start from a card (external drag)", () => {
+    const task = makeTask({ id: 1, title: "todoのタスク", status: "todo" });
+    const tasksState = makeTasksState({ tasks: [task] });
+
+    render(<TaskBoard tasksState={tasksState} />);
+
+    // dragStart を経ていない＝アプリ外（ファイル等）からのドラッグ。
     const dataTransfer = makeDataTransfer(1);
     const inProgressColumn = screen.getByRole("region", { name: "進行中" });
 
+    fireEvent.dragEnter(inProgressColumn, { dataTransfer });
+
+    expect(inProgressColumn).not.toHaveClass("task-column-drag-over");
+  });
+
+  it("does not highlight when the dragged card is no longer in the task list", () => {
+    const task = makeTask({ id: 1, title: "todoのタスク", status: "todo" });
+    const tasksState = makeTasksState({ tasks: [task] });
+
+    const { rerender } = render(<TaskBoard tasksState={tasksState} />);
+
+    const dataTransfer = makeDataTransfer();
+    const card = screen.getByText("todoのタスク").closest(".task-card");
+    fireEvent.dragStart(card as Element, { dataTransfer });
+
+    // ドラッグ中に refresh 等でタスクが消えた場合（未知の id と同じ扱い）。
+    rerender(<TaskBoard tasksState={makeTasksState({ tasks: [] })} />);
+
+    const inProgressColumn = screen.getByRole("region", { name: "進行中" });
+    fireEvent.dragEnter(inProgressColumn, { dataTransfer });
+
+    expect(inProgressColumn).not.toHaveClass("task-column-drag-over");
+  });
+
+  it("clears the drag highlight when the drag ends without a drop (dragend)", () => {
+    const task = makeTask({ id: 1, title: "todoのタスク", status: "todo" });
+    const tasksState = makeTasksState({ tasks: [task] });
+
+    render(<TaskBoard tasksState={tasksState} />);
+
+    const dataTransfer = makeDataTransfer();
+    const card = screen.getByText("todoのタスク").closest(".task-card");
+    const inProgressColumn = screen.getByRole("region", { name: "進行中" });
+
+    fireEvent.dragStart(card as Element, { dataTransfer });
+    fireEvent.dragEnter(inProgressColumn, { dataTransfer });
+    expect(inProgressColumn).toHaveClass("task-column-drag-over");
+
+    // dragend 後は新たな dragEnter でもハイライトしない（状態が解除済み）。
+    fireEvent.dragEnd(card as Element, { dataTransfer });
+    fireEvent.dragLeave(inProgressColumn, { dataTransfer });
+    fireEvent.dragEnter(inProgressColumn, { dataTransfer });
+
+    expect(inProgressColumn).not.toHaveClass("task-column-drag-over");
+  });
+
+  it("clears the drag highlight on dragleave without a drop", () => {
+    const task = makeTask({ id: 1, title: "todoのタスク", status: "todo" });
+    const tasksState = makeTasksState({ tasks: [task] });
+
+    render(<TaskBoard tasksState={tasksState} />);
+
+    const dataTransfer = makeDataTransfer();
+    const card = screen.getByText("todoのタスク").closest(".task-card");
+    const inProgressColumn = screen.getByRole("region", { name: "進行中" });
+
+    fireEvent.dragStart(card as Element, { dataTransfer });
     fireEvent.dragEnter(inProgressColumn, { dataTransfer });
     expect(inProgressColumn).toHaveClass("task-column-drag-over");
 
@@ -259,10 +339,14 @@ describe("TaskBoard", () => {
 
     render(<TaskBoard tasksState={tasksState} />);
 
-    const dataTransfer = makeDataTransfer(1);
+    const dataTransfer = makeDataTransfer();
+    const card = screen.getByText("todoのタスク").closest(".task-card");
     const inProgressColumn = screen.getByRole("region", { name: "進行中" });
 
+    fireEvent.dragStart(card as Element, { dataTransfer });
     fireEvent.dragEnter(inProgressColumn, { dataTransfer });
+    expect(inProgressColumn).toHaveClass("task-column-drag-over");
+
     fireEvent.dragOver(inProgressColumn, { dataTransfer });
     fireEvent.drop(inProgressColumn, { dataTransfer });
 

@@ -9,6 +9,11 @@ interface TaskCardProps {
   onStatusChange: (id: number, status: TaskStatus) => void;
   /** Resolves to true when the update succeeded; edit mode only closes then. */
   onEdit: (id: number, patch: TaskPatchInput) => Promise<boolean>;
+  /**
+   * ドラッグ中のタスク id を親へ通知する（開始時に id・終了時に null）。
+   * 親はこれでドロップ先ハイライトの要否を判定する（Issue #122 レビュー指摘）。
+   */
+  onDraggingChange?: (id: number | null) => void;
 }
 
 const PRIORITY_LABEL: Record<TaskPriority, string> = {
@@ -30,7 +35,12 @@ function toDateInputValue(dueAt: string | null): string {
   return (dueAt ?? "").slice(0, 10);
 }
 
-function TaskCard({ task, onStatusChange, onEdit }: TaskCardProps) {
+function TaskCard({
+  task,
+  onStatusChange,
+  onEdit,
+  onDraggingChange,
+}: TaskCardProps) {
   const [isEditing, setIsEditing] = useState(false);
   const [title, setTitle] = useState(task.title);
   const [description, setDescription] = useState(task.description ?? "");
@@ -58,6 +68,13 @@ function TaskCard({ task, onStatusChange, onEdit }: TaskCardProps) {
     }
     event.dataTransfer.setData(TASK_DRAG_DATA_TYPE, String(task.id));
     event.dataTransfer.effectAllowed = "move";
+    onDraggingChange?.(task.id);
+  };
+
+  // dragend はドロップ成功時も中断時（Esc・領域外へ離す）も必ず発火するため、
+  // ドラッグ中状態の解除はここに集約する。
+  const handleDragEnd = () => {
+    onDraggingChange?.(null);
   };
 
   const handleSubmit = (event: FormEvent<HTMLFormElement>) => {
@@ -131,7 +148,12 @@ function TaskCard({ task, onStatusChange, onEdit }: TaskCardProps) {
   }
 
   return (
-    <div className="task-card" draggable onDragStart={handleDragStart}>
+    <div
+      className="task-card"
+      draggable
+      onDragStart={handleDragStart}
+      onDragEnd={handleDragEnd}
+    >
       <h3>{task.title}</h3>
       {task.description !== null && task.description !== "" && (
         <p>{task.description}</p>
