@@ -3,6 +3,25 @@ import { fireEvent, render, screen, waitFor, within } from "@testing-library/rea
 import TaskBoard from "./TaskBoard";
 import type { Task } from "./task";
 import type { UseTasksResult } from "./use-tasks";
+import { TASK_DRAG_DATA_TYPE } from "./task-dnd";
+
+// jsdom は DataTransfer を実装しないため、setData/getData を持つ簡易スタブを
+// 自前で用意する（Issue #122）。ドラッグ開始 → ドロップの一連の流れを模すため
+// 同一インスタンスを dragStart/dragOver/drop へ使い回す。
+function makeDataTransfer(initialTaskId?: number) {
+  const store = new Map<string, string>();
+  if (initialTaskId !== undefined) {
+    store.set(TASK_DRAG_DATA_TYPE, String(initialTaskId));
+  }
+  return {
+    setData: vi.fn((type: string, value: string) => {
+      store.set(type, value);
+    }),
+    getData: vi.fn((type: string) => store.get(type) ?? ""),
+    dropEffect: "",
+    effectAllowed: "",
+  };
+}
 
 function makeTask(overrides: Partial<Task>): Task {
   return {
@@ -130,6 +149,124 @@ describe("TaskBoard", () => {
         status: "in_progress",
       }),
     );
+  });
+
+  it("calls editTask with the drop column's status when a card is dropped there", async () => {
+    const task = makeTask({ id: 1, title: "todoのタスク", status: "todo" });
+    const tasksState = makeTasksState({ tasks: [task] });
+
+    render(<TaskBoard tasksState={tasksState} />);
+
+    const dataTransfer = makeDataTransfer(1);
+    const inProgressColumn = screen.getByRole("region", { name: "進行中" });
+
+    fireEvent.dragOver(inProgressColumn, { dataTransfer });
+    fireEvent.drop(inProgressColumn, { dataTransfer });
+
+    await waitFor(() =>
+      expect(tasksState.editTask).toHaveBeenCalledWith(1, {
+        status: "in_progress",
+      }),
+    );
+  });
+
+  it("does not call editTask when a card is dropped into its own column", () => {
+    const task = makeTask({ id: 1, title: "todoのタスク", status: "todo" });
+    const tasksState = makeTasksState({ tasks: [task] });
+
+    render(<TaskBoard tasksState={tasksState} />);
+
+    const dataTransfer = makeDataTransfer(1);
+    const todoColumn = screen.getByRole("region", { name: "未着手" });
+
+    fireEvent.dragOver(todoColumn, { dataTransfer });
+    fireEvent.drop(todoColumn, { dataTransfer });
+
+    expect(tasksState.editTask).not.toHaveBeenCalled();
+  });
+
+  it("does nothing when the dropped dataTransfer has no valid task id", () => {
+    const task = makeTask({ id: 1, title: "todoのタスク", status: "todo" });
+    const tasksState = makeTasksState({ tasks: [task] });
+
+    render(<TaskBoard tasksState={tasksState} />);
+
+    const dataTransfer = makeDataTransfer(); // id 未設定
+    const inProgressColumn = screen.getByRole("region", { name: "進行中" });
+
+    expect(() => {
+      fireEvent.dragOver(inProgressColumn, { dataTransfer });
+      fireEvent.drop(inProgressColumn, { dataTransfer });
+    }).not.toThrow();
+    expect(tasksState.editTask).not.toHaveBeenCalled();
+  });
+
+  it("keeps the card in its original column and shows an alert when the drop update fails", async () => {
+    const task = makeTask({ id: 1, title: "todoのタスク", status: "todo" });
+    const tasksState = makeTasksState({
+      tasks: [task],
+      editTask: vi.fn().mockRejectedValue(new Error("更新に失敗しました")),
+    });
+
+    render(<TaskBoard tasksState={tasksState} />);
+
+    const dataTransfer = makeDataTransfer(1);
+    const inProgressColumn = screen.getByRole("region", { name: "進行中" });
+
+    fireEvent.dragOver(inProgressColumn, { dataTransfer });
+    fireEvent.drop(inProgressColumn, { dataTransfer });
+
+    await waitFor(() =>
+      expect(screen.getByRole("alert")).toHaveTextContent("更新に失敗しました"),
+    );
+    // 楽観的更新をしないため tasks は変わらず、カードは元の todo カラムに残る
+    const todoColumn = screen.getByRole("region", { name: "未着手" });
+    expect(within(todoColumn).getByText("todoのタスク")).toBeInTheDocument();
+  });
+
+  it("highlights the target column while dragging over it", () => {
+    const tasksState = makeTasksState();
+
+    render(<TaskBoard tasksState={tasksState} />);
+
+    const dataTransfer = makeDataTransfer(1);
+    const inProgressColumn = screen.getByRole("region", { name: "進行中" });
+
+    fireEvent.dragEnter(inProgressColumn, { dataTransfer });
+
+    expect(inProgressColumn).toHaveClass("task-column-drag-over");
+  });
+
+  it("clears the drag highlight on dragleave without a drop", () => {
+    const tasksState = makeTasksState();
+
+    render(<TaskBoard tasksState={tasksState} />);
+
+    const dataTransfer = makeDataTransfer(1);
+    const inProgressColumn = screen.getByRole("region", { name: "進行中" });
+
+    fireEvent.dragEnter(inProgressColumn, { dataTransfer });
+    expect(inProgressColumn).toHaveClass("task-column-drag-over");
+
+    fireEvent.dragLeave(inProgressColumn, { dataTransfer });
+
+    expect(inProgressColumn).not.toHaveClass("task-column-drag-over");
+  });
+
+  it("clears the drag highlight after a drop", () => {
+    const task = makeTask({ id: 1, title: "todoのタスク", status: "todo" });
+    const tasksState = makeTasksState({ tasks: [task] });
+
+    render(<TaskBoard tasksState={tasksState} />);
+
+    const dataTransfer = makeDataTransfer(1);
+    const inProgressColumn = screen.getByRole("region", { name: "進行中" });
+
+    fireEvent.dragEnter(inProgressColumn, { dataTransfer });
+    fireEvent.dragOver(inProgressColumn, { dataTransfer });
+    fireEvent.drop(inProgressColumn, { dataTransfer });
+
+    expect(inProgressColumn).not.toHaveClass("task-column-drag-over");
   });
 
   it("refreshes the shared task list on mount", () => {

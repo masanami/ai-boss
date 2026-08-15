@@ -1,7 +1,8 @@
 import { useState } from "react";
-import type { FormEvent } from "react";
+import type { DragEvent, FormEvent } from "react";
 import { TASK_STATUSES } from "./task";
 import type { Task, TaskPatchInput, TaskPriority, TaskStatus } from "./task";
+import { TASK_DRAG_DATA_TYPE } from "./task-dnd";
 
 interface TaskCardProps {
   task: Task;
@@ -44,6 +45,19 @@ function TaskCard({ task, onStatusChange, onEdit }: TaskCardProps) {
     setPriority(task.priority ?? "");
     setDueAt(toDateInputValue(task.due_at));
     setIsEditing(true);
+  };
+
+  // ドラッグ開始はカード本体からのみ許可する。select/button（ステータス変更
+  // プルダウン・編集ボタン）からの操作を D&D に奪われないよう、そこから始まった
+  // dragstart は preventDefault してキャンセルする（Issue #122）。
+  const handleDragStart = (event: DragEvent<HTMLDivElement>) => {
+    const target = event.target as HTMLElement;
+    if (target.closest("select, button") !== null) {
+      event.preventDefault();
+      return;
+    }
+    event.dataTransfer.setData(TASK_DRAG_DATA_TYPE, String(task.id));
+    event.dataTransfer.effectAllowed = "move";
   };
 
   const handleSubmit = (event: FormEvent<HTMLFormElement>) => {
@@ -117,7 +131,7 @@ function TaskCard({ task, onStatusChange, onEdit }: TaskCardProps) {
   }
 
   return (
-    <div className="task-card">
+    <div className="task-card" draggable onDragStart={handleDragStart}>
       <h3>{task.title}</h3>
       {task.description !== null && task.description !== "" && (
         <p>{task.description}</p>

@@ -61,6 +61,11 @@
   min-height: 200px;
 }
 
+.task-column-drag-over {
+  border-color: var(--color-accent);
+  box-shadow: inset 0 0 0 2px var(--color-accent);
+}
+
 .task-column h2 {
   font-size: 0.85rem;
   text-transform: uppercase;
