@@ -157,8 +157,15 @@ export function registerChatMessageRoute(
         // doc comment). `effort: "low"` caps how deep that reasoning goes —
         // chat is interactive (latency matters to the user) and thinking
         // tokens are billed, so the API's own `high` default would be
-        // wasteful here. `maxTokens` is left unset (facade default 16000),
-        // which is sized for `effort: "low"` thinking plus a full reply.
+        // wasteful here (`effort` bounds the whole turn's elaborateness, not
+        // just thinking depth — see `ClaudeMessageRequest.outputConfig`).
+        // `maxTokens` is left unset (facade default 16000), which is sized
+        // for `effort: "low"` thinking plus a full reply.
+        //
+        // This is also the only call site that runs the facade's tool loop
+        // *and* enables thinking, which is why that loop replays the
+        // assistant turn from `BossLlmMessage.rawContent` (thinking block
+        // and signature intact) rather than the normalized content.
         await streamBossMessage(
           client,
           {

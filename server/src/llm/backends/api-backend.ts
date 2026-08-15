@@ -91,7 +91,11 @@ function normalizeMessage(message: Anthropic.Message): BossLlmMessage {
       thinkingTokens: message.usage?.output_tokens_details?.thinking_tokens,
     });
   }
-  return { content };
+  // `rawContent` keeps the assistant turn's original blocks (including
+  // `thinking` and its signature) so the facade's tool loop can replay the
+  // turn verbatim on the follow-up round — see `BossLlmMessage.rawContent`
+  // in `claude-client.ts` for why the normalized `content` is unusable there.
+  return { content, rawContent: message.content };
 }
 
 /**

@@ -161,12 +161,15 @@ describe("streamApiMessage", () => {
       thinking: { type: "disabled" },
     });
 
-    expect(result).toEqual({
-      content: [
-        { type: "text", text: "了解した" },
-        { type: "tool_use", id: "tool_1", name: "update_task", input: { id: 1 } },
-      ],
-    });
+    expect(result.content).toEqual([
+      { type: "text", text: "了解した" },
+      { type: "tool_use", id: "tool_1", name: "update_task", input: { id: 1 } },
+    ]);
+    // Issue #117: the dropped blocks survive on `rawContent` so the facade's
+    // tool loop can replay the assistant turn verbatim (thinking block and
+    // signature intact) — dropping them there would break the follow-up
+    // round whenever thinking is enabled.
+    expect(result.rawContent).toEqual(finalMessage.content);
   });
 
   it("does not warn when content is non-empty", async () => {
@@ -208,7 +211,7 @@ describe("streamApiMessage", () => {
       thinking: { type: "adaptive" },
     });
 
-    expect(result).toEqual({ content: [] });
+    expect(result.content).toEqual([]);
     expect(consoleWarnSpy).toHaveBeenCalledTimes(1);
     const [, diagnostics] = consoleWarnSpy.mock.calls[0] as [string, Record<string, unknown>];
     expect(diagnostics).toMatchObject({
@@ -308,10 +311,8 @@ describe("createApiMessage", () => {
       thinking: { type: "disabled" },
     });
 
-    expect(result).toEqual({
-      content: [
-        { type: "tool_use", id: "tool_1", name: "submit_verdict", input: { verdict: "upheld" } },
-      ],
-    });
+    expect(result.content).toEqual([
+      { type: "tool_use", id: "tool_1", name: "submit_verdict", input: { verdict: "upheld" } },
+    ]);
   });
 });

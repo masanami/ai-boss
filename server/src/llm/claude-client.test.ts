@@ -301,9 +301,9 @@ describe("streamBossMessage (no tools/executeTool — single round)", () => {
       messages: [{ role: "user", content: "タスクを更新して" }],
     });
 
-    expect(result).toEqual({
-      content: [{ type: "tool_use", id: "tool_1", name: "update_task", input: { id: 1 } }],
-    });
+    expect(result.content).toEqual([
+      { type: "tool_use", id: "tool_1", name: "update_task", input: { id: 1 } },
+    ]);
     expect(streamMock).toHaveBeenCalledTimes(1);
   });
 });
@@ -334,7 +334,7 @@ describe("streamBossMessage (tool loop)", () => {
       isError: false,
     });
     expect(onTextDelta).toHaveBeenCalledWith("タスクを作成した");
-    expect(result).toEqual({ content: [{ type: "text", text: "タスクを作成した" }] });
+    expect(result.content).toEqual([{ type: "text", text: "タスクを作成した" }]);
 
     const secondCallRequest = streamMock.mock.calls[1][0] as {
       messages: Array<{ role: string; content: unknown }>;
@@ -347,6 +347,48 @@ describe("streamBossMessage (tool loop)", () => {
     expect(secondCallRequest.messages[2]).toMatchObject({
       role: "user",
       content: [{ type: "tool_result", tool_use_id: "tool_1", content: '{"title":"資料作成"}' }],
+    });
+  });
+
+  // Issue #117 (self-review: design-reviewer). The DEFAULT_MAX_TOKENS
+  // increase is what first makes "thinking *and* a tool_use in the same
+  // turn" reachable on the chat route, and the API requires that turn to be
+  // replayed with its original thinking block + signature before the
+  // tool_result. Echoing the normalized content (which drops thinking)
+  // would break every tool-using chat turn, so pin the verbatim replay.
+  it("replays the assistant turn verbatim — thinking block and signature intact — before the tool_result", async () => {
+    const thinkingBlock = {
+      type: "thinking",
+      thinking: "タスク名を決める内部推論",
+      signature: "sig_abc123",
+    };
+    const firstStream = createFakeStream({
+      content: [
+        thinkingBlock,
+        { type: "tool_use", id: "tool_1", name: "create_task", input: { title: "資料作成" } },
+      ],
+    });
+    const secondStream = createFakeStream(textMessage("タスクを作成した"));
+    streamMock.mockReturnValueOnce(firstStream).mockReturnValueOnce(secondStream);
+
+    await streamBossMessage(
+      apiClient(),
+      {
+        messages: [{ role: "user", content: "タスクを作って" }],
+        thinking: { type: "adaptive" },
+      },
+      { executeTool: vi.fn().mockResolvedValue({ content: "{}", isError: false }) },
+    );
+
+    const secondCallRequest = streamMock.mock.calls[1][0] as {
+      messages: Array<{ role: string; content: unknown }>;
+    };
+    expect(secondCallRequest.messages[1]).toEqual({
+      role: "assistant",
+      content: [
+        thinkingBlock,
+        { type: "tool_use", id: "tool_1", name: "create_task", input: { title: "資料作成" } },
+      ],
     });
   });
 
@@ -480,9 +522,9 @@ describe("createBossMessage", () => {
       messages: [{ role: "user", content: "進言内容" }],
     });
 
-    expect(result).toEqual({
-      content: [{ type: "tool_use", id: "tool_1", name: "submit_verdict", input: { verdict: "upheld" } }],
-    });
+    expect(result.content).toEqual([
+      { type: "tool_use", id: "tool_1", name: "submit_verdict", input: { verdict: "upheld" } },
+    ]);
   });
 });
 
