@@ -71,6 +71,7 @@ describe("streamApiMessage", () => {
       messages,
       tools,
       maxTokens: 2048,
+      thinking: { type: "disabled" },
     });
 
     expect(streamMock).toHaveBeenCalledWith({
@@ -79,7 +80,45 @@ describe("streamApiMessage", () => {
       system: "あなたはボスです",
       messages,
       tools,
+      thinking: { type: "disabled" },
     });
+  });
+
+  it("passes thinking and output_config through when both are set", async () => {
+    const fakeStream = createFakeStream({ content: [] });
+    streamMock.mockReturnValue(fakeStream);
+    const client = createApiClient("sk-ant-test-key");
+
+    await streamApiMessage(client, {
+      model: "claude-sonnet-5",
+      messages: [{ role: "user", content: "こんにちは" }],
+      maxTokens: 16000,
+      thinking: { type: "adaptive" },
+      outputConfig: { effort: "low" },
+    });
+
+    expect(streamMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        thinking: { type: "adaptive" },
+        output_config: { effort: "low" },
+      }),
+    );
+  });
+
+  it("does not send an output_config key when outputConfig is not set", async () => {
+    const fakeStream = createFakeStream({ content: [] });
+    streamMock.mockReturnValue(fakeStream);
+    const client = createApiClient("sk-ant-test-key");
+
+    await streamApiMessage(client, {
+      model: "claude-sonnet-5",
+      messages: [{ role: "user", content: "こんにちは" }],
+      maxTokens: 16000,
+      thinking: { type: "disabled" },
+    });
+
+    const sentRequest = streamMock.mock.calls[0][0] as Record<string, unknown>;
+    expect("output_config" in sentRequest).toBe(false);
   });
 
   it("relays each streamed text delta to onTextDelta", async () => {
@@ -94,6 +133,7 @@ describe("streamApiMessage", () => {
         model: "claude-sonnet-5",
         messages: [{ role: "user", content: "進捗どうですか" }],
         maxTokens: 1024,
+        thinking: { type: "disabled" },
       },
       onTextDelta,
     );
@@ -118,6 +158,7 @@ describe("streamApiMessage", () => {
       model: "claude-sonnet-5",
       messages: [{ role: "user", content: "タスクを更新して" }],
       maxTokens: 1024,
+      thinking: { type: "disabled" },
     });
 
     expect(result).toEqual({
@@ -126,6 +167,66 @@ describe("streamApiMessage", () => {
         { type: "tool_use", id: "tool_1", name: "update_task", input: { id: 1 } },
       ],
     });
+  });
+
+  it("does not warn when content is non-empty", async () => {
+    const consoleWarnSpy = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    const finalMessage: FakeMessage = {
+      content: [{ type: "text", text: "了解した", citations: null }],
+    };
+    const fakeStream = createFakeStream(finalMessage);
+    streamMock.mockReturnValue(fakeStream);
+    const client = createApiClient("sk-ant-test-key");
+
+    await streamApiMessage(client, {
+      model: "claude-sonnet-5",
+      messages: [{ role: "user", content: "タスクを更新して" }],
+      maxTokens: 1024,
+      thinking: { type: "disabled" },
+    });
+
+    expect(consoleWarnSpy).not.toHaveBeenCalled();
+    consoleWarnSpy.mockRestore();
+  });
+
+  it("Issue #117 reproduction: normalizes a thinking-only, stop_reason=max_tokens response to empty content and logs a diagnostic", async () => {
+    const consoleWarnSpy = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    const finalMessage = {
+      content: [{ type: "thinking", thinking: "夕会の決定ログを踏まえて長々と検討する内部推論..." }],
+      stop_reason: "max_tokens",
+      model: "claude-sonnet-5",
+      usage: { input_tokens: 4200, output_tokens: 1024 },
+    };
+    const fakeStream = createFakeStream(finalMessage as unknown as FakeMessage);
+    streamMock.mockReturnValue(fakeStream);
+    const client = createApiClient("sk-ant-test-key");
+
+    const result = await streamApiMessage(client, {
+      model: "claude-sonnet-5",
+      messages: [{ role: "user", content: "今日の決定を踏まえて相談したい" }],
+      maxTokens: 1024,
+      thinking: { type: "adaptive" },
+    });
+
+    expect(result).toEqual({ content: [] });
+    expect(consoleWarnSpy).toHaveBeenCalledTimes(1);
+    const [, diagnostics] = consoleWarnSpy.mock.calls[0] as [string, Record<string, unknown>];
+    expect(diagnostics).toMatchObject({
+      stopReason: "max_tokens",
+      blockTypes: ["thinking"],
+      model: "claude-sonnet-5",
+      inputTokens: 4200,
+      outputTokens: 1024,
+    });
+
+    const loggedArgs = consoleWarnSpy.mock.calls.flat();
+    const serialized = JSON.stringify(loggedArgs);
+    // No secret/content leakage: neither the thinking body nor the user's
+    // message/system prompt text should ever reach the log.
+    expect(serialized).not.toContain("夕会の決定ログ");
+    expect(serialized).not.toContain("今日の決定を踏まえて相談したい");
+
+    consoleWarnSpy.mockRestore();
   });
 });
 
@@ -151,6 +252,7 @@ describe("createApiMessage", () => {
       tools,
       toolChoice: { type: "tool", name: "submit_verdict" },
       maxTokens: 2048,
+      thinking: { type: "disabled" },
     });
 
     expect(createMock).toHaveBeenCalledWith({
@@ -160,7 +262,35 @@ describe("createApiMessage", () => {
       messages,
       tools,
       tool_choice: { type: "tool", name: "submit_verdict" },
+      thinking: { type: "disabled" },
     });
+  });
+
+  it("passes thinking and output_config through when both are set, and omits output_config when unset", async () => {
+    createMock.mockResolvedValue({ content: [] });
+    const client = createApiClient("sk-ant-test-key");
+
+    await createApiMessage(client, {
+      model: "claude-sonnet-5",
+      messages: [{ role: "user", content: "進言内容" }],
+      maxTokens: 16000,
+      thinking: { type: "adaptive" },
+      outputConfig: { effort: "low" },
+    });
+
+    expect(createMock).toHaveBeenCalledWith(
+      expect.objectContaining({ thinking: { type: "adaptive" }, output_config: { effort: "low" } }),
+    );
+
+    createMock.mockClear();
+    await createApiMessage(client, {
+      model: "claude-sonnet-5",
+      messages: [{ role: "user", content: "進言内容" }],
+      maxTokens: 16000,
+      thinking: { type: "disabled" },
+    });
+    const sentRequest = createMock.mock.calls[0][0] as Record<string, unknown>;
+    expect("output_config" in sentRequest).toBe(false);
   });
 
   it("normalizes the resolved message's content blocks", async () => {
@@ -175,6 +305,7 @@ describe("createApiMessage", () => {
       model: "claude-sonnet-5",
       messages: [{ role: "user", content: "進言内容" }],
       maxTokens: 1024,
+      thinking: { type: "disabled" },
     });
 
     expect(result).toEqual({

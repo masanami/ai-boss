@@ -187,6 +187,12 @@ export async function generateNotificationBody(
       system,
       messages: [{ role: "user", content: buildUserInstruction(request) }],
       maxTokens: NOTIFICATION_MAX_TOKENS,
+      // Issue #117: same rationale as boss-comment.ts — this route's small
+      // `maxTokens` (150) is sized for the notification body alone, so
+      // thinking must stay off. Set explicitly (matching the facade's
+      // default) so it's part of this route's own pinned contract rather
+      // than an implicit dependency on that default.
+      thinking: { type: "disabled" },
     });
 
     const text = extractText(message);

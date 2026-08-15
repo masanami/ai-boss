@@ -302,6 +302,32 @@ describe("POST /api/sessions/:id/messages", () => {
     expect(streamBossMessageMock.mock.calls[0][1].system).toContain("資料作成");
   });
 
+  // Issue #117: chat is the one call site that opts into thinking (see
+  // chat-messages-route.ts's doc comment on the streamBossMessage call) —
+  // pin the exact request shape so a future edit can't silently drop this
+  // and regress into the "thinking-only turn exhausts max_tokens" bug.
+  it("Issue #117: enables adaptive thinking with effort 'low' on the streamBossMessage request", async () => {
+    const session = await createSession();
+    streamBossMessageMock.mockResolvedValue(fakeTextMessage("了解した"));
+    const app = createApp(db, env);
+
+    const res = await app.request(`/api/sessions/${session.id}/messages`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ content: "こんにちは" }),
+    });
+    await res.text();
+
+    expect(streamBossMessageMock).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        thinking: { type: "adaptive" },
+        outputConfig: { effort: "low" },
+      }),
+      expect.anything(),
+    );
+  });
+
   it("passes the session's type as sessionType so the system prompt reflects the morning flow guidance", async () => {
     const app = createApp(db, env);
     const session = await readJson<Session>(

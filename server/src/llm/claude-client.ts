@@ -51,7 +51,18 @@ export const DEFAULT_MODEL = "claude-sonnet-5";
  */
 export const MAX_TOOL_ROUNDS = 5;
 
-const DEFAULT_MAX_TOKENS = 1024;
+/**
+ * `max_tokens` bounds *thinking + response text combined*, not just the
+ * visible reply — it is an upper limit, not a reservation, so raising it
+ * does not increase the actual cost of a short response (Issue #117: the
+ * previous 1024 was sized only for response text and silently starved
+ * `claude-sonnet-5`'s default adaptive thinking, producing a thinking-only
+ * turn with `stop_reason: "max_tokens"` and zero visible content). 16000 is
+ * the recommended non-streaming default with enough headroom for D3's
+ * `effort: "low"` adaptive thinking plus a full boss reply. Kept as a single
+ * constant across every call site (KISS) rather than split per-route.
+ */
+const DEFAULT_MAX_TOKENS = 16_000;
 
 export class MissingApiKeyError extends Error {
   constructor() {
@@ -135,6 +146,30 @@ export interface ClaudeMessageRequest {
    * (`streamBossMessage`) has no need for it yet. */
   toolChoice?: Anthropic.ToolChoice;
   maxTokens?: number;
+  /**
+   * Extended-thinking mode for this request. Defaults to `{ type: "disabled"
+   * }` in {@link resolveRequest} (Issue #117 fix) rather than being left
+   * unset: `claude-sonnet-5` treats an *omitted* `thinking` as `adaptive`
+   * (a silent behavior change from Sonnet 4.6, where omission meant no
+   * thinking at all), and adaptive thinking alone was enough to exhaust the
+   * old 1024-token `max_tokens` default before any reply text was produced.
+   * Closing this at the facade means a future call site that forgets to set
+   * `thinking` fails safe (no thinking, full `max_tokens` budget goes to the
+   * reply) instead of silently reproducing this bug — only call sites that
+   * actually want thinking (currently: the chat route, `{ type: "adaptive"
+   * }`) need to opt in explicitly. Only consumed by the `api` backend (see
+   * `backends/api-backend.ts`) — `claude-code` has no equivalent parameter
+   * (D6: `dispatchStream`/`dispatchCreate` never forward it there).
+   */
+  thinking?: Anthropic.ThinkingConfigParam;
+  /**
+   * Optional output tuning (currently just `effort`, which bounds adaptive
+   * thinking depth). Left unset by default — only call sites that enable
+   * thinking need to tune it (e.g. the chat route uses `effort: "low"` to
+   * keep chat latency/thinking cost down; the API's own default is `high`).
+   * Same `api`-only scope as {@link thinking} above.
+   */
+  outputConfig?: Anthropic.OutputConfig;
 }
 
 export type OnTextDelta = (textDelta: string) => void;
@@ -175,6 +210,8 @@ function resolveRequest(request: ClaudeMessageRequest): {
   tools?: Anthropic.Tool[];
   toolChoice?: Anthropic.ToolChoice;
   maxTokens: number;
+  thinking: Anthropic.ThinkingConfigParam;
+  outputConfig?: Anthropic.OutputConfig;
 } {
   return {
     model: request.model ?? DEFAULT_MODEL,
@@ -183,6 +220,10 @@ function resolveRequest(request: ClaudeMessageRequest): {
     tools: request.tools,
     toolChoice: request.toolChoice,
     maxTokens: request.maxTokens ?? DEFAULT_MAX_TOKENS,
+    // Issue #117 fix — see ClaudeMessageRequest.thinking's doc comment for
+    // why "disabled" (not "leave unset") is the fail-safe default.
+    thinking: request.thinking ?? { type: "disabled" },
+    outputConfig: request.outputConfig,
   };
 }
 

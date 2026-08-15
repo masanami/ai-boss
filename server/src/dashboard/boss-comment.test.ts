@@ -54,6 +54,18 @@ describe("getOrGenerateBossComment", () => {
     expect(createBossMessageMock).toHaveBeenCalledTimes(1);
   });
 
+  // Issue #117 (D4): this route's small maxTokens is sized for the comment
+  // text alone — thinking must stay off so it can't starve max_tokens.
+  it("sends thinking: { type: 'disabled' } (Issue #117 — small maxTokens must not compete with thinking)", async () => {
+    const now = new Date(2026, 6, 6, 8, 0);
+    createBossMessageMock.mockResolvedValue(fakeTextMessage("今日も一日決めた通りにやれ"));
+
+    await getOrGenerateBossComment(db, env, now);
+
+    const request = createBossMessageMock.mock.calls[0][1] as { thinking: unknown };
+    expect(request.thinking).toEqual({ type: "disabled" });
+  });
+
   it("caches the generated comment under today's local date key", async () => {
     const now = new Date(2026, 6, 6, 8, 0);
     createBossMessageMock.mockResolvedValue(fakeTextMessage("今日も一日決めた通りにやれ"));
