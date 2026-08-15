@@ -4,6 +4,7 @@ import { openDatabase } from "../db/connection.js";
 import { runMigrations } from "../db/migrate.js";
 import { listTasks } from "../tasks/tasks-repository.js";
 import { listDecisions } from "../decisions/decisions-repository.js";
+import { updateSessionSummary } from "./sessions-repository.js";
 import type { Session } from "./session.js";
 import type { Message } from "./message.js";
 
@@ -329,6 +330,41 @@ describe("POST /api/sessions/:id/messages", () => {
         executeTool: expect.any(Function),
         onToolEvent: expect.any(Function),
       }),
+    );
+  });
+
+  it("AC-2: includes a saved session summary in the system prompt so the boss can refer to recent reports without re-explanation", async () => {
+    const app = createApp(db, env);
+    const priorSession = await readJson<Session>(
+      await app.request("/api/sessions", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ type: "morning" }),
+      }),
+    );
+    updateSessionSummary(
+      db,
+      priorSession.id,
+      "資料作成を最優先にし、13時までに終わらせることを決定した。",
+    );
+    const session = await createSession();
+    streamBossMessageMock.mockResolvedValue(fakeTextMessage("了解した"));
+
+    const res = await app.request(`/api/sessions/${session.id}/messages`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ content: "今日はどう進めればいい？" }),
+    });
+    await res.text();
+
+    expect(streamBossMessageMock).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        system: expect.stringContaining(
+          "資料作成を最優先にし、13時までに終わらせることを決定した。",
+        ),
+      }),
+      expect.anything(),
     );
   });
 
