@@ -70,6 +70,19 @@ describe("generateSessionSummary", () => {
     expect(createBossMessageMock).toHaveBeenCalledTimes(1);
   });
 
+  // Issue #117 (D4): same rationale as boss-comment.ts/notification-body.ts
+  // — small maxTokens must not compete with thinking.
+  it("sends thinking: { type: 'disabled' } (Issue #117)", async () => {
+    const session = insertSession(db, { type: "morning" });
+    insertMessage(db, { session_id: session.id, role: "user", content: "報告します" });
+    createBossMessageMock.mockResolvedValue(fakeTextMessage("要約"));
+
+    await generateSessionSummary(db, env, "api", session.id);
+
+    const request = createBossMessageMock.mock.calls[0][1] as { thinking: unknown };
+    expect(request.thinking).toEqual({ type: "disabled" });
+  });
+
   it("does not call the LLM and returns null when the session has no messages", async () => {
     const session = insertSession(db, { type: "morning" });
 

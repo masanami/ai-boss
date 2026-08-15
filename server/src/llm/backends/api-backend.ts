@@ -41,8 +41,29 @@ export interface ApiMessageRequest {
   tools?: Anthropic.Tool[];
   toolChoice?: Anthropic.ToolChoice;
   maxTokens: number;
+  /** Always resolved by the facade (`claude-client.ts`'s `resolveRequest`)
+   * before reaching this module — see `ClaudeMessageRequest.thinking`'s doc
+   * comment for the Issue #117 fail-safe-default rationale. */
+  thinking: Anthropic.ThinkingConfigParam;
+  outputConfig?: Anthropic.OutputConfig;
 }
 
+/**
+ * Normalizes a raw `Anthropic.Message` into the facade's `BossLlmMessage`
+ * contract (only `text`/`tool_use` blocks; everything else — including
+ * `thinking` — carries no meaning for boss callers and is dropped).
+ *
+ * Issue #117: when the resulting `content` is empty, that is always an
+ * anomaly (the turn produced nothing a caller can use — most commonly a
+ * thinking-only response that hit `stop_reason: "max_tokens"` before any
+ * text/tool_use was emitted). Logs a diagnostic in that case so the cause is
+ * traceable from server logs alone. Deliberately restricted to metadata that
+ * cannot leak conversation content: block *types* only (never `text`/
+ * `thinking`/tool `input`/`output`), `stop_reason`, `model`, and token
+ * counts from `usage` — never the system prompt or `messages` (see the
+ * critical 外部システム連携 discipline this module's other call sites
+ * already follow for error logging).
+ */
 function normalizeMessage(message: Anthropic.Message): BossLlmMessage {
   const content: BossContentBlock[] = [];
   for (const block of message.content) {
@@ -60,7 +81,21 @@ function normalizeMessage(message: Anthropic.Message): BossLlmMessage {
     // and are intentionally dropped — see the ticket's normalization
     // contract (only text/tool_use are promised).
   }
-  return { content };
+  if (content.length === 0) {
+    console.warn("api backend: normalized message has no text/tool_use content", {
+      stopReason: message.stop_reason,
+      blockTypes: message.content.map((block) => block.type),
+      model: message.model,
+      inputTokens: message.usage?.input_tokens,
+      outputTokens: message.usage?.output_tokens,
+      thinkingTokens: message.usage?.output_tokens_details?.thinking_tokens,
+    });
+  }
+  // `rawContent` keeps the assistant turn's original blocks (including
+  // `thinking` and its signature) so the facade's tool loop can replay the
+  // turn verbatim on the follow-up round — see `BossLlmMessage.rawContent`
+  // in `claude-client.ts` for why the normalized `content` is unusable there.
+  return { content, rawContent: message.content };
 }
 
 /**
@@ -86,6 +121,12 @@ export function streamApiMessage(
     system: request.system,
     messages: request.messages,
     tools: request.tools,
+    thinking: request.thinking,
+    // Unlike `system`/`tools` (always forwarded, undefined or not),
+    // `output_config` is only included when the caller actually set it — no
+    // call site needs an explicit "use the API default" signal, so omitting
+    // the key entirely when unset keeps the request minimal.
+    ...(request.outputConfig !== undefined ? { output_config: request.outputConfig } : {}),
   });
 
   if (onTextDelta) {
@@ -111,6 +152,8 @@ export function createApiMessage(
       messages: request.messages,
       tools: request.tools,
       tool_choice: request.toolChoice,
+      thinking: request.thinking,
+      ...(request.outputConfig !== undefined ? { output_config: request.outputConfig } : {}),
     })
     .then(normalizeMessage);
 }

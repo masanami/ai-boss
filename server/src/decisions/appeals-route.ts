@@ -138,6 +138,10 @@ export function registerAppealsRoute(
           messages: [{ role: "user", content: userMessage }],
           tools: [SUBMIT_VERDICT_TOOL],
           toolChoice: { type: "tool", name: "submit_verdict" },
+          // `thinking` は指定せずファサード既定（`{ type: "disabled" }`）に
+          // 依存する（Issue #117）。構造化抽出なので思考は不要で、かつ
+          // `toolChoice` によるツール強制と思考の併用も避けられる。既定を
+          // 変える場合はこの経路に明示指定を足すこと。
         },
         "submit_verdict",
         parseVerdictToolInput,

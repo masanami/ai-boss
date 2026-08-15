@@ -114,6 +114,22 @@ describe("generateNotificationBody", () => {
     expect(request.maxTokens).toBeLessThanOrEqual(200);
   });
 
+  // Issue #117 (D4): same rationale as boss-comment.ts — small maxTokens
+  // must not compete with thinking.
+  it("sends thinking: { type: 'disabled' } (Issue #117)", async () => {
+    streamBossMessageMock.mockResolvedValue(fakeTextMessage("着手しろ"));
+
+    await generateNotificationBody(db, env, {
+      ruleType: "silence",
+      escalationLevel: 1,
+      task: null,
+      now,
+    });
+
+    const request = streamBossMessageMock.mock.calls[0][1] as { thinking: unknown };
+    expect(request.thinking).toEqual({ type: "disabled" });
+  });
+
   it("returns the trimmed Claude-generated text when the call succeeds", async () => {
     streamBossMessageMock.mockResolvedValue(
       fakeTextMessage("  資料作成に早く着手しろ。  "),

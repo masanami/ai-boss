@@ -81,6 +81,11 @@ export async function generateSessionSummary(
       system: SUMMARY_SYSTEM_PROMPT,
       messages: [{ role: "user", content: formatConversation(messages) }],
       maxTokens: SUMMARY_MAX_TOKENS,
+      // Issue #117: same rationale as boss-comment.ts/notification-body.ts —
+      // this route's small `maxTokens` (300) is sized for the summary text
+      // alone, so thinking must stay off. Set explicitly so it's part of
+      // this route's own pinned contract.
+      thinking: { type: "disabled" },
     });
 
     const text = extractText(message);

@@ -148,9 +148,34 @@ export function registerChatMessageRoute(
         // The tool loop (MAX_TOOL_ROUNDS · execute · continue) now lives
         // inside streamBossMessage (Issue #78, "ツール実行主体の一本化").
         // This route only relays SSE events from the callbacks it fires.
+        //
+        // thinking/outputConfig (Issue #117): chat is the one boss-dialogue
+        // path where a bit of reasoning genuinely helps ("決める" requires
+        // weighing tasks/decisions/history), so it's the only call site that
+        // opts back into thinking rather than relying on the facade's
+        // fail-safe `disabled` default (`ClaudeMessageRequest.thinking`'s
+        // doc comment). `effort: "low"` caps how deep that reasoning goes —
+        // chat is interactive (latency matters to the user) and thinking
+        // tokens are billed, so the API's own `high` default would be
+        // wasteful here (`effort` bounds the whole turn's elaborateness, not
+        // just thinking depth — see `ClaudeMessageRequest.outputConfig`).
+        // `maxTokens` is left unset (facade default 16000), which is sized
+        // for `effort: "low"` thinking plus a full reply.
+        //
+        // This is also the only call site that runs the facade's tool loop
+        // *and* enables thinking, which is why that loop replays the
+        // assistant turn from `BossLlmMessage.rawContent` (thinking block
+        // and signature intact) rather than the normalized content.
         await streamBossMessage(
           client,
-          { model, system, messages, tools: BOSS_TOOLS },
+          {
+            model,
+            system,
+            messages,
+            tools: BOSS_TOOLS,
+            thinking: { type: "adaptive" },
+            outputConfig: { effort: "low" },
+          },
           {
             onTextDelta,
             executeTool,
