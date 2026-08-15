@@ -84,6 +84,39 @@ describe("settings routes", () => {
       const body = await readJson<SettingsBody>(res);
       expect(body.boss_strictness).toBe(3);
     });
+
+    // Issue #121 self-review: `boss-comment-cache.ts`'s dashboard_comment_*
+    // keys (derived cache, not a user setting) rely on `readEffectiveSettings`
+    // being an allowlist (explicit key enumeration) to stay excluded from
+    // this response. This test locks that invariant in explicitly, rather
+    // than leaving it to be enforced only implicitly by the `toEqual` above.
+    it("excludes the dashboard boss-comment cache keys (derived cache, not a user setting)", async () => {
+      db.prepare("INSERT INTO settings (key, value) VALUES (?, ?)").run(
+        "dashboard_comment_date",
+        "2026-07-06",
+      );
+      db.prepare("INSERT INTO settings (key, value) VALUES (?, ?)").run(
+        "dashboard_comment_fingerprint",
+        "some-fingerprint",
+      );
+      db.prepare("INSERT INTO settings (key, value) VALUES (?, ?)").run(
+        "dashboard_comment_text",
+        "今日も淡々とやれ",
+      );
+      const app = createApp(db);
+
+      const res = await app.request("/api/settings");
+
+      const body = (await readJson<Record<string, unknown>>(res)) as Record<
+        string,
+        unknown
+      >;
+      // キーごとに検証する。arrayContaining の否定は「3キーすべてが露出した
+      // ときだけ」失敗するため、1〜2キーだけ漏れる回帰を素通りさせる。
+      expect(body).not.toHaveProperty("dashboard_comment_date");
+      expect(body).not.toHaveProperty("dashboard_comment_fingerprint");
+      expect(body).not.toHaveProperty("dashboard_comment_text");
+    });
   });
 
   describe("PUT /api/settings", () => {
