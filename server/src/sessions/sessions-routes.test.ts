@@ -33,6 +33,18 @@ interface ErrorBody {
   error: string;
 }
 
+interface ErrorBodyWithCode extends ErrorBody {
+  code: string;
+}
+
+async function postSession(app: ReturnType<typeof createApp>, type: string) {
+  return app.request("/api/sessions", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ type }),
+  });
+}
+
 async function readJson<T>(res: Response): Promise<T> {
   return (await res.json()) as T;
 }
@@ -112,6 +124,87 @@ describe("sessions routes", () => {
       expect(res.status).toBe(400);
       const body = await readJson<ErrorBody>(res);
       expect(typeof body.error).toBe("string");
+    });
+
+    describe("evening session daily limit", () => {
+      afterEach(() => {
+        vi.useRealTimers();
+      });
+
+      it("returns 409 with code evening_session_already_exists when an evening session already exists today, without inserting a new row", async () => {
+        const app = createApp(db);
+        vi.useFakeTimers();
+        vi.setSystemTime(new Date(2026, 7, 14, 18, 0));
+        const first = await postSession(app, "evening");
+        expect(first.status).toBe(201);
+
+        vi.setSystemTime(new Date(2026, 7, 14, 20, 0));
+        const second = await postSession(app, "evening");
+
+        expect(second.status).toBe(409);
+        const body = await readJson<ErrorBodyWithCode>(second);
+        expect(body.code).toBe("evening_session_already_exists");
+        expect(typeof body.error).toBe("string");
+
+        const list = await readJson<Session[]>(
+          await app.request("/api/sessions?type=evening"),
+        );
+        expect(list).toHaveLength(1);
+      });
+
+      it("allows today's evening session when only a previous day's evening session exists (date boundary)", async () => {
+        const app = createApp(db);
+        vi.useFakeTimers();
+        vi.setSystemTime(new Date(2026, 7, 13, 23, 50));
+        const previousDay = await readJson<Session>(
+          await postSession(app, "evening"),
+        );
+
+        vi.setSystemTime(new Date(2026, 7, 14, 0, 30));
+        await app.request(`/api/sessions/${previousDay.id}/end`, {
+          method: "POST",
+        });
+
+        vi.setSystemTime(new Date(2026, 7, 14, 18, 0));
+        const today = await postSession(app, "evening");
+
+        expect(today.status).toBe(201);
+        const list = await readJson<Session[]>(
+          await app.request("/api/sessions?type=evening"),
+        );
+        expect(list).toHaveLength(2);
+      });
+
+      it("returns 409 when today's evening session is already ended", async () => {
+        const app = createApp(db);
+        vi.useFakeTimers();
+        vi.setSystemTime(new Date(2026, 7, 14, 18, 0));
+        const first = await readJson<Session>(await postSession(app, "evening"));
+        await app.request(`/api/sessions/${first.id}/end`, { method: "POST" });
+
+        vi.setSystemTime(new Date(2026, 7, 14, 20, 0));
+        const second = await postSession(app, "evening");
+
+        expect(second.status).toBe(409);
+        const body = await readJson<ErrorBodyWithCode>(second);
+        expect(body.code).toBe("evening_session_already_exists");
+      });
+
+      it("does not limit morning or adhoc sessions created on the same day", async () => {
+        const app = createApp(db);
+        vi.useFakeTimers();
+        vi.setSystemTime(new Date(2026, 7, 14, 9, 0));
+
+        const firstMorning = await postSession(app, "morning");
+        const secondMorning = await postSession(app, "morning");
+        const firstAdhoc = await postSession(app, "adhoc");
+        const secondAdhoc = await postSession(app, "adhoc");
+
+        expect(firstMorning.status).toBe(201);
+        expect(secondMorning.status).toBe(201);
+        expect(firstAdhoc.status).toBe(201);
+        expect(secondAdhoc.status).toBe(201);
+      });
     });
   });
 

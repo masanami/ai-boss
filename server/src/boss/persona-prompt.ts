@@ -50,7 +50,7 @@ export interface RecentSessionSummary {
   reportedAt: string;
 }
 
-export type PromptPurpose = "chat" | "notification";
+export type PromptPurpose = "chat" | "notification" | "daily-report";
 
 export interface PersonaPromptContext {
   /** 現在のタスク一覧 */
@@ -222,6 +222,16 @@ const TASK_ESTIMATE_CONFIRMATION_INSTRUCTION =
   "チャットからタスクを新規作成するときは、所要時間の見積もりを提案し、ユーザーが確認（同意または修正）した値だけを" +
   "estimated_minutes に保存すること（確認前に保存してはならない）。";
 
+// 日報生成（Issue #108）の「値の抽出」段専用の purpose。Markdown をここで
+// 組み立てさせない（親要件チケット #100 のクリティカル設計決定 — 構造は
+// レンダラーが決める）ため、指示は「3値を平文で submit_evening_summary ツール
+// へ提出させる」ことに限定する。chat 用のセッションフロー指示・見積もり確認
+// 指示は付けない（用途が異なるため）。
+const DAILY_REPORT_INSTRUCTION =
+  "この応答は日報生成のための夕会サマリ抽出に使われる。夕会の会話から「報告の要点」「ボスの講評」「翌日への持ち越し」の" +
+  "3つの値を抽出し、必ず submit_evening_summary ツールを呼び出して提出すること。各値は平文の簡潔な文章とし、" +
+  "Markdown の見出し・箇条書き記号・装飾は使わないこと。翌日への持ち越しが無い場合は「なし」と明記すること（空文字は不可）。";
+
 function resolveSessionFlowInstruction(
   sessionType: SessionType | undefined,
 ): string | null {
@@ -265,6 +275,8 @@ export function buildPersonaPrompt(
     sections.push(
       "この応答は通知文面として使われる。要点を絞り、短く簡潔な文章にすること。",
     );
+  } else if (purpose === "daily-report") {
+    sections.push(DAILY_REPORT_INSTRUCTION);
   } else {
     const sessionFlowInstruction = resolveSessionFlowInstruction(
       context.sessionType,

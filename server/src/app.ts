@@ -8,6 +8,7 @@ import { createActivityRouter } from "./activity/activity-routes.js";
 import { createCheckinsRouter } from "./activity/checkins-routes.js";
 import { createDecisionsRouter } from "./decisions/decisions-routes.js";
 import { createDashboardRouter } from "./dashboard/dashboard-routes.js";
+import { createReportsRouter } from "./reports/reports-routes.js";
 import { createSettingsRouter } from "./settings/settings-routes.js";
 import { DEFAULT_LLM_BACKEND, type LlmBackend } from "./config.js";
 
@@ -34,9 +35,10 @@ export interface CreateAppOptions {
    * (`index.ts`) and threaded through to `createClaudeClient`. Defaults to
    * {@link DEFAULT_LLM_BACKEND} for callers that don't pass it (most tests).
    *
-   * Dashboard comment / notification-body generation are not wired to this
-   * option — but they are still backend-aware: those two call sites
-   * (`dashboard/boss-comment.ts`, `notifications/notification-body.ts`)
+   * Dashboard comment / notification-body / daily-report generation are not
+   * wired to this option — but they are still backend-aware: those call
+   * sites (`dashboard/boss-comment.ts`, `notifications/notification-body.ts`,
+   * `reports/generate-daily-report.ts` via `reports/extract-evening-summary.ts`)
    * resolve the backend themselves via `resolveLlmBackend(env)` (Issue #79),
    * since they already receive the full `env` independently of this
    * `createApp` option.
@@ -70,6 +72,7 @@ export function createApp(
   api.route("/activity", createActivityRouter(db));
   api.route("/decisions", createDecisionsRouter(db, env, llmBackend));
   api.route("/dashboard", createDashboardRouter(db, env));
+  api.route("/reports", createReportsRouter(db, env));
   api.route("/settings", createSettingsRouter(db));
 
   const app = new Hono();

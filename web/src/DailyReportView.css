@@ -1,0 +1,80 @@
+.daily-report-view {
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+}
+
+.daily-report-status {
+  color: var(--color-text-muted);
+}
+
+.daily-report-layout {
+  display: grid;
+  grid-template-columns: 220px 1fr;
+  gap: 1.5rem;
+  align-items: start;
+}
+
+.daily-report-history h3 {
+  font-size: 0.85rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--color-text-muted);
+  margin: 0 0 0.5rem;
+}
+
+.daily-report-history-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+}
+
+.daily-report-history-list button {
+  width: 100%;
+  text-align: left;
+  padding: 0.4rem 0.6rem;
+  border: 1px solid var(--color-border);
+  border-radius: 6px;
+  background: transparent;
+  color: var(--color-text);
+  cursor: pointer;
+}
+
+.daily-report-history-list button[aria-pressed="true"] {
+  border-color: var(--color-accent);
+  color: var(--color-accent);
+}
+
+.daily-report-main {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+}
+
+.daily-report-actions {
+  display: flex;
+  gap: 0.5rem;
+}
+
+.daily-report-hint {
+  color: var(--color-text-muted);
+}
+
+.daily-report-content {
+  white-space: pre-wrap;
+  overflow-wrap: break-word;
+  background-color: var(--color-bg-elevated);
+  border: 1px solid var(--color-border);
+  border-radius: 8px;
+  padding: 1rem;
+  font-family: monospace;
+}
+
+.daily-report-fallback-textarea {
+  width: 100%;
+  min-height: 200px;
+  font-family: monospace;
+}

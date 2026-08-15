@@ -3,6 +3,7 @@ import { z } from "zod";
 import type Anthropic from "@anthropic-ai/sdk";
 import { BOSS_TOOLS } from "../../boss/boss-tools.js";
 import { SUBMIT_VERDICT_TOOL } from "../../decisions/verdict-tool.js";
+import { SUBMIT_EVENING_SUMMARY_TOOL } from "../../reports/evening-summary-tool.js";
 
 const { queryMock, toolMock, createSdkMcpServerMock } = vi.hoisted(() => {
   const toolMock = vi.fn(
@@ -177,7 +178,11 @@ describe("buildClaudeCodeEnv", () => {
 // ---------------------------------------------------------------------------
 
 describe("TOOL_ZOD_SHAPES alignment with the JSON Schema tool definitions", () => {
-  const jsonSchemaTools: Anthropic.Tool[] = [...BOSS_TOOLS, SUBMIT_VERDICT_TOOL];
+  const jsonSchemaTools: Anthropic.Tool[] = [
+    ...BOSS_TOOLS,
+    SUBMIT_VERDICT_TOOL,
+    SUBMIT_EVENING_SUMMARY_TOOL,
+  ];
 
   it.each(jsonSchemaTools.map((toolDef) => [toolDef.name, toolDef] as const))(
     "%s: Zod shape keys and required-ness match the JSON Schema",
@@ -666,6 +671,76 @@ describe("streamClaudeCodeMessage", () => {
     const callToolResult = (await handler({ verdict: "upheld", response: "維持する" })) as {
       content: Array<{ type: string; text: string }>;
     };
+
+    expect(executeTool).not.toHaveBeenCalled();
+    expect(callToolResult.content[0]?.type).toBe("text");
+  });
+
+  it("surfaces the submit_evening_summary tool_use block without executing anything (no executeTool call) — Issue #108", async () => {
+    const executeTool = vi.fn();
+
+    queryMock.mockImplementationOnce(() =>
+      toAsyncIterable([
+        assistantToolUseMessage("toolu_es1", "submit_evening_summary", {
+          report_summary: "タスクAを完了した",
+          boss_comment: "よくやった",
+          carry_over: "なし",
+        }),
+        resultMessage(),
+      ]),
+    );
+
+    const result = await streamClaudeCodeMessage(
+      {
+        model: "claude-sonnet-5",
+        messages: [{ role: "user", content: "夕会の会話ログ" }],
+        tools: [SUBMIT_EVENING_SUMMARY_TOOL],
+      },
+      { executeTool },
+    );
+
+    expect(executeTool).not.toHaveBeenCalled();
+    expect(result.content).toEqual([
+      {
+        type: "tool_use",
+        id: "toolu_es1",
+        name: "submit_evening_summary",
+        input: { report_summary: "タスクAを完了した", boss_comment: "よくやった", carry_over: "なし" },
+      },
+    ]);
+  });
+
+  it("does not throw ClaudeCodeBackendError for submit_evening_summary (regression guard: it must be registered like submit_verdict, not treated as an unknown/executed tool)", async () => {
+    queryMock.mockImplementationOnce(() => toAsyncIterable([resultMessage()]));
+
+    await expect(
+      streamClaudeCodeMessage({
+        model: "claude-sonnet-5",
+        messages: [{ role: "user", content: "夕会の会話ログ" }],
+        tools: [SUBMIT_EVENING_SUMMARY_TOOL],
+      }),
+    ).resolves.toBeDefined();
+  });
+
+  it("the submit_evening_summary MCP handler itself never calls executeTool and returns an ack without side effects", async () => {
+    const executeTool = vi.fn();
+    queryMock.mockImplementationOnce(() => toAsyncIterable([resultMessage()]));
+
+    await streamClaudeCodeMessage(
+      {
+        model: "claude-sonnet-5",
+        messages: [{ role: "user", content: "夕会の会話ログ" }],
+        tools: [SUBMIT_EVENING_SUMMARY_TOOL],
+      },
+      { executeTool },
+    );
+
+    const handler = findHandler("submit_evening_summary");
+    const callToolResult = (await handler({
+      report_summary: "a",
+      boss_comment: "b",
+      carry_over: "なし",
+    })) as { content: Array<{ type: string; text: string }> };
 
     expect(executeTool).not.toHaveBeenCalled();
     expect(callToolResult.content[0]?.type).toBe("text");

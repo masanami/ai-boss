@@ -22,9 +22,9 @@ import { createTimedExecFile, type ExecFileFn } from "../../lib/exec-file.js";
  * クリティカル設計決定（docs/features/claude-code-backend.md）:
  * - カスタムツールは in-process MCP サーバ（`createSdkMcpServer` / `tool()`）
  *   として提供する。既存の JSON Schema（`boss-tools.ts` / `task-tools.ts` /
- *   `verdict-tool.ts`）は単一ソースとして変更しない。Zod スキーマはこの
- *   ファイル内に閉じて手書きし、整合はユニットテストで担保する
- *   （`TOOL_ZOD_SHAPES` を参照）。
+ *   `verdict-tool.ts` / `reports/evening-summary-tool.ts`）は単一ソースとして
+ *   変更しない。Zod スキーマはこのファイル内に閉じて手書きし、整合はユニット
+ *   テストで担保する（`TOOL_ZOD_SHAPES` を参照）。
  * - 「補足決定（ツール実行主体の一本化）」: DB に書き込む実行系ツール
  *   （`create_task` / `update_task` / `record_decision`）は MCP ハンドラが
  *   実行主体となり、`callbacks.executeTool`（呼び出し元が db/sessionId を
@@ -37,7 +37,8 @@ import { createTimedExecFile, type ExecFileFn } from "../../lib/exec-file.js";
  *   捕捉して受理応答を返すのみで、検証（`parseVerdictToolInput`）は既存の
  *   `requestVerdict`（`claude-client.ts`）が返り値の tool_use ブロックに
  *   対して行う — API バックエンドと同じ経路を通すことで検証ロジックの
- *   重複を避ける。
+ *   重複を避ける。`submit_evening_summary`（Issue #108）も同じ理由・同じ
+ *   経路で非実行ツールとして扱う（`buildSubmitEveningSummaryTool` 参照）。
  */
 
 const MCP_SERVER_NAME = "ai-boss";
@@ -124,25 +125,45 @@ const submitVerdictShape = {
   revised_rationale: z.string().describe("修正の根拠").optional(),
 };
 
+/** 日報生成（Issue #108）の値の抽出ステップで使う `submit_evening_summary`
+ * の Zod 対応。`submit_verdict` と同じく DB 書き込みを伴わない「値の報告」
+ * ツールで、3値はすべて必須（JSON Schema 側 `evening-summary-tool.ts` の
+ * `required` と一致 — 整合はテストで担保）。 */
+const submitEveningSummaryShape = {
+  report_summary: z.string().describe("ユーザーが夕会で報告した内容の要点（平文・簡潔に）"),
+  boss_comment: z.string().describe("その報告に対するボスの講評・評価コメント（平文・簡潔に）"),
+  carry_over: z
+    .string()
+    .describe("翌日への持ち越し事項の要約。持ち越しが無い場合は「なし」と書くこと（空文字は不可）。"),
+};
+
 /**
  * Exported so a unit test can assert the Zod shapes' keys/required-ness stay
  * aligned with the JSON Schema tool definitions (`BOSS_TOOLS`,
- * `SUBMIT_VERDICT_TOOL`) that remain the single source of truth.
+ * `SUBMIT_VERDICT_TOOL`, `SUBMIT_EVENING_SUMMARY_TOOL`) that remain the
+ * single source of truth.
  */
 export const TOOL_ZOD_SHAPES = {
   create_task: createTaskShape,
   update_task: updateTaskShape,
   record_decision: recordDecisionShape,
   submit_verdict: submitVerdictShape,
+  submit_evening_summary: submitEveningSummaryShape,
 } as const;
 
-/** Derived from `TOOL_ZOD_SHAPES` (minus `submit_verdict`, which has its own
- * non-executing handler — see `buildSubmitVerdictTool`) rather than a
- * separately hand-maintained literal list, so there is a single place to add
- * a new DB-writing tool (self-review: avoid triple bookkeeping across
- * `BOSS_TOOLS`, `TOOL_ZOD_SHAPES`, and this set). */
+/** Tool names with their own non-executing handler (report-a-value tools —
+ * no DB write of their own; see `buildSubmitVerdictTool` /
+ * `buildSubmitEveningSummaryTool`). Kept as a single source alongside
+ * `EXECUTED_TOOL_NAMES` below rather than duplicating the literal list. */
+const NON_EXECUTING_TOOL_NAMES = new Set(["submit_verdict", "submit_evening_summary"]);
+
+/** Derived from `TOOL_ZOD_SHAPES` (minus the non-executing tools above, each
+ * of which has its own handler) rather than a separately hand-maintained
+ * literal list, so there is a single place to add a new DB-writing tool
+ * (self-review: avoid triple bookkeeping across `BOSS_TOOLS`,
+ * `TOOL_ZOD_SHAPES`, and this set). */
 const EXECUTED_TOOL_NAMES = new Set(
-  Object.keys(TOOL_ZOD_SHAPES).filter((name) => name !== "submit_verdict"),
+  Object.keys(TOOL_ZOD_SHAPES).filter((name) => !NON_EXECUTING_TOOL_NAMES.has(name)),
 );
 
 // ---------------------------------------------------------------------------
@@ -499,16 +520,35 @@ function buildSubmitVerdictTool(description: string) {
   });
 }
 
+/**
+ * `submit_evening_summary`（Issue #108: 日報生成の「値の抽出」ステップ）も
+ * `submit_verdict` と同じ理由で実行関数を持たない: DB 書き込み（`daily_reports`
+ * への UPSERT）は呼び出し元（`generate-daily-report.ts`）が
+ * `requestVerdict` の戻り値を見て行い、検証（`parseEveningSummaryToolInput`）
+ * も `requestVerdict` 自身が `tool_use` ブロックに対して行う（`api` バック
+ * エンドと同じ検証経路を通す）。このハンドラは Agent SDK の MCP ラウンド
+ * トリップを完了させるだけの受理応答を返す。
+ */
+function buildSubmitEveningSummaryTool(description: string) {
+  return tool("submit_evening_summary", description, submitEveningSummaryShape, async () => {
+    return { content: [{ type: "text" as const, text: "夕会サマリを受け付けた。" }] };
+  });
+}
+
 /** Builds the in-process MCP server exposing exactly the tools named in
  * `tools` (the JSON Schema `Anthropic.Tool[]` the facade forwards — for
  * chat this is `BOSS_TOOLS`, for re-adjudication `[SUBMIT_VERDICT_TOOL]`,
- * for dashboard-comment/notification-body it is empty/undefined). Throws if
- * a tool name has no registered Zod schema — a defensive guard, since the
+ * for daily-report extraction `[SUBMIT_EVENING_SUMMARY_TOOL]`, for
+ * dashboard-comment/notification-body it is empty/undefined). Throws if a
+ * tool name has no registered Zod schema — a defensive guard, since the
  * call sites are all controlled by this codebase. */
 function buildMcpServer(toolDefs: Anthropic.Tool[], hooks: McpHooks) {
   const tools = toolDefs.map((toolDef) => {
     if (toolDef.name === "submit_verdict") {
       return buildSubmitVerdictTool(toolDef.description ?? "");
+    }
+    if (toolDef.name === "submit_evening_summary") {
+      return buildSubmitEveningSummaryTool(toolDef.description ?? "");
     }
     if (EXECUTED_TOOL_NAMES.has(toolDef.name)) {
       const shape = TOOL_ZOD_SHAPES[toolDef.name as keyof typeof TOOL_ZOD_SHAPES];
