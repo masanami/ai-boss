@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { useChat, type ChatEntry } from "./use-chat";
+import type { ChatEntry, UseChatResult } from "./use-chat";
 import type { ChatToolEvent } from "./chat";
 import "./ChatView.css";
 
@@ -42,7 +42,16 @@ function ChatEntryItem({ entry }: { entry: ChatEntry }) {
   );
 }
 
-function ChatView() {
+interface ChatViewProps {
+  /**
+   * Chat state, lifted up to `AppLayout` so it survives `ChatView` being
+   * unmounted on tab switches (Issue #93; same pattern as `TaskBoard`
+   * receiving `tasksState`, Issue #70).
+   */
+  chatState: UseChatResult;
+}
+
+function ChatView({ chatState }: ChatViewProps) {
   const {
     entries,
     status,
@@ -54,7 +63,7 @@ function ChatView() {
     send,
     startSession,
     endSession,
-  } = useChat();
+  } = chatState;
   const [draft, setDraft] = useState("");
   const bottomRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);

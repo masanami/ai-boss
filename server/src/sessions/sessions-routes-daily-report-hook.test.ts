@@ -39,6 +39,18 @@ vi.mock("../reports/generate-daily-report.js", async (importOriginal) => {
   return { ...actual, generateDailyReport: generateDailyReportMock };
 });
 
+// `POST /:id/end` drives two independent side effects since Issue #96 and
+// Issue #100 were merged: the session summary and the daily report. Stubbed
+// here (rather than driven through the real LLM path) so the coexistence
+// test below can assert both outcomes deterministically.
+const { generateSessionSummaryMock } = vi.hoisted(() => ({
+  generateSessionSummaryMock: vi.fn(),
+}));
+
+vi.mock("./session-summary.js", () => ({
+  generateSessionSummary: generateSessionSummaryMock,
+}));
+
 async function readJson<T>(res: Response): Promise<T> {
   return (await res.json()) as T;
 }
@@ -83,6 +95,8 @@ describe("evening session end -> daily report generation hook", () => {
       },
     });
     generateDailyReportMock.mockClear();
+    generateSessionSummaryMock.mockReset();
+    generateSessionSummaryMock.mockResolvedValue("夕会の要約");
   });
 
   afterEach(() => {
@@ -109,6 +123,49 @@ describe("evening session end -> daily report generation hook", () => {
       evening_session_id: number;
     };
     expect(report.evening_session_id).toBe(session.id);
+  });
+
+  // main への追従マージ（Issue #96 と #100 の合流）の回帰テスト。`POST /:id/end`
+  // は要約保存（#96）と日報生成（#100）の 2 つを行う。片方が早期 return して
+  // もう片方を飛ばす実装に戻ると、このテストだけが落ちる。
+  it("saves the session summary AND generates the daily report when an evening session ends", async () => {
+    const app = createApp(db, env);
+    const session = await readJson<Session>(await postSession(app, "evening"));
+    insertUserMessage(db, session.id, "報告です");
+
+    const res = await app.request(`/api/sessions/${session.id}/end`, { method: "POST" });
+
+    expect(res.status).toBe(200);
+
+    // #96: 要約が保存され、レスポンスにも反映される
+    expect(generateSessionSummaryMock).toHaveBeenCalledTimes(1);
+    const body = await readJson<Session>(res);
+    expect(body.summary).toBe("夕会の要約");
+    const stored = db
+      .prepare("SELECT summary FROM sessions WHERE id = ?")
+      .get(session.id) as { summary: string | null };
+    expect(stored.summary).toBe("夕会の要約");
+
+    // #100: 同じリクエストで日報も生成されている
+    expect(generateDailyReportMock).toHaveBeenCalledTimes(1);
+    expect(reportRowCount(db)).toBe(1);
+  });
+
+  // 2 つのガードは別条件であり、片方を流用して他方を壊してはならない。
+  // 要約済み（summary あり）の未終了夕会を終了すると、要約は再生成されないが
+  // ended_at は初回遷移なので日報は生成される。
+  it("still generates the daily report when the summary is skipped because one already exists", async () => {
+    const app = createApp(db, env);
+    const session = await readJson<Session>(await postSession(app, "evening"));
+    insertUserMessage(db, session.id, "報告です");
+    db.prepare("UPDATE sessions SET summary = ? WHERE id = ?").run("既存の要約", session.id);
+
+    const res = await app.request(`/api/sessions/${session.id}/end`, { method: "POST" });
+
+    expect(res.status).toBe(200);
+    expect(generateSessionSummaryMock).not.toHaveBeenCalled();
+    expect(generateDailyReportMock).toHaveBeenCalledTimes(1);
+    expect(reportRowCount(db)).toBe(1);
   });
 
   it("does not re-invoke generation when an already-ended evening session is ended again (test 6)", async () => {

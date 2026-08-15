@@ -33,6 +33,20 @@ export async function fetchLatestSession(
   return sessions[0] ?? null;
 }
 
+/**
+ * Returns all sessions (any type), newest-first, as reported by the
+ * unfiltered `/api/sessions` endpoint. Used on mount to find today's open
+ * morning/evening session in a single round-trip instead of querying each
+ * type separately.
+ */
+export async function fetchSessions(): Promise<ChatSession[]> {
+  const response = await fetch(SESSIONS_URL);
+  if (!response.ok) {
+    throw new Error(await toErrorMessage(response));
+  }
+  return (await response.json()) as ChatSession[];
+}
+
 export async function createSession(type: SessionType): Promise<ChatSession> {
   const response = await fetch(SESSIONS_URL, {
     method: "POST",

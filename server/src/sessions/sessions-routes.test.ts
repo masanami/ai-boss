@@ -1,11 +1,33 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type Database from "better-sqlite3";
+import type Anthropic from "@anthropic-ai/sdk";
 import { openDatabase } from "../db/connection.js";
 import { runMigrations } from "../db/migrate.js";
-import { createApp } from "../app.js";
 import { insertMessage } from "./messages-repository.js";
 import type { Session } from "./session.js";
 import type { Message } from "./message.js";
+
+const { createClaudeClientMock, createBossMessageMock } = vi.hoisted(() => ({
+  createClaudeClientMock: vi.fn(),
+  createBossMessageMock: vi.fn(),
+}));
+
+vi.mock("../llm/claude-client.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../llm/claude-client.js")>();
+  return {
+    ...actual,
+    createClaudeClient: createClaudeClientMock,
+    createBossMessage: createBossMessageMock,
+  };
+});
+
+const { createApp } = await import("../app.js");
+
+function fakeTextMessage(text: string): Anthropic.Message {
+  return {
+    content: text ? [{ type: "text", text, citations: null }] : [],
+  } as unknown as Anthropic.Message;
+}
 
 interface ErrorBody {
   error: string;
@@ -33,6 +55,9 @@ describe("sessions routes", () => {
   beforeEach(() => {
     db = openDatabase(":memory:");
     runMigrations(db);
+    createClaudeClientMock.mockReset();
+    createBossMessageMock.mockReset();
+    createClaudeClientMock.mockReturnValue({});
   });
 
   afterEach(() => {
@@ -379,6 +404,119 @@ describe("sessions routes", () => {
       expect(res.status).toBe(200);
       const body = await readJson<Session>(res);
       expect(body).toEqual(first);
+    });
+
+    it("AC-1: ending a morning session generates and persists a summary from its messages", async () => {
+      const env = { ANTHROPIC_API_KEY: "sk-ant-test-key" };
+      const app = createApp(db, env);
+      const session = await readJson<Session>(
+        await app.request("/api/sessions", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ type: "morning" }),
+        }),
+      );
+      insertMessage(db, {
+        session_id: session.id,
+        role: "user",
+        content: "資料作成を今日中に終わらせます",
+      });
+      insertMessage(db, {
+        session_id: session.id,
+        role: "boss",
+        content: "資料作成を最優先にしろ",
+      });
+      createBossMessageMock.mockResolvedValue(
+        fakeTextMessage("資料作成を最優先にすることを決定した。"),
+      );
+
+      const res = await app.request(`/api/sessions/${session.id}/end`, {
+        method: "POST",
+      });
+
+      expect(res.status).toBe(200);
+      const body = await readJson<Session>(res);
+      expect(body.summary).toBe("資料作成を最優先にすることを決定した。");
+
+      const stored = db
+        .prepare("SELECT summary FROM sessions WHERE id = ?")
+        .get(session.id) as { summary: string | null };
+      expect(stored.summary).toBe("資料作成を最優先にすることを決定した。");
+    });
+
+    it("AC-3: still returns 200 with ended_at set (and summary left null) when summary generation fails", async () => {
+      const env = { ANTHROPIC_API_KEY: "sk-ant-test-key" };
+      const app = createApp(db, env);
+      const session = await readJson<Session>(
+        await app.request("/api/sessions", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ type: "evening" }),
+        }),
+      );
+      insertMessage(db, { session_id: session.id, role: "user", content: "進捗報告です" });
+      createBossMessageMock.mockRejectedValue(new Error("connection reset with request id xyz"));
+
+      const res = await app.request(`/api/sessions/${session.id}/end`, {
+        method: "POST",
+      });
+
+      expect(res.status).toBe(200);
+      const body = await readJson<Session>(res);
+      expect(body.summary).toBeNull();
+      expect(typeof body.ended_at).toBe("string");
+    });
+
+    it("decision 3: does not attempt summary generation for adhoc sessions", async () => {
+      const env = { ANTHROPIC_API_KEY: "sk-ant-test-key" };
+      const app = createApp(db, env);
+      const session = await readJson<Session>(
+        await app.request("/api/sessions", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ type: "adhoc" }),
+        }),
+      );
+      insertMessage(db, { session_id: session.id, role: "user", content: "ちょっと相談です" });
+
+      const res = await app.request(`/api/sessions/${session.id}/end`, {
+        method: "POST",
+      });
+
+      expect(res.status).toBe(200);
+      const body = await readJson<Session>(res);
+      expect(body.summary).toBeNull();
+      expect(createClaudeClientMock).not.toHaveBeenCalled();
+      expect(createBossMessageMock).not.toHaveBeenCalled();
+    });
+
+    it("does not regenerate or overwrite the summary when re-ending an already-summarized session", async () => {
+      const env = { ANTHROPIC_API_KEY: "sk-ant-test-key" };
+      const app = createApp(db, env);
+      const session = await readJson<Session>(
+        await app.request("/api/sessions", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ type: "morning" }),
+        }),
+      );
+      insertMessage(db, { session_id: session.id, role: "user", content: "報告します" });
+      createBossMessageMock.mockResolvedValue(fakeTextMessage("最初の要約"));
+
+      const first = await readJson<Session>(
+        await app.request(`/api/sessions/${session.id}/end`, { method: "POST" }),
+      );
+      expect(first.summary).toBe("最初の要約");
+
+      createBossMessageMock.mockResolvedValue(fakeTextMessage("2回目の要約（上書きされてはならない）"));
+      const res = await app.request(`/api/sessions/${session.id}/end`, {
+        method: "POST",
+      });
+
+      expect(res.status).toBe(200);
+      const body = await readJson<Session>(res);
+      expect(body.summary).toBe("最初の要約");
+      expect(createBossMessageMock).toHaveBeenCalledTimes(1);
     });
   });
 });

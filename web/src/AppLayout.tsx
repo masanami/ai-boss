@@ -8,6 +8,7 @@ import DecisionLog from "./DecisionLog";
 import SettingsView from "./SettingsView";
 import TaskBoard from "./TaskBoard";
 import TodaySummary from "./TodaySummary";
+import { useChat } from "./use-chat";
 import { useHealthCheck } from "./use-health-check";
 import { useTasks } from "./use-tasks";
 import "./AppLayout.css";
@@ -39,6 +40,13 @@ function AppLayout() {
   // tasks はタスクボード・チェックイン・サイドパネルで共有するため、
   // 共通の親であるここに1回だけ持つ（リフトアップ、Issue #70）。
   const tasksState = useTasks();
+  // chat も同じ理由でここに1回だけ持つ（リフトアップ、Issue #93）。
+  // ビュー切替は条件レンダリングのため ChatView 内に置くと会話状態がタブ遷移の
+  // たびにアンマウントで失われる。tasksState と同じパターンに揃えることで、
+  // タブを離れても朝会・夕会の会話が継続する。トレードオフとして、チャット
+  // タブを開かなくてもアプリ起動時に useChat の初期フェッチが走るが、
+  // useTasks も同じ挙動であり許容する。
+  const chatState = useChat();
   // ダッシュボードを既定ビューにする（Issue #60 の明示的な仮定: ダッシュボード
   // はアプリの顔。チャット中心の仕様とはナビ1クリックで両立させる）。
   const [activeView, setActiveView] = useState<AppView>("dashboard");
@@ -76,7 +84,7 @@ function AppLayout() {
         )}
         {activeView === "chat" && (
           <main className="app-main" aria-label="ボスとの対話">
-            <ChatView />
+            <ChatView chatState={chatState} />
           </main>
         )}
         {activeView === "tasks" && (

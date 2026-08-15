@@ -7,8 +7,37 @@ import {
   endSession,
   findSessionById,
   insertSession,
+  listRecentSessionSummaries,
   listSessions,
+  updateSessionSummary,
 } from "./sessions-repository.js";
+
+/** Raw-SQL helper for tests that need explicit control over `ended_at` /
+ * `started_at` / `summary` (ordering assertions) — distinct from the
+ * `insertSession` repository function under test, which manages
+ * `started_at` itself and always leaves `ended_at`/`summary` null. */
+function insertRawSession(
+  db: Database.Database,
+  overrides: {
+    type: "morning" | "evening" | "adhoc";
+    startedAt: string;
+    endedAt?: string | null;
+    summary?: string | null;
+  },
+): number {
+  const result = db
+    .prepare(
+      `INSERT INTO sessions (type, started_at, ended_at, summary)
+       VALUES (?, ?, ?, ?)`,
+    )
+    .run(
+      overrides.type,
+      overrides.startedAt,
+      overrides.endedAt ?? null,
+      overrides.summary ?? null,
+    );
+  return Number(result.lastInsertRowid);
+}
 
 describe("sessions repository", () => {
   let db: Database.Database;
@@ -199,6 +228,132 @@ describe("sessions repository", () => {
       expect(secondAdhoc.ok).toBe(true);
       expect(listSessions(db, { type: "morning" })).toHaveLength(2);
       expect(listSessions(db, { type: "adhoc" })).toHaveLength(2);
+    });
+  });
+
+  describe("updateSessionSummary", () => {
+    it("sets the summary and returns the updated session", () => {
+      const session = insertSession(db, { type: "morning" });
+
+      const updated = updateSessionSummary(db, session.id, "今日の要約");
+
+      expect(updated).toMatchObject({ id: session.id, summary: "今日の要約" });
+    });
+
+    it("returns undefined when the session does not exist", () => {
+      expect(updateSessionSummary(db, 9999, "要約")).toBeUndefined();
+    });
+
+    // 同時終了レース: 2 つの POST /:id/end が両方 summary === null を読んでから
+    // それぞれ生成を終えると、後着の無条件 UPDATE が先着の要約を潰しうる。
+    // WHERE summary IS NULL の compare-and-set で先着を守る。
+    it("keeps the first stored summary when a second update races in", () => {
+      const session = insertSession(db, { type: "morning" });
+
+      const first = updateSessionSummary(db, session.id, "先に保存された要約");
+      const second = updateSessionSummary(db, session.id, "後から来た要約");
+
+      expect(first).toMatchObject({ summary: "先に保存された要約" });
+      // 後着は上書きせず、保存済みの行（先着の要約）を返す
+      expect(second).toMatchObject({ summary: "先に保存された要約" });
+      expect(findSessionById(db, session.id)).toMatchObject({
+        summary: "先に保存された要約",
+      });
+    });
+  });
+
+  describe("listRecentSessionSummaries", () => {
+    it("returns an empty array when there are no summarized sessions", () => {
+      expect(listRecentSessionSummaries(db, 5)).toEqual([]);
+    });
+
+    it("maps type/summary/reportedAt, ordered most-recent (ended_at, falling back to started_at) first", () => {
+      insertRawSession(db, {
+        type: "morning",
+        startedAt: "2026-07-01T00:00:00.000Z",
+        endedAt: "2026-07-01T01:00:00.000Z",
+        summary: "古い朝会の要約",
+      });
+      insertRawSession(db, {
+        type: "evening",
+        startedAt: "2026-07-05T00:00:00.000Z",
+        endedAt: "2026-07-05T01:00:00.000Z",
+        summary: "新しい夕会の要約",
+      });
+
+      const result = listRecentSessionSummaries(db, 5);
+
+      expect(result).toEqual([
+        { type: "evening", content: "新しい夕会の要約", reportedAt: "2026-07-05T01:00:00.000Z" },
+        { type: "morning", content: "古い朝会の要約", reportedAt: "2026-07-01T01:00:00.000Z" },
+      ]);
+    });
+
+    it("falls back to started_at for ordering when ended_at is null", () => {
+      insertRawSession(db, {
+        type: "adhoc",
+        startedAt: "2026-07-03T00:00:00.000Z",
+        endedAt: null,
+        summary: "終了していないが要約はある",
+      });
+
+      const result = listRecentSessionSummaries(db, 5);
+
+      expect(result).toEqual([
+        {
+          type: "adhoc",
+          content: "終了していないが要約はある",
+          reportedAt: "2026-07-03T00:00:00.000Z",
+        },
+      ]);
+    });
+
+    it("excludes sessions whose summary is null or an empty string", () => {
+      insertRawSession(db, {
+        type: "morning",
+        startedAt: "2026-07-01T00:00:00.000Z",
+        endedAt: "2026-07-01T01:00:00.000Z",
+        summary: null,
+      });
+      insertRawSession(db, {
+        type: "evening",
+        startedAt: "2026-07-02T00:00:00.000Z",
+        endedAt: "2026-07-02T01:00:00.000Z",
+        summary: "",
+      });
+      insertRawSession(db, {
+        type: "adhoc",
+        startedAt: "2026-07-03T00:00:00.000Z",
+        endedAt: "2026-07-03T01:00:00.000Z",
+        summary: "有効な要約",
+      });
+
+      const result = listRecentSessionSummaries(db, 5);
+
+      expect(result).toEqual([
+        { type: "adhoc", content: "有効な要約", reportedAt: "2026-07-03T01:00:00.000Z" },
+      ]);
+    });
+
+    it("caps the result at the given limit, keeping the most recent ones", () => {
+      for (let i = 0; i < 7; i++) {
+        insertRawSession(db, {
+          type: "adhoc",
+          startedAt: `2026-07-0${i + 1}T00:00:00.000Z`,
+          endedAt: `2026-07-0${i + 1}T01:00:00.000Z`,
+          summary: `要約${i}`,
+        });
+      }
+
+      const result = listRecentSessionSummaries(db, 5);
+
+      expect(result.map((s) => s.content)).toEqual([
+        "要約6",
+        "要約5",
+        "要約4",
+        "要約3",
+        "要約2",
+      ]);
     });
   });
 });
