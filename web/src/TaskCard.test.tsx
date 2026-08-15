@@ -2,6 +2,21 @@ import { describe, expect, it, vi } from "vitest";
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import TaskCard from "./TaskCard";
 import type { Task } from "./task";
+import { TASK_DRAG_DATA_TYPE } from "./task-dnd";
+
+// jsdom は DataTransfer を実装しないため、setData/getData を持つ簡易スタブを
+// 自前で用意する（Issue #122）。
+function makeDataTransfer() {
+  const store = new Map<string, string>();
+  return {
+    setData: vi.fn((type: string, value: string) => {
+      store.set(type, value);
+    }),
+    getData: vi.fn((type: string) => store.get(type) ?? ""),
+    dropEffect: "",
+    effectAllowed: "",
+  };
+}
 
 const BASE_TASK: Task = {
   id: 1,
@@ -205,6 +220,63 @@ describe("TaskCard", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "編集" }));
     expect(screen.getByLabelText("締切")).toHaveValue("2026-07-10");
+  });
+
+  it("is draggable so it can be dropped into another column", () => {
+    render(
+      <TaskCard task={BASE_TASK} onStatusChange={vi.fn()} onEdit={vi.fn()} />,
+    );
+
+    expect(
+      screen.getByRole("heading", { name: "資料を作る" }).closest(".task-card"),
+    ).toHaveAttribute("draggable", "true");
+  });
+
+  it("sets the task id on the dataTransfer when a drag starts from the card", () => {
+    render(
+      <TaskCard task={BASE_TASK} onStatusChange={vi.fn()} onEdit={vi.fn()} />,
+    );
+
+    const card = screen
+      .getByRole("heading", { name: "資料を作る" })
+      .closest(".task-card") as HTMLElement;
+    const dataTransfer = makeDataTransfer();
+
+    fireEvent.dragStart(card, { dataTransfer });
+
+    expect(dataTransfer.setData).toHaveBeenCalledWith(
+      TASK_DRAG_DATA_TYPE,
+      "1",
+    );
+  });
+
+  it("does not start a drag from the status select (keeps the pulldown clickable)", () => {
+    render(
+      <TaskCard task={BASE_TASK} onStatusChange={vi.fn()} onEdit={vi.fn()} />,
+    );
+
+    const dataTransfer = makeDataTransfer();
+    const dispatched = fireEvent.dragStart(screen.getByLabelText("ステータス"), {
+      dataTransfer,
+    });
+
+    expect(dispatched).toBe(false); // preventDefault() が呼ばれた
+    expect(dataTransfer.setData).not.toHaveBeenCalled();
+  });
+
+  it("does not start a drag from the edit button (keeps it clickable)", () => {
+    render(
+      <TaskCard task={BASE_TASK} onStatusChange={vi.fn()} onEdit={vi.fn()} />,
+    );
+
+    const dataTransfer = makeDataTransfer();
+    const dispatched = fireEvent.dragStart(
+      screen.getByRole("button", { name: "編集" }),
+      { dataTransfer },
+    );
+
+    expect(dispatched).toBe(false);
+    expect(dataTransfer.setData).not.toHaveBeenCalled();
   });
 
   it("discards edits and returns to view mode when cancel is clicked", () => {
