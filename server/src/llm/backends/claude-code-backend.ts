@@ -9,6 +9,7 @@ import type {
   OnTextDelta,
   OnToolEvent,
 } from "../claude-client.js";
+import { SWITCH_TO_API_BACKEND_HINT } from "../../config.js";
 import { TASK_PRIORITIES, TASK_STATUSES } from "../../tasks/task.js";
 import { APPEAL_VERDICTS } from "../../decisions/appeal.js";
 import { createTimedExecFile, type ExecFileFn } from "../../lib/exec-file.js";
@@ -343,7 +344,14 @@ export interface ClaudeCodeAvailabilityCheckDeps {
  * `dispatchStream`/`dispatchCreate`). Defined here (not in `claude-client.ts`)
  * and re-exported by that module's facade, because `claude-client.ts` already
  * imports from this module — defining it there and importing it back here
- * would create a circular import.
+ * would create a circular import. Its switch-back sentence is imported from
+ * `config.ts` (a leaf module that owns `LLM_BACKEND`'s semantics and imports
+ * nothing) so `loadConfig`'s startup notice and this hint can't drift apart.
+ *
+ * Deliberately says "claude-code バックエンド" without claiming it is the
+ * *default*: this fires for an explicit `LLM_BACKEND=claude-code` too, and
+ * telling such an owner their `.env` setting isn't in effect would send them
+ * chasing the wrong problem (self-review: code-reviewer).
  *
  * Deliberately static: per the "log class name only" discipline (see
  * `ClaudeCodeUnavailableError`'s own doc comment above), callers never log
@@ -351,8 +359,8 @@ export interface ClaudeCodeAvailabilityCheckDeps {
  * without risking request/environment details leaking into logs.
  */
 export const CLAUDE_CODE_UNAVAILABLE_HINT =
-  "claude-code バックエンド（既定）が利用できません。Claude Code のインストール・ログイン状態を確認してください。" +
-  "Claude API 経路へ戻すには server/.env に LLM_BACKEND=api を設定し、ANTHROPIC_API_KEY を設定してください。";
+  "claude-code バックエンドが利用できません。Claude Code のインストール・ログイン状態を確認してください。" +
+  SWITCH_TO_API_BACKEND_HINT;
 
 /**
  * FR-13 / AC-12: best-effort startup check of the `claude-code` backend's

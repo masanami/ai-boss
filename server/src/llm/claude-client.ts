@@ -1,5 +1,5 @@
 import type Anthropic from "@anthropic-ai/sdk";
-import { DEFAULT_LLM_BACKEND, type LlmBackend } from "../config.js";
+import { resolveLlmBackend, type LlmBackend } from "../config.js";
 import { createApiClient, streamApiMessage, createApiMessage } from "./backends/api-backend.js";
 import {
   streamClaudeCodeMessage,
@@ -107,21 +107,29 @@ export interface BossLlmMessage {
 }
 
 /**
- * Creates the LLM client for the given backend (defaults to
- * {@link DEFAULT_LLM_BACKEND} — `"claude-code"` since Issue #118 — the
- * single source of truth for the default, so this no longer hardcodes its
- * own independent `"api"` literal as it did pre-#118). Production callers
- * (`app.ts`, `boss-comment.ts`, `notification-body.ts`,
+ * Creates the LLM client for the given backend. `backend` defaults to
+ * `resolveLlmBackend(env)` — i.e. the caller's own `LLM_BACKEND`, falling
+ * back to `config.ts`'s `DEFAULT_LLM_BACKEND` (`"claude-code"` since Issue
+ * #118) when it is unset. Deliberately resolved *from `env`* rather than from the static
+ * default: `env` is already this function's first argument, and a static
+ * default would ignore an explicit `LLM_BACKEND=api` whenever a caller omits
+ * the argument — routing an owner who deliberately chose the pay-as-you-go
+ * path onto the subscription one instead, which is the exact kind of silent
+ * backend switch FR-12 forbids (self-review: design-reviewer).
+ *
+ * Production callers (`app.ts`, `boss-comment.ts`, `notification-body.ts`,
  * `extract-evening-summary.ts`, `session-summary.ts`) all pass `backend`
  * explicitly via `loadConfig(env).llmBackend` or `resolveLlmBackend(env)`, so
- * this default is only actually exercised by callers that omit it (tests, or
- * any future call site that doesn't need per-request backend selection).
+ * this default is only exercised by callers that omit it (tests, or any
+ * future call site that doesn't need per-request backend selection) — but it
+ * now agrees with them instead of diverging.
+ *
  * Only the `api` backend validates `ANTHROPIC_API_KEY`; `claude-code`
  * performs no key check (FR-10).
  */
 export function createClaudeClient(
   env: NodeJS.ProcessEnv,
-  backend: LlmBackend = DEFAULT_LLM_BACKEND,
+  backend: LlmBackend = resolveLlmBackend(env),
 ): BossLlmClient {
   if (backend === "claude-code") {
     return { backend: "claude-code", env: buildClaudeCodeEnv(env) };

@@ -30,7 +30,14 @@ function fakeTextMessage(text: string): Anthropic.Message {
 
 describe("getOrGenerateBossComment", () => {
   let db: Database.Database;
-  const env = { ANTHROPIC_API_KEY: "sk-ant-test-key" };
+  // `LLM_BACKEND` を api に固定する（Issue #118）。この関数は
+  // `resolveLlmBackend(env)` で自分でバックエンドを解決し、`api` /
+  // `claude-code` で挙動が分岐する（短文指示の付与・全角80字フォールバック）。
+  // 既定が claude-code になったため、明示しないとこのファイル全体が
+  // claude-code 側へ倒れ、api 側の契約（FR-14）を検証するテストが
+  // リポジトリから消える（claude-code 側は
+  // `boss-comment.claude-code.test.ts` が担保する）。
+  const env = { ANTHROPIC_API_KEY: "sk-ant-test-key", LLM_BACKEND: "api" };
 
   beforeEach(() => {
     db = openDatabase(":memory:");

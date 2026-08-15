@@ -15,6 +15,19 @@ const ALLOWED_LLM_BACKENDS = ["api", "claude-code"] as const;
 
 export type LlmBackend = (typeof ALLOWED_LLM_BACKENDS)[number];
 
+/**
+ * Issue #118: the single wording for "how do I get back on the Claude API
+ * pay-as-you-go path?", shared by every operator-facing message that needs to
+ * say it — `loadConfig`'s startup notice below, and
+ * `llm/backends/claude-code-backend.ts`'s `CLAUDE_CODE_UNAVAILABLE_HINT`
+ * (startup availability warnings + request-time `ClaudeCodeUnavailableError`).
+ * Lives here because `config.ts` owns `LLM_BACKEND`'s semantics and imports
+ * nothing, so any module can import it without risking a cycle. Contains no
+ * secrets — it names the variables, never their values.
+ */
+export const SWITCH_TO_API_BACKEND_HINT =
+  "Claude API（従量課金）経路を使うには server/.env に LLM_BACKEND=api を設定し、ANTHROPIC_API_KEY を設定してください。";
+
 export interface AppConfig {
   port: number;
   dbPath: string;
@@ -102,7 +115,7 @@ export function loadConfig(env: NodeJS.ProcessEnv): AppConfig {
   if (llmBackend === "claude-code" && !isExplicitLlmBackend && hasAnthropicApiKey) {
     console.warn(
       "ANTHROPIC_API_KEY が設定されていますが、既定の claude-code バックエンドが使用されます。" +
-        "Claude API（従量課金）経路を使うには server/.env に LLM_BACKEND=api を設定してください。",
+        SWITCH_TO_API_BACKEND_HINT,
     );
   }
 

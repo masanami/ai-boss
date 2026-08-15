@@ -113,11 +113,20 @@ describe("createClaudeClient", () => {
     });
   });
 
-  it("defaults to the claude-code backend (DEFAULT_LLM_BACKEND, Issue #118) when the backend argument is omitted, and never throws MissingApiKeyError even without ANTHROPIC_API_KEY", () => {
+  it("defaults to the claude-code backend (DEFAULT_LLM_BACKEND, Issue #118) when the backend argument is omitted and LLM_BACKEND is unset, and never throws MissingApiKeyError even without ANTHROPIC_API_KEY", () => {
     const result = createClaudeClient({});
 
     expect(result.backend).toBe("claude-code");
     expect(anthropicCtor).not.toHaveBeenCalled();
+  });
+
+  it("resolves the omitted backend argument from env, so an explicit LLM_BACKEND=api still wins over the new default (Issue #118 — FR-12: no silent backend switch)", () => {
+    const result = createClaudeClient({
+      LLM_BACKEND: "api",
+      ANTHROPIC_API_KEY: "sk-ant-test-key",
+    });
+
+    expect(result.backend).toBe("api");
   });
 
   it("returns { backend: 'claude-code', env } without checking ANTHROPIC_API_KEY (FR-10)", () => {
