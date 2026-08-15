@@ -10,7 +10,7 @@ import { createDecisionsRouter } from "./decisions/decisions-routes.js";
 import { createDashboardRouter } from "./dashboard/dashboard-routes.js";
 import { createReportsRouter } from "./reports/reports-routes.js";
 import { createSettingsRouter } from "./settings/settings-routes.js";
-import { DEFAULT_LLM_BACKEND, type LlmBackend } from "./config.js";
+import { resolveLlmBackend, type LlmBackend } from "./config.js";
 
 function checkDatabaseConnection(db: Database.Database): boolean {
   try {
@@ -32,8 +32,15 @@ export interface CreateAppOptions {
   /**
    * LLM backend for the chat (`sessions`) and re-adjudication (`decisions`)
    * routes, resolved by the caller via `loadConfig(env).llmBackend`
-   * (`index.ts`) and threaded through to `createClaudeClient`. Defaults to
-   * {@link DEFAULT_LLM_BACKEND} for callers that don't pass it (most tests).
+   * (`index.ts`) and threaded through to `createClaudeClient`. When omitted
+   * (most tests), it is resolved from `env` via `resolveLlmBackend(env)` —
+   * i.e. the caller's own `LLM_BACKEND`, falling back to
+   * `config.ts`'s `DEFAULT_LLM_BACKEND` when that is unset. Resolving from `env`
+   * rather than jumping straight to the static default (Issue #118) keeps
+   * this option consistent with `createClaudeClient`'s own default and with
+   * the three `resolveLlmBackend(env)` call sites below: an `env` that says
+   * `LLM_BACKEND=api` must not be silently routed to the subscription
+   * backend just because this option was left off (FR-12).
    *
    * Dashboard comment / notification-body / daily-report generation are not
    * wired to this option — but they are still backend-aware: those call
@@ -60,7 +67,7 @@ export function createApp(
   options: CreateAppOptions = {},
 ): Hono {
   const api = new Hono();
-  const llmBackend: LlmBackend = options.llmBackend ?? DEFAULT_LLM_BACKEND;
+  const llmBackend: LlmBackend = options.llmBackend ?? resolveLlmBackend(env);
 
   api.get("/health", (c) => {
     return c.json({ status: "ok", db: checkDatabaseConnection(db) });

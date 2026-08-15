@@ -139,7 +139,7 @@ describe("POST /api/sessions/:id/messages", () => {
     expect(streamBossMessageMock).not.toHaveBeenCalled();
   });
 
-  it("defaults to the api backend when no llmBackend option is passed to createApp", async () => {
+  it("defaults to the claude-code backend (DEFAULT_LLM_BACKEND, Issue #118) when no llmBackend option is passed to createApp", async () => {
     const session = await createSession();
     streamBossMessageMock.mockResolvedValue(fakeTextMessage("了解した"));
     const app = createApp(db, env);
@@ -153,7 +153,25 @@ describe("POST /api/sessions/:id/messages", () => {
     const events = parseSseEvents(await res.text());
     expect(events.find((e) => e.event === "done")).toBeDefined();
 
-    expect(createClaudeClientMock).toHaveBeenCalledWith(env, "api");
+    expect(createClaudeClientMock).toHaveBeenCalledWith(env, "claude-code");
+  });
+
+  it("resolves the omitted llmBackend option from env, so an explicit LLM_BACKEND=api still reaches the api backend (Issue #118 — FR-12: no silent backend switch)", async () => {
+    const session = await createSession();
+    streamBossMessageMock.mockResolvedValue(fakeTextMessage("了解した"));
+    const apiEnv = { ...env, LLM_BACKEND: "api" };
+    const app = createApp(db, apiEnv);
+
+    const res = await app.request(`/api/sessions/${session.id}/messages`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ content: "こんにちは" }),
+    });
+    expect(res.status).toBe(200);
+    const events = parseSseEvents(await res.text());
+    expect(events.find((e) => e.event === "done")).toBeDefined();
+
+    expect(createClaudeClientMock).toHaveBeenCalledWith(apiEnv, "api");
   });
 
   it("passes the configured llmBackend (loadConfig 由来) through to createClaudeClient", async () => {

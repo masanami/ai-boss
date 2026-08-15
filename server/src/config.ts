@@ -2,14 +2,31 @@ const DEFAULT_PORT = 8787;
 const DEFAULT_DB_PATH = "./data/ai-boss.db";
 /** Default backend used by `loadConfig`, re-exported so callers that need a
  * fallback outside of `loadConfig` (e.g. `app.ts`'s
- * `CreateAppOptions.llmBackend`) don't hardcode the `"api"` literal. Note
- * `llm/claude-client.ts`'s own `createClaudeClient` default is a separate,
- * independently-hardcoded `"api"` fallback for callers outside `app.ts`
- * (`server/src/llm/` is out of this ticket's scope). */
-export const DEFAULT_LLM_BACKEND: LlmBackend = "api";
+ * `CreateAppOptions.llmBackend`) don't hardcode a literal. Issue #118:
+ * changed from `"api"` to `"claude-code"` — the owner has a Claude Code
+ * subscription login and wants that used by default instead of
+ * `ANTHROPIC_API_KEY` pay-as-you-go. Set `LLM_BACKEND=api` in `server/.env`
+ * to opt back into the `api` backend (back-compat, unchanged behavior).
+ * `llm/claude-client.ts`'s own `createClaudeClient` default now imports this
+ * same constant too (Issue #118 — single source of truth for the default),
+ * rather than independently hardcoding a literal. */
+export const DEFAULT_LLM_BACKEND: LlmBackend = "claude-code";
 const ALLOWED_LLM_BACKENDS = ["api", "claude-code"] as const;
 
 export type LlmBackend = (typeof ALLOWED_LLM_BACKENDS)[number];
+
+/**
+ * Issue #118: the single wording for "how do I get back on the Claude API
+ * pay-as-you-go path?", shared by every operator-facing message that needs to
+ * say it — `loadConfig`'s startup notice below, and
+ * `llm/backends/claude-code-backend.ts`'s `CLAUDE_CODE_UNAVAILABLE_HINT`
+ * (startup availability warnings + request-time `ClaudeCodeUnavailableError`).
+ * Lives here because `config.ts` owns `LLM_BACKEND`'s semantics and imports
+ * nothing, so any module can import it without risking a cycle. Contains no
+ * secrets — it names the variables, never their values.
+ */
+export const SWITCH_TO_API_BACKEND_HINT =
+  "Claude API（従量課金）経路を使うには server/.env に LLM_BACKEND=api を設定し、ANTHROPIC_API_KEY を設定してください。";
 
 export interface AppConfig {
   port: number;
@@ -71,11 +88,34 @@ export function loadConfig(env: NodeJS.ProcessEnv): AppConfig {
   const port = resolvePort(env);
   const dbPath = env.DB_PATH ?? DEFAULT_DB_PATH;
   const hasAnthropicApiKey = Boolean(env.ANTHROPIC_API_KEY);
+  const isExplicitLlmBackend = env.LLM_BACKEND !== undefined;
   const llmBackend = resolveLlmBackend(env);
+
+  // Issue #118: log the effective backend once at startup — the default
+  // changed from `api` to `claude-code`, so operators need a quick way to
+  // confirm which one is actually in effect without reading `server/.env`.
+  // Never includes `env.ANTHROPIC_API_KEY`'s value (see the "never logs the
+  // key value" test below).
+  console.log(
+    `LLM backend: ${llmBackend}（${isExplicitLlmBackend ? "LLM_BACKEND で明示" : "既定値"}）`,
+  );
 
   if (!hasAnthropicApiKey && llmBackend === "api") {
     console.warn(
       "ANTHROPIC_API_KEY is not set. Claude API 連携機能は動作しません。",
+    );
+  }
+
+  // Issue #118: the default backend changed to `claude-code`, so an owner
+  // who only ever set ANTHROPIC_API_KEY (and never touched LLM_BACKEND)
+  // would otherwise have their request routing silently switch away from
+  // the api pay-as-you-go path they may still expect. Only fires when the
+  // default is actually in effect (LLM_BACKEND unset) — an explicit
+  // `LLM_BACKEND=claude-code` is a deliberate choice and needs no nudge.
+  if (llmBackend === "claude-code" && !isExplicitLlmBackend && hasAnthropicApiKey) {
+    console.warn(
+      "ANTHROPIC_API_KEY が設定されていますが、既定の claude-code バックエンドが使用されます。" +
+        SWITCH_TO_API_BACKEND_HINT,
     );
   }
 

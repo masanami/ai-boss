@@ -78,7 +78,12 @@ function createThinkingOnlyStream() {
 
 describe("POST /api/sessions/:id/messages — Issue #117 reproduction", () => {
   let db: Database.Database;
-  const env = { ANTHROPIC_API_KEY: "sk-ant-test-key" };
+  // `LLM_BACKEND` を api に固定する（Issue #118 のマージ解消）。この再現テスト
+  // は `@anthropic-ai/sdk` をモックして **api バックエンド**の thinking 由来の
+  // 空応答を再現するもので、既定が claude-code になった後は明示しないと
+  // claude-code 経路へ倒れ、モックした SDK が一度も呼ばれなくなる。
+  // `createApp` は `llmBackend` 省略時に `resolveLlmBackend(env)` で解決する。
+  const env = { ANTHROPIC_API_KEY: "sk-ant-test-key", LLM_BACKEND: "api" };
 
   beforeEach(() => {
     db = openDatabase(":memory:");

@@ -1,5 +1,8 @@
 import type Anthropic from "@anthropic-ai/sdk";
-import type { LlmBackend } from "../config.js";
+// Issue #118 の `resolveLlmBackend`（`createClaudeClient` の backend 既定の
+// 解決元）と、Issue #117 の `ApiMessageRequest`（thinking / outputConfig を
+// 含む api バックエンドのリクエスト型）は目的が異なり、両方必要（マージ解消）。
+import { resolveLlmBackend, type LlmBackend } from "../config.js";
 import {
   createApiClient,
   streamApiMessage,
@@ -10,14 +13,18 @@ import {
   streamClaudeCodeMessage,
   createClaudeCodeMessage,
   buildClaudeCodeEnv,
+  ClaudeCodeUnavailableError,
+  CLAUDE_CODE_UNAVAILABLE_HINT,
 } from "./backends/claude-code-backend.js";
 
-/** Re-exported so callers/tests can reference the FR-11 error type without
- * reaching into `backends/claude-code-backend.js` directly — the facade is
- * the intended public surface (補足決定「FR-10 とエラーハンドリングの整合」
- * already documents `ClaudeCodeUnavailableError` as this module's `api`
- * counterpart to `MissingApiKeyError`). */
-export { ClaudeCodeUnavailableError } from "./backends/claude-code-backend.js";
+/** Re-exported so callers/tests can reference the FR-11 error type (and
+ * Issue #118's switch-back guidance) without reaching into
+ * `backends/claude-code-backend.js` directly — the facade is the intended
+ * public surface (補足決定「FR-10 とエラーハンドリングの整合」already
+ * documents `ClaudeCodeUnavailableError` as this module's `api` counterpart
+ * to `MissingApiKeyError`). Imported as values (not just re-exported) above
+ * so `dispatchStream`/`dispatchCreate` below can reference them directly. */
+export { ClaudeCodeUnavailableError, CLAUDE_CODE_UNAVAILABLE_HINT };
 export type { ClaudeCodeUnavailableReason } from "./backends/claude-code-backend.js";
 
 /** FR-13 / AC-12: re-exported (like `ClaudeCodeUnavailableError` above) so
@@ -142,14 +149,29 @@ export interface BossLlmMessage {
 }
 
 /**
- * Creates the LLM client for the given backend (defaults to `api` — the
- * caller wires `loadConfig().llmBackend` through in a later ticket; see the
- * ticket's explicit scope note). Only the `api` backend validates
- * `ANTHROPIC_API_KEY`; `claude-code` performs no key check (FR-10).
+ * Creates the LLM client for the given backend. `backend` defaults to
+ * `resolveLlmBackend(env)` — i.e. the caller's own `LLM_BACKEND`, falling
+ * back to `config.ts`'s `DEFAULT_LLM_BACKEND` (`"claude-code"` since Issue
+ * #118) when it is unset. Deliberately resolved *from `env`* rather than from the static
+ * default: `env` is already this function's first argument, and a static
+ * default would ignore an explicit `LLM_BACKEND=api` whenever a caller omits
+ * the argument — routing an owner who deliberately chose the pay-as-you-go
+ * path onto the subscription one instead, which is the exact kind of silent
+ * backend switch FR-12 forbids (self-review: design-reviewer).
+ *
+ * Production callers (`app.ts`, `boss-comment.ts`, `notification-body.ts`,
+ * `extract-evening-summary.ts`, `session-summary.ts`) all pass `backend`
+ * explicitly via `loadConfig(env).llmBackend` or `resolveLlmBackend(env)`, so
+ * this default is only exercised by callers that omit it (tests, or any
+ * future call site that doesn't need per-request backend selection) — but it
+ * now agrees with them instead of diverging.
+ *
+ * Only the `api` backend validates `ANTHROPIC_API_KEY`; `claude-code`
+ * performs no key check (FR-10).
  */
 export function createClaudeClient(
   env: NodeJS.ProcessEnv,
-  backend: LlmBackend = "api",
+  backend: LlmBackend = resolveLlmBackend(env),
 ): BossLlmClient {
   if (backend === "claude-code") {
     return { backend: "claude-code", env: buildClaudeCodeEnv(env) };
@@ -260,6 +282,31 @@ function isToolUseBlock(block: BossContentBlock): block is BossToolUseBlock {
 }
 
 /**
+ * Issue #118: when the (now-default) `claude-code` backend's execution
+ * environment is unavailable, logs {@link CLAUDE_CODE_UNAVAILABLE_HINT} via
+ * `console.warn` before letting the error continue to propagate unchanged —
+ * the existing error contract (HTTP 500 for chat/appeals, template fallback
+ * for dashboard comment / notification body) is untouched, only a warning is
+ * added. Every call site that logs a `ClaudeCodeUnavailableError` today logs
+ * `err.name` only (never `.message`), per the "log class name only"
+ * discipline (see that error type's own doc comment) — the static hint is
+ * this module's way of surfacing actionable guidance without leaking
+ * request/environment detail into logs. Shared by `dispatchStream` and
+ * `dispatchCreate`'s `claude-code` branches so the behavior can't drift
+ * between the streaming and non-streaming dispatch paths.
+ */
+async function runClaudeCodeDispatch<T>(attempt: () => Promise<T>): Promise<T> {
+  try {
+    return await attempt();
+  } catch (err) {
+    if (err instanceof ClaudeCodeUnavailableError) {
+      console.warn(CLAUDE_CODE_UNAVAILABLE_HINT);
+    }
+    throw err;
+  }
+}
+
+/**
  * Dispatches a single streaming round. For `claude-code`, the whole call
  * (Agent SDK `query()`, including its own in-process MCP tool execution) is
  * wrapped in {@link runWithTimeoutAndRetry} (AC-11 · non-functional
@@ -301,24 +348,26 @@ async function dispatchStream(
           return callbacks.executeTool!(name, input);
         }
       : undefined;
-    return runWithTimeoutAndRetry(
-      (signal) =>
-        streamClaudeCodeMessage(
-          {
-            model: resolved.model,
-            system: resolved.system,
-            messages: resolved.messages,
-            tools: resolved.tools,
-          },
-          {
-            onTextDelta: trackedOnTextDelta,
-            onToolEvent: callbacks?.onToolEvent,
-            executeTool: trackedExecuteTool,
-            signal,
-            env: client.env,
-          },
-        ),
-      () => sideEffectOccurred,
+    return runClaudeCodeDispatch(() =>
+      runWithTimeoutAndRetry(
+        (signal) =>
+          streamClaudeCodeMessage(
+            {
+              model: resolved.model,
+              system: resolved.system,
+              messages: resolved.messages,
+              tools: resolved.tools,
+            },
+            {
+              onTextDelta: trackedOnTextDelta,
+              onToolEvent: callbacks?.onToolEvent,
+              executeTool: trackedExecuteTool,
+              signal,
+              env: client.env,
+            },
+          ),
+        () => sideEffectOccurred,
+      ),
     );
   }
   return streamApiMessage(client.client, resolveRequest(request), callbacks?.onTextDelta);
@@ -338,18 +387,20 @@ async function dispatchCreate(
 ): Promise<BossLlmMessage> {
   if (client.backend === "claude-code") {
     const resolved = resolveRequest(request);
-    return runWithTimeoutAndRetry(
-      (signal) =>
-        createClaudeCodeMessage(
-          {
-            model: resolved.model,
-            system: resolved.system,
-            messages: resolved.messages,
-            tools: resolved.tools,
-          },
-          { signal, env: client.env },
-        ),
-      () => false,
+    return runClaudeCodeDispatch(() =>
+      runWithTimeoutAndRetry(
+        (signal) =>
+          createClaudeCodeMessage(
+            {
+              model: resolved.model,
+              system: resolved.system,
+              messages: resolved.messages,
+              tools: resolved.tools,
+            },
+            { signal, env: client.env },
+          ),
+        () => false,
+      ),
     );
   }
   return createApiMessage(client.client, resolveRequest(request));

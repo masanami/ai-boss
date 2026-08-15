@@ -41,6 +41,7 @@ const {
   MissingApiKeyError,
   LlmTimeoutError,
   ClaudeCodeUnavailableError,
+  CLAUDE_CODE_UNAVAILABLE_HINT,
   DEFAULT_MODEL,
   MAX_TOOL_ROUNDS,
   streamBossMessage,
@@ -77,7 +78,7 @@ function createFakeStream(finalMessage: FakeMessage, textDeltas: string[] = []) 
 }
 
 function apiClient(env: NodeJS.ProcessEnv = { ANTHROPIC_API_KEY: "sk-ant-test-key" }) {
-  return createClaudeClient(env);
+  return createClaudeClient(env, "api");
 }
 
 function textMessage(text: string): FakeMessage {
@@ -97,12 +98,12 @@ beforeEach(() => {
 });
 
 describe("createClaudeClient", () => {
-  it("throws MissingApiKeyError when ANTHROPIC_API_KEY is not set (api backend)", () => {
-    expect(() => createClaudeClient({})).toThrow(MissingApiKeyError);
+  it("throws MissingApiKeyError when ANTHROPIC_API_KEY is not set (api backend explicit)", () => {
+    expect(() => createClaudeClient({}, "api")).toThrow(MissingApiKeyError);
   });
 
   it("returns { backend: 'api', client } and constructs the Anthropic client with the api key, 120s timeout, and maxRetries 2", () => {
-    const result = createClaudeClient({ ANTHROPIC_API_KEY: "sk-ant-test-key" });
+    const result = createClaudeClient({ ANTHROPIC_API_KEY: "sk-ant-test-key" }, "api");
 
     expect(result.backend).toBe("api");
     expect(anthropicCtor).toHaveBeenCalledWith({
@@ -110,6 +111,22 @@ describe("createClaudeClient", () => {
       timeout: 120_000,
       maxRetries: 2,
     });
+  });
+
+  it("defaults to the claude-code backend (DEFAULT_LLM_BACKEND, Issue #118) when the backend argument is omitted and LLM_BACKEND is unset, and never throws MissingApiKeyError even without ANTHROPIC_API_KEY", () => {
+    const result = createClaudeClient({});
+
+    expect(result.backend).toBe("claude-code");
+    expect(anthropicCtor).not.toHaveBeenCalled();
+  });
+
+  it("resolves the omitted backend argument from env, so an explicit LLM_BACKEND=api still wins over the new default (Issue #118 — FR-12: no silent backend switch)", () => {
+    const result = createClaudeClient({
+      LLM_BACKEND: "api",
+      ANTHROPIC_API_KEY: "sk-ant-test-key",
+    });
+
+    expect(result.backend).toBe("api");
   });
 
   it("returns { backend: 'claude-code', env } without checking ANTHROPIC_API_KEY (FR-10)", () => {
@@ -924,6 +941,33 @@ describe("streamBossMessage (claude-code backend wiring)", () => {
       vi.useRealTimers();
     }
   });
+
+  it("logs the CLAUDE_CODE_UNAVAILABLE_HINT via console.warn and still rejects with the original ClaudeCodeUnavailableError (Issue #118)", async () => {
+    vi.useFakeTimers();
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      const unavailableError = new ClaudeCodeUnavailableError(
+        "not_installed",
+        "claude-code backend: the Claude Code executable was not found (ENOENT) — is it installed?",
+      );
+      streamClaudeCodeMessageMock.mockRejectedValue(unavailableError);
+
+      const promise = streamBossMessage(claudeCodeClient(), {
+        messages: [{ role: "user", content: "hi" }],
+      });
+      promise.catch(() => {});
+      await vi.advanceTimersByTimeAsync(1_000 + 2_000 + 1);
+
+      await expect(promise).rejects.toBe(unavailableError);
+      expect(warnSpy).toHaveBeenCalledWith(CLAUDE_CODE_UNAVAILABLE_HINT);
+      // Logged exactly once — the warning belongs to the whole dispatch
+      // (after retries are exhausted), not once per retry attempt.
+      expect(warnSpy).toHaveBeenCalledTimes(1);
+    } finally {
+      warnSpy.mockRestore();
+      vi.useRealTimers();
+    }
+  });
 });
 
 describe("createBossMessage / requestVerdict (claude-code backend wiring)", () => {
@@ -1012,6 +1056,30 @@ describe("createBossMessage / requestVerdict (claude-code backend wiring)", () =
       await expect(promise).resolves.toEqual({ content: [{ type: "text", text: "今日も一日決めた通りにやれ" }] });
       expect(createClaudeCodeMessageMock).toHaveBeenCalledTimes(2);
     } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("createBossMessage also logs the CLAUDE_CODE_UNAVAILABLE_HINT via console.warn on ClaudeCodeUnavailableError (Issue #118 — dispatchCreate path)", async () => {
+    vi.useFakeTimers();
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      const unavailableError = new ClaudeCodeUnavailableError(
+        "unknown",
+        "claude-code backend: query failed before completion",
+      );
+      createClaudeCodeMessageMock.mockRejectedValue(unavailableError);
+
+      const promise = createBossMessage(claudeCodeClient(), {
+        messages: [{ role: "user", content: "進言内容" }],
+      });
+      promise.catch(() => {});
+      await vi.advanceTimersByTimeAsync(1_000 + 2_000 + 1);
+
+      await expect(promise).rejects.toBe(unavailableError);
+      expect(warnSpy).toHaveBeenCalledWith(CLAUDE_CODE_UNAVAILABLE_HINT);
+    } finally {
+      warnSpy.mockRestore();
       vi.useRealTimers();
     }
   });

@@ -2,7 +2,9 @@
 
 ## 概要
 
-LLM 呼び出しのバックエンドとして、現行の Claude API 直呼び（`@anthropic-ai/sdk`）に加え、Claude Agent SDK（`@anthropic-ai/claude-agent-sdk`、内部で Claude Code を実行）を選択可能にする。選択は `server/.env` の `LLM_BACKEND` で行い、既定は現行どおり Claude API とする。
+LLM 呼び出しのバックエンドとして、現行の Claude API 直呼び（`@anthropic-ai/sdk`）に加え、Claude Agent SDK（`@anthropic-ai/claude-agent-sdk`、内部で Claude Code を実行）を選択可能にする。選択は `server/.env` の `LLM_BACKEND` で行う。
+
+> **変更履歴（Issue #118）**: 本機能の導入時は既定を現行どおり `api`（`LLM_BACKEND` 未設定時は Claude API 従量課金経路）としていたが、Issue #118 で**既定を `claude-code` に変更**した。オーナーの Claude サブスクリプション枠を既定で活用するためで、本機能の当初目的（「背景・目的」）に沿った変更である。`LLM_BACKEND=api` を明示すれば従来どおり API 経路を使える（**後方互換は維持し、既定値のみ変更**）。以降の FR・AC は現行仕様（既定 `claude-code`）で記述している。旧既定（`api`）の記録は本節に集約する。
 
 ## 背景・目的
 
@@ -15,7 +17,7 @@ ai-boss のオーナー（macOS ローカルで Claude Code を利用中のシ�
 
 ## 機能要件
 
-- [ ] FR-01: `server/.env` の `LLM_BACKEND` でバックエンドを選択できる。許容値は `api` と `claude-code` の 2 値。未設定時は `api` として動作する（後方互換）。
+- [ ] FR-01: `server/.env` の `LLM_BACKEND` でバックエンドを選択できる。許容値は `api` と `claude-code` の 2 値。未設定時は `claude-code` として動作する（既定値 `DEFAULT_LLM_BACKEND`。Issue #118 で `api` から変更。`LLM_BACKEND=api` の明示で従来の API 経路を使える）。
 - [ ] FR-02: `LLM_BACKEND` が許容値以外の場合、サーバー起動時にエラーで停止し、許容値を含むメッセージを表示する（誤設定のまま意図しない課金経路で動くことを防ぐ）。
 - [ ] FR-03: `claude-code` バックエンドは、既存 4 呼び出し箇所（チャット `server/src/sessions/chat-messages-route.ts`・再裁定 `server/src/decisions/appeals-route.ts`・ダッシュボードコメント `server/src/dashboard/boss-comment.ts`・通知文面 `server/src/notifications/notification-body.ts`）のすべてで動作する（検証は AC-03・AC-04・AC-10 が対応する）。
 - [ ] FR-04: チャットの SSE 挙動は両バックエンドで同一の外部仕様とする。イベント契約（現行実装・`web/src` のクライアント型と同一）: `event: text`（データ `{text}`＝delta）、`event: tool`（データ `{name, input, result, isError}`。ツール ID を外部ペイロードに追加しない）、正常完了時 `event: done`（保存済みボスメッセージ）、ストリーム障害時 `event: error`。イベント順序は「text（0 回以上）→ tool（ツール使用時）→ 次ラウンドの text → … → done」とし、最終メッセージを DB に保存する。Agent SDK 出力からこの契約への変換規則はバックエンド内に閉じる。ただし Agent SDK が partial message 相当の逐次イベントを提供しない場合に限り、「前提・仮定（明示）」4 の縮退仕様（1 応答 1 text イベント）に従い、縮退時も本要件を満たすとみなす。
@@ -27,7 +29,7 @@ ai-boss のオーナー（macOS ローカルで Claude Code を利用中のシ�
 - [ ] FR-10: `claude-code` バックエンド選択時は `MissingApiKeyError` の検査を行わない（`ANTHROPIC_API_KEY` 未設定でも動作する）。`api` バックエンドの挙動は現行から変更しない。
 - [ ] FR-11: `claude-code` バックエンドの実行環境不備（Claude Code 未インストール・未ログイン）は専用エラー型（例: `ClaudeCodeUnavailableError`）で表現し、呼び出し元の既存契約に乗せる: チャット・再裁定は HTTP 500、ダッシュボードコメント・通知文面はテンプレートへフォールバックする。ログにはエラークラス名のみ残す（現行のログ規律を継承）。
 - [ ] FR-12: `claude-code` バックエンドの失敗時に `api` バックエンドへ自動フォールバックしない（オーナーの課金意図に反する無断切替を禁止する）。
-- [ ] FR-13: サーバー起動時、`LLM_BACKEND=claude-code` の場合は Claude Code 実行環境の可用性を best-effort で確認する。確認の対象は「Agent SDK が実際に使用する Claude Code 実行バイナリ」（SDK 同梱バイナリ。SDK が実行パスの取得・指定手段を提供する場合はバックエンド実装と同じパスを共有する）とし、PATH 上の `claude` コマンドの検査で代替しない。確認の内容は「当該バイナリのバージョン取得を `execFile`（シェル非経由）で実行し、失敗（ENOENT・非ゼロ終了・タイムアウト）で警告ログを出す」とする（トークン消費を伴う疎通確認は行わない。起動は止めない。現行の `hasAnthropicApiKey` 警告パターンを踏襲）。
+- [ ] FR-13: サーバー起動時、`claude-code` バックエンドが有効な場合（`LLM_BACKEND=claude-code` の明示・未設定による既定のいずれも含む）は Claude Code 実行環境の可用性を best-effort で確認する。確認の対象は「Agent SDK が実際に使用する Claude Code 実行バイナリ」（SDK 同梱バイナリ。SDK が実行パスの取得・指定手段を提供する場合はバックエンド実装と同じパスを共有する）とし、PATH 上の `claude` コマンドの検査で代替しない。確認の内容は「当該バイナリのバージョン取得を `execFile`（シェル非経由）で実行し、失敗（ENOENT・非ゼロ終了・タイムアウト）で警告ログを出す」とする（トークン消費を伴う疎通確認は行わない。起動は止めない。現行の `hasAnthropicApiKey` 警告パターンを踏襲）。
 - [ ] FR-14: `claude-code` バックエンドのダッシュボードコメント生成では、リクエスト単位の応答長上限（現行 `DASHBOARD_COMMENT_MAX_TOKENS=150`）の代替として、プロンプトに明示的な短文指示（1〜2 文・全角 80 字以内）を追加する。プロンプト指示のみでは上限を保証できないため、生成後に上限（全角 80 字相当）を検証し、超過時は既存のテンプレートフォールバックを使用する（短いコメントという既存 UI の契約を維持するため）。
 - [ ] FR-15: `claude-code` バックエンドでは Claude Code のセッション履歴の永続化（`~/.claude/projects/` 配下への会話 JSONL 書き出し）を無効化する（オプション名は実装時の SDK バージョンで確認し、実装チケットに記録する）。会話データの保存先をアプリの SQLite に一本化する。SDK が永続化の無効化手段を提供しない場合は、警告ログを出して動作を継続し、逸脱（ローカルディスク内の Claude Code セッションファイルに会話履歴が残ること。外部送信は発生しない）を実装チケットと本仕様に明記する（オーナーがこの逸脱を許容しない場合は `api` バックエンドを使用する）。
 
@@ -116,7 +118,7 @@ server/src/llm/
 
 ## 受入基準
 
-- [ ] AC-01: `LLM_BACKEND` 未設定で起動した場合、現行と同一の挙動（api バックエンド）で全既存テストが通過する。
+- [ ] AC-01: `LLM_BACKEND` 未設定で起動した場合、既定の `claude-code` バックエンドで動作する（Issue #118 で変更。旧既定 `api` での動作は `LLM_BACKEND=api` を明示した場合の後方互換テストとして維持する）。
 - [ ] AC-02: `LLM_BACKEND=不正値` で起動した場合、サーバーが起動せず、許容値（`api` / `claude-code`）を含むエラーメッセージが表示される。
 - [ ] AC-03: `LLM_BACKEND=claude-code` かつ `ANTHROPIC_API_KEY` 未設定で、チャット送信 → text delta の SSE 受信 → カスタムツール実行 → 応答保存、の一連が動作する（Agent SDK はモック。結合確認は walkthrough で実施）。ツール副作用（DB 書き込み）が 1 ツール呼び出しにつき一度だけ実行され、`event: tool` が 1 ツール実行につき一度だけ・FR-04 のペイロードと順序で送出されることを併せて検証する。「前提・仮定（明示）」4 の縮退仕様が発動した場合は「1 応答 1 text イベントの SSE 受信」で本基準を満たすとみなす。
 - [ ] AC-04: `claude-code` バックエンドで再裁定を実行し、submit_verdict ツール入力が現行と同じ検証（`parseVerdictToolInput`）を通過して裁定が保存される。検証と保存が 1 リクエストにつき一度だけ実行されることを併せて検証する。ツール未呼び出し時は HTTP 500 が返る。
@@ -127,5 +129,5 @@ server/src/llm/
 - [ ] AC-09: `/quality-check` が pass する（lint / typecheck / test 全通過）。
 - [ ] AC-10: `claude-code` バックエンドでダッシュボードコメント生成・通知文面生成が動作する（モックに応答テキストを返させ、生成結果が保存・返却されることを確認する）。ダッシュボードコメントのプロンプトに FR-14 の短文指示が含まれること、および上限（全角 80 字相当）を超過する応答を返すモックでテンプレートフォールバックとなることをテストで確認できる。
 - [ ] AC-11: `claude-code` バックエンドのファサード層タイムアウト（120 秒）・リトライ（最大 2 回・指数バックオフ）を、モックで失敗・遅延を注入して検証できる（呼び出し全体の経過時間上限と期限到達時のキャンセル・リトライ回数・ツール実行後の失敗が再試行されないこと、の確認。時刻はモックし TZ・実時間に依存しない）。
-- [ ] AC-12: `LLM_BACKEND=claude-code` で起動時の可用性確認（FR-13）が失敗しても、警告ログが出力されたうえでサーバーの起動が継続することをテストで確認できる。可用性確認の対象が PATH 上の `claude` コマンドではなく、バックエンド実装と共有された Claude Code 実行バイナリのパスであることを併せて確認できる。
+- [ ] AC-12: `claude-code` バックエンド有効時（既定・明示のいずれも）に起動時の可用性確認（FR-13）が失敗しても、警告ログが出力されたうえでサーバーの起動が継続することをテストで確認できる。可用性確認の対象が PATH 上の `claude` コマンドではなく、バックエンド実装と共有された Claude Code 実行バイナリのパスであることを併せて確認できる。
 - [ ] AC-13: `claude-code` バックエンドの呼び出しで、セッション履歴の永続化を無効化するオプション（FR-15）がモックに渡ることをテストで確認できる。
