@@ -1,6 +1,11 @@
 import type Anthropic from "@anthropic-ai/sdk";
 import type { LlmBackend } from "../config.js";
-import { createApiClient, streamApiMessage, createApiMessage } from "./backends/api-backend.js";
+import {
+  createApiClient,
+  streamApiMessage,
+  createApiMessage,
+  type ApiMessageRequest,
+} from "./backends/api-backend.js";
 import {
   streamClaudeCodeMessage,
   createClaudeCodeMessage,
@@ -51,7 +56,18 @@ export const DEFAULT_MODEL = "claude-sonnet-5";
  */
 export const MAX_TOOL_ROUNDS = 5;
 
-const DEFAULT_MAX_TOKENS = 1024;
+/**
+ * `max_tokens` bounds *thinking + response text combined*, not just the
+ * visible reply — it is an upper limit, not a reservation, so raising it
+ * does not increase the actual cost of a short response (Issue #117: the
+ * previous 1024 was sized only for response text and silently starved
+ * `claude-sonnet-5`'s default adaptive thinking, producing a thinking-only
+ * turn with `stop_reason: "max_tokens"` and zero visible content). 16000 is
+ * the recommended non-streaming default with enough headroom for D3's
+ * `effort: "low"` adaptive thinking plus a full boss reply. Kept as a single
+ * constant across every call site (KISS) rather than split per-route.
+ */
+const DEFAULT_MAX_TOKENS = 16_000;
 
 export class MissingApiKeyError extends Error {
   constructor() {
@@ -100,6 +116,29 @@ export type BossContentBlock = BossTextBlock | BossToolUseBlock;
 
 export interface BossLlmMessage {
   content: BossContentBlock[];
+  /**
+   * The backend's *unmodified* assistant content blocks, when it can supply
+   * them (`api` only — see `backends/api-backend.ts`'s `normalizeMessage`).
+   * Used solely by {@link streamBossMessage}'s tool loop to echo the
+   * assistant turn back verbatim on the follow-up round.
+   *
+   * Issue #117: `content` deliberately drops every block type outside
+   * `text`/`tool_use`, including `thinking`. That is correct for boss
+   * callers, but wrong for the tool loop: with extended thinking enabled,
+   * the assistant turn that produced a `tool_use` must be replayed to the
+   * API *with its original `thinking` block and signature intact* (the SDK
+   * documents the signature as being returned "for multi-turn continuity"),
+   * otherwise the follow-up request is rejected. Echoing the normalized
+   * content instead would have made every tool-using chat turn fail the
+   * moment thinking became reachable — which the `DEFAULT_MAX_TOKENS`
+   * increase in this same fix is exactly what makes it reachable.
+   *
+   * Optional on purpose: `claude-code` does not set it (D6 — that backend
+   * runs its own internal tool loop and this facade never replays turns for
+   * it), so the loop falls back to `content` there, preserving the existing
+   * behavior its tests pin.
+   */
+  rawContent?: unknown[];
 }
 
 /**
@@ -135,6 +174,33 @@ export interface ClaudeMessageRequest {
    * (`streamBossMessage`) has no need for it yet. */
   toolChoice?: Anthropic.ToolChoice;
   maxTokens?: number;
+  /**
+   * Extended-thinking mode for this request. Defaults to `{ type: "disabled"
+   * }` in {@link resolveRequest} (Issue #117 fix) rather than being left
+   * unset: `claude-sonnet-5` treats an *omitted* `thinking` as `adaptive`
+   * (a silent behavior change from Sonnet 4.6, where omission meant no
+   * thinking at all), and adaptive thinking alone was enough to exhaust the
+   * old 1024-token `max_tokens` default before any reply text was produced.
+   * Closing this at the facade means a future call site that forgets to set
+   * `thinking` fails safe (no thinking, full `max_tokens` budget goes to the
+   * reply) instead of silently reproducing this bug — only call sites that
+   * actually want thinking (currently: the chat route, `{ type: "adaptive"
+   * }`) need to opt in explicitly. Only consumed by the `api` backend (see
+   * `backends/api-backend.ts`) — `claude-code` has no equivalent parameter
+   * (D6: `dispatchStream`/`dispatchCreate` never forward it there).
+   */
+  thinking?: Anthropic.ThinkingConfigParam;
+  /**
+   * Optional output tuning (currently just `effort`). Note that `effort`
+   * governs how much work the model puts into the turn *as a whole* — not
+   * just how deep adaptive thinking goes, but also how elaborate the visible
+   * reply is — so lowering it is a quality/latency trade-off on the response
+   * itself, not only on the hidden reasoning. Left unset by default; the
+   * API's own default is `high`. Currently only the chat route sets it
+   * (`effort: "low"`, to keep interactive latency and thinking-token cost
+   * down). Same `api`-only scope as {@link thinking} above.
+   */
+  outputConfig?: Anthropic.OutputConfig;
 }
 
 export type OnTextDelta = (textDelta: string) => void;
@@ -168,14 +234,13 @@ export interface StreamBossMessageCallbacks {
   executeTool?: BossToolExecutor;
 }
 
-function resolveRequest(request: ClaudeMessageRequest): {
-  model: string;
-  system?: string;
-  messages: Anthropic.MessageParam[];
-  tools?: Anthropic.Tool[];
-  toolChoice?: Anthropic.ToolChoice;
-  maxTokens: number;
-} {
+/** Returns {@link ApiMessageRequest} rather than an inline structural copy of
+ * it so the two stay in sync by construction: adding a field on one side
+ * without the other is now a compile error (self-review: design-reviewer
+ * caught the duplicated shape when `thinking`/`outputConfig` widened it).
+ * The import is type-only, so no runtime dependency is added in the
+ * facade → backend direction that isn't already there. */
+function resolveRequest(request: ClaudeMessageRequest): ApiMessageRequest {
   return {
     model: request.model ?? DEFAULT_MODEL,
     system: request.system,
@@ -183,6 +248,10 @@ function resolveRequest(request: ClaudeMessageRequest): {
     tools: request.tools,
     toolChoice: request.toolChoice,
     maxTokens: request.maxTokens ?? DEFAULT_MAX_TOKENS,
+    // Issue #117 fix — see ClaudeMessageRequest.thinking's doc comment for
+    // why "disabled" (not "leave unset") is the fail-safe default.
+    thinking: request.thinking ?? { type: "disabled" },
+    outputConfig: request.outputConfig,
   };
 }
 
@@ -335,9 +404,15 @@ export async function streamBossMessage(
       break;
     }
 
+    // Replay the assistant turn *verbatim* when the backend gave us the raw
+    // blocks (Issue #117): with thinking enabled, dropping the `thinking`
+    // block before the `tool_result` breaks the turn — see
+    // `BossLlmMessage.rawContent`'s doc comment. Falls back to the
+    // normalized content for backends that supply no raw blocks.
     messages.push({
       role: "assistant",
-      content: finalMessage.content as unknown as Anthropic.MessageParam["content"],
+      content: (finalMessage.rawContent ??
+        finalMessage.content) as unknown as Anthropic.MessageParam["content"],
     });
 
     const toolResultBlocks: Anthropic.ToolResultBlockParam[] = [];

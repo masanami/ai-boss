@@ -100,6 +100,14 @@ async function generateBossComment(
       system,
       messages: [{ role: "user", content: buildUserInstruction(backend) }],
       maxTokens: DASHBOARD_COMMENT_MAX_TOKENS,
+      // Issue #117: this route's `maxTokens` (150) is sized only for the
+      // short comment itself. The facade already defaults `thinking` to
+      // "disabled", but it's set explicitly here (rather than relying on
+      // that default) because "no thinking" is part of *this route's own*
+      // contract — a small max_tokens budget and any amount of thinking are
+      // mutually exclusive here, so a test pins it directly instead of
+      // depending on the facade's default staying what it is today.
+      thinking: { type: "disabled" },
     });
 
     const text = extractText(message);

@@ -185,7 +185,7 @@ describe("streamBossMessage (no tools/executeTool — single round)", () => {
     expect(streamMock).toHaveBeenCalledWith(expect.objectContaining({ model: "claude-opus-4-8" }));
   });
 
-  it("defaults max_tokens to 1024 when not given", async () => {
+  it("defaults max_tokens to 16000 when not given (Issue #117: max_tokens bounds thinking+text combined)", async () => {
     const fakeStream = createFakeStream({ content: [] });
     streamMock.mockReturnValue(fakeStream);
     const client = apiClient();
@@ -194,7 +194,53 @@ describe("streamBossMessage (no tools/executeTool — single round)", () => {
       messages: [{ role: "user", content: "こんにちは" }],
     });
 
-    expect(streamMock).toHaveBeenCalledWith(expect.objectContaining({ max_tokens: 1024 }));
+    expect(streamMock).toHaveBeenCalledWith(expect.objectContaining({ max_tokens: 16000 }));
+  });
+
+  it("defaults thinking to { type: 'disabled' } when not given (Issue #117 fail-safe default)", async () => {
+    const fakeStream = createFakeStream({ content: [] });
+    streamMock.mockReturnValue(fakeStream);
+    const client = apiClient();
+
+    await streamBossMessage(client, {
+      messages: [{ role: "user", content: "こんにちは" }],
+    });
+
+    expect(streamMock).toHaveBeenCalledWith(
+      expect.objectContaining({ thinking: { type: "disabled" } }),
+    );
+  });
+
+  it("passes the caller's thinking/outputConfig through, overriding the default", async () => {
+    const fakeStream = createFakeStream({ content: [] });
+    streamMock.mockReturnValue(fakeStream);
+    const client = apiClient();
+
+    await streamBossMessage(client, {
+      messages: [{ role: "user", content: "こんにちは" }],
+      thinking: { type: "adaptive" },
+      outputConfig: { effort: "low" },
+    });
+
+    expect(streamMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        thinking: { type: "adaptive" },
+        output_config: { effort: "low" },
+      }),
+    );
+  });
+
+  it("does not send output_config when outputConfig is not given", async () => {
+    const fakeStream = createFakeStream({ content: [] });
+    streamMock.mockReturnValue(fakeStream);
+    const client = apiClient();
+
+    await streamBossMessage(client, {
+      messages: [{ role: "user", content: "こんにちは" }],
+    });
+
+    const sentRequest = streamMock.mock.calls[0][0] as Record<string, unknown>;
+    expect("output_config" in sentRequest).toBe(false);
   });
 
   it("passes system, messages, tools, and maxTokens through unchanged", async () => {
@@ -225,6 +271,7 @@ describe("streamBossMessage (no tools/executeTool — single round)", () => {
       system: "あなたはボスです",
       messages,
       tools,
+      thinking: { type: "disabled" },
     });
   });
 
@@ -254,9 +301,9 @@ describe("streamBossMessage (no tools/executeTool — single round)", () => {
       messages: [{ role: "user", content: "タスクを更新して" }],
     });
 
-    expect(result).toEqual({
-      content: [{ type: "tool_use", id: "tool_1", name: "update_task", input: { id: 1 } }],
-    });
+    expect(result.content).toEqual([
+      { type: "tool_use", id: "tool_1", name: "update_task", input: { id: 1 } },
+    ]);
     expect(streamMock).toHaveBeenCalledTimes(1);
   });
 });
@@ -287,7 +334,7 @@ describe("streamBossMessage (tool loop)", () => {
       isError: false,
     });
     expect(onTextDelta).toHaveBeenCalledWith("タスクを作成した");
-    expect(result).toEqual({ content: [{ type: "text", text: "タスクを作成した" }] });
+    expect(result.content).toEqual([{ type: "text", text: "タスクを作成した" }]);
 
     const secondCallRequest = streamMock.mock.calls[1][0] as {
       messages: Array<{ role: string; content: unknown }>;
@@ -300,6 +347,48 @@ describe("streamBossMessage (tool loop)", () => {
     expect(secondCallRequest.messages[2]).toMatchObject({
       role: "user",
       content: [{ type: "tool_result", tool_use_id: "tool_1", content: '{"title":"資料作成"}' }],
+    });
+  });
+
+  // Issue #117 (self-review: design-reviewer). The DEFAULT_MAX_TOKENS
+  // increase is what first makes "thinking *and* a tool_use in the same
+  // turn" reachable on the chat route, and the API requires that turn to be
+  // replayed with its original thinking block + signature before the
+  // tool_result. Echoing the normalized content (which drops thinking)
+  // would break every tool-using chat turn, so pin the verbatim replay.
+  it("replays the assistant turn verbatim — thinking block and signature intact — before the tool_result", async () => {
+    const thinkingBlock = {
+      type: "thinking",
+      thinking: "タスク名を決める内部推論",
+      signature: "sig_abc123",
+    };
+    const firstStream = createFakeStream({
+      content: [
+        thinkingBlock,
+        { type: "tool_use", id: "tool_1", name: "create_task", input: { title: "資料作成" } },
+      ],
+    });
+    const secondStream = createFakeStream(textMessage("タスクを作成した"));
+    streamMock.mockReturnValueOnce(firstStream).mockReturnValueOnce(secondStream);
+
+    await streamBossMessage(
+      apiClient(),
+      {
+        messages: [{ role: "user", content: "タスクを作って" }],
+        thinking: { type: "adaptive" },
+      },
+      { executeTool: vi.fn().mockResolvedValue({ content: "{}", isError: false }) },
+    );
+
+    const secondCallRequest = streamMock.mock.calls[1][0] as {
+      messages: Array<{ role: string; content: unknown }>;
+    };
+    expect(secondCallRequest.messages[1]).toEqual({
+      role: "assistant",
+      content: [
+        thinkingBlock,
+        { type: "tool_use", id: "tool_1", name: "create_task", input: { title: "資料作成" } },
+      ],
     });
   });
 
@@ -408,7 +497,21 @@ describe("createBossMessage", () => {
       messages,
       tools,
       tool_choice: { type: "tool", name: "submit_verdict" },
+      thinking: { type: "disabled" },
     });
+  });
+
+  it("defaults thinking to { type: 'disabled' } when not given", async () => {
+    createMock.mockResolvedValue({ content: [] });
+    const client = apiClient();
+
+    await createBossMessage(client, {
+      messages: [{ role: "user", content: "進言内容" }],
+    });
+
+    expect(createMock).toHaveBeenCalledWith(
+      expect.objectContaining({ thinking: { type: "disabled" } }),
+    );
   });
 
   it("resolves with the message returned by messages.create, including tool_use blocks", async () => {
@@ -419,9 +522,9 @@ describe("createBossMessage", () => {
       messages: [{ role: "user", content: "進言内容" }],
     });
 
-    expect(result).toEqual({
-      content: [{ type: "tool_use", id: "tool_1", name: "submit_verdict", input: { verdict: "upheld" } }],
-    });
+    expect(result.content).toEqual([
+      { type: "tool_use", id: "tool_1", name: "submit_verdict", input: { verdict: "upheld" } },
+    ]);
   });
 });
 
@@ -648,6 +751,28 @@ describe("streamBossMessage (claude-code backend wiring)", () => {
     ]);
   });
 
+  // D6 regression (Issue #117): claude-code has no thinking/max_tokens
+  // starvation problem of its own (the Agent SDK controls its own turn
+  // budget), and `backends/claude-code-backend.ts` is deliberately left
+  // untouched by this fix — dispatchStream must keep destructuring only
+  // model/system/messages/tools for this branch, even when a caller passes
+  // thinking/outputConfig (e.g. because it shares a request builder with an
+  // api-backend call site).
+  it("does not forward thinking/outputConfig to the claude-code backend even when the caller sets them", async () => {
+    streamClaudeCodeMessageMock.mockResolvedValue({ content: [{ type: "text", text: "了解" }] });
+
+    await streamBossMessage(claudeCodeClient(), {
+      messages: [{ role: "user", content: "hi" }],
+      thinking: { type: "adaptive" },
+      outputConfig: { effort: "low" },
+    });
+
+    expect(streamClaudeCodeMessageMock).toHaveBeenCalledWith(
+      { model: "claude-sonnet-5", system: undefined, messages: [{ role: "user", content: "hi" }], tools: undefined },
+      expect.anything(),
+    );
+  });
+
   it("forwards model/system/messages/tools and onTextDelta/onToolEvent/executeTool through to the backend", async () => {
     streamClaudeCodeMessageMock.mockResolvedValue({ content: [{ type: "text", text: "了解" }] });
     const onTextDelta = vi.fn();
@@ -802,6 +927,28 @@ describe("streamBossMessage (claude-code backend wiring)", () => {
 });
 
 describe("createBossMessage / requestVerdict (claude-code backend wiring)", () => {
+  // D6 regression (Issue #117) — see the equivalent streamBossMessage test
+  // above for the rationale.
+  it("does not forward thinking/outputConfig to the claude-code backend even when the caller sets them", async () => {
+    createClaudeCodeMessageMock.mockResolvedValue({ content: [{ type: "text", text: "了解" }] });
+
+    await createBossMessage(claudeCodeClient(), {
+      messages: [{ role: "user", content: "進言内容" }],
+      thinking: { type: "adaptive" },
+      outputConfig: { effort: "low" },
+    });
+
+    expect(createClaudeCodeMessageMock).toHaveBeenCalledWith(
+      {
+        model: "claude-sonnet-5",
+        system: undefined,
+        messages: [{ role: "user", content: "進言内容" }],
+        tools: undefined,
+      },
+      expect.anything(),
+    );
+  });
+
   it("createBossMessage forwards model/system/messages/tools to the backend and resolves with its content", async () => {
     createClaudeCodeMessageMock.mockResolvedValue({
       content: [{ type: "tool_use", id: "toolu_v1", name: "submit_verdict", input: { verdict: "upheld", response: "維持する" } }],
