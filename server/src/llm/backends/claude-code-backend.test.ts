@@ -968,6 +968,9 @@ describe("checkClaudeCodeAvailability", () => {
     expect(console.warn).toHaveBeenCalledTimes(3);
     for (const call of vi.mocked(console.warn).mock.calls) {
       expect(call).toContain(CLAUDE_CODE_UNAVAILABLE_HINT);
+      // 定数と自分自身を比べるだけでは、案内から復旧手段が消えても
+      // 気付けない。利用者向けの外部契約として文字列そのものを固定する。
+      expect(call.flat().join(" ")).toContain("LLM_BACKEND=api");
     }
   });
 

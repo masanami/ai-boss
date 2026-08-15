@@ -112,6 +112,9 @@ describe("loadConfig", () => {
     expect(logSpy).toHaveBeenCalledTimes(1);
     const logged = logSpy.mock.calls[0].join(" ");
     expect(logged).toContain("claude-code");
+    // バックエンド名だけを見ると、既定/明示の区別が消えても気付けない。
+    // 起動ログの外部契約として区別の文言そのものを固定する。
+    expect(logged).toContain("既定値");
   });
 
   it("logs the effective llmBackend once at startup, noting LLM_BACKEND was set explicitly (Issue #118)", () => {
@@ -122,6 +125,7 @@ describe("loadConfig", () => {
     expect(logSpy).toHaveBeenCalledTimes(1);
     const logged = logSpy.mock.calls[0].join(" ");
     expect(logged).toContain("api");
+    expect(logged).toContain("LLM_BACKEND で明示");
   });
 
   it("warns to set LLM_BACKEND=api when the default claude-code backend is in effect and ANTHROPIC_API_KEY is set (Issue #118)", () => {
@@ -140,6 +144,17 @@ describe("loadConfig", () => {
 
   it("does not warn about switching backends when LLM_BACKEND=api is set explicitly even if ANTHROPIC_API_KEY is set (Issue #118)", () => {
     loadConfig({ LLM_BACKEND: "api", ANTHROPIC_API_KEY: "sk-ant-test-key" });
+
+    expect(console.warn).not.toHaveBeenCalled();
+  });
+
+  // 明示 claude-code ＋ API キーあり。切替警告は「既定で claude-code に
+  // なっているが API キーがある」ケース向けなので、明示指定なら出ない。
+  it("does not warn about switching backends when LLM_BACKEND=claude-code is set explicitly even if ANTHROPIC_API_KEY is set (Issue #118)", () => {
+    loadConfig({
+      LLM_BACKEND: "claude-code",
+      ANTHROPIC_API_KEY: "sk-ant-test-key",
+    });
 
     expect(console.warn).not.toHaveBeenCalled();
   });
