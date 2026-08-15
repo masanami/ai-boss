@@ -257,7 +257,11 @@ describe("reports routes", () => {
 
       expect(second.id).toBe(first.id);
       expect(second.content).toContain("更新後の要点");
-      expect(second.content).not.toContain(first.content.match(/報告の要点: .+/)?.[0] ?? "__none__");
+      // フォールバック値 ("__none__") で黙って通過しないよう、まず抽出結果が
+      // 存在することを検証してから比較する（CodeRabbit 指摘）。
+      const firstSummaryLine = first.content.match(/報告の要点: .+/)?.[0];
+      expect(firstSummaryLine).toBeDefined();
+      expect(second.content).not.toContain(firstSummaryLine);
     });
   });
 });

@@ -39,10 +39,20 @@ function DailyReportView() {
     if (report === null) {
       return;
     }
-    navigator.clipboard.writeText(report.content).then(
-      () => setCopyState({ kind: "success" }),
-      () => setCopyState({ kind: "failure" }),
-    );
+    // 非セキュアコンテキストでは navigator.clipboard 自体が undefined で、
+    // .writeText を呼ぶと同期的に TypeError が投げられる（.then の失敗
+    // ハンドラには届かない）。try/catch で同期例外も失敗扱いに落とす。
+    try {
+      if (!navigator.clipboard) {
+        throw new Error("clipboard API is unavailable");
+      }
+      navigator.clipboard.writeText(report.content).then(
+        () => setCopyState({ kind: "success" }),
+        () => setCopyState({ kind: "failure" }),
+      );
+    } catch {
+      setCopyState({ kind: "failure" });
+    }
   };
 
   if (status === "loading") {

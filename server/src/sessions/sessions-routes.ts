@@ -180,8 +180,11 @@ export function createSessionsRouter(
     //
     // (a) the session's ended_at update above is already committed before
     // (b) this synchronous, request-scoped generation call — the ordering
-    // required by the spec's "実行境界" (best-effort: never blocks the
-    // 200 response on generation outcome).
+    // required by the spec's "実行境界" (best-effort). Note this call is
+    // awaited: the 200 response waits for generation to finish (or the
+    // 20s timeout above), it just never *fails* on generation's outcome —
+    // `triggerDailyReportGeneration` swallows all errors so a bad
+    // generation never turns this response into a non-200.
     if (isFirstEnding && session.type === "evening") {
       await triggerDailyReportGeneration(db, env, session.id);
     }

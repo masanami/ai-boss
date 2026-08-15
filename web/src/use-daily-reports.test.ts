@@ -157,6 +157,55 @@ describe("useDailyReports", () => {
     expect(result.current.needsEveningSession).toBe(false);
   });
 
+  it("keeps the later selection's report when an earlier selection's response resolves after it (stale-response guard)", async () => {
+    const DATE_A = "2026-08-12";
+    const DATE_B = PAST_SUMMARY.date; // "2026-08-13"
+    const REPORT_A: DailyReport = {
+      ...PAST_REPORT,
+      date: DATE_A,
+      content: "# 日報 2026-08-12（水）\n",
+    };
+
+    let resolveA: (() => void) | null = null;
+    const pendingA = new Promise<void>((resolve) => {
+      resolveA = resolve;
+    });
+
+    vi.stubGlobal(
+      "fetch",
+      routedFetchMock({
+        today: () => jsonResponse(200, TODAY_REPORT),
+        summaries: () => jsonResponse(200, [TODAY_SUMMARY, PAST_SUMMARY]),
+        byDate: {
+          [DATE_A]: () => pendingA.then(() => jsonResponse(200, REPORT_A)),
+          [DATE_B]: () => jsonResponse(200, PAST_REPORT),
+        },
+      }),
+    );
+
+    const { result } = renderHook(() => useDailyReports());
+    await waitFor(() => expect(result.current.status).toBe("ready"));
+
+    // A を選ぶ（応答はまだ保留）。続けて B を選ぶ（先に解決する）。その後で
+    // A の応答を解決させても、最後に選んだ B のままであるべき。
+    await act(async () => {
+      result.current.selectDate(DATE_A);
+    });
+    await act(async () => {
+      result.current.selectDate(DATE_B);
+    });
+
+    await waitFor(() => expect(result.current.report).toEqual(PAST_REPORT));
+
+    await act(async () => {
+      resolveA?.();
+      await pendingA;
+    });
+
+    expect(result.current.report).toEqual(PAST_REPORT);
+    expect(result.current.selectedDate).toBe(DATE_B);
+  });
+
   it("regenerates the report, updating both the content and the summary list without duplicating the date", async () => {
     const regenerated: DailyReport = {
       ...TODAY_REPORT,

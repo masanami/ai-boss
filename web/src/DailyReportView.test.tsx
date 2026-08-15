@@ -180,6 +180,37 @@ describe("DailyReportView", () => {
     expect(selectSpy).toHaveBeenCalled();
   });
 
+  it("falls back to a selected textarea when navigator.clipboard is undefined (non-secure context)", async () => {
+    vi.stubGlobal(
+      "fetch",
+      routedFetchMock({
+        today: () => jsonResponse(200, TODAY_REPORT),
+        summaries: () => jsonResponse(200, [TODAY_SUMMARY]),
+      }),
+    );
+    // 非セキュアコンテキストでは navigator.clipboard 自体が undefined になり、
+    // .writeText を呼ぶと同期的に TypeError が投げられる（CodeRabbit 指摘）。
+    Object.defineProperty(navigator, "clipboard", {
+      value: undefined,
+      configurable: true,
+    });
+    const selectSpy = vi.spyOn(HTMLTextAreaElement.prototype, "select");
+
+    render(<DailyReportView />);
+    await waitFor(() =>
+      expect(currentReportContent()).toBe(TODAY_REPORT.content),
+    );
+
+    expect(() =>
+      fireEvent.click(screen.getByRole("button", { name: "コピー" })),
+    ).not.toThrow();
+
+    await waitFor(() => expect(screen.getByRole("alert")).toBeInTheDocument());
+    const textarea = screen.getByLabelText("日報本文（手動コピー用）");
+    expect(textarea).toHaveValue(TODAY_REPORT.content);
+    expect(selectSpy).toHaveBeenCalled();
+  });
+
   it("retries the copy on a second click of the copy button after a failure", async () => {
     vi.stubGlobal(
       "fetch",

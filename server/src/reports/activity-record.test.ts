@@ -209,6 +209,22 @@ describe("computeActivityRecord — 休憩合計時間 (breakTotalMinutes) の�
     expect(result.breakTotalMinutes).toBe(10);
   });
 
+  it("clamps to 0 minutes (never negative) when an unresponded break_start begins after the evening session's ended_at", () => {
+    // 夕会が 19:00-19:30 で終了した後、23:00 に休憩を開始してまだ戻ってきて
+    // いない状態で日報を再生成するケース（CodeRabbit 指摘: 打ち切り時刻
+    // sessionEndedAt が start より前になり、対応なしのまま計算すると
+    // durationMs が負になっていた）。
+    const result = computeActivityRecord({
+      taskStarts: [],
+      breakStarts: [event(1, localIso(2026, 8, 14, 23, 0))],
+      breakEnds: [],
+      sessionEndedAt: localIso(2026, 8, 14, 19, 30),
+    });
+
+    expect(result.breakCount).toBe(1);
+    expect(result.breakTotalMinutes).toBe(0);
+  });
+
   it("floors the total to whole minutes when a break duration includes leftover seconds", () => {
     const start = event(1, localIso(2026, 8, 14, 10, 0, 0));
     const end = event(2, localIso(2026, 8, 14, 10, 1, 59));

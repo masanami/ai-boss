@@ -94,7 +94,13 @@ export function computeActivityRecord(input: ActivityRecordInput): ActivityRecor
   const totalMs = pairs.reduce((sum, pair) => {
     const endIso = pair.end ? pair.end.created_at : input.sessionEndedAt;
     const durationMs = new Date(endIso).getTime() - new Date(pair.start.created_at).getTime();
-    return sum + durationMs;
+    // 未対応（end: null）の場合、打ち切り時刻は夕会 sessionEndedAt。もし
+    // break_start がそれより後（例: 夕会終了後の深夜に休憩を開始し、まだ
+    // 戻っていない状態で日報を再生成した場合）だと durationMs が負になる。
+    // 「打ち切り時刻までを計上する」という仕様の素直な帰結として、打ち切り
+    // 時刻が開始より前なら休憩時間は 0 とみなす（負の休憩時間として合計に
+    // 混入させない）。
+    return sum + Math.max(0, durationMs);
   }, 0);
   const breakTotalMinutes = Math.floor(totalMs / (60 * 1000));
 

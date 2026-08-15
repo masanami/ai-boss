@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import {
   ReportApiError,
   fetchDailyReport,
@@ -63,6 +63,10 @@ export function useDailyReports(): UseDailyReportsResult {
   const [selectError, setSelectError] = useState<string | null>(null);
   const [isRegenerating, setIsRegenerating] = useState(false);
   const [regenerateError, setRegenerateError] = useState<string | null>(null);
+  // selectDate で最後に要求した日付。素早く A → B と選んだ場合に A の応答が
+  // B より後に届いても、その時点で「最後に要求したのは B」と分かるようにし、
+  // 古い応答で状態を上書きしないための stale-response ガード（CodeRabbit 指摘）。
+  const latestRequestedDateRef = useRef(todayKey);
 
   useEffect(() => {
     let cancelled = false;
@@ -102,12 +106,20 @@ export function useDailyReports(): UseDailyReportsResult {
     (date: string) => {
       setSelectedDate(date);
       setSelectError(null);
+      latestRequestedDateRef.current = date;
       fetchDailyReport(date)
         .then((fetchedReport) => {
+          // この応答より後に別の日付が選択されていたら、古い応答なので破棄する。
+          if (latestRequestedDateRef.current !== date) {
+            return;
+          }
           setReport(fetchedReport);
           setNeedsEveningSession(false);
         })
         .catch((error: unknown) => {
+          if (latestRequestedDateRef.current !== date) {
+            return;
+          }
           if (
             error instanceof ReportApiError &&
             error.code === "report_not_found" &&

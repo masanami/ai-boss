@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type Database from "better-sqlite3";
 import { openDatabase } from "../db/connection.js";
 import { runMigrations } from "../db/migrate.js";
@@ -19,6 +19,7 @@ describe("daily-reports-repository", () => {
 
   afterEach(() => {
     db.close();
+    vi.useRealTimers();
   });
 
   describe("upsertDailyReport", () => {
@@ -41,7 +42,13 @@ describe("daily-reports-repository", () => {
       expect(typeof report.updated_at).toBe("string");
     });
 
-    it("overwrites the same date on re-generation (upsert), keeping created_at but updating updated_at and content", async () => {
+    it("overwrites the same date on re-generation (upsert), keeping created_at but updating updated_at and content", () => {
+      // 実時間待機（setTimeout）ではなく fake timers で時刻を進める
+      // （CodeRabbit 指摘: 実待機はテストを遅く・不安定にする）。時刻は
+      // ローカル日付コンストラクタ由来（CLAUDE.md「テスト方針」）。
+      vi.useFakeTimers();
+      vi.setSystemTime(new Date(2026, 7, 14, 19, 0, 0));
+
       const session = insertSession(db, { type: "evening" });
 
       const first = upsertDailyReport(db, {
@@ -50,8 +57,8 @@ describe("daily-reports-repository", () => {
         evening_session_id: session.id,
       });
 
-      // created_at と updated_at の差を検出できるよう、値を1ms進めてから再生成する
-      await new Promise((resolve) => setTimeout(resolve, 2));
+      // created_at と updated_at の差を検出できるよう、値を1秒進めてから再生成する
+      vi.setSystemTime(new Date(2026, 7, 14, 19, 0, 1));
 
       const secondSession = insertSession(db, { type: "evening" });
       const second = upsertDailyReport(db, {
