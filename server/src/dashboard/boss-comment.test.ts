@@ -42,6 +42,12 @@ describe("getOrGenerateBossComment", () => {
   const env = { ANTHROPIC_API_KEY: "sk-ant-test-key", LLM_BACKEND: "api" };
 
   beforeEach(() => {
+    // insertTask は updated_at に実時刻を使う。フィンガープリントの入力に
+    // なるため、CLAUDE.md のテスト方針（現在時刻はモックする）に従って固定
+    // する。テスト内の now と同じローカル日付に揃え、TZ 非依存に組む。
+    // shouldAdvanceTime: true は await が実タイマー待ちで止まらないようにする。
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    vi.setSystemTime(new Date(2026, 6, 6, 8, 0));
     db = openDatabase(":memory:");
     runMigrations(db);
     createClaudeClientMock.mockReset();
@@ -51,6 +57,7 @@ describe("getOrGenerateBossComment", () => {
 
   afterEach(() => {
     db.close();
+    vi.useRealTimers();
   });
 
   it("calls the Claude API and returns the generated text on first request", async () => {

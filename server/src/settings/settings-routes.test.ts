@@ -111,13 +111,11 @@ describe("settings routes", () => {
         string,
         unknown
       >;
-      expect(Object.keys(body)).not.toEqual(
-        expect.arrayContaining([
-          "dashboard_comment_date",
-          "dashboard_comment_fingerprint",
-          "dashboard_comment_text",
-        ]),
-      );
+      // キーごとに検証する。arrayContaining の否定は「3キーすべてが露出した
+      // ときだけ」失敗するため、1〜2キーだけ漏れる回帰を素通りさせる。
+      expect(body).not.toHaveProperty("dashboard_comment_date");
+      expect(body).not.toHaveProperty("dashboard_comment_fingerprint");
+      expect(body).not.toHaveProperty("dashboard_comment_text");
     });
   });
 
