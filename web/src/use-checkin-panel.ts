@@ -105,18 +105,21 @@ export function useCheckinPanel(
     try {
       await postCheckin(input);
       setSubmitError(null);
-      await reloadEvents();
-      // チェックイン自体は既に成功しているため、tasks 再取得はベスト
-      // エフォート扱いにする。refreshTasks は現状 use-tasks.ts の refresh
-      // （内部で fetch エラーを catch し reject しない）のみが実引数だが、
-      // その契約は型（() => Promise<void>）では保証されない。ここで吸収
-      // しておかないと、refreshTasks が reject した場合に成功したチェック
-      // インが失敗として報告されてしまう（レビュー指摘）。
+      // チェックイン成功の時点でサーバ側のタスク status 遷移は確定している
+      // ため、tasks 再取得は活動履歴の再取得より先に必ず実行する（後続の
+      // reloadEvents が reject するとここに到達しなくなり、ボードが
+      // 古い todo のまま残る＝レビュー指摘）。ベストエフォート扱いにするのは
+      // 従来どおり: refreshTasks は現状 use-tasks.ts の refresh（内部で
+      // fetch エラーを catch し reject しない）のみが実引数だが、その契約は
+      // 型（() => Promise<void>）では保証されない。ここで吸収しておかないと、
+      // refreshTasks が reject した場合に成功したチェックインが失敗として
+      // 報告されてしまう（レビュー指摘）。
       try {
         await refreshTasks();
       } catch {
         // no-op: tasks 再取得の失敗はチェックインの成否に影響させない
       }
+      await reloadEvents();
       return true;
     } catch (error) {
       setSubmitError(
