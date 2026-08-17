@@ -36,7 +36,7 @@ describe("useCheckinPanel", () => {
       }),
     );
 
-    const { result } = renderHook(() => useCheckinPanel());
+    const { result } = renderHook(() => useCheckinPanel(vi.fn()));
 
     await waitFor(() =>
       expect(result.current.events).toEqual([TASK_START_EVENT]),
@@ -50,7 +50,7 @@ describe("useCheckinPanel", () => {
       vi.fn().mockRejectedValue(new Error("network error")),
     );
 
-    const { result } = renderHook(() => useCheckinPanel());
+    const { result } = renderHook(() => useCheckinPanel(vi.fn()));
 
     await waitFor(() => expect(result.current.status).toBe("error"));
     expect(result.current.events).toEqual([]);
@@ -66,7 +66,7 @@ describe("useCheckinPanel", () => {
       }),
     );
 
-    const { result } = renderHook(() => useCheckinPanel());
+    const { result } = renderHook(() => useCheckinPanel(vi.fn()));
 
     await waitFor(() => expect(result.current.status).toBe("ready"));
     expect(result.current.isOnBreak).toBe(true);
@@ -91,7 +91,7 @@ describe("useCheckinPanel", () => {
     });
     vi.stubGlobal("fetch", fetchMock);
 
-    const { result } = renderHook(() => useCheckinPanel());
+    const { result } = renderHook(() => useCheckinPanel(vi.fn()));
     await waitFor(() => expect(result.current.status).toBe("ready"));
 
     let submitted = false;
@@ -105,6 +105,64 @@ describe("useCheckinPanel", () => {
     expect(submitted).toBe(true);
     expect(result.current.events).toEqual([TASK_START_EVENT]);
     expect(result.current.submitError).toBeNull();
+  });
+
+  it("calls the provided refreshTasks callback after a successful submitCheckin (Issue #134)", async () => {
+    const fetchMock = vi.fn();
+    fetchMock.mockResolvedValueOnce({
+      ok: true,
+      status: 200,
+      json: () => Promise.resolve([]),
+    });
+    fetchMock.mockResolvedValueOnce({
+      ok: true,
+      status: 201,
+      json: () => Promise.resolve(TASK_START_EVENT),
+    });
+    fetchMock.mockResolvedValueOnce({
+      ok: true,
+      status: 200,
+      json: () => Promise.resolve([TASK_START_EVENT]),
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const refreshTasks = vi.fn().mockResolvedValue(undefined);
+
+    const { result } = renderHook(() => useCheckinPanel(refreshTasks));
+    await waitFor(() => expect(result.current.status).toBe("ready"));
+
+    await act(async () => {
+      await result.current.submitCheckin({ type: "task_start", task_id: 1 });
+    });
+
+    expect(refreshTasks).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not call refreshTasks when submitCheckin fails (Issue #134)", async () => {
+    const fetchMock = vi.fn();
+    fetchMock.mockResolvedValueOnce({
+      ok: true,
+      status: 200,
+      json: () => Promise.resolve([]),
+    });
+    fetchMock.mockResolvedValueOnce({
+      ok: false,
+      status: 404,
+      json: () => Promise.resolve({ error: "task 1 not found" }),
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const refreshTasks = vi.fn().mockResolvedValue(undefined);
+
+    const { result } = renderHook(() => useCheckinPanel(refreshTasks));
+    await waitFor(() => expect(result.current.status).toBe("ready"));
+
+    await act(async () => {
+      await result.current.submitCheckin({
+        type: "task_start",
+        task_id: 1,
+      });
+    });
+
+    expect(refreshTasks).not.toHaveBeenCalled();
   });
 
   it("ignores a second submitCheckin while one is in flight (double-submit guard)", async () => {
@@ -136,7 +194,7 @@ describe("useCheckinPanel", () => {
     });
     vi.stubGlobal("fetch", fetchMock);
 
-    const { result } = renderHook(() => useCheckinPanel());
+    const { result } = renderHook(() => useCheckinPanel(vi.fn()));
     await waitFor(() => expect(result.current.status).toBe("ready"));
 
     let first: Promise<boolean> | undefined;
@@ -168,7 +226,7 @@ describe("useCheckinPanel", () => {
     });
     vi.stubGlobal("fetch", fetchMock);
 
-    const { result } = renderHook(() => useCheckinPanel());
+    const { result } = renderHook(() => useCheckinPanel(vi.fn()));
     await waitFor(() => expect(result.current.status).toBe("ready"));
 
     let submitted = true;
