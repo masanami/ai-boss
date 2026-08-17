@@ -432,6 +432,44 @@ describe("ChatView", () => {
     );
   });
 
+  it("does not claim a task was updated when a read-only tool (e.g. get_activity_log) runs (self-review: get_activity_log previously fell into the create_task/update_task-only notice text)", async () => {
+    const toolEvent = {
+      name: "get_activity_log",
+      input: { task_id: 5 },
+      result: JSON.stringify({ events: [], truncated: false }),
+      isError: false,
+    };
+    vi.stubGlobal(
+      "fetch",
+      vi
+        .fn()
+        .mockResolvedValueOnce(jsonResponse([SESSION]))
+        .mockResolvedValueOnce(jsonResponse([]))
+        .mockResolvedValueOnce(
+          sseResponse([
+            `event: tool\ndata: ${JSON.stringify(toolEvent)}\n\n`,
+            `event: done\ndata: ${JSON.stringify(BOSS_REPLY)}\n\n`,
+          ]),
+        ),
+    );
+
+    render(<ChatViewHarness />);
+    await waitFor(() =>
+      expect(screen.getByLabelText("メッセージ")).toBeEnabled(),
+    );
+
+    fireEvent.change(screen.getByLabelText("メッセージ"), {
+      target: { value: "完了しました" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "送信" }));
+
+    await waitFor(() =>
+      expect(screen.getByText("B 案件は後回しにしろ。")).toBeInTheDocument(),
+    );
+    expect(screen.queryByText(/タスクを更新しました/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/タスクを作成しました/)).not.toBeInTheDocument();
+  });
+
   it("shows an alert when the stream reports an error", async () => {
     vi.stubGlobal(
       "fetch",

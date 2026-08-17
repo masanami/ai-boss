@@ -253,6 +253,7 @@ describe("streamClaudeCodeMessage", () => {
       "mcp__ai-boss__create_task",
       "mcp__ai-boss__update_task",
       "mcp__ai-boss__record_decision",
+      "mcp__ai-boss__get_activity_log",
     ]);
     expect(Object.keys(options.mcpServers as Record<string, unknown>)).toEqual(["ai-boss"]);
     // Runaway-loop guard (self-review): claude-code has no MAX_TOOL_ROUNDS
