@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import { selectDefaultTask } from "./select-default-task";
 import { useCheckinPanel } from "./use-checkin-panel";
 import type { ActivityEvent, CheckinInput } from "./activity-event";
-import type { Task } from "./task";
+import type { UseTasksResult } from "./use-tasks";
 import "./CheckinPanel.css";
 
 const BREAK_PRESET_MINUTES = [5, 15, 30] as const;
@@ -25,14 +25,22 @@ function formatTime(iso: string): string {
 }
 
 interface CheckinPanelProps {
-  /** AppLayout にリフトアップされた共有 tasks（Issue #70）。タスクボードの
-   * 作成・ステータス変更がリロードなしで「着手するタスク」に反映される。 */
-  tasks: Task[];
+  /** AppLayout にリフトアップされた共有 tasksState（Issue #70）。tasks は
+   * タスクボードの作成・ステータス変更がリロードなしで「着手するタスク」に
+   * 反映されるのに使い、refresh はチェックイン成功時にタスクボード側の
+   * ステータス変化（例: task_start による todo → in_progress、Issue #133）
+   * を即時反映するために使う（Issue #134）。実際に使うのは tasks と refresh
+   * のみだが、TaskBoard（Issue #70）と同じ「共有 tasksState を丸ごと受け取る」
+   * パターンに揃えている。addTask/editTask は現状未使用（レビュー指摘: props
+   * を tasks + refresh の2つに絞る選択肢もあるが、共有状態の受け渡し方を
+   * TaskBoard と統一する一貫性を優先した）。 */
+  tasksState: UseTasksResult;
 }
 
-function CheckinPanel({ tasks }: CheckinPanelProps) {
+function CheckinPanel({ tasksState }: CheckinPanelProps) {
+  const { tasks, refresh } = tasksState;
   const { events, status, isOnBreak, submitError, isSubmitting, submitCheckin } =
-    useCheckinPanel();
+    useCheckinPanel(refresh);
 
   const selectableTasks = useMemo(
     () =>
