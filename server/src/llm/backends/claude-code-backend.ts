@@ -26,10 +26,11 @@ import { createTimedExecFile, type ExecFileFn } from "../../lib/exec-file.js";
  *   `verdict-tool.ts` / `reports/evening-summary-tool.ts`）は単一ソースとして
  *   変更しない。Zod スキーマはこのファイル内に閉じて手書きし、整合はユニット
  *   テストで担保する（`TOOL_ZOD_SHAPES` を参照）。
- * - 「補足決定（ツール実行主体の一本化）」: DB に書き込む実行系ツール
- *   （`create_task` / `update_task` / `record_decision`）は MCP ハンドラが
- *   実行主体となり、`callbacks.executeTool`（呼び出し元が db/sessionId を
- *   クロージャで束縛済み）をハンドラ内から一度だけ呼ぶ。呼び出し元
+ * - 「補足決定（ツール実行主体の一本化）」: サーバ側の実行関数を持つツール
+ *   （`create_task` / `update_task` / `record_decision` — DB 書き込み。
+ *   `get_activity_log`（Issue #150） — DB 読み出しのみだが同じ経路）は MCP
+ *   ハンドラが実行主体となり、`callbacks.executeTool`（呼び出し元が
+ *   db/sessionId をクロージャで束縛済み）をハンドラ内から一度だけ呼ぶ。呼び出し元
  *   （`claude-client.ts`）はこの結果を tool_use として再実行しない
  *   （`streamBossMessage` は claude-code バックエンド時、単一 dispatch のみ
  *   行い MAX_TOOL_ROUNDS ループを回さない — 詳細は `claude-client.ts`）。
@@ -119,6 +120,22 @@ const recordDecisionShape = {
   task_id: z.number().int().describe("関連するタスクの id").optional(),
 };
 
+const getActivityLogShape = {
+  task_id: z.number().int().describe("絞り込み対象のタスクの id").optional(),
+  since: z
+    .string()
+    .describe(
+      "この日時（ISO 8601 文字列。YYYY-MM-DD のみの指定はローカル日の0時として扱う）以降のイベントに絞り込む。省略時は task_id 指定時は全期間、未指定時は当日ローカル0時以降。",
+    )
+    .optional(),
+  until: z
+    .string()
+    .describe(
+      "この日時（ISO 8601 文字列。YYYY-MM-DD のみの指定はローカル日の23:59:59として扱う）以前のイベントに絞り込む",
+    )
+    .optional(),
+};
+
 const submitVerdictShape = {
   verdict: z.enum(APPEAL_VERDICTS).describe("裁定結果。維持なら upheld、修正するなら revised。"),
   response: z.string().describe("ボスの再裁定文（ユーザーに提示する説明・断言）"),
@@ -148,21 +165,27 @@ export const TOOL_ZOD_SHAPES = {
   create_task: createTaskShape,
   update_task: updateTaskShape,
   record_decision: recordDecisionShape,
+  get_activity_log: getActivityLogShape,
   submit_verdict: submitVerdictShape,
   submit_evening_summary: submitEveningSummaryShape,
 } as const;
 
-/** Tool names with their own non-executing handler (report-a-value tools —
- * no DB write of their own; see `buildSubmitVerdictTool` /
- * `buildSubmitEveningSummaryTool`). Kept as a single source alongside
- * `EXECUTED_TOOL_NAMES` below rather than duplicating the literal list. */
+/** Tool names with their own non-executing handler (report-a-value tools;
+ * see `buildSubmitVerdictTool` / `buildSubmitEveningSummaryTool`). Kept as a
+ * single source alongside `EXECUTED_TOOL_NAMES` below rather than
+ * duplicating the literal list. */
 const NON_EXECUTING_TOOL_NAMES = new Set(["submit_verdict", "submit_evening_summary"]);
 
 /** Derived from `TOOL_ZOD_SHAPES` (minus the non-executing tools above, each
  * of which has its own handler) rather than a separately hand-maintained
- * literal list, so there is a single place to add a new DB-writing tool
- * (self-review: avoid triple bookkeeping across `BOSS_TOOLS`,
- * `TOOL_ZOD_SHAPES`, and this set). */
+ * literal list, so there is a single place to add a new tool that goes
+ * through `callbacks.executeTool` (self-review: avoid triple bookkeeping
+ * across `BOSS_TOOLS`, `TOOL_ZOD_SHAPES`, and this set). The classification
+ * axis here is "has a server-side executor function reached via
+ * `executeTool`", not "writes to the DB" — `get_activity_log` (Issue #150)
+ * is a DB-read-only tool that still belongs in this set, since it is
+ * dispatched through the same `executeBossTool`/`executeTool` path as the
+ * DB-writing tools above it. */
 const EXECUTED_TOOL_NAMES = new Set(
   Object.keys(TOOL_ZOD_SHAPES).filter((name) => !NON_EXECUTING_TOOL_NAMES.has(name)),
 );
