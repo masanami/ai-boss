@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { fetchTodayActivity, postCheckin } from "./checkins-api";
 import { deriveIsOnBreak } from "./derive-break-status";
 import type { ActivityEvent, CheckinInput } from "./activity-event";
+import type { TaskPatchInput } from "./task";
 
 export type ActivityLoadStatus = "loading" | "ready" | "error";
 
@@ -13,13 +14,30 @@ export interface UseCheckinPanelResult {
   /** 送信中フラグ。UI 側でボタンを無効化するために公開する */
   isSubmitting: boolean;
   submitCheckin: (input: CheckinInput) => Promise<boolean>;
+  /** 今日の活動を再取得する。マウント時読み込み・submitCheckin・
+   * completeTask（Issue #138）が共有する内部処理だが、既存の
+   * use-checkin-panel.test.ts のテストパターン（フックの各アクションを
+   * 直接呼んで検証する）に合わせてテスト容易性のために公開している。
+   * CheckinPanel からは直接呼ばれない（completeTask 経由で間接的に使う）。 */
+  reloadEvents: () => Promise<void>;
+  /** 選択中タスクを完了（status: "done"）にする。「完了」ボタン（Issue #138）
+   * 用のアクション。submitCheckin と同じ送信中フラグ・エラー state・
+   * 再入ガードを共有し、着手/休憩と完了が同時に走らないようにする。
+   * editTask は呼び出し元（CheckinPanel）が受け取る共有 tasksState 由来の
+   * ものをそのまま渡す（本フックは tasksState を持たないため）。 */
+  completeTask: (
+    taskId: number,
+    editTask: (id: number, patch: TaskPatchInput) => Promise<void>,
+  ) => Promise<boolean>;
 }
 
 /**
- * Loads today's activity events on mount and exposes a `submitCheckin`
- * action that posts an explicit checkin, then refetches the list so the
- * panel reflects the new state. Mirrors the fetch-on-mount pattern used by
- * `useTasks`.
+ * Loads today's activity events on mount and exposes two mutation actions
+ * that share the same in-flight guard and error state: `submitCheckin`
+ * (posts an explicit checkin) and `completeTask` (Issue #138; marks the
+ * selected task done via the caller-provided `editTask`). Both refetch the
+ * activity list on success so the panel reflects the new state. Mirrors the
+ * fetch-on-mount pattern used by `useTasks`.
  *
  * @param refreshTasks - The shared `useTasks().refresh` from `AppLayout`
  * (Issue #70 lift-up). Called after a successful checkin so status changes
@@ -35,29 +53,46 @@ export function useCheckinPanel(
   const [status, setStatus] = useState<ActivityLoadStatus>("loading");
   const [submitError, setSubmitError] = useState<string | null>(null);
 
-  useEffect(() => {
-    let cancelled = false;
+  // 「完了」ボタン（reloadEvents 経由）がマウント時の初回読み込みより先に
+  // 解決した場合、後から到着する初回読み込みの遅延レスポンスが新しい結果を
+  // 巻き戻さないよう、世代番号で最新リクエストの応答だけを反映する
+  // （use-tasks.ts の refresh と同じパターン、Issue #138 レビュー指摘）。
+  // events だけでなく status もこの世代ガードの対象にする（完了操作による
+  // 再取得の成功/失敗が status にも正しく反映され、旧世代の応答で巻き戻ら
+  // ないようにするため）。呼び出し元（submitCheckin/completeTask）は失敗を
+  // 検知して submitError を出す必要があるため、失敗時は status を更新した
+  // 上でエラーを rethrow し、呼び出し元の catch に処理を委ねる。
+  const eventsGenerationRef = useRef(0);
 
-    fetchTodayActivity()
-      .then((fetched) => {
-        if (!cancelled) {
-          setEvents(fetched);
-          setStatus("ready");
-        }
-      })
-      .catch(() => {
-        if (!cancelled) {
-          setStatus("error");
-        }
-      });
-
-    return () => {
-      cancelled = true;
-    };
+  const reloadEvents = useCallback(async () => {
+    const generation = ++eventsGenerationRef.current;
+    try {
+      const fetched = await fetchTodayActivity();
+      if (generation !== eventsGenerationRef.current) {
+        return;
+      }
+      setEvents(fetched);
+      setStatus("ready");
+    } catch (error) {
+      if (generation === eventsGenerationRef.current) {
+        setStatus("error");
+      }
+      throw error;
+    }
   }, []);
 
-  // 連打（二重クリック）で POST /api/checkins が多重発火し activity_events に
-  // 重複記録されるのを防ぐ。ref は同期的な再入ガード、state は UI の無効化用。
+  useEffect(() => {
+    reloadEvents().catch(() => {
+      // no-op: 失敗時の status 更新は reloadEvents 内で既に行われている。
+      // ここでは unhandled promise rejection 化を防ぐためだけに捕捉する。
+    });
+  }, [reloadEvents]);
+
+  // 連打（二重クリック）で POST /api/checkins・PATCH /api/tasks/:id が多重
+  // 発火するのを防ぐ。ref は同期的な再入ガード、state は UI の無効化用。
+  // submitCheckin（着手/休憩/戻り）と completeTask（完了）は同じ送信中
+  // フラグ・エラー state を共有し、一方の実行中はもう一方も無効化される
+  // （Issue #138 レビュー指摘: 個別の state だと相互に排他できなかった）。
   const submittingRef = useRef(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
 
@@ -70,8 +105,7 @@ export function useCheckinPanel(
     try {
       await postCheckin(input);
       setSubmitError(null);
-      const refetched = await fetchTodayActivity();
-      setEvents(refetched);
+      await reloadEvents();
       // チェックイン自体は既に成功しているため、tasks 再取得はベスト
       // エフォート扱いにする。refreshTasks は現状 use-tasks.ts の refresh
       // （内部で fetch エラーを catch し reject しない）のみが実引数だが、
@@ -93,7 +127,37 @@ export function useCheckinPanel(
       submittingRef.current = false;
       setIsSubmitting(false);
     }
-  }, [refreshTasks]);
+  }, [refreshTasks, reloadEvents]);
+
+  const completeTask = useCallback(
+    async (
+      taskId: number,
+      editTask: (id: number, patch: TaskPatchInput) => Promise<void>,
+    ) => {
+      if (submittingRef.current) {
+        return false;
+      }
+      submittingRef.current = true;
+      setIsSubmitting(true);
+      try {
+        await editTask(taskId, { status: "done" });
+        setSubmitError(null);
+        // editTask（use-tasks.ts）は成功時に共有 tasks state を自ら更新
+        // 済みのため、submitCheckin と異なり tasks 再取得は不要。
+        await reloadEvents();
+        return true;
+      } catch (error) {
+        setSubmitError(
+          error instanceof Error ? error.message : "送信に失敗しました",
+        );
+        return false;
+      } finally {
+        submittingRef.current = false;
+        setIsSubmitting(false);
+      }
+    },
+    [reloadEvents],
+  );
 
   return {
     events,
@@ -102,5 +166,7 @@ export function useCheckinPanel(
     submitError,
     isSubmitting,
     submitCheckin,
+    reloadEvents,
+    completeTask,
   };
 }

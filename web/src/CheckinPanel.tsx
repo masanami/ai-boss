@@ -29,18 +29,24 @@ interface CheckinPanelProps {
    * タスクボードの作成・ステータス変更がリロードなしで「着手するタスク」に
    * 反映されるのに使い、refresh はチェックイン成功時にタスクボード側の
    * ステータス変化（例: task_start による todo → in_progress、Issue #133）
-   * を即時反映するために使う（Issue #134）。実際に使うのは tasks と refresh
-   * のみだが、TaskBoard（Issue #70）と同じ「共有 tasksState を丸ごと受け取る」
-   * パターンに揃えている。addTask/editTask は現状未使用（レビュー指摘: props
-   * を tasks + refresh の2つに絞る選択肢もあるが、共有状態の受け渡し方を
-   * TaskBoard と統一する一貫性を優先した）。 */
+   * を即時反映するために使う（Issue #134）。editTask は「完了」ボタン
+   * （Issue #138）が選択中タスクを status: "done" にするために使う。
+   * addTask は現状未使用だが、TaskBoard（Issue #70）と同じ「共有
+   * tasksState を丸ごと受け取る」パターンに揃えている。 */
   tasksState: UseTasksResult;
 }
 
 function CheckinPanel({ tasksState }: CheckinPanelProps) {
-  const { tasks, refresh } = tasksState;
-  const { events, status, isOnBreak, submitError, isSubmitting, submitCheckin } =
-    useCheckinPanel(refresh);
+  const { tasks, refresh, editTask } = tasksState;
+  const {
+    events,
+    status,
+    isOnBreak,
+    submitError,
+    isSubmitting,
+    submitCheckin,
+    completeTask,
+  } = useCheckinPanel(refresh);
 
   const selectableTasks = useMemo(
     () =>
@@ -89,6 +95,30 @@ function CheckinPanel({ tasksState }: CheckinPanelProps) {
       if (ok) {
         setNote("");
         setFeedback(successMessage);
+      }
+    });
+  };
+
+  const selectedTask = useMemo(
+    () => selectableTasks.find((task) => task.id === selectedTaskId) ?? null,
+    [selectableTasks, selectedTaskId],
+  );
+  const hasInProgressTask = useMemo(
+    () => selectableTasks.some((task) => task.status === "in_progress"),
+    [selectableTasks],
+  );
+
+  // 「ひとこと」欄は着手/休憩/戻りと異なり完了操作では送信・クリアしない
+  // （決定済みの仕様: PATCH /api/tasks/:id は note を受け付けないため）。
+  const handleComplete = () => {
+    if (selectedTaskId === "") {
+      return;
+    }
+    const taskId = selectedTaskId;
+    setFeedback(null);
+    void completeTask(taskId, editTask).then((ok) => {
+      if (ok) {
+        setFeedback("完了しました");
       }
     });
   };
@@ -171,6 +201,19 @@ function CheckinPanel({ tasksState }: CheckinPanelProps) {
             >
               着手
             </button>
+            {hasInProgressTask && (
+              <button
+                type="button"
+                onClick={handleComplete}
+                disabled={
+                  selectedTaskId === "" ||
+                  selectedTask?.status !== "in_progress" ||
+                  isSubmitting
+                }
+              >
+                完了
+              </button>
+            )}
           </div>
           <div className="checkin-panel-group">
             <label>

@@ -30,8 +30,10 @@ function makeTask(overrides: Partial<Task> & { id: number }): Task {
 
 // CheckinPanel は Issue #134 で AppLayout の共有 tasksState（UseTasksResult）
 // を丸ごと受け取るようになった（tasks 配列だけでなく refresh も使うため）。
-// テストでは addTask/editTask は使わないダミーで埋め、必要に応じて refresh
-// だけ差し替えられるようにする。
+// editTask は Issue #138 の「完了」ボタンが選択中タスクを status: "done" に
+// するために使うため、既定で解決済み Promise を返すダミーにしておき、
+// テストごとに editTask/refresh を必要に応じて差し替えられるようにする。
+// addTask は現状どのテストからも使われない。
 function makeTasksState(
   tasks: Task[],
   overrides: Partial<UseTasksResult> = {},
@@ -40,7 +42,7 @@ function makeTasksState(
     tasks,
     status: "ready",
     addTask: vi.fn(),
-    editTask: vi.fn(),
+    editTask: vi.fn().mockResolvedValue(undefined),
     refresh: vi.fn().mockResolvedValue(undefined),
     ...overrides,
   };
@@ -482,6 +484,162 @@ describe("CheckinPanel", () => {
     await waitFor(() =>
       expect(screen.getByRole("button", { name: "着手" })).toBeEnabled(),
     );
+  });
+
+  it("shows the 完了 button only when there is an in_progress task (Issue #138)", async () => {
+    const tasks = [makeTask({ id: 1, title: "着手中タスク", status: "in_progress" })];
+    vi.stubGlobal("fetch", createFetchMock());
+
+    const { rerender } = render(
+      <CheckinPanel tasksState={makeTasksState(tasks)} />,
+    );
+
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: "完了" })).toBeInTheDocument(),
+    );
+
+    rerender(
+      <CheckinPanel
+        tasksState={makeTasksState([
+          makeTask({ id: 1, title: "todoタスク", status: "todo" }),
+        ])}
+      />,
+    );
+
+    await waitFor(() =>
+      expect(
+        screen.queryByRole("button", { name: "完了" }),
+      ).not.toBeInTheDocument(),
+    );
+  });
+
+  it("disables the 完了 button when the selected task is todo (Issue #138)", async () => {
+    const tasks = [
+      makeTask({ id: 1, title: "todoタスク", status: "todo", priority: "high" }),
+      makeTask({ id: 2, title: "着手中タスク", status: "in_progress" }),
+    ];
+    vi.stubGlobal("fetch", createFetchMock());
+
+    render(<CheckinPanel tasksState={makeTasksState(tasks)} />);
+
+    await waitFor(() =>
+      expect(
+        screen.getByRole("combobox", { name: "着手するタスク" }),
+      ).toHaveValue("1"),
+    );
+
+    expect(screen.getByRole("button", { name: "完了" })).toBeDisabled();
+
+    fireEvent.change(screen.getByRole("combobox", { name: "着手するタスク" }), {
+      target: { value: "2" },
+    });
+
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: "完了" })).toBeEnabled(),
+    );
+  });
+
+  it("calls editTask with status done when 完了 is clicked (Issue #138)", async () => {
+    const tasks = [makeTask({ id: 2, title: "着手中タスク", status: "in_progress" })];
+    vi.stubGlobal("fetch", createFetchMock());
+    const editTask = vi.fn().mockResolvedValue(undefined);
+
+    render(
+      <CheckinPanel tasksState={makeTasksState(tasks, { editTask })} />,
+    );
+
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: "完了" })).toBeEnabled(),
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "完了" }));
+
+    await waitFor(() =>
+      expect(editTask).toHaveBeenCalledWith(2, { status: "done" }),
+    );
+  });
+
+  it("shows 完了しました and reloads today's activity on successful completion (Issue #138)", async () => {
+    const tasks = [makeTask({ id: 2, title: "着手中タスク", status: "in_progress" })];
+    const fetchMock = createFetchMock();
+    vi.stubGlobal("fetch", fetchMock);
+    const editTask = vi.fn().mockResolvedValue(undefined);
+
+    render(
+      <CheckinPanel tasksState={makeTasksState(tasks, { editTask })} />,
+    );
+
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: "完了" })).toBeEnabled(),
+    );
+    const initialActivityCalls = fetchMock.mock.calls.filter(
+      ([url]) => url === "/api/activity/today",
+    ).length;
+
+    fireEvent.click(screen.getByRole("button", { name: "完了" }));
+
+    await waitFor(() =>
+      expect(screen.getByText("完了しました")).toBeInTheDocument(),
+    );
+    await waitFor(() => {
+      const activityCalls = fetchMock.mock.calls.filter(
+        ([url]) => url === "/api/activity/today",
+      ).length;
+      expect(activityCalls).toBe(initialActivityCalls + 1);
+    });
+  });
+
+  it("shows an alert with the error message when 完了 fails (Issue #138)", async () => {
+    const tasks = [makeTask({ id: 2, title: "着手中タスク", status: "in_progress" })];
+    vi.stubGlobal("fetch", createFetchMock());
+    const editTask = vi.fn().mockRejectedValue(new Error("task 2 not found"));
+
+    render(
+      <CheckinPanel tasksState={makeTasksState(tasks, { editTask })} />,
+    );
+
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: "完了" })).toBeEnabled(),
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "完了" }));
+
+    await waitFor(() =>
+      expect(screen.getByRole("alert")).toHaveTextContent("task 2 not found"),
+    );
+  });
+
+  it("ignores a second 完了 click while one is in flight (double-click guard, Issue #138)", async () => {
+    const tasks = [makeTask({ id: 2, title: "着手中タスク", status: "in_progress" })];
+    vi.stubGlobal("fetch", createFetchMock());
+    let releaseEditTask: (() => void) | undefined;
+    const editTask = vi.fn(
+      () =>
+        new Promise<void>((resolve) => {
+          releaseEditTask = () => resolve(undefined);
+        }),
+    );
+
+    render(
+      <CheckinPanel tasksState={makeTasksState(tasks, { editTask })} />,
+    );
+
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: "完了" })).toBeEnabled(),
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "完了" }));
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: "完了" })).toBeDisabled(),
+    );
+    fireEvent.click(screen.getByRole("button", { name: "完了" }));
+
+    releaseEditTask?.();
+
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: "完了" })).toBeEnabled(),
+    );
+    expect(editTask).toHaveBeenCalledTimes(1);
   });
 
   it("shows an error message when today's activity fails to load", async () => {
