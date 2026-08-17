@@ -137,6 +137,34 @@ describe("useCheckinPanel", () => {
     expect(refreshTasks).toHaveBeenCalledTimes(1);
   });
 
+  it("calls refreshTasks even when the activity refetch fails after a successful checkin (PR #137 review)", async () => {
+    const fetchMock = vi.fn();
+    fetchMock.mockResolvedValueOnce({
+      ok: true,
+      status: 200,
+      json: () => Promise.resolve([]),
+    });
+    fetchMock.mockResolvedValueOnce({
+      ok: true,
+      status: 201,
+      json: () => Promise.resolve(TASK_START_EVENT),
+    });
+    fetchMock.mockRejectedValueOnce(new Error("network error"));
+    vi.stubGlobal("fetch", fetchMock);
+    const refreshTasks = vi.fn().mockResolvedValue(undefined);
+
+    const { result } = renderHook(() => useCheckinPanel(refreshTasks));
+    await waitFor(() => expect(result.current.status).toBe("ready"));
+
+    await act(async () => {
+      await result.current.submitCheckin({ type: "task_start", task_id: 1 });
+    });
+
+    // サーバ側の status 遷移は確定済みのため、活動履歴の再取得が失敗しても
+    // 共有 tasks の再取得（ボード反映）は実行されなければならない
+    expect(refreshTasks).toHaveBeenCalledTimes(1);
+  });
+
   it("does not call refreshTasks when submitCheckin fails (Issue #134)", async () => {
     const fetchMock = vi.fn();
     fetchMock.mockResolvedValueOnce({
