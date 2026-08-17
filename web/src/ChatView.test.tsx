@@ -618,3 +618,130 @@ describe("ChatView", () => {
     expect(screen.getByRole("button", { name: "夕会を開始" })).toBeDisabled();
   });
 });
+
+describe("ChatView auto-scroll (Issue #130)", () => {
+  // jsdom always reports `scrollHeight` as 0, so the auto-scroll effect
+  // (`el.scrollTop = el.scrollHeight`) can't be observed without stubbing
+  // it. Stubbing on the prototype (rather than a single element instance)
+  // means the getter is already in place before React mounts and runs the
+  // effect for the first time, and `scrollTop` itself is a plain jsdom
+  // property that reads back whatever was last set, so no separate stub is
+  // needed for it.
+  //
+  // The getter only reports `scrollHeightValue` for `.chat-timeline`
+  // itself; every other element (notably the auto-growing textarea, which
+  // reads its own `scrollHeight` in a separate effect) keeps jsdom's
+  // default of 0, so this stub can't leak into unrelated assertions.
+  //
+  // jsdom defines `scrollHeight` on `Element.prototype`, not
+  // `HTMLElement.prototype`, so there is no own descriptor to save and
+  // restore here; deleting the stubbed own property is enough to fall back
+  // to the inherited implementation.
+  let scrollHeightValue = 0;
+
+  beforeEach(() => {
+    scrollHeightValue = 800;
+    Object.defineProperty(HTMLElement.prototype, "scrollHeight", {
+      configurable: true,
+      get(this: HTMLElement) {
+        return this.classList.contains("chat-timeline") ? scrollHeightValue : 0;
+      },
+    });
+  });
+
+  afterEach(() => {
+    delete (HTMLElement.prototype as { scrollHeight?: unknown }).scrollHeight;
+  });
+
+  function timelineOf(container: HTMLElement): HTMLElement {
+    const el = container.querySelector(".chat-timeline");
+    if (el === null) {
+      throw new Error(".chat-timeline not found");
+    }
+    return el as HTMLElement;
+  }
+
+  it("scrolls the timeline to the bottom once the history has rendered", () => {
+    const { container } = render(
+      <ChatView
+        chatState={makeChatState({
+          entries: [
+            {
+              kind: "message",
+              key: "message-1",
+              role: "user",
+              content: "おはようございます",
+            },
+            {
+              kind: "message",
+              key: "message-2",
+              role: "boss",
+              content: "今日は A 案件からだ。",
+            },
+          ],
+        })}
+      />,
+    );
+
+    expect(timelineOf(container).scrollTop).toBe(800);
+  });
+
+  it("scrolls back to the bottom when a new entry is appended", () => {
+    const { container, rerender } = render(
+      <ChatView
+        chatState={makeChatState({
+          entries: [
+            { kind: "message", key: "message-1", role: "user", content: "一件目" },
+          ],
+        })}
+      />,
+    );
+    expect(timelineOf(container).scrollTop).toBe(800);
+
+    scrollHeightValue = 1200;
+    rerender(
+      <ChatView
+        chatState={makeChatState({
+          entries: [
+            { kind: "message", key: "message-1", role: "user", content: "一件目" },
+            { kind: "message", key: "message-2", role: "boss", content: "二件目" },
+          ],
+        })}
+      />,
+    );
+
+    expect(timelineOf(container).scrollTop).toBe(1200);
+  });
+
+  it("scrolls to the bottom as the streaming reply grows", () => {
+    const baseEntries = [
+      { kind: "message" as const, key: "message-1", role: "user" as const, content: "相談です" },
+    ];
+    const { container, rerender } = render(
+      <ChatView chatState={makeChatState({ entries: baseEntries })} />,
+    );
+    expect(timelineOf(container).scrollTop).toBe(800);
+
+    scrollHeightValue = 950;
+    rerender(
+      <ChatView
+        chatState={makeChatState({
+          entries: baseEntries,
+          streamingText: "考え中",
+        })}
+      />,
+    );
+    expect(timelineOf(container).scrollTop).toBe(950);
+
+    scrollHeightValue = 1100;
+    rerender(
+      <ChatView
+        chatState={makeChatState({
+          entries: baseEntries,
+          streamingText: "考え中です…B 案件は後回しにしろ。",
+        })}
+      />,
+    );
+    expect(timelineOf(container).scrollTop).toBe(1100);
+  });
+});
