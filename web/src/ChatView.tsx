@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import type { ChatEntry, UseChatResult } from "./use-chat";
 import type { ChatToolEvent } from "./chat";
 import "./ChatView.css";
@@ -65,11 +65,18 @@ function ChatView({ chatState }: ChatViewProps) {
     endSession,
   } = chatState;
   const [draft, setDraft] = useState("");
-  const bottomRef = useRef<HTMLDivElement>(null);
+  const timelineRef = useRef<HTMLUListElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
 
-  useEffect(() => {
-    bottomRef.current?.scrollIntoView?.({ block: "end" });
+  // Layout effect (not a plain effect) so the scroll position is settled
+  // before the browser paints, avoiding a visible "top flashes, then jumps
+  // to bottom" flicker when the history first mounts.
+  useLayoutEffect(() => {
+    const el = timelineRef.current;
+    if (el === null) {
+      return;
+    }
+    el.scrollTop = el.scrollHeight;
   }, [entries, streamingText]);
 
   // Grow the input with its content. Resetting to "auto" first lets it shrink
@@ -158,7 +165,7 @@ function ChatView({ chatState }: ChatViewProps) {
           </>
         )}
       </div>
-      <ul className="chat-timeline" aria-label="会話履歴">
+      <ul className="chat-timeline" aria-label="会話履歴" ref={timelineRef}>
         {entries.map((entry) => (
           <ChatEntryItem key={entry.key} entry={entry} />
         ))}
@@ -169,7 +176,6 @@ function ChatView({ chatState }: ChatViewProps) {
           </li>
         )}
       </ul>
-      <div ref={bottomRef} />
       {error !== null && (
         <p className="chat-error" role="alert">
           {error}
