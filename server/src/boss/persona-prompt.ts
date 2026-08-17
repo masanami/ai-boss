@@ -144,7 +144,7 @@ function formatTaskLine(task: Task): string {
   const status = TASK_STATUS_LABELS[task.status];
   const priority = task.priority ? TASK_PRIORITY_LABELS[task.priority] : "未設定";
   const dueAt = task.due_at ?? "未設定";
-  return `- [${status}] ${task.title}（優先度: ${priority} / 締切: ${dueAt}）`;
+  return `- [${status}] #${task.id} ${task.title}（優先度: ${priority} / 締切: ${dueAt}）`;
 }
 
 function formatTaskSection(tasks: Task[]): string {
