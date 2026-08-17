@@ -33,16 +33,25 @@ function createRoutedFetchMock(options: {
   tasks?: Task[];
   onCreateTask?: (body: unknown) => Task;
   onPatchTask?: (id: number, body: unknown) => Task;
+  /** Issue #134: called on POST /api/checkins with the parsed body and the
+   * current task list; returns the task list that a subsequent GET
+   * /api/tasks (triggered by the checkin-success refresh) should see. This
+   * simulates the server-side status transitions from Issue #133 (e.g.
+   * task_start moving a task to in_progress) without re-implementing them
+   * here. */
+  onCheckin?: (body: unknown, tasks: Task[]) => Task[];
   sessions?: ChatSession[];
   sessionMessages?: Record<number, ChatMessage[]>;
 } = {}) {
   const {
-    tasks = [],
+    tasks: initialTasks = [],
     onCreateTask,
     onPatchTask,
+    onCheckin,
     sessions = [],
     sessionMessages = {},
   } = options;
+  let tasks = initialTasks;
 
   const jsonResponse = (status: number, body: unknown) =>
     Promise.resolve({
@@ -82,20 +91,32 @@ function createRoutedFetchMock(options: {
       return jsonResponse(200, tasks);
     }
     if (url === "/api/tasks" && method === "POST" && onCreateTask) {
-      return jsonResponse(
-        201,
-        onCreateTask(JSON.parse(init?.body as string) as unknown),
-      );
+      const created = onCreateTask(JSON.parse(init?.body as string) as unknown);
+      // Keep the mutable `tasks` list consistent with what onCreateTask
+      // returned, so a later GET /api/tasks (e.g. triggered by the checkin
+      // refresh, Issue #134) doesn't roll back to the stale initial list.
+      tasks = [...tasks, created];
+      return jsonResponse(201, created);
     }
     const patchMatch = /^\/api\/tasks\/(\d+)$/.exec(url);
     if (patchMatch && method === "PATCH" && onPatchTask) {
-      return jsonResponse(
-        200,
-        onPatchTask(
-          Number(patchMatch[1]),
-          JSON.parse(init?.body as string) as unknown,
-        ),
+      const updated = onPatchTask(
+        Number(patchMatch[1]),
+        JSON.parse(init?.body as string) as unknown,
       );
+      tasks = tasks.map((t) => (t.id === updated.id ? updated : t));
+      return jsonResponse(200, updated);
+    }
+    if (url === "/api/checkins" && method === "POST") {
+      const body = JSON.parse(init?.body as string) as unknown;
+      if (onCheckin) {
+        tasks = onCheckin(body, tasks);
+      }
+      return jsonResponse(201, {
+        id: 1,
+        ...(body as Record<string, unknown>),
+        created_at: "2026-07-27T09:00:00.000Z",
+      });
     }
     // chatState (Issue #93: useChat is lifted up to AppLayout, so it fetches
     // on mount regardless of which view is active).
@@ -283,6 +304,58 @@ describe("AppLayout", () => {
     expect(
       screen.getByRole("region", { name: "チェックイン" }),
     ).toBeInTheDocument();
+  });
+
+  it("reflects a task's status change from a checkin on the task board without a reload (Issue #134)", async () => {
+    const task = makeTask({ id: 1, title: "資料を作る", status: "todo" });
+    vi.stubGlobal(
+      "fetch",
+      createRoutedFetchMock({
+        tasks: [task],
+        // Mirrors the server-side task_start -> in_progress transition from
+        // Issue #133; this test only cares that the client refetches and
+        // reflects it, not that the transition itself is correct.
+        onCheckin: (body, tasks) => {
+          const parsed = body as { type: string; task_id?: number };
+          if (parsed.type !== "task_start") {
+            return tasks;
+          }
+          return tasks.map((t) =>
+            t.id === parsed.task_id ? { ...t, status: "in_progress" } : t,
+          );
+        },
+      }),
+    );
+
+    render(<AppLayout />);
+
+    // タスクボードを先にマウントしておく（TaskBoard 自身がマウント時に
+    // 一度だけ refresh() する副作用 — TaskBoard.tsx 参照 — を「着手」より
+    // 前に済ませ切る）。これをしないと、この後の「進行中」への反映が
+    // ボードの再マウントによるものなのか CheckinPanel からの refresh 配線
+    // （Issue #134 の本題）によるものなのか区別できないテストになる
+    // （レビュー指摘）。サイドパネルは activeView に関わらず常時表示なので、
+    // タスクビューに切り替えたままチェックインできる。
+    fireEvent.click(screen.getByRole("button", { name: "タスク" }));
+    const todoColumn = await screen.findByRole("region", { name: "未着手" });
+    await waitFor(() =>
+      expect(within(todoColumn).getByText("資料を作る")).toBeInTheDocument(),
+    );
+
+    const combobox = screen.getByRole("combobox", { name: "着手するタスク" });
+    await waitFor(() => expect(combobox).toHaveValue("1"));
+
+    fireEvent.click(screen.getByRole("button", { name: "着手" }));
+    await waitFor(() =>
+      expect(screen.getByText("着手しました")).toBeInTheDocument(),
+    );
+
+    const inProgressColumn = screen.getByRole("region", { name: "進行中" });
+    await waitFor(() =>
+      expect(
+        within(inProgressColumn).getByText("資料を作る"),
+      ).toBeInTheDocument(),
+    );
   });
 
   it("renders the header title", () => {

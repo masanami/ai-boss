@@ -20,8 +20,17 @@ export interface UseCheckinPanelResult {
  * action that posts an explicit checkin, then refetches the list so the
  * panel reflects the new state. Mirrors the fetch-on-mount pattern used by
  * `useTasks`.
+ *
+ * @param refreshTasks - The shared `useTasks().refresh` from `AppLayout`
+ * (Issue #70 lift-up). Called after a successful checkin so status changes
+ * driven by the checkin (e.g. task_start moving a task to in_progress,
+ * Issue #133) are reflected on the task board without a reload. Not called
+ * on failure, and checkin types that don't change task status re-fetch
+ * idempotently (Issue #134).
  */
-export function useCheckinPanel(): UseCheckinPanelResult {
+export function useCheckinPanel(
+  refreshTasks: () => Promise<void>,
+): UseCheckinPanelResult {
   const [events, setEvents] = useState<ActivityEvent[]>([]);
   const [status, setStatus] = useState<ActivityLoadStatus>("loading");
   const [submitError, setSubmitError] = useState<string | null>(null);
@@ -63,6 +72,17 @@ export function useCheckinPanel(): UseCheckinPanelResult {
       setSubmitError(null);
       const refetched = await fetchTodayActivity();
       setEvents(refetched);
+      // チェックイン自体は既に成功しているため、tasks 再取得はベスト
+      // エフォート扱いにする。refreshTasks は現状 use-tasks.ts の refresh
+      // （内部で fetch エラーを catch し reject しない）のみが実引数だが、
+      // その契約は型（() => Promise<void>）では保証されない。ここで吸収
+      // しておかないと、refreshTasks が reject した場合に成功したチェック
+      // インが失敗として報告されてしまう（レビュー指摘）。
+      try {
+        await refreshTasks();
+      } catch {
+        // no-op: tasks 再取得の失敗はチェックインの成否に影響させない
+      }
       return true;
     } catch (error) {
       setSubmitError(
@@ -73,7 +93,7 @@ export function useCheckinPanel(): UseCheckinPanelResult {
       submittingRef.current = false;
       setIsSubmitting(false);
     }
-  }, []);
+  }, [refreshTasks]);
 
   return {
     events,

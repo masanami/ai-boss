@@ -108,7 +108,7 @@ function AppLayout() {
           </main>
         )}
         <aside className="app-side-panel" aria-label="サイドパネル">
-          <CheckinPanel tasks={tasksState.tasks} />
+          <CheckinPanel tasksState={tasksState} />
           <TodaySummary tasks={tasksState.tasks} status={tasksState.status} />
         </aside>
       </div>
