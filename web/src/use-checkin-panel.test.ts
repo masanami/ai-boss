@@ -335,6 +335,32 @@ describe("useCheckinPanel", () => {
     expect(result.current.submitError).toBeNull();
   });
 
+  it("completeTask returns true and keeps submitError null when the activity refetch fails after a successful editTask (PR #146 review)", async () => {
+    const fetchMock = vi.fn();
+    fetchMock.mockResolvedValueOnce({
+      ok: true,
+      status: 200,
+      json: () => Promise.resolve([]),
+    });
+    fetchMock.mockRejectedValueOnce(new Error("network error"));
+    vi.stubGlobal("fetch", fetchMock);
+    const editTask = vi.fn().mockResolvedValue(undefined);
+
+    const { result } = renderHook(() => useCheckinPanel(vi.fn()));
+    await waitFor(() => expect(result.current.status).toBe("ready"));
+
+    let completed = false;
+    await act(async () => {
+      completed = await result.current.completeTask(1, editTask);
+    });
+
+    // 完了（editTask）はサーバ側で確定済みのため、履歴再取得の失敗を
+    // 完了操作の失敗として表示しない。履歴側のエラーは status に反映される
+    expect(completed).toBe(true);
+    expect(result.current.submitError).toBeNull();
+    expect(result.current.status).toBe("error");
+  });
+
   it("sets submitError and returns false when completeTask's editTask rejects (Issue #138)", async () => {
     vi.stubGlobal(
       "fetch",

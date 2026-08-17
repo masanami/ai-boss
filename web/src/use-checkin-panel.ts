@@ -146,8 +146,15 @@ export function useCheckinPanel(
         await editTask(taskId, { status: "done" });
         setSubmitError(null);
         // editTask（use-tasks.ts）は成功時に共有 tasks state を自ら更新
-        // 済みのため、submitCheckin と異なり tasks 再取得は不要。
-        await reloadEvents();
+        // 済みのため、submitCheckin と異なり tasks 再取得は不要。完了自体は
+        // この時点で確定しているため、活動履歴の再取得失敗を完了操作の失敗
+        // として扱わない（reloadEvents 内で status が "error" になり履歴側の
+        // エラー表示に委ねる。PR #146 レビュー指摘）。
+        try {
+          await reloadEvents();
+        } catch {
+          // no-op: 履歴再取得の失敗は完了の成否に影響させない
+        }
         return true;
       } catch (error) {
         setSubmitError(
