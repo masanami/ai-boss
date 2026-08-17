@@ -513,6 +513,43 @@ describe("AppLayout", () => {
     );
   });
 
+  it("keeps the chat draft across a chat -> tasks -> chat round trip (Issue #153)", async () => {
+    // The draft is lifted up to useChat (Issue #153) the same way the
+    // conversation itself was (Issue #93), so leaving the chat tab
+    // (unmounting ChatView) and coming back must not lose what was typed but
+    // not yet sent. This exercises the real AppLayout wiring, not a
+    // synthetic stand-in for it.
+    vi.stubGlobal("fetch", createRoutedFetchMock());
+
+    render(<AppLayout />);
+    await waitFor(() =>
+      expect(
+        within(screen.getByRole("complementary", { name: "サイドパネル" })).getByText(
+          "0 / 0 件完了（0%）",
+        ),
+      ).toBeInTheDocument(),
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "チャット" }));
+    await waitFor(() =>
+      expect(screen.getByLabelText("メッセージ")).toBeEnabled(),
+    );
+    fireEvent.change(screen.getByLabelText("メッセージ"), {
+      target: { value: "書きかけの相談" },
+    });
+
+    fireEvent.click(screen.getByRole("button", { name: "タスク" }));
+    await waitFor(() =>
+      expect(screen.getByRole("main", { name: "タスクボード" })).toBeInTheDocument(),
+    );
+    expect(screen.queryByLabelText("メッセージ")).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "チャット" }));
+    await waitFor(() =>
+      expect(screen.getByLabelText("メッセージ")).toHaveValue("書きかけの相談"),
+    );
+  });
+
   it("switches the main area to the settings view when the settings nav item is clicked", () => {
     render(<AppLayout />);
 

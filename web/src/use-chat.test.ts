@@ -111,6 +111,39 @@ afterEach(() => {
   vi.unstubAllGlobals();
 });
 
+// The hook's own state contract for `draft`/`setDraft` (Issue #153, same
+// pattern as the rest of `UseChatResult`). This does not exercise the
+// unmount/remount invariant the ticket is actually about — a `renderHook`
+// hook instance never unmounts on its own here, so that survives-a-tab-switch
+// behaviour is covered where it can actually regress: AppLayout.test.tsx's
+// real conditional-rendering integration test ("keeps the chat draft across
+// a chat -> tasks -> chat round trip"). ChatView.test.tsx only covers that
+// ChatView reads/writes `chatState.draft`/`setDraft` (wiring), not the
+// unmount/remount survival itself.
+describe("useChat draft", () => {
+  it("initializes draft as an empty string", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValueOnce(jsonResponse([])));
+
+    const { result } = renderHook(() => useChat());
+    await waitFor(() => expect(result.current.status).toBe("ready"));
+
+    expect(result.current.draft).toBe("");
+  });
+
+  it("updates draft via setDraft", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValueOnce(jsonResponse([])));
+
+    const { result } = renderHook(() => useChat());
+    await waitFor(() => expect(result.current.status).toBe("ready"));
+
+    act(() => {
+      result.current.setDraft("書きかけの相談");
+    });
+
+    expect(result.current.draft).toBe("書きかけの相談");
+  });
+});
+
 describe("useChat", () => {
   it("restores the history of the latest adhoc session on mount", async () => {
     const fetchMock = vi
