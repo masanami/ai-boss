@@ -3,6 +3,7 @@ import type Database from "better-sqlite3";
 import { listEventsSince } from "../activity/activity-events-repository.js";
 import { startOfLocalDayIso } from "../activity/local-day.js";
 import { findTaskById } from "../tasks/tasks-repository.js";
+import type { Task } from "../tasks/task.js";
 import type { ToolExecutionResult } from "./task-tools.js";
 
 /** Maximum number of events returned in one call, to protect the chat
@@ -39,6 +40,8 @@ export const GET_ACTIVITY_LOG_TOOL: Anthropic.Tool = {
     "break_start・break_end=休憩の開始・終了、chat_message=チャットでの発言。" +
     "task_id / since / until はすべて任意の絞り込み条件。since を省略した場合、task_id 指定時は全期間、" +
     "未指定時は当日ローカル0時以降が対象になる。" +
+    "task_id を指定した場合は task（id / title / status / estimated_minutes / completed_at）も併せて返るため、" +
+    "実績時間と見積もりの突き合わせや、完了済みかどうかの判断にはこの task の値を使うこと。" +
     "結果は最大100件（新しい順に切り詰め、古いイベントから欠落しうる）。truncated が true の場合は since/until で範囲を絞って再照会すること。",
   input_schema: {
     type: "object",
@@ -168,6 +171,7 @@ export function executeGetActivityLogTool(
   }
 
   let taskId: number | undefined;
+  let task: Task | undefined;
   if (input.task_id !== undefined && input.task_id !== null) {
     if (typeof input.task_id !== "number" || !Number.isInteger(input.task_id)) {
       return { content: "task_id must be an integer", isError: true };
@@ -177,10 +181,12 @@ export function executeGetActivityLogTool(
     // truncated: false}` instead of an error, and the boss could not tell
     // "this task has no log entries" apart from "this task_id is wrong"
     // (self-review finding).
-    if (!findTaskById(db, input.task_id)) {
+    const found = findTaskById(db, input.task_id);
+    if (!found) {
       return { content: `task ${input.task_id} not found`, isError: true };
     }
     taskId = input.task_id;
+    task = found;
   }
 
   let sinceIso: string | undefined;
@@ -217,5 +223,24 @@ export function executeGetActivityLogTool(
   const truncated = events.length > MAX_EVENTS;
   const limited = truncated ? events.slice(-MAX_EVENTS) : events;
 
-  return { content: JSON.stringify({ events: limited, truncated }), isError: false };
+  // task_id 指定時はタスク側のメタデータも返す。activity_events だけでは
+  // 見積もり（estimated_minutes）と権威ある完了時刻（completed_at）が分からず、
+  // task_update イベントも変更内容を持たないため「完了なのか優先度変更なのか」
+  // を区別できない＝実績時間と見積もりの突き合わせができない（PR #152 レビュー指摘）。
+  const taskMeta = task
+    ? {
+        task: {
+          id: task.id,
+          title: task.title,
+          status: task.status,
+          estimated_minutes: task.estimated_minutes,
+          completed_at: task.completed_at,
+        },
+      }
+    : {};
+
+  return {
+    content: JSON.stringify({ ...taskMeta, events: limited, truncated }),
+    isError: false,
+  };
 }

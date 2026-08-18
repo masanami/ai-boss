@@ -63,6 +63,55 @@ describe("executeGetActivityLogTool", () => {
     expect(truncated).toBe(false);
   });
 
+  it("includes task metadata (estimated_minutes / completed_at / status) when task_id is given (PR #152 review)", () => {
+    const task = insertTask(db, {
+      title: "資料作成",
+      description: null,
+      category: "work",
+      priority: null,
+      due_at: null,
+      status: "done",
+      boss_comment: null,
+      estimated_minutes: 60,
+    });
+
+    insertEvent({
+      type: "task_start",
+      createdAt: new Date(2026, 6, 5, 9, 0, 0, 0),
+      taskId: task.id,
+    });
+
+    const result = executeGetActivityLogTool(db, { task_id: task.id });
+
+    expect(result.isError).toBe(false);
+    // 実績時間（events）と見積もり・権威ある完了時刻の突き合わせに必要
+    const parsed = JSON.parse(result.content) as {
+      task?: {
+        id: number;
+        title: string;
+        status: string;
+        estimated_minutes: number | null;
+        completed_at: string | null;
+      };
+    };
+    expect(parsed.task).toMatchObject({
+      id: task.id,
+      title: "資料作成",
+      status: "done",
+      estimated_minutes: 60,
+    });
+    expect(parsed.task).toHaveProperty("completed_at");
+  });
+
+  it("omits task metadata when task_id is not given", () => {
+    insertEvent({ type: "checkin", createdAt: new Date(2026, 6, 5, 9, 0, 0, 0) });
+
+    const result = executeGetActivityLogTool(db, {});
+
+    expect(result.isError).toBe(false);
+    expect(JSON.parse(result.content)).not.toHaveProperty("task");
+  });
+
   it("returns events from the full history (not just today) when task_id is given and since is omitted", () => {
     const task = insertTask(db, {
       title: "資料作成",
