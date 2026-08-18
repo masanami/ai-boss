@@ -30,6 +30,18 @@ export interface UseChatResult {
   switching: boolean;
   streamingText: string;
   error: string | null;
+  /**
+   * The in-progress message text. Lifted up from `ChatView` (Issue #153,
+   * same pattern as the rest of this hook's state, Issue #93) so it survives
+   * `ChatView` unmounting on a tab switch. Not persisted beyond the page
+   * session (no localStorage) — YAGNI. Trade-off: because this hook is held
+   * by `AppLayout` (not `ChatView`), every keystroke now re-renders
+   * `AppLayout`'s subtree (nav, side panel) in addition to `ChatView` itself
+   * — accepted like the other state already lifted here (Issue #93), since
+   * this is a small, local, single-user app.
+   */
+  draft: string;
+  setDraft: (value: string) => void;
   send: (content: string) => Promise<void>;
   startSession: (type: "morning" | "evening") => Promise<void>;
   endSession: () => Promise<void>;
@@ -94,6 +106,7 @@ export function useChat(): UseChatResult {
   const [switching, setSwitching] = useState(false);
   const [streamingText, setStreamingText] = useState("");
   const [error, setError] = useState<string | null>(null);
+  const [draft, setDraft] = useState("");
   const sessionIdRef = useRef<number | null>(null);
   const sessionTypeRef = useRef<SessionType>("adhoc");
   const entriesRef = useRef<ChatEntry[]>([]);
@@ -200,8 +213,9 @@ export function useChat(): UseChatResult {
       setError(null);
 
       // Optimistic append BEFORE any request: the input field is already
-      // cleared by the caller, so even a session-creation failure must not
-      // lose what the user typed.
+      // cleared by the caller (ChatView's submitDraft, via chatState.setDraft
+      // below), so even a session-creation failure must not lose what the
+      // user typed.
       setEntries((prev) => [
         ...prev,
         { kind: "message", key: nextLocalKey("user"), role: "user", content },
@@ -337,6 +351,8 @@ export function useChat(): UseChatResult {
     switching,
     streamingText,
     error,
+    draft,
+    setDraft,
     send,
     startSession,
     endSession,

@@ -9,6 +9,11 @@ import type { ChatMessage, ChatSession } from "./chat";
 // mirrors how AppLayout wires the two together, so the bulk of the existing
 // fetch-driven scenarios below keep exercising the real hook + component
 // integration unchanged.
+//
+// The Issue #153 regression test for "draft survives leaving/revisiting the
+// chat tab" lives in AppLayout.test.tsx instead of here: it needs the real
+// AppLayout conditional rendering (not a synthetic stand-in for it) to catch
+// a regression if that wiring ever changes.
 function ChatViewHarness() {
   const chatState = useChat();
   return <ChatView chatState={chatState} />;
@@ -98,6 +103,8 @@ function makeChatState(overrides: Partial<UseChatResult> = {}): UseChatResult {
     switching: false,
     streamingText: "",
     error: null,
+    draft: "",
+    setDraft: vi.fn(),
     send: vi.fn(),
     startSession: vi.fn(),
     endSession: vi.fn(),
@@ -430,6 +437,44 @@ describe("ChatView", () => {
         screen.getByText("ボスがタスクを作成しました: 資料作成"),
       ).toBeInTheDocument(),
     );
+  });
+
+  it("does not claim a task was updated when a read-only tool (e.g. get_activity_log) runs (self-review: get_activity_log previously fell into the create_task/update_task-only notice text)", async () => {
+    const toolEvent = {
+      name: "get_activity_log",
+      input: { task_id: 5 },
+      result: JSON.stringify({ events: [], truncated: false }),
+      isError: false,
+    };
+    vi.stubGlobal(
+      "fetch",
+      vi
+        .fn()
+        .mockResolvedValueOnce(jsonResponse([SESSION]))
+        .mockResolvedValueOnce(jsonResponse([]))
+        .mockResolvedValueOnce(
+          sseResponse([
+            `event: tool\ndata: ${JSON.stringify(toolEvent)}\n\n`,
+            `event: done\ndata: ${JSON.stringify(BOSS_REPLY)}\n\n`,
+          ]),
+        ),
+    );
+
+    render(<ChatViewHarness />);
+    await waitFor(() =>
+      expect(screen.getByLabelText("メッセージ")).toBeEnabled(),
+    );
+
+    fireEvent.change(screen.getByLabelText("メッセージ"), {
+      target: { value: "完了しました" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "送信" }));
+
+    await waitFor(() =>
+      expect(screen.getByText("B 案件は後回しにしろ。")).toBeInTheDocument(),
+    );
+    expect(screen.queryByText(/タスクを更新しました/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/タスクを作成しました/)).not.toBeInTheDocument();
   });
 
   it("shows an alert when the stream reports an error", async () => {

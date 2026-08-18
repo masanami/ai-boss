@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useRef } from "react";
 import type { ChatEntry, UseChatResult } from "./use-chat";
 import type { ChatToolEvent } from "./chat";
 import "./ChatView.css";
@@ -12,9 +12,25 @@ const SESSION_END_LABELS = {
   evening: "夕会を終了",
 } as const;
 
+// Only tools that actually create/update a task get the task-specific
+// "作成/更新" notice below. Every other BOSS_TOOLS entry (record_decision,
+// get_activity_log, ...) used to fall through to the "更新" branch by
+// default, which became an observably false claim ("ボスがタスクを更新しま
+// した") once get_activity_log — a read-only tool called on essentially
+// every completion report — was added (self-review, Issue #150).
+const TASK_WRITE_TOOL_ACTIONS: Record<string, string> = {
+  create_task: "作成",
+  update_task: "更新",
+};
+
 function toolNoticeText(tool: ChatToolEvent): string {
   if (tool.isError) {
-    return `タスク操作に失敗しました（${tool.name}）`;
+    return `ツールの実行に失敗しました（${tool.name}）`;
+  }
+
+  const action = TASK_WRITE_TOOL_ACTIONS[tool.name];
+  if (action === undefined) {
+    return "ボスがツールを実行しました";
   }
 
   let title: string | undefined;
@@ -24,7 +40,6 @@ function toolNoticeText(tool: ChatToolEvent): string {
   } catch {
     title = undefined;
   }
-  const action = tool.name === "create_task" ? "作成" : "更新";
   return title
     ? `ボスがタスクを${action}しました: ${title}`
     : `ボスがタスクを${action}しました`;
@@ -60,11 +75,12 @@ function ChatView({ chatState }: ChatViewProps) {
     switching,
     streamingText,
     error,
+    draft,
+    setDraft,
     send,
     startSession,
     endSession,
   } = chatState;
-  const [draft, setDraft] = useState("");
   const timelineRef = useRef<HTMLUListElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
 

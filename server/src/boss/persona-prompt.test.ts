@@ -159,6 +159,30 @@ describe("buildPersonaPrompt", () => {
     expect(prompt).toContain("資料作成");
   });
 
+  it("タスクがあるとき、そのタスクの数値idが #<id> 形式で整形行に含まれる（update_task 呼び出しに必要）", () => {
+    const prompt = buildPersonaPrompt(DEFAULT_PERSONA_SETTINGS, {
+      tasks: [makeTask({ id: 12, title: "レポート作成" })],
+      recentDecisions: [],
+      now,
+    });
+
+    expect(prompt).toContain("#12 レポート作成");
+  });
+
+  it("purpose が notification / daily-report のとき、タスク整形行に #<id> を含めない（内部 id のユーザー可視文面への漏出防止・PR #149 レビュー）", () => {
+    for (const purpose of ["notification", "daily-report"] as const) {
+      const prompt = buildPersonaPrompt(DEFAULT_PERSONA_SETTINGS, {
+        tasks: [makeTask({ id: 12, title: "レポート作成" })],
+        recentDecisions: [],
+        now,
+        purpose,
+      });
+
+      expect(prompt, purpose).not.toContain("#12");
+      expect(prompt, purpose).toContain("レポート作成");
+    }
+  });
+
   it("直近の決定が空のとき、決定なしの文言を含む", () => {
     const prompt = buildPersonaPrompt(DEFAULT_PERSONA_SETTINGS, {
       tasks: [],
@@ -354,7 +378,10 @@ describe("buildPersonaPrompt", () => {
     // （PR #165 レビュー指摘）
     expect(prompt).toContain("決定の要点");
     expect(prompt).toContain("翌日への持ち越し");
-    expect(prompt).not.toContain("#");
+    // Markdown見出し記法（行頭 # + 空白）を指示しないことを検証する。単純な
+    // toContain("#") だと、タスク一覧の "#<id>" 形式（Issue #147）が将来
+    // daily-report にも渡された場合に無関係な理由で壊れるため、見出し記法に絞る。
+    expect(prompt).not.toMatch(/^#{1,6}\s/m);
     expect(prompt).not.toContain("通知文面として使われる");
   });
 
