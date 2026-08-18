@@ -23,8 +23,8 @@ export type GenerateDailyReportResult =
 
 export interface GenerateDailyReportOptions {
   /**
-   * LLM による3値抽出ステップに渡す任意の上限時間（ms）。指定時は超過時点で
-   * 3値なしと見なしフォールバックへ進む。未指定時はタイムアウトを設けない
+   * LLM による4値抽出ステップに渡す任意の上限時間（ms）。指定時は超過時点で
+   * 4値なしと見なしフォールバックへ進む。未指定時はタイムアウトを設けない
    * （LLM クライアント既定のタイムアウト方針に委ねる）。既定20秒を渡すのは
    * 夕会終了フック側（依存チケット #109）の責務であり、本サービスは受け口
    * だけを用意する。
@@ -128,9 +128,9 @@ function checkPrerequisite(
  *   共通に効く
  * - 前提条件を満たさない場合は日報を保存せず `{ ok: false, code:
  *   "evening_session_required" }` を返す
- * - 3値抽出（`extractEveningSummary`）が失敗・タイムアウト・形式不正の場合
- *   でも例外を投げず、同じレンダラーへ3値なしで渡したフォールバック日報を
- *   保存して返す（3値が無いことは生成失敗ではない）
+ * - 4値抽出（`extractEveningSummary`）が失敗・タイムアウト・形式不正の場合
+ *   でも例外を投げず、同じレンダラーへ4値なしで渡したフォールバック日報を
+ *   保存して返す（4値が無いことは生成失敗ではない）
  * - 対象ローカル暦日・`daily_reports.date`・表題は対象夕会の `started_at`
  *   のローカル日付（`toDateKey`）に従う（`now` の日付ではない）
  * - 同日に複数回呼んでも `daily_reports` の同日行が UPSERT される（行数は
@@ -151,9 +151,17 @@ export async function generateDailyReport(
   const collected = collectDailyReportData(db, session);
   const eveningMessages = listMessagesBySessionId(db, session.id);
 
-  const eveningSummary = await extractEveningSummary(db, env, eveningMessages, now, {
-    timeoutMs: options.timeoutMs,
-  });
+  // 収集した当日の active 決定一覧は、日報の「決定事項」セクション（Issue
+  // #144 で廃止）へは渡さず、抽出ステップのコンテキストへ渡す（「決定の
+  // 要点」の抽出材料。docs/features/work-log.md「日報側の変更」）。
+  const eveningSummary = await extractEveningSummary(
+    db,
+    env,
+    eveningMessages,
+    collected.decisions,
+    now,
+    { timeoutMs: options.timeoutMs },
+  );
 
   const content = renderDailyReport({
     date: collected.targetDate,
@@ -162,7 +170,6 @@ export async function generateDailyReport(
     firstTaskStartAt: collected.firstTaskStartAt,
     breakCount: collected.breakCount,
     breakTotalMinutes: collected.breakTotalMinutes,
-    decisions: collected.decisions,
     eveningSummary,
   });
 

@@ -24,6 +24,7 @@ const { generateDailyReport } = await import("./generate-daily-report.js");
 function calledWithValid(data: {
   reportSummary: string;
   bossComment: string;
+  keyDecisions: string;
   carryOver: string;
 }) {
   return { called: true as const, result: { valid: true as const, data } };
@@ -144,7 +145,7 @@ describe("generateDailyReport", () => {
   });
 
   describe("正常系", () => {
-    it("3値がテンプレートの「夕会サマリ」に反映され daily_reports に UPSERT される", async () => {
+    it("4値がテンプレートの「夕会サマリ」に反映され daily_reports に UPSERT される", async () => {
       const now = new Date(2026, 7, 14, 21, 0);
       const sessionId = insertRawSession(
         db,
@@ -158,6 +159,7 @@ describe("generateDailyReport", () => {
         calledWithValid({
           reportSummary: "タスクAを完了した",
           bossComment: "よくやった",
+          keyDecisions: "本日のノルマは資料作成完了とする",
           carryOver: "タスクBを明日に持ち越す",
         }),
       );
@@ -170,6 +172,7 @@ describe("generateDailyReport", () => {
       expect(result.report.evening_session_id).toBe(sessionId);
       expect(result.report.content).toContain("- 報告の要点: タスクAを完了した");
       expect(result.report.content).toContain("- ボスの講評: よくやった");
+      expect(result.report.content).toContain("- 決定の要点: 本日のノルマは資料作成完了とする");
       expect(result.report.content).toContain("- 翌日への持ち越し: タスクBを明日に持ち越す");
       expect(reportRowCount()).toBe(1);
     });
@@ -187,6 +190,7 @@ describe("generateDailyReport", () => {
         calledWithValid({
           reportSummary: "全タスク完了",
           bossComment: "満点だ",
+          keyDecisions: "なし",
           carryOver: "なし",
         }),
       );
@@ -195,6 +199,59 @@ describe("generateDailyReport", () => {
 
       if (!result.ok) throw new Error("expected ok result");
       expect(result.report.content).toContain("- 翌日への持ち越し: なし");
+    });
+
+    it("決定なし: active 決定が0件でも生成は成功し、LLM が「なし」を返すと「決定の要点: なし」が出力される", async () => {
+      const now = new Date(2026, 7, 14, 21, 0);
+      const sessionId = insertRawSession(
+        db,
+        "evening",
+        iso(2026, 8, 14, 19, 0),
+        iso(2026, 8, 14, 19, 30),
+      );
+      insertRawMessage(db, sessionId, "user", "今日は決定なし", iso(2026, 8, 14, 19, 1));
+      requestVerdictMock.mockResolvedValue(
+        calledWithValid({
+          reportSummary: "特に進捗なし",
+          bossComment: "明日に期待する",
+          keyDecisions: "なし",
+          carryOver: "なし",
+        }),
+      );
+
+      const result = await generateDailyReport(db, env, now);
+
+      expect(result.ok).toBe(true);
+      if (!result.ok) throw new Error("expected ok result");
+      expect(result.report.content).toContain("- 決定の要点: なし");
+    });
+
+    it("当日の active 決定一覧が抽出ステップ（extractEveningSummary 経由の requestVerdict 入力）へ渡される", async () => {
+      const now = new Date(2026, 7, 14, 21, 0);
+      const sessionId = insertRawSession(
+        db,
+        "evening",
+        iso(2026, 8, 14, 19, 0),
+        iso(2026, 8, 14, 19, 30),
+      );
+      insertRawMessage(db, sessionId, "user", "タスクAを完了した", iso(2026, 8, 14, 19, 1));
+      db.prepare(
+        `INSERT INTO decisions (session_id, content, status, created_at) VALUES (?, ?, 'active', ?)`,
+      ).run(sessionId, "本日のノルマは資料作成完了とする", iso(2026, 8, 14, 10, 0));
+      requestVerdictMock.mockResolvedValue(
+        calledWithValid({
+          reportSummary: "a",
+          bossComment: "b",
+          keyDecisions: "本日のノルマは資料作成完了とする",
+          carryOver: "なし",
+        }),
+      );
+
+      await generateDailyReport(db, env, now);
+
+      const [, request] = requestVerdictMock.mock.calls[0];
+      const userMessage = request.messages[0].content as string;
+      expect(userMessage).toContain("本日のノルマは資料作成完了とする");
     });
   });
 
@@ -222,6 +279,7 @@ describe("generateDailyReport", () => {
       expect(summarySection).toContain(FALLBACK_EVENING_SUMMARY_NOTE);
       expect(summarySection).not.toContain("- 報告の要点:");
       expect(summarySection).not.toContain("- ボスの講評:");
+      expect(summarySection).not.toContain("- 決定の要点:");
       expect(summarySection).not.toContain("- 翌日への持ち越し:");
       expect(reportRowCount()).toBe(1);
     });
@@ -263,12 +321,12 @@ describe("generateDailyReport", () => {
       );
       insertRawMessage(db, sessionId, "user", "1回目の報告", iso(2026, 8, 14, 19, 1));
       requestVerdictMock.mockResolvedValue(
-        calledWithValid({ reportSummary: "1回目", bossComment: "b", carryOver: "なし" }),
+        calledWithValid({ reportSummary: "1回目", bossComment: "b", keyDecisions: "なし", carryOver: "なし" }),
       );
 
       const first = await generateDailyReport(db, env, now);
       requestVerdictMock.mockResolvedValue(
-        calledWithValid({ reportSummary: "2回目", bossComment: "b", carryOver: "なし" }),
+        calledWithValid({ reportSummary: "2回目", bossComment: "b", keyDecisions: "なし", carryOver: "なし" }),
       );
       const second = await generateDailyReport(db, env, now);
 
@@ -293,7 +351,7 @@ describe("generateDailyReport", () => {
       );
       insertRawMessage(db, sessionId, "user", "日をまたぐ夕会の報告", iso(2026, 8, 14, 23, 51));
       requestVerdictMock.mockResolvedValue(
-        calledWithValid({ reportSummary: "a", bossComment: "b", carryOver: "なし" }),
+        calledWithValid({ reportSummary: "a", bossComment: "b", keyDecisions: "なし", carryOver: "なし" }),
       );
 
       const result = await generateDailyReport(db, env, now);
@@ -319,7 +377,7 @@ describe("generateDailyReport", () => {
       insertRawDoneTask(db, "8/14に完了したタスク", iso(2026, 8, 14, 10, 0), iso(2026, 8, 14, 18, 0));
       insertRawDoneTask(db, "8/15に完了したタスク", iso(2026, 8, 15, 9, 0), iso(2026, 8, 15, 9, 0));
       requestVerdictMock.mockResolvedValue(
-        calledWithValid({ reportSummary: "a", bossComment: "b", carryOver: "なし" }),
+        calledWithValid({ reportSummary: "a", bossComment: "b", keyDecisions: "なし", carryOver: "なし" }),
       );
 
       // 夕会終了フック（#109）を模して、now は終了直後の実時刻（翌日 00:30

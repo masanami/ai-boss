@@ -88,7 +88,7 @@ describe("reports routes", () => {
       called: true,
       result: {
         valid: true,
-        data: { reportSummary: "要点", bossComment: "講評", carryOver: "なし" },
+        data: { reportSummary: "要点", bossComment: "講評", keyDecisions: "なし", carryOver: "なし" },
       },
     });
   });
@@ -248,7 +248,12 @@ describe("reports routes", () => {
         called: true,
         result: {
           valid: true,
-          data: { reportSummary: "更新後の要点", bossComment: "講評", carryOver: "なし" },
+          data: {
+            reportSummary: "更新後の要点",
+            bossComment: "講評",
+            keyDecisions: "なし",
+            carryOver: "なし",
+          },
         },
       });
       const second = await readJson<DailyReport>(
