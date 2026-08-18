@@ -51,6 +51,8 @@ describe("createApp", () => {
     writeFileSync(join(staticRoot, "index.html"), "<html>ai-boss</html>");
     mkdirSync(join(staticRoot, "assets"));
     writeFileSync(join(staticRoot, "assets", "app.js"), "console.log('ok');");
+    writeFileSync(join(staticRoot, "favicon.svg"), "<svg></svg>");
+    writeFileSync(join(staticRoot, "manifest.webmanifest"), "{}");
 
     afterAll(() => {
       rmSync(staticRoot, { recursive: true, force: true });
@@ -74,6 +76,26 @@ describe("createApp", () => {
       expect(res.status).toBe(200);
       expect(res.headers.get("content-type")).toContain("javascript");
       expect(await res.text()).toBe("console.log('ok');");
+    });
+
+    it("serves favicon.svg with an image/svg+xml content type", async () => {
+      const app = createApp(db, process.env, { staticRoot });
+
+      const res = await app.request("/favicon.svg");
+
+      expect(res.status).toBe(200);
+      expect(res.headers.get("content-type")).toContain("image/svg+xml");
+      expect(await res.text()).toBe("<svg></svg>");
+    });
+
+    it("serves manifest.webmanifest with an application/manifest+json content type", async () => {
+      const app = createApp(db, process.env, { staticRoot });
+
+      const res = await app.request("/manifest.webmanifest");
+
+      expect(res.status).toBe(200);
+      expect(res.headers.get("content-type")).toContain("application/manifest+json");
+      expect(await res.text()).toBe("{}");
     });
 
     it("falls back to index.html for an unknown non-API path (SPA routing)", async () => {
