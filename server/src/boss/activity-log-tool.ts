@@ -70,6 +70,25 @@ type IsoParseResult =
 /** Matches a bare `YYYY-MM-DD` date (no time-of-day component). */
 const DATE_ONLY_PATTERN = /^\d{4}-\d{2}-\d{2}$/;
 
+/** Matches an ISO 8601 datetime: `T` 区切り・分まで必須・秒/ミリ秒任意・
+ * タイムゾーン指定（`Z` or `±HH:MM`）任意（省略時は `Date.parse` のローカル
+ * 解釈に委ねる）。`Date.parse` 単独だと `July 5, 2026` や `2026/07/05` 等の
+ * 非 ISO 形式まで受理してしまうため、形式はこのパターンで先に絞る
+ * （PR #152 レビュー指摘）。 */
+const DATETIME_PATTERN =
+  /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})(?::(\d{2})(?:\.\d{1,3})?)?(?:Z|[+-]\d{2}:\d{2})?$/;
+
+/** `2026-02-30` のような存在しない暦日を `Date` の月繰り上げ正規化で
+ * 受理しないための実在チェック。 */
+function isRealCalendarDate(year: number, month: number, day: number): boolean {
+  const probe = new Date(year, month - 1, day);
+  return (
+    probe.getFullYear() === year &&
+    probe.getMonth() === month - 1 &&
+    probe.getDate() === day
+  );
+}
+
 /** Validates and canonicalizes an ISO 8601 date-ish input. Canonicalizing
  * (round-tripping through `Date`) matters for `since`: `listEventsSince`
  * compares `created_at` as plain TEXT, so `since` must be in the same
@@ -97,15 +116,7 @@ function parseIsoInput(
 
   if (DATE_ONLY_PATTERN.test(value)) {
     const [year, month, day] = value.split("-").map(Number);
-    const isRealCalendarDate = (() => {
-      const probe = new Date(year, month - 1, day);
-      return (
-        probe.getFullYear() === year &&
-        probe.getMonth() === month - 1 &&
-        probe.getDate() === day
-      );
-    })();
-    if (!isRealCalendarDate) {
+    if (!isRealCalendarDate(year, month, day)) {
       return {
         ok: false,
         error: `${fieldName} must be a valid ISO 8601 date string (got "${value}")`,
@@ -118,7 +129,20 @@ function parseIsoInput(
     return { ok: true, iso: resolved.toISOString() };
   }
 
-  const timestamp = Date.parse(value);
+  const match = DATETIME_PATTERN.exec(value);
+  if (!match) {
+    return {
+      ok: false,
+      error: `${fieldName} must be a valid ISO 8601 date string (got "${value}")`,
+    };
+  }
+  const [, y, mo, d, h, mi, sec] = match;
+  const inRange =
+    isRealCalendarDate(Number(y), Number(mo), Number(d)) &&
+    Number(h) <= 23 &&
+    Number(mi) <= 59 &&
+    (sec === undefined || Number(sec) <= 59);
+  const timestamp = inRange ? Date.parse(value) : Number.NaN;
   if (Number.isNaN(timestamp)) {
     return {
       ok: false,

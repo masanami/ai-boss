@@ -205,6 +205,38 @@ describe("executeGetActivityLogTool", () => {
     expect(result.content).toContain("until");
   });
 
+  it("rejects non-ISO datetime formats that Date.parse would accept (PR #152 review)", () => {
+    // Date.parse 単独では受理されてしまう非 ISO 形式・不正値の代表例
+    const invalidInputs = [
+      "July 5, 2026", // 英語自然文形式
+      "2026/07/05", // スラッシュ区切り
+      "2026-07-05 12:34:56Z", // T でなく空白区切り
+      "2026-02-30T12:00:00Z", // 存在しない暦日（月繰り上げ正規化を拒否）
+      "2026-07-05T25:00:00Z", // 時が範囲外
+      "2026-07-05T12:60:00Z", // 分が範囲外
+    ];
+
+    for (const value of invalidInputs) {
+      const result = executeGetActivityLogTool(db, { since: value });
+      expect(result.isError, `should reject: ${value}`).toBe(true);
+      expect(result.content).toContain("since");
+    }
+  });
+
+  it("accepts strict ISO 8601 datetime variants (offset / milliseconds / minute precision)", () => {
+    const validInputs = [
+      "2026-07-05T12:34:56Z",
+      "2026-07-05T12:34:56+09:00",
+      "2026-07-05T12:34:56.123Z",
+      "2026-07-05T12:34",
+    ];
+
+    for (const value of validInputs) {
+      const result = executeGetActivityLogTool(db, { since: value });
+      expect(result.isError, `should accept: ${value}`).not.toBe(true);
+    }
+  });
+
   it("rejects a non-object input", () => {
     const result = executeGetActivityLogTool(db, "not-an-object");
 
