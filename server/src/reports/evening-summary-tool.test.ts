@@ -5,20 +5,22 @@ import {
 } from "./evening-summary-tool.js";
 
 describe("SUBMIT_EVENING_SUMMARY_TOOL", () => {
-  it("requires report_summary / boss_comment / carry_over", () => {
+  it("requires report_summary / boss_comment / key_decisions / carry_over", () => {
     expect(SUBMIT_EVENING_SUMMARY_TOOL.input_schema.required).toEqual([
       "report_summary",
       "boss_comment",
+      "key_decisions",
       "carry_over",
     ]);
   });
 });
 
 describe("parseEveningSummaryToolInput", () => {
-  it("returns valid data with camelCase fields when all 3 values are non-empty strings", () => {
+  it("returns valid data with camelCase fields when all 4 values are non-empty strings", () => {
     const result = parseEveningSummaryToolInput({
       report_summary: "タスクAを完了した",
       boss_comment: "よくやった",
+      key_decisions: "本日のノルマは資料作成完了とする",
       carry_over: "タスクBを明日に持ち越す",
     });
 
@@ -27,6 +29,7 @@ describe("parseEveningSummaryToolInput", () => {
       data: {
         reportSummary: "タスクAを完了した",
         bossComment: "よくやった",
+        keyDecisions: "本日のノルマは資料作成完了とする",
         carryOver: "タスクBを明日に持ち越す",
       },
     });
@@ -36,6 +39,18 @@ describe("parseEveningSummaryToolInput", () => {
     const result = parseEveningSummaryToolInput({
       report_summary: "タスクAを完了した",
       boss_comment: "よくやった",
+      key_decisions: "なし",
+      carry_over: "なし",
+    });
+
+    expect(result.valid).toBe(true);
+  });
+
+  it("accepts key_decisions: 'なし' as a valid non-empty value (no-decision-of-note case)", () => {
+    const result = parseEveningSummaryToolInput({
+      report_summary: "タスクAを完了した",
+      boss_comment: "よくやった",
+      key_decisions: "なし",
       carry_over: "なし",
     });
 
@@ -53,12 +68,13 @@ describe("parseEveningSummaryToolInput", () => {
     });
   });
 
-  it.each(["report_summary", "boss_comment", "carry_over"])(
+  it.each(["report_summary", "boss_comment", "key_decisions", "carry_over"])(
     "rejects when %s is missing",
     (field) => {
       const input: Record<string, string> = {
         report_summary: "要点",
         boss_comment: "講評",
+        key_decisions: "なし",
         carry_over: "なし",
       };
       delete input[field];
@@ -69,12 +85,13 @@ describe("parseEveningSummaryToolInput", () => {
     },
   );
 
-  it.each(["report_summary", "boss_comment", "carry_over"])(
+  it.each(["report_summary", "boss_comment", "key_decisions", "carry_over"])(
     "rejects when %s is an empty string",
     (field) => {
       const input = {
         report_summary: "要点",
         boss_comment: "講評",
+        key_decisions: "なし",
         carry_over: "なし",
         [field]: "",
       };
@@ -85,12 +102,13 @@ describe("parseEveningSummaryToolInput", () => {
     },
   );
 
-  it.each(["report_summary", "boss_comment", "carry_over"])(
+  it.each(["report_summary", "boss_comment", "key_decisions", "carry_over"])(
     "rejects when %s is whitespace only",
     (field) => {
       const input = {
         report_summary: "要点",
         boss_comment: "講評",
+        key_decisions: "なし",
         carry_over: "なし",
         [field]: "   ",
       };
@@ -101,12 +119,13 @@ describe("parseEveningSummaryToolInput", () => {
     },
   );
 
-  it.each(["report_summary", "boss_comment", "carry_over"])(
+  it.each(["report_summary", "boss_comment", "key_decisions", "carry_over"])(
     "rejects when %s is not a string",
     (field) => {
       const input: Record<string, unknown> = {
         report_summary: "要点",
         boss_comment: "講評",
+        key_decisions: "なし",
         carry_over: "なし",
         [field]: 123,
       };

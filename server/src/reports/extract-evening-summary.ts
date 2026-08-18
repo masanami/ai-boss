@@ -1,7 +1,8 @@
 // 日報生成の「値の抽出」段（docs/features/daily-report.md「機能全体の設計」の
-// 4段のうち2段目）。夕会セッションの会話メッセージを Claude に渡し、
-// 「報告の要点」「ボスの講評」「翌日への持ち越し」の3値だけを構造化応答
-// （submit_evening_summary ツール、`evening-summary-tool.ts`）で取得する。
+// 4段のうち2段目）。夕会セッションの会話メッセージ＋当日の active 決定一覧を
+// Claude に渡し、「報告の要点」「ボスの講評」「決定の要点」「翌日への持ち越し」
+// の4値だけを構造化応答（submit_evening_summary ツール、`evening-summary-tool.ts`）
+// で取得する。
 //
 // `server/src/dashboard/boss-comment.ts` / `server/src/notifications/notification-body.ts`
 // と同じフォールバック契約: 例外を投げず、失敗時は null を返す。失敗に含める
@@ -35,11 +36,29 @@ function buildTranscript(messages: Message[]): string {
     .join("\n");
 }
 
-function buildUserInstruction(messages: Message[]): string {
+/**
+ * 当日の `status = active` 決定一覧（content のみ・作成日時昇順で呼び出し
+ * 側から渡される）を箇条書きにする。0件の場合は「（決定なし）」と明示し、
+ * LLM が「決定の要点」を「なし」と書く判断材料にする（docs/features/work-log.md
+ * 「日報側の変更」）。
+ */
+function buildDecisionsList(decisionContents: string[]): string {
+  if (decisionContents.length === 0) {
+    return "（決定なし）";
+  }
+  return decisionContents.map((content) => `- ${content}`).join("\n");
+}
+
+function buildUserInstruction(messages: Message[], decisionContents: string[]): string {
   return [
-    "以下は夕会（報告セッション）の会話ログである。この内容を踏まえて、必ず submit_evening_summary ツールで" +
-      "「報告の要点」「ボスの講評」「翌日への持ち越し」の3つの値を提出せよ。",
+    "以下は夕会（報告セッション）の会話ログと、当日の決定一覧である。この内容を踏まえて、必ず submit_evening_summary ツールで" +
+      "「報告の要点」「ボスの講評」「決定の要点」「翌日への持ち越し」の4つの値を提出せよ。",
+    "「決定の要点」は当日の決定のうち最終状態として効いているもの（確定ノルマ・新規タスク登録・持ち越し判断等）の要約とし、" +
+      "該当が無い場合は key_decisions に「なし」と明記すること（空文字は不可）。",
     "翌日への持ち越しが無い場合は carry_over に「なし」と明記すること（空文字は不可）。",
+    "",
+    "--- 当日の決定一覧 ---",
+    buildDecisionsList(decisionContents),
     "",
     "--- 夕会の会話ログ ---",
     buildTranscript(messages),
@@ -47,7 +66,7 @@ function buildUserInstruction(messages: Message[]): string {
 }
 
 export interface ExtractEveningSummaryOptions {
-  /** 抽出ステップの任意の上限時間（ms）。超過時は3値なし（null）として扱う。
+  /** 抽出ステップの任意の上限時間（ms）。超過時は4値なし（null）として扱う。
    * 未指定時はタイムアウトを設けない（LLM クライアント既定の方針に委ねる —
    * 既定20秒を渡すのは夕会終了フック側の責務。ここでは受け口だけ用意する）。*/
   timeoutMs?: number;
@@ -86,20 +105,28 @@ function withOptionalTimeout<T>(
 }
 
 /**
- * 夕会セッションの会話メッセージから、日報の「夕会サマリ」3値を抽出する。
+ * 夕会セッションの会話メッセージ＋当日の active 決定一覧から、日報の
+ * 「夕会サマリ」4値を抽出する。
  *
  * `api` バックエンドでは `toolChoice` でツール呼び出しを強制する。`claude-code`
  * バックエンド（`toolChoice` 非対応）は、システムプロンプト（purpose:
  * "daily-report"、`persona-prompt.ts`）とこの関数のユーザーメッセージ双方の
  * 指示文でツール呼び出しを促す代替をとる（既存の踏襲）。
  *
+ * `decisionContents` は当日（ローカル日付）の `status = active` 決定の
+ * `content` 一覧（作成日時昇順・呼び出し側 `generate-daily-report.ts` が
+ * `collectDailyReportData` の結果をそのまま渡す）。「決定の要点」抽出の
+ * 材料としてユーザーメッセージへ注入するだけで、この関数自身は DB を
+ * 読まない（docs/features/work-log.md「日報側の変更」）。
+ *
  * 例外を投げず、失敗時は null を返す（呼び出し側 `generate-daily-report.ts`
- * は null を「同じレンダラーへ3値なしで渡す」フォールバック経路として扱う）。
+ * は null を「同じレンダラーへ4値なしで渡す」フォールバック経路として扱う）。
  */
 export async function extractEveningSummary(
   db: Database.Database,
   env: NodeJS.ProcessEnv,
   eveningMessages: Message[],
+  decisionContents: string[],
   now: Date,
   options: ExtractEveningSummaryOptions = {},
 ): Promise<EveningSummaryValues | null> {
@@ -119,7 +146,9 @@ export async function extractEveningSummary(
       {
         model,
         system,
-        messages: [{ role: "user", content: buildUserInstruction(eveningMessages) }],
+        messages: [
+          { role: "user", content: buildUserInstruction(eveningMessages, decisionContents) },
+        ],
         tools: [SUBMIT_EVENING_SUMMARY_TOOL],
         // api バックエンドのみ toolChoice でツール呼び出しを強制する。
         // claude-code は toolChoice 非対応のため渡さない（プロンプト指示で代替）。
