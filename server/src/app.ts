@@ -9,6 +9,7 @@ import { createCheckinsRouter } from "./activity/checkins-routes.js";
 import { createDecisionsRouter } from "./decisions/decisions-routes.js";
 import { createDashboardRouter } from "./dashboard/dashboard-routes.js";
 import { createReportsRouter } from "./reports/reports-routes.js";
+import { createWorkLogsRouter } from "./reports/work-logs-routes.js";
 import { createSettingsRouter } from "./settings/settings-routes.js";
 import { resolveLlmBackend, type LlmBackend } from "./config.js";
 
@@ -80,6 +81,7 @@ export function createApp(
   api.route("/decisions", createDecisionsRouter(db, env, llmBackend));
   api.route("/dashboard", createDashboardRouter(db, env));
   api.route("/reports", createReportsRouter(db, env));
+  api.route("/work-logs", createWorkLogsRouter(db));
   api.route("/settings", createSettingsRouter(db));
 
   const app = new Hono();
