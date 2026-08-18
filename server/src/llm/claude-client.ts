@@ -315,18 +315,24 @@ async function runClaudeCodeDispatch<T>(attempt: () => Promise<T>): Promise<T> {
  * options (unlike the `api` backend — see that function's doc comment for
  * why doubling up would be wrong). `hasSideEffect` becomes `true` the moment
  * `executeTool` **or** `onTextDelta` is invoked at all (regardless of
- * `executeTool`'s result), which is intentionally conservative: once a
- * DB-writing tool call has been dispatched, or any text has already been
+ * `executeTool`'s result), which is intentionally conservative: once *any*
+ * tool call reachable through `executeTool` has been dispatched — DB-writing
+ * (`create_task` / `update_task` / `record_decision`) or DB-read-only
+ * (`get_activity_log`, Issue #150) alike — or any text has already been
  * streamed to the caller (which relays it via SSE and accumulates it into
  * the message that gets persisted — see `chat-messages-route.ts`'s
  * `fullText`), a later failure in that same attempt must not trigger a
  * retry. Retrying would re-run the whole `query()` from scratch, which would
- * either duplicate the DB write, or duplicate already-relayed text
- * (self-review: without tracking `onTextDelta` too, a mid-stream failure
- * followed by a successful retry would leave the persisted message
- * containing the first attempt's partial text followed by the second
- * attempt's full text). See the non-functional requirement's point 3 and
- * `callbacks.executeTool`'s doc comment.
+ * either duplicate a DB write, re-run a read unnecessarily, or duplicate
+ * already-relayed text (self-review: without tracking `onTextDelta` too, a
+ * mid-stream failure followed by a successful retry would leave the
+ * persisted message containing the first attempt's partial text followed by
+ * the second attempt's full text). Treating read-only tool calls as a side
+ * effect too is deliberately coarse — it costs at most one skipped retry
+ * opportunity, not a correctness bug — rather than threading a
+ * read-vs-write distinction through this facade for a single tool (self-
+ * review: judged out of this ticket's scope). See the non-functional
+ * requirement's point 3 and `callbacks.executeTool`'s doc comment.
  */
 async function dispatchStream(
   client: BossLlmClient,

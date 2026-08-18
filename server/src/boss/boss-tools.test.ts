@@ -8,11 +8,12 @@ import { listTasks } from "../tasks/tasks-repository.js";
 import { BOSS_TOOLS, executeBossTool } from "./boss-tools.js";
 
 describe("BOSS_TOOLS", () => {
-  it("defines create_task, update_task, and record_decision", () => {
+  it("defines create_task, update_task, record_decision, and get_activity_log", () => {
     expect(BOSS_TOOLS.map((tool) => tool.name)).toEqual([
       "create_task",
       "update_task",
       "record_decision",
+      "get_activity_log",
     ]);
   });
 });
@@ -54,5 +55,13 @@ describe("executeBossTool", () => {
 
     expect(result.isError).toBe(true);
     expect(result.content).toContain("delete_task");
+  });
+
+  it("dispatches get_activity_log without requiring the session id", () => {
+    const result = executeBossTool(db, sessionId, "get_activity_log", {});
+
+    expect(result.isError).toBe(false);
+    const parsed = JSON.parse(result.content) as { events: unknown[]; truncated: boolean };
+    expect(parsed).toMatchObject({ events: [], truncated: false });
   });
 });
