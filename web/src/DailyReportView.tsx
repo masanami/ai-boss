@@ -1,8 +1,6 @@
-import { useEffect, useRef, useState } from "react";
+import { useCopyToClipboard } from "./use-copy-to-clipboard";
 import { useDailyReports } from "./use-daily-reports";
 import "./DailyReportView.css";
-
-type CopyState = { kind: "idle" } | { kind: "success" } | { kind: "failure" };
 
 const HINT_MESSAGE = "夕会を完了すると日報を生成できます";
 
@@ -20,40 +18,13 @@ function DailyReportView() {
     regenerate,
   } = useDailyReports();
 
-  const [copyState, setCopyState] = useState<CopyState>({ kind: "idle" });
-  const textareaRef = useRef<HTMLTextAreaElement | null>(null);
-
-  // 表示中の本文が変わったら（日付切り替え・再生成）、直前のコピー結果表示は
-  // 古い本文についてのものなので消す。
-  useEffect(() => {
-    setCopyState({ kind: "idle" });
-  }, [report?.content]);
-
-  useEffect(() => {
-    if (copyState.kind === "failure" && textareaRef.current) {
-      textareaRef.current.select();
-    }
-  }, [copyState]);
-
-  const handleCopy = () => {
-    if (report === null) {
-      return;
-    }
-    // 非セキュアコンテキストでは navigator.clipboard 自体が undefined で、
-    // .writeText を呼ぶと同期的に TypeError が投げられる（.then の失敗
-    // ハンドラには届かない）。try/catch で同期例外も失敗扱いに落とす。
-    try {
-      if (!navigator.clipboard) {
-        throw new Error("clipboard API is unavailable");
-      }
-      navigator.clipboard.writeText(report.content).then(
-        () => setCopyState({ kind: "success" }),
-        () => setCopyState({ kind: "failure" }),
-      );
-    } catch {
-      setCopyState({ kind: "failure" });
-    }
-  };
+  // コピー処理（成功/失敗フィードバック・本文変更時のリセット・失敗時の
+  // 手動コピー退避）は作業ログビューと共通のフックへ抽出済み（Issue #161）。
+  const {
+    copyState,
+    copy: handleCopy,
+    textareaRef,
+  } = useCopyToClipboard(report?.content ?? null);
 
   if (status === "loading") {
     return (
