@@ -86,6 +86,38 @@ describe("WorkLogView", () => {
     await waitFor(() => expect(currentLogContent()).toBe(PAST_LOG.content));
   });
 
+  it("clears the previously loaded log while the newly selected date is still loading (PR #165 review)", async () => {
+    let releasePastLog: (() => void) | undefined;
+    const fetchMock = vi.fn((url: string) => {
+      if (url === `/api/work-logs/${TODAY}`) {
+        return jsonResponse(200, TODAY_LOG);
+      }
+      // 過去日の応答は解放されるまで保留し、「読み込み中」の状態を作る
+      return new Promise((resolve) => {
+        releasePastLog = () => resolve(jsonResponse(200, PAST_LOG));
+      });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(<WorkLogView />);
+    await waitFor(() => expect(currentLogContent()).toBe(TODAY_LOG.content));
+
+    fireEvent.change(screen.getByLabelText("対象日"), {
+      target: { value: PAST_LOG.date },
+    });
+
+    // 取得中に前日分が残っていると、日付入力と本文が食い違ったままコピーできてしまう
+    await waitFor(() =>
+      expect(
+        screen.queryByRole("document", { name: "作業ログ本文" }),
+      ).not.toBeInTheDocument(),
+    );
+    expect(screen.getByRole("button", { name: /コピー/ })).toBeDisabled();
+
+    releasePastLog?.();
+    await waitFor(() => expect(currentLogContent()).toBe(PAST_LOG.content));
+  });
+
   it("shows an error (role=alert) when the fetch fails", async () => {
     vi.stubGlobal(
       "fetch",

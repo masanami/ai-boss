@@ -30,6 +30,11 @@ export function useWorkLog(): UseWorkLogResult {
 
   useEffect(() => {
     latestRequestedDateRef.current = selectedDate;
+    // 取得中に前の日付の内容を表示したままにしない。日付入力は新しい日付を
+    // 指しているのに本文が前日分のままだと、遅い回線で「表示中の日付と違う
+    // 日のログをコピーして共有してしまう」事故が起きる（PR #165 レビュー指摘）。
+    setWorkLog(null);
+    setError(null);
     fetchWorkLog(selectedDate)
       .then((fetched) => {
         if (latestRequestedDateRef.current !== selectedDate) {

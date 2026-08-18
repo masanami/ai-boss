@@ -338,7 +338,7 @@ describe("buildPersonaPrompt", () => {
     expect(prompt).toContain("通知文面として使われる");
   });
 
-  it("purpose が daily-report のとき、submit_evening_summary ツールでの3値提出を促す指示を含み、Markdown構造を指示しない", () => {
+  it("purpose が daily-report のとき、submit_evening_summary ツールでの4値提出を促す指示を含み、Markdown構造を指示しない", () => {
     const prompt = buildPersonaPrompt(DEFAULT_PERSONA_SETTINGS, {
       tasks: [],
       recentDecisions: [],
@@ -349,6 +349,10 @@ describe("buildPersonaPrompt", () => {
     expect(prompt).toContain("submit_evening_summary");
     expect(prompt).toContain("報告の要点");
     expect(prompt).toContain("ボスの講評");
+    // 4値化（Issue #159）で追加。システムプロンプト側が3値のままだと、
+    // ツール入力の必須フィールドが欠けて日報がフォールバックに落ちる
+    // （PR #165 レビュー指摘）
+    expect(prompt).toContain("決定の要点");
     expect(prompt).toContain("翌日への持ち越し");
     expect(prompt).not.toContain("#");
     expect(prompt).not.toContain("通知文面として使われる");
