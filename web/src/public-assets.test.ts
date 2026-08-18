@@ -48,13 +48,18 @@ describe("web/public assets", () => {
     );
   });
 
-  // PNG generation (qlmanage/sips) was blocked by the permission system during
-  // implementation (Issue #156); the lead generates icon-192.png/icon-512.png
-  // separately. This it.todo is a deliberate, visible marker (rather than a
-  // silently-passing assertion) so the gap doesn't disappear from test output:
-  // once the PNGs land, replace this with a real existsSync + pixel-size
-  // assertion for both files.
-  it.todo(
-    "icon-192.png and icon-512.png referenced by manifest.webmanifest exist as 192x192/512x512 PNGs (blocked: PNG generation commands denied by permission system, see Issue #156)",
-  );
+  it("icon-192.png and icon-512.png referenced by manifest.webmanifest exist as 192x192/512x512 PNGs", () => {
+    // PNG ヘッダの IHDR チャンク（先頭 8 バイトのシグネチャ直後）から
+    // 幅・高さを読む。画像ライブラリへの依存を増やさないための最小検証
+    const readPngSize = (name: string) => {
+      const buf = readFileSync(join(publicDir, name));
+      expect(buf.subarray(0, 8)).toEqual(
+        Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]),
+      );
+      return { width: buf.readUInt32BE(16), height: buf.readUInt32BE(20) };
+    };
+
+    expect(readPngSize("icon-192.png")).toEqual({ width: 192, height: 192 });
+    expect(readPngSize("icon-512.png")).toEqual({ width: 512, height: 512 });
+  });
 });
