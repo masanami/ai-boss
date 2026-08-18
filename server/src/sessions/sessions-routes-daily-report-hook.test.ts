@@ -98,7 +98,7 @@ describe("evening session end -> daily report generation hook", () => {
       called: true,
       result: {
         valid: true,
-        data: { reportSummary: "要点", bossComment: "講評", carryOver: "なし" },
+        data: { reportSummary: "要点", bossComment: "講評", keyDecisions: "なし", carryOver: "なし" },
       },
     });
     generateDailyReportMock.mockClear();

@@ -1,6 +1,8 @@
-// 動的値（タスク名・決定の content・LLM が返す3値）を日報 Markdown へ埋め込む
+// 動的値（タスク名・決定の content・LLM が返す4値 等）を Markdown へ埋め込む
 // 前に適用する正規化・エスケープ。固定構造を壊さないための契約
-// (docs/features/daily-report.md「動的値のエスケープ・正規化」)。
+// (docs/features/daily-report.md「動的値のエスケープ・正規化」)。日報
+// （render-daily-report.ts）・作業ログ（render-work-log.ts）の両レンダラーが
+// 共用する。
 
 /** 改行 (CR/LF/CRLF) を半角空白へ置換する */
 const NEWLINE_PATTERN = /\r\n|\r|\n/g;

@@ -1,0 +1,37 @@
+.work-log-view {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+}
+
+.work-log-status {
+  color: var(--color-text-muted);
+}
+
+.work-log-actions {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+}
+
+.work-log-date-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+}
+
+.work-log-content {
+  white-space: pre-wrap;
+  overflow-wrap: break-word;
+  background-color: var(--color-bg-elevated);
+  border: 1px solid var(--color-border);
+  border-radius: 8px;
+  padding: 1rem;
+  font-family: monospace;
+}
+
+.work-log-fallback-textarea {
+  width: 100%;
+  min-height: 200px;
+  font-family: monospace;
+}

@@ -10,7 +10,6 @@ function baseInput(overrides: Partial<RenderDailyReportInput> = {}): RenderDaily
     firstTaskStartAt: null,
     breakCount: 0,
     breakTotalMinutes: 0,
-    decisions: [],
     eveningSummary: null,
     ...overrides,
   };
@@ -36,7 +35,7 @@ describe("renderDailyReport — 表題・見出し", () => {
     expect(md).toContain(`（${kanji}）`);
   });
 
-  it("includes the section headings 本日のタスク・活動記録・夕会サマリ in this order, with no 決定事項 heading when there are no decisions", () => {
+  it("includes the section headings 本日のタスク・活動記録・夕会サマリ in this order, and never emits a 決定事項 heading (Issue #144: 決定事項 was abolished)", () => {
     const md = renderDailyReport(baseInput());
 
     const taskIdx = md.indexOf("## 本日のタスク");
@@ -49,13 +48,19 @@ describe("renderDailyReport — 表題・見出し", () => {
     expect(md).not.toContain("## 決定事項");
   });
 
-  it("includes the 決定事項 heading, after 夕会サマリ, when there are decisions", () => {
-    const md = renderDailyReport(baseInput({ decisions: ["資料作成を最優先にする"] }));
+  it("never emits a 決定事項 heading even when eveningSummary.keyDecisions is present", () => {
+    const md = renderDailyReport(
+      baseInput({
+        eveningSummary: {
+          reportSummary: "資料作成を完了した",
+          bossComment: "よくやった",
+          keyDecisions: "資料作成を最優先にする",
+          carryOver: "なし",
+        },
+      }),
+    );
 
-    const summaryIdx = md.indexOf("## 夕会サマリ");
-    const decisionsIdx = md.indexOf("## 決定事項");
-
-    expect(decisionsIdx).toBeGreaterThan(summaryIdx);
+    expect(md).not.toContain("## 決定事項");
   });
 });
 
@@ -119,12 +124,13 @@ describe("renderDailyReport — 活動記録", () => {
 });
 
 describe("renderDailyReport — 夕会サマリ（通常経路）", () => {
-  it("renders the three values when eveningSummary is provided", () => {
+  it("renders the four values when eveningSummary is provided", () => {
     const md = renderDailyReport(
       baseInput({
         eveningSummary: {
           reportSummary: "資料作成を完了した",
           bossComment: "よくやった",
+          keyDecisions: "本日のノルマは資料作成完了とする",
           carryOver: "明日は設計レビューから",
         },
       }),
@@ -132,31 +138,58 @@ describe("renderDailyReport — 夕会サマリ（通常経路）", () => {
 
     expect(md).toContain("- 報告の要点: 資料作成を完了した");
     expect(md).toContain("- ボスの講評: よくやった");
+    expect(md).toContain("- 決定の要点: 本日のノルマは資料作成完了とする");
     expect(md).toContain("- 翌日への持ち越し: 明日は設計レビューから");
   });
 
-  it("renders the caller-provided literal 'なし' for carryOver as-is (the renderer does not decide this fallback)", () => {
+  it("renders the four values in the order 報告の要点・ボスの講評・決定の要点・翌日への持ち越し", () => {
     const md = renderDailyReport(
       baseInput({
         eveningSummary: {
           reportSummary: "資料作成を完了した",
           bossComment: "よくやった",
+          keyDecisions: "本日のノルマは資料作成完了とする",
+          carryOver: "明日は設計レビューから",
+        },
+      }),
+    );
+
+    const reportIdx = md.indexOf("- 報告の要点:");
+    const bossIdx = md.indexOf("- ボスの講評:");
+    const decisionsIdx = md.indexOf("- 決定の要点:");
+    const carryOverIdx = md.indexOf("- 翌日への持ち越し:");
+
+    expect(reportIdx).toBeGreaterThan(-1);
+    expect(bossIdx).toBeGreaterThan(reportIdx);
+    expect(decisionsIdx).toBeGreaterThan(bossIdx);
+    expect(carryOverIdx).toBeGreaterThan(decisionsIdx);
+  });
+
+  it("renders the caller-provided literal 'なし' for keyDecisions/carryOver as-is (the renderer does not decide this fallback)", () => {
+    const md = renderDailyReport(
+      baseInput({
+        eveningSummary: {
+          reportSummary: "資料作成を完了した",
+          bossComment: "よくやった",
+          keyDecisions: "なし",
           carryOver: "なし",
         },
       }),
     );
 
+    expect(md).toContain("- 決定の要点: なし");
     expect(md).toContain("- 翌日への持ち越し: なし");
   });
 });
 
 describe("renderDailyReport — 夕会サマリ（フォールバック経路。通常経路と同じレンダラーを共用する）", () => {
-  it("renders exactly the fixed one-line note and omits all three items when eveningSummary is null", () => {
+  it("renders exactly the fixed one-line note and omits all four items when eveningSummary is null", () => {
     const md = renderDailyReport(baseInput({ eveningSummary: null }));
 
     expect(md).toContain(`- ${FALLBACK_EVENING_SUMMARY_NOTE}`);
     expect(md).not.toContain("- 報告の要点:");
     expect(md).not.toContain("- ボスの講評:");
+    expect(md).not.toContain("- 決定の要点:");
     expect(md).not.toContain("- 翌日への持ち越し:");
   });
 
@@ -164,14 +197,6 @@ describe("renderDailyReport — 夕会サマリ（フォールバック経路。
     expect(FALLBACK_EVENING_SUMMARY_NOTE).toBe(
       "※ ボスの講評の生成に失敗したため、記録の機械整形で出力しています",
     );
-  });
-});
-
-describe("renderDailyReport — 決定事項", () => {
-  it("renders each decision content as one bullet line, in the given order (rationale is not part of the input shape)", () => {
-    const md = renderDailyReport(baseInput({ decisions: ["決定1", "決定2"] }));
-
-    expect(md.indexOf("- 決定1")).toBeLessThan(md.indexOf("- 決定2"));
   });
 });
 
@@ -183,25 +208,34 @@ describe("renderDailyReport — 動的値のエスケープ・正規化との統
     expect(md).not.toContain("1行目\n2行目");
   });
 
-  it("escapes a leading markdown symbol in a decision content so it cannot masquerade as a heading", () => {
-    const md = renderDailyReport(baseInput({ decisions: ["# 偽の見出し"] }));
-
-    expect(md).toContain("- \\# 偽の見出し");
-    // 実際の見出しとして解釈されないこと（構造上の "## " 系見出しの並びを壊さない）
-    expect(md).not.toContain("- # 偽の見出し");
-  });
-
-  it("escapes a leading markdown symbol in an evening-summary value", () => {
+  it("escapes a leading markdown symbol in an evening-summary value (reportSummary)", () => {
     const md = renderDailyReport(
       baseInput({
         eveningSummary: {
           reportSummary: "- 箇条書き風の要点",
           bossComment: "よくやった",
+          keyDecisions: "なし",
           carryOver: "なし",
         },
       }),
     );
 
     expect(md).toContain("- 報告の要点: \\- 箇条書き風の要点");
+  });
+
+  it("escapes a leading markdown symbol in the keyDecisions value so it cannot masquerade as a heading", () => {
+    const md = renderDailyReport(
+      baseInput({
+        eveningSummary: {
+          reportSummary: "資料作成を完了した",
+          bossComment: "よくやった",
+          keyDecisions: "# 偽の見出し",
+          carryOver: "なし",
+        },
+      }),
+    );
+
+    expect(md).toContain("- 決定の要点: \\# 偽の見出し");
+    expect(md).not.toContain("- 決定の要点: # 偽の見出し");
   });
 });

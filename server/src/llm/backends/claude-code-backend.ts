@@ -143,13 +143,20 @@ const submitVerdictShape = {
   revised_rationale: z.string().describe("修正の根拠").optional(),
 };
 
-/** 日報生成（Issue #108）の値の抽出ステップで使う `submit_evening_summary`
- * の Zod 対応。`submit_verdict` と同じく DB 書き込みを伴わない「値の報告」
- * ツールで、3値はすべて必須（JSON Schema 側 `evening-summary-tool.ts` の
- * `required` と一致 — 整合はテストで担保）。 */
+/** 日報生成の値の抽出ステップで使う `submit_evening_summary` の Zod 対応。
+ * `submit_verdict` と同じく DB 書き込みを伴わない「値の報告」ツールで、4値
+ * はすべて必須（JSON Schema 側 `evening-summary-tool.ts` の `required` と
+ * 一致 — 整合はテストで担保）。`key_decisions`（Issue #144: 日報「決定事項」
+ * の廃止・夕会サマリへの統合）は「決定の要点」を表す。 */
 const submitEveningSummaryShape = {
   report_summary: z.string().describe("ユーザーが夕会で報告した内容の要点（平文・簡潔に）"),
   boss_comment: z.string().describe("その報告に対するボスの講評・評価コメント（平文・簡潔に）"),
+  key_decisions: z
+    .string()
+    .describe(
+      "当日の決定のうち最終状態として効いているもの（確定ノルマ・新規タスク登録・持ち越し判断等）の要約。" +
+        "該当が無い場合は「なし」と書くこと（空文字は不可）。",
+    ),
   carry_over: z
     .string()
     .describe("翌日への持ち越し事項の要約。持ち越しが無い場合は「なし」と書くこと（空文字は不可）。"),

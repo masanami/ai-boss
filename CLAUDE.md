@@ -67,6 +67,8 @@ AI が「上司（ボス）」を演じるセルフマネジメント支援ア�
 |---------|------|------|
 | 機能仕様（MVP・正本） | `docs/features/ai-boss-mvp.md` | 整備済み |
 | LLM バックエンド選択（既定 claude-code の仕様・正本） | `docs/features/claude-code-backend.md` | 整備済み |
+| 日報生成（正本） | `docs/features/daily-report.md` | 整備済み |
+| 作業ログ（管理者共有向け・正本） | `docs/features/work-log.md` | 整備済み |
 | 将来アイデア（バックログ） | `docs/features/future-ideas.md` | 整備済み |
 
 ## 品質方針

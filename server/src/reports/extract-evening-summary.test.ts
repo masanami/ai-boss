@@ -24,6 +24,7 @@ const { MissingApiKeyError } = await import("../llm/claude-client.js");
 function calledWithValid(data: {
   reportSummary: string;
   bossComment: string;
+  keyDecisions: string;
   carryOver: string;
 }) {
   return { called: true as const, result: { valid: true as const, data } };
@@ -44,6 +45,8 @@ const eveningMessages: Message[] = [
   { id: 2, session_id: 1, role: "boss", content: "よくやったな", created_at: now.toISOString() },
 ];
 
+const noDecisions: string[] = [];
+
 describe("extractEveningSummary", () => {
   let db: Database.Database;
   const env = { ANTHROPIC_API_KEY: "sk-ant-test-key" };
@@ -61,20 +64,22 @@ describe("extractEveningSummary", () => {
     vi.useRealTimers();
   });
 
-  it("正常系: ツールが有効な3値で呼ばれたら、そのままの値（camelCase）を返す", async () => {
+  it("正常系: ツールが有効な4値で呼ばれたら、そのままの値（camelCase）を返す", async () => {
     requestVerdictMock.mockResolvedValue(
       calledWithValid({
         reportSummary: "タスクAを完了した",
         bossComment: "よくやった",
+        keyDecisions: "本日のノルマは資料作成完了とする",
         carryOver: "タスクBを明日に持ち越す",
       }),
     );
 
-    const result = await extractEveningSummary(db, env, eveningMessages, now);
+    const result = await extractEveningSummary(db, env, eveningMessages, noDecisions, now);
 
     expect(result).toEqual({
       reportSummary: "タスクAを完了した",
       bossComment: "よくやった",
+      keyDecisions: "本日のノルマは資料作成完了とする",
       carryOver: "タスクBを明日に持ち越す",
     });
   });
@@ -84,21 +89,43 @@ describe("extractEveningSummary", () => {
       calledWithValid({
         reportSummary: "タスクAを完了した",
         bossComment: "よくやった",
+        keyDecisions: "なし",
         carryOver: "なし",
       }),
     );
 
-    const result = await extractEveningSummary(db, env, eveningMessages, now);
+    const result = await extractEveningSummary(db, env, eveningMessages, noDecisions, now);
 
     expect(result?.carryOver).toBe("なし");
   });
 
-  it("api バックエンドでは toolChoice で submit_evening_summary の呼び出しを強制する", async () => {
+  it("決定なし: LLM が key_decisions: 'なし' を返したら、そのまま 'なし' を返す", async () => {
     requestVerdictMock.mockResolvedValue(
-      calledWithValid({ reportSummary: "a", bossComment: "b", carryOver: "なし" }),
+      calledWithValid({
+        reportSummary: "タスクAを完了した",
+        bossComment: "よくやった",
+        keyDecisions: "なし",
+        carryOver: "なし",
+      }),
     );
 
-    await extractEveningSummary(db, { ...env, LLM_BACKEND: "api" }, eveningMessages, now);
+    const result = await extractEveningSummary(db, env, eveningMessages, noDecisions, now);
+
+    expect(result?.keyDecisions).toBe("なし");
+  });
+
+  it("api バックエンドでは toolChoice で submit_evening_summary の呼び出しを強制する", async () => {
+    requestVerdictMock.mockResolvedValue(
+      calledWithValid({ reportSummary: "a", bossComment: "b", keyDecisions: "なし", carryOver: "なし" }),
+    );
+
+    await extractEveningSummary(
+      db,
+      { ...env, LLM_BACKEND: "api" },
+      eveningMessages,
+      noDecisions,
+      now,
+    );
 
     expect(requestVerdictMock).toHaveBeenCalledTimes(1);
     const [, request, toolName] = requestVerdictMock.mock.calls[0];
@@ -111,13 +138,14 @@ describe("extractEveningSummary", () => {
   it("claude-code バックエンドでは toolChoice を渡さない（プロンプト指示で代替）", async () => {
     createClaudeClientMock.mockReturnValue({ backend: "claude-code", env: {} });
     requestVerdictMock.mockResolvedValue(
-      calledWithValid({ reportSummary: "a", bossComment: "b", carryOver: "なし" }),
+      calledWithValid({ reportSummary: "a", bossComment: "b", keyDecisions: "なし", carryOver: "なし" }),
     );
 
     await extractEveningSummary(
       db,
       { ...env, LLM_BACKEND: "claude-code" },
       eveningMessages,
+      noDecisions,
       now,
     );
 
@@ -128,10 +156,47 @@ describe("extractEveningSummary", () => {
     expect(request.system).toContain("submit_evening_summary");
   });
 
+  describe("抽出への入力（当日の active 決定一覧の注入）", () => {
+    it("決定一覧が空でない場合、ユーザーメッセージに各決定の content が含まれる", async () => {
+      requestVerdictMock.mockResolvedValue(
+        calledWithValid({ reportSummary: "a", bossComment: "b", keyDecisions: "なし", carryOver: "なし" }),
+      );
+
+      await extractEveningSummary(
+        db,
+        env,
+        eveningMessages,
+        ["本日のノルマは資料作成完了とする", "設計レビューは明日に持ち越す"],
+        now,
+      );
+
+      const [, request] = requestVerdictMock.mock.calls[0];
+      const userMessage = request.messages[0].content as string;
+      expect(userMessage).toContain("本日のノルマは資料作成完了とする");
+      expect(userMessage).toContain("設計レビューは明日に持ち越す");
+      // 決定一覧は夕会の会話ログとは別に、決定の先に現れる（順序性の担保）。
+      expect(userMessage.indexOf("本日のノルマは資料作成完了とする")).toBeLessThan(
+        userMessage.indexOf("今日はタスクAを終わらせた"),
+      );
+    });
+
+    it("決定一覧が0件の場合でもユーザーメッセージが構築され、LLM へ「なし」の旨が伝わる", async () => {
+      requestVerdictMock.mockResolvedValue(
+        calledWithValid({ reportSummary: "a", bossComment: "b", keyDecisions: "なし", carryOver: "なし" }),
+      );
+
+      await extractEveningSummary(db, env, eveningMessages, [], now);
+
+      const [, request] = requestVerdictMock.mock.calls[0];
+      const userMessage = request.messages[0].content as string;
+      expect(userMessage).toContain("なし");
+    });
+  });
+
   it("フォールバック: ツールが呼ばれなかった場合は null を返す（例外を投げない）", async () => {
     requestVerdictMock.mockResolvedValue(notCalled());
 
-    const result = await extractEveningSummary(db, env, eveningMessages, now);
+    const result = await extractEveningSummary(db, env, eveningMessages, noDecisions, now);
 
     expect(result).toBeNull();
   });
@@ -139,7 +204,7 @@ describe("extractEveningSummary", () => {
   it("フォールバック: ツール入力が不正形（必須欠落・空文字）の場合は null を返す（例外を投げない）", async () => {
     requestVerdictMock.mockResolvedValue(calledWithInvalid("carry_over is required"));
 
-    const result = await extractEveningSummary(db, env, eveningMessages, now);
+    const result = await extractEveningSummary(db, env, eveningMessages, noDecisions, now);
 
     expect(result).toBeNull();
   });
@@ -147,7 +212,7 @@ describe("extractEveningSummary", () => {
   it("フォールバック: requestVerdict が例外を投げた場合も null を返す（例外を投げない）", async () => {
     requestVerdictMock.mockRejectedValue(new Error("network error"));
 
-    const result = await extractEveningSummary(db, env, eveningMessages, now);
+    const result = await extractEveningSummary(db, env, eveningMessages, noDecisions, now);
 
     expect(result).toBeNull();
   });
@@ -157,7 +222,7 @@ describe("extractEveningSummary", () => {
       throw new MissingApiKeyError();
     });
 
-    const result = await extractEveningSummary(db, {}, eveningMessages, now);
+    const result = await extractEveningSummary(db, {}, eveningMessages, noDecisions, now);
 
     expect(result).toBeNull();
     expect(requestVerdictMock).not.toHaveBeenCalled();
@@ -171,7 +236,7 @@ describe("extractEveningSummary", () => {
     });
     requestVerdictMock.mockReturnValue(slowPromise);
 
-    const resultPromise = extractEveningSummary(db, env, eveningMessages, now, {
+    const resultPromise = extractEveningSummary(db, env, eveningMessages, noDecisions, now, {
       timeoutMs: 1000,
     });
     // アサーションの取りこぼし（unhandled rejection の警告）を避けるため、
@@ -185,7 +250,9 @@ describe("extractEveningSummary", () => {
 
     // 後から実際の応答が解決しても、既に確定した結果には影響しない
     // （unhandled rejection にもならない）ことを確認する。
-    resolveSlow(calledWithValid({ reportSummary: "a", bossComment: "b", carryOver: "なし" }));
+    resolveSlow(
+      calledWithValid({ reportSummary: "a", bossComment: "b", keyDecisions: "なし", carryOver: "なし" }),
+    );
     await vi.runAllTimersAsync();
   });
 
@@ -197,14 +264,19 @@ describe("extractEveningSummary", () => {
     });
     requestVerdictMock.mockReturnValue(slowPromise);
 
-    const resultPromise = extractEveningSummary(db, env, eveningMessages, now);
+    const resultPromise = extractEveningSummary(db, env, eveningMessages, noDecisions, now);
 
     await vi.advanceTimersByTimeAsync(60_000);
     resolveSlow(
-      calledWithValid({ reportSummary: "a", bossComment: "b", carryOver: "なし" }),
+      calledWithValid({ reportSummary: "a", bossComment: "b", keyDecisions: "なし", carryOver: "なし" }),
     );
     const result = await resultPromise;
 
-    expect(result).toEqual({ reportSummary: "a", bossComment: "b", carryOver: "なし" });
+    expect(result).toEqual({
+      reportSummary: "a",
+      bossComment: "b",
+      keyDecisions: "なし",
+      carryOver: "なし",
+    });
   });
 });

@@ -8,6 +8,7 @@ import DecisionLog from "./DecisionLog";
 import SettingsView from "./SettingsView";
 import TaskBoard from "./TaskBoard";
 import TodaySummary from "./TodaySummary";
+import WorkLogView from "./WorkLogView";
 import { useChat } from "./use-chat";
 import { useHealthCheck } from "./use-health-check";
 import { useTasks } from "./use-tasks";
@@ -19,6 +20,7 @@ type AppView =
   | "tasks"
   | "decisions"
   | "reports"
+  | "work-logs"
   | "settings";
 
 interface NavItem {
@@ -32,6 +34,7 @@ const NAV_ITEMS: NavItem[] = [
   { label: "タスク", view: "tasks" },
   { label: "決定ログ", view: "decisions" },
   { label: "日報", view: "reports" },
+  { label: "作業ログ", view: "work-logs" },
   { label: "設定", view: "settings" },
 ];
 
@@ -100,6 +103,11 @@ function AppLayout() {
         {activeView === "reports" && (
           <main className="app-main" aria-label="日報">
             <DailyReportView />
+          </main>
+        )}
+        {activeView === "work-logs" && (
+          <main className="app-main" aria-label="作業ログ">
+            <WorkLogView />
           </main>
         )}
         {activeView === "settings" && (

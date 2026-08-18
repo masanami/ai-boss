@@ -18,13 +18,19 @@ export const FALLBACK_EVENING_SUMMARY_NOTE =
   "※ ボスの講評の生成に失敗したため、記録の機械整形で出力しています";
 
 /**
- * LLM が夕会の会話から抽出する3値。呼び出し側（生成サービス、依存チケット
- * #107/#108）が抽出を担い、このレンダラーは渡された値をそのまま埋め込む
- * だけ（「翌日への持ち越し」が無い場合の "なし" も呼び出し側が渡す値）。
+ * LLM が夕会の会話（＋当日の active 決定一覧）から抽出する4値。呼び出し側
+ * （生成サービス）が抽出を担い、このレンダラーは渡された値をそのまま埋め
+ * 込むだけ（「決定の要点」「翌日への持ち越し」が無い場合の "なし" も呼び出し
+ * 側が渡す値）。
+ *
+ * 日報の「決定事項」セクション（当日の決定全件の逐次列挙）は Issue #144 で
+ * 廃止し、最終的な結論の要点は「決定の要点」へ統合した（詳細な時系列出力は
+ * 作業ログ `docs/features/work-log.md` の責務）。
  */
 export interface EveningSummaryValues {
   reportSummary: string;
   bossComment: string;
+  keyDecisions: string;
   carryOver: string;
 }
 
@@ -41,9 +47,7 @@ export interface RenderDailyReportInput {
   breakCount: number;
   /** 休憩の対応付け結果の合計時間（分・切り捨て） */
   breakTotalMinutes: number;
-  /** 当日の決定事項の content 一覧（created_at 昇順など、表示順は呼び出し側が決める） */
-  decisions: string[];
-  /** LLM が返す3値。失敗・タイムアウト・形式不正時は null（フォールバック経路） */
+  /** LLM が返す4値。失敗・タイムアウト・形式不正時は null（フォールバック経路） */
   eveningSummary: EveningSummaryValues | null;
 }
 
@@ -89,21 +93,13 @@ export function renderDailyReport(input: RenderDailyReportInput): string {
   lines.push("## 夕会サマリ");
   lines.push("");
   if (input.eveningSummary) {
-    const { reportSummary, bossComment, carryOver } = input.eveningSummary;
+    const { reportSummary, bossComment, keyDecisions, carryOver } = input.eveningSummary;
     lines.push(`- 報告の要点: ${normalizeDynamicValue(reportSummary)}`);
     lines.push(`- ボスの講評: ${normalizeDynamicValue(bossComment)}`);
+    lines.push(`- 決定の要点: ${normalizeDynamicValue(keyDecisions)}`);
     lines.push(`- 翌日への持ち越し: ${normalizeDynamicValue(carryOver)}`);
   } else {
     lines.push(`- ${FALLBACK_EVENING_SUMMARY_NOTE}`);
-  }
-
-  if (input.decisions.length > 0) {
-    lines.push("");
-    lines.push("## 決定事項");
-    lines.push("");
-    for (const content of input.decisions) {
-      lines.push(`- ${normalizeDynamicValue(content)}`);
-    }
   }
 
   return lines.join("\n");

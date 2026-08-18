@@ -148,7 +148,7 @@ afterEach(() => {
 });
 
 describe("AppLayout", () => {
-  it("renders the six nav placeholder items", () => {
+  it("renders the seven nav items", () => {
     render(<AppLayout />);
 
     expect(
@@ -165,6 +165,9 @@ describe("AppLayout", () => {
       screen.getByRole("button", { name: "決定ログ" }),
     ).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "日報" })).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: "作業ログ" }),
+    ).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "設定" })).toBeInTheDocument();
   });
 
@@ -448,6 +451,19 @@ describe("AppLayout", () => {
     fireEvent.click(screen.getByRole("button", { name: "日報" }));
 
     expect(screen.getByRole("main", { name: "日報" })).toBeInTheDocument();
+    expect(
+      screen.queryByRole("main", { name: "ボスとの対話" }),
+    ).not.toBeInTheDocument();
+  });
+
+  it("switches the main area to the work log view when the work log nav item is clicked", () => {
+    // 既定の（解決しない）fetch スタブのままでよい: main のラベル切り替えだけを
+    // 確認する（日報・決定ログの既存スイッチテストと同じ作法）。
+    render(<AppLayout />);
+
+    fireEvent.click(screen.getByRole("button", { name: "作業ログ" }));
+
+    expect(screen.getByRole("main", { name: "作業ログ" })).toBeInTheDocument();
     expect(
       screen.queryByRole("main", { name: "ボスとの対話" }),
     ).not.toBeInTheDocument();

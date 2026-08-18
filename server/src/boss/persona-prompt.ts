@@ -233,9 +233,10 @@ const TASK_ESTIMATE_CONFIRMATION_INSTRUCTION =
 // へ提出させる」ことに限定する。chat 用のセッションフロー指示・見積もり確認
 // 指示は付けない（用途が異なるため）。
 const DAILY_REPORT_INSTRUCTION =
-  "この応答は日報生成のための夕会サマリ抽出に使われる。夕会の会話から「報告の要点」「ボスの講評」「翌日への持ち越し」の" +
-  "3つの値を抽出し、必ず submit_evening_summary ツールを呼び出して提出すること。各値は平文の簡潔な文章とし、" +
-  "Markdown の見出し・箇条書き記号・装飾は使わないこと。翌日への持ち越しが無い場合は「なし」と明記すること（空文字は不可）。";
+  "この応答は日報生成のための夕会サマリ抽出に使われる。夕会の会話と当日の決定一覧から「報告の要点」「ボスの講評」" +
+  "「決定の要点」「翌日への持ち越し」の4つの値を抽出し、必ず submit_evening_summary ツールを呼び出して提出すること。" +
+  "各値は平文の簡潔な文章とし、Markdown の見出し・箇条書き記号・装飾は使わないこと。" +
+  "決定の要点・翌日への持ち越しが無い場合はそれぞれ「なし」と明記すること（空文字は不可）。";
 
 function resolveSessionFlowInstruction(
   sessionType: SessionType | undefined,
