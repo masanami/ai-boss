@@ -169,6 +169,20 @@ describe("buildPersonaPrompt", () => {
     expect(prompt).toContain("#12 レポート作成");
   });
 
+  it("purpose が notification / daily-report のとき、タスク整形行に #<id> を含めない（内部 id のユーザー可視文面への漏出防止・PR #149 レビュー）", () => {
+    for (const purpose of ["notification", "daily-report"] as const) {
+      const prompt = buildPersonaPrompt(DEFAULT_PERSONA_SETTINGS, {
+        tasks: [makeTask({ id: 12, title: "レポート作成" })],
+        recentDecisions: [],
+        now,
+        purpose,
+      });
+
+      expect(prompt, purpose).not.toContain("#12");
+      expect(prompt, purpose).toContain("レポート作成");
+    }
+  });
+
   it("直近の決定が空のとき、決定なしの文言を含む", () => {
     const prompt = buildPersonaPrompt(DEFAULT_PERSONA_SETTINGS, {
       tasks: [],

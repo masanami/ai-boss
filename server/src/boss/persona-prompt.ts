@@ -140,18 +140,23 @@ function resolveTimeOfDay(now: Date): TimeOfDay {
   return "夜";
 }
 
-function formatTaskLine(task: Task): string {
+// `#<id>` はボスが update_task の対象を特定するための内部識別子（Issue #142）。
+// ツールが有効な chat プロンプトのみに含め、通知・日報などユーザー可視文面の
+// 生成経路（ツール非公開）には渡さない — モデルが内部 id を文面に
+// エコーするのを防ぐ（PR #149 レビュー指摘）。
+function formatTaskLine(task: Task, includeId: boolean): string {
   const status = TASK_STATUS_LABELS[task.status];
   const priority = task.priority ? TASK_PRIORITY_LABELS[task.priority] : "未設定";
   const dueAt = task.due_at ?? "未設定";
-  return `- [${status}] #${task.id} ${task.title}（優先度: ${priority} / 締切: ${dueAt}）`;
+  const idPart = includeId ? `#${task.id} ` : "";
+  return `- [${status}] ${idPart}${task.title}（優先度: ${priority} / 締切: ${dueAt}）`;
 }
 
-function formatTaskSection(tasks: Task[]): string {
+function formatTaskSection(tasks: Task[], includeId: boolean): string {
   if (tasks.length === 0) {
     return "現在登録されているタスクはありません。";
   }
-  return tasks.map(formatTaskLine).join("\n");
+  return tasks.map((task) => formatTaskLine(task, includeId)).join("\n");
 }
 
 function formatDecisionLine(decision: RecentDecision): string {
@@ -262,7 +267,7 @@ export function buildPersonaPrompt(
     "応答の規律: ボスは決定の形で断言する。「〜すべきか迷う」ではなく「〜しろ」「〜で行く」のように言い切る。" +
       "優先順位・ノルマ・締切・持ち越し等の重要な裁定を下したときは record_decision ツールで記録すること。",
     TIME_OF_DAY_HINTS[timeOfDay],
-    `現在のタスク一覧:\n${formatTaskSection(context.tasks)}`,
+    `現在のタスク一覧:\n${formatTaskSection(context.tasks, purpose === "chat")}`,
     `直近の決定:\n${formatDecisionSection(context.recentDecisions)}`,
     `直近の報告履歴:\n${formatSessionSummarySection(context.recentSessionSummaries ?? [])}`,
   ];
