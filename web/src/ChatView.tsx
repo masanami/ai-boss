@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useRef } from "react";
 import type { ChatEntry, UseChatResult } from "./use-chat";
 import type { ChatToolEvent } from "./chat";
 import "./ChatView.css";
@@ -75,11 +75,12 @@ function ChatView({ chatState }: ChatViewProps) {
     switching,
     streamingText,
     error,
+    draft,
+    setDraft,
     send,
     startSession,
     endSession,
   } = chatState;
-  const [draft, setDraft] = useState("");
   const timelineRef = useRef<HTMLUListElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
 

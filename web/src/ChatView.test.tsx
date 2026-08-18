@@ -9,6 +9,11 @@ import type { ChatMessage, ChatSession } from "./chat";
 // mirrors how AppLayout wires the two together, so the bulk of the existing
 // fetch-driven scenarios below keep exercising the real hook + component
 // integration unchanged.
+//
+// The Issue #153 regression test for "draft survives leaving/revisiting the
+// chat tab" lives in AppLayout.test.tsx instead of here: it needs the real
+// AppLayout conditional rendering (not a synthetic stand-in for it) to catch
+// a regression if that wiring ever changes.
 function ChatViewHarness() {
   const chatState = useChat();
   return <ChatView chatState={chatState} />;
@@ -98,6 +103,8 @@ function makeChatState(overrides: Partial<UseChatResult> = {}): UseChatResult {
     switching: false,
     streamingText: "",
     error: null,
+    draft: "",
+    setDraft: vi.fn(),
     send: vi.fn(),
     startSession: vi.fn(),
     endSession: vi.fn(),
