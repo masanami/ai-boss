@@ -118,7 +118,8 @@ function withOptionalTimeout<T>(
  * `content` 一覧（作成日時昇順・呼び出し側 `generate-daily-report.ts` が
  * `collectDailyReportData` の結果をそのまま渡す）。「決定の要点」抽出の
  * 材料としてユーザーメッセージへ注入するだけで、この関数自身は DB を
- * 読まない（保証 G-170-54・経緯は Issue #144）。
+ * 読まない（収集と抽出を分ける段構成は
+ * docs/adr/0006-renderer-owns-structure.md。経緯は Issue #144）。
  *
  * 例外を投げず、失敗時は null を返す（呼び出し側 `generate-daily-report.ts`
  * は null を「同じレンダラーへ4値なしで渡す」フォールバック経路として扱う）。

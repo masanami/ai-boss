@@ -16,7 +16,7 @@
 
 1. **永続化先は SQLite の単一ファイルのみ**とする（[ADR 0001](./0001-local-only-data-boundary.md)）。better-sqlite3 による同期 API を使い、単一ライターを前提にする。
 2. **`sessions` を第一級の概念として持つ。** 会話は単一スレッドではなく、種別（`morning` / `evening` / `adhoc`）を持つセッションに属する。`messages` は `session_id` に紐づく。決定・日報もセッションを参照する。
-3. **`activity_events` を検知エンジンの単一入力テーブルとする**（[ADR 0004](./0004-deterministic-detection-engine.md)）。
+3. **`activity_events` を検知エンジンの「活動シグナル」の単一入力テーブルとする**（[ADR 0004](./0004-deterministic-detection-engine.md) 決定 1）。**検知エンジンが読む唯一のテーブルという意味ではない** — 発火判定には `tasks`（対象タスクと見積もり）・`notifications`（重複送信防止とエスカレーション履歴）・`settings`（閾値）・`sessions`（当日の朝会夕会の実施有無）も入力として渡る。一元化しているのは「ユーザーが動いたか」を表すシグナルであり、それ以外の判定材料は別テーブルから来る。
 4. **マイグレーションは単調増加する version 番号で管理する。** 各 version は冪等に適用でき、既存 version の内容は後から書き換えない。新しいスキーマ変更は新しい version として追加する。
 
 > **既知の逸脱（実装が本 ADR に未追従・#175）**: 決定 4 の「各 version は冪等に適用でき」は現状の実装では成立していない。`server/src/db/migrate.ts` は `db.exec(migration)` と `db.pragma("user_version = N")` を**単一トランザクションで囲んでいない**ため、その隙間で停止すると次回起動時に同じ version が再実行される。version 2 の `ALTER TABLE appeals ADD COLUMN response TEXT` は `IF NOT EXISTS` を取れず冪等でないため、この場合 `duplicate column name` で起動に失敗する（version 1・3 は `CREATE TABLE IF NOT EXISTS` のみで偶然冪等）。

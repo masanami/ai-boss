@@ -213,15 +213,17 @@ export function registerChatMessageRoute(
         // Only log the error's class name, never its message: Claude API
         // errors may embed request details (or, in principle, request
         // headers) in `message`, and this is a critical path where those
-        // must not reach logs（保証 G-170-27・
-        // docs/adr/0002-api-key-and-llm-call-path.md 決定 4）。
+        // must not reach logs（docs/adr/0002-api-key-and-llm-call-path.md
+        // 決定 4: 失敗時のログに残すのはエラークラス名まで）。
         console.error(
           "chat message stream failed:",
           err instanceof Error ? err.name : typeof err,
         );
         // Text already streamed to the client is part of the conversation
         // the user actually saw — persist it so the history stays consistent
-        // after a reload instead of silently dropping the partial reply.
+        // after a reload instead of silently dropping the partial reply
+        // （保証 G-170-27: 配信済みテキストが無ければ永続化せず、途中まで
+        // 配信されていればその部分テキストを永続化する）。
         if (fullText !== "") {
           try {
             insertMessage(db, { session_id: id, role: "boss", content: fullText });
