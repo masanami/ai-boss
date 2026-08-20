@@ -25,8 +25,8 @@ export function findDailyReportByDate(
  * see migration v3). Re-generation (same date) overwrites `content` and
  * `evening_session_id` and refreshes `updated_at`, but keeps the original
  * `created_at` (excluded from the `ON CONFLICT` update set), matching
- * docs/features/daily-report.md「クリティカル設計決定 > DB スキーマ」
- * (1日1行・再生成は同日行の UPSERT）.
+ * docs/adr/0005-sqlite-schema-policy.md 検討した代替案（1日1行・再生成は
+ * 同日行の UPSERT・世代管理はしない）and 保証 G-170-43 / G-170-80.
  */
 export function upsertDailyReport(
   db: Database.Database,
@@ -53,8 +53,7 @@ export function upsertDailyReport(
 /**
  * Returns all daily reports ordered by `date` descending, for the report
  * list screen (`GET /api/reports`). Only `date`/`created_at`/`updated_at`
- * are returned — `content` is intentionally excluded (see
- * docs/features/daily-report.md「レスポンススキーマ」).
+ * are returned — `content` is intentionally excluded (保証 G-170-41).
  */
 export function listDailyReports(db: Database.Database): DailyReportSummary[] {
   return db

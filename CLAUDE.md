@@ -4,13 +4,23 @@
 
 AI が「上司（ボス）」を演じるセルフマネジメント支援アプリ。朝会・夕会での報告、随時のチャット相談に対しボスが決定の形で断言し、サボり（未着手・回避・休憩延伸・無音）を検知して macOS 通知で段階的に催促する。macOS ローカル完結・シングルユーザー。
 
+## 開発フェーズ
+
+- **フェーズ**: GDD期
+
+駆動文書は**保証台帳** `docs/guarantees.md`（現に守られている公開面の約束）と、恒常的な設計決定を記録した `docs/adr/` の 2 つ。機能仕様ドキュメント（`docs/features/`）は退役済みで、新たに作成しない。
+
+- 実装は**保証を足す・変える・消す**という単位で考える。保証を変える PR は台帳と参照テストを同時に変える
+- まだ守っていない「やりたいこと」は GitHub Issue が正本。台帳には書かない
+- テストで担保されていない公開面は台帳の「Gaps」に列挙してある。約束ではないので、Gaps の項目に依存した実装をしない
+
 ## 開発原則
 
 - **YAGNI**: 必要になるまで機能を追加しない。「念のため」の実装をしない
 - **KISS**: シンプルで直接的なコードを書く。過度な抽象化を避ける
 - **DRY**: 共通処理は再利用可能な関数・コンポーネントに抽出
-- **ローカルファースト**: 全データはローカル SQLite のみ。外部送信は Anthropic への推論リクエストだけ（不変制約）。既定の claude-code バックエンドはローカルの Claude Code 実行系を経由するが、この不変制約はビルトインツール無効化（FR-06）・セッション永続化無効化（FR-15）・テレメトリ／自動更新確認の無効化で担保する（`docs/features/claude-code-backend.md`）
-- **秘密情報の分離**: `ANTHROPIC_API_KEY` は `server/.env` のみ。フロントエンドへ渡さない・コミットしない（claude-code バックエンドは API キーを子プロセス環境から明示除外する）
+- **ローカルファースト**: 全データはローカル SQLite のみ。外部送信は Anthropic への推論リクエストだけ（不変制約）。既定の claude-code バックエンドはローカルの Claude Code 実行系を経由するが、この不変制約はビルトインツール無効化・セッション永続化無効化・テレメトリ／自動更新確認の無効化で担保する（[ADR 0001](docs/adr/0001-local-only-data-boundary.md)・[ADR 0003](docs/adr/0003-llm-backend-isolation.md)）
+- **秘密情報の分離**: `ANTHROPIC_API_KEY` は `server/.env` のみ。フロントエンドへ渡さない・コミットしない（claude-code バックエンドは API キーを子プロセス環境から明示除外する）（[ADR 0002](docs/adr/0002-api-key-and-llm-call-path.md)）
 - **検知ロジックは純粋関数**: サボり検知ルールエンジンは入力（activity_events 等）→ 出力の純粋関数として実装し、LLM は文面生成のみに使う
 
 ## 技術スタック
@@ -25,15 +35,18 @@ AI が「上司（ボス）」を演じるセルフマネジメント支援ア�
 | Infra | macOS ローカル実行のみ。通知は terminal-notifier 優先 / osascript フォールバック |
 | Package | npm（workspaces: `server/` + `web/`） |
 
-> 実装計画・API/DB 設計の正本は [docs/features/ai-boss-mvp.md](docs/features/ai-boss-mvp.md)。実装と仕様が食い違う場合は仕様を確認してから直す。
+> 現に守られている API・画面・検知ロジックの約束は [docs/guarantees.md](docs/guarantees.md) が正本。実装と台帳が食い違う場合、**どちらが正しいかを判断してから**直す（台帳が古いなら台帳を、実装が壊れたなら実装を直す。片方だけ黙って合わせない）。
 
 ## 開発フロー（claude-harness）
 
-開発は claude-harness プラグインのスキル群で行う:
+開発は claude-harness プラグインのスキル群で行う（**GDD期のフロー**）:
 
-- 要件化 `/define-feature` → チケット化 `/create-ticket` → 実装 `/para-impl`（内部で TDD・QC 通過まで）
-- 単発実装は `/tdd-impl`、品質確認は `/quality-check`、コミットは `/commit`
+- 起票 `/create-ticket`（保証節を含める）→ 裁可（`guarantee:approved`）→ 実装 `/para-impl`（裁可済み Issue のみ・内部で TDD・QC 通過まで）
+- 単発実装は `/tdd-impl`、品質確認は `/quality-check`（保証索引ゲートを含む）、コミットは `/commit`
+- 台帳の監査は `/guarantee-audit drift`（台帳と実態の乖離を検出）、恒常的な設計決定の記録は `/create-adr`
 - レビュー対応 `/pr-review-respond` → マージ `/pr-merge`（**`main` への昇格マージのみ人間承認**）
+
+> 機能仕様ドキュメントを作る `/define-feature` は SDD期のスキルであり、本リポジトリでは使わない。
 
 ## 開発規約
 
@@ -65,18 +78,15 @@ AI が「上司（ボス）」を演じるセルフマネジメント支援ア�
 
 | カテゴリ | パス | 状態 |
 |---------|------|------|
-| 機能仕様（MVP・正本） | `docs/features/ai-boss-mvp.md` | 整備済み |
-| LLM バックエンド選択（既定 claude-code の仕様・正本） | `docs/features/claude-code-backend.md` | 整備済み |
-| 日報生成（正本） | `docs/features/daily-report.md` | 整備済み |
-| 作業ログ（管理者共有向け・正本） | `docs/features/work-log.md` | 整備済み |
-| 将来アイデア（バックログ） | `docs/features/future-ideas.md` | 整備済み |
+| 保証台帳（駆動文書・正本） | `docs/guarantees.md` | 整備済み |
+| 設計判断記録 | `docs/adr/` | 整備済み |
 
 ## 品質方針
 
 ```text
 - 必須ゲート: lint / typecheck / test の全通過（/quality-check が機械可読で pass を返すこと）
 - クリティカル箇所（変更時は人間レビュー必須）: Claude API 連携・DB スキーマ・API キーの取り扱い・通知の実行系
-- サボり検知の閾値・エスカレーションはユニットテストで仕様（ai-boss-mvp.md）との一致を担保する
+- サボり検知の閾値・エスカレーションはユニットテストで仕様（保証台帳の「1. サボり検知ルールエンジン」）との一致を担保する
 ```
 
 ## よく使うコマンド
@@ -99,5 +109,3 @@ npm test
 # ビルド
 npm run build
 ```
-
-> **注**: 上記スクリプトは実装計画 1「基盤構築」（Issue #3）で整備する。整備完了までは docs のみのリポジトリ。

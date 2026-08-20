@@ -32,7 +32,7 @@ export type { ClaudeCodeUnavailableReason } from "./backends/claude-code-backend
  * through the facade rather than importing `backends/claude-code-backend.js`
  * directly — `server/src/llm/` treats this module as the intended public
  * surface (see this file's own doc comment and
- * docs/features/claude-code-backend.md's "アーキテクチャ決定"; self-review:
+ * docs/adr/0003-llm-backend-isolation.md's "組み込み方式"; self-review:
  * design-reviewer caught the direct import as the one non-facade caller). */
 export {
   checkClaudeCodeAvailability,
@@ -44,12 +44,12 @@ export {
  * used for boss dialogue (chat), re-adjudication (appeals), dashboard
  * comment generation, and notification copy generation.
  *
- * クリティカル設計決定（docs/features/claude-code-backend.md）:
+ * クリティカル設計決定（docs/adr/0003-llm-backend-isolation.md）:
  * - ツール実行主体はファサード配下に一本化する（呼び出し元はツールを
  *   実行しない）。`streamBossMessage` がツールループ・`executeTool`・
- *   `onToolEvent` の発火を内包する（補足決定「ツール実行主体の一本化」）。
+ *   `onToolEvent` の発火を内包する（ADR 0003 決定 2）。
  * - `api` バックエンド時のみ `ANTHROPIC_API_KEY` を検査する
- *   （補足決定「FR-10 とエラーハンドリングの整合」）。
+ *   （ADR 0002・保証 G-170-17）。
  */
 
 export const DEFAULT_MODEL = "claude-sonnet-5";
@@ -425,8 +425,8 @@ async function dispatchCreate(
  * `executeTool` was given at all).
  *
  * This loop only ever runs for the `api` backend. For `claude-code` (Issue
- * #79), per docs/features/claude-code-backend.md 補足決定「ツール実行主体の
- * 一本化」(2), the Agent SDK's own in-process MCP handlers are the tool
+ * #79), per docs/adr/0003-llm-backend-isolation.md 決定 2「ツール実行主体の
+ * 一本化」, the Agent SDK's own in-process MCP handlers are the tool
  * execution site (`backends/claude-code-backend.ts`), and its `query()` call
  * already runs its own internal multi-turn tool loop — so this function
  * makes exactly one {@link dispatchStream} call for `claude-code` and
@@ -616,15 +616,16 @@ function rejectOnAbort(signal: AbortSignal, error: Error): Promise<never> {
  * already delegates its timeout/retry policy to the Anthropic SDK's own
  * `timeout`/`maxRetries` client options (see `backends/api-backend.ts`), and
  * wrapping it here too would compound retries (up to 3 × 3 = 9 attempts) —
- * see docs/features/claude-code-backend.md 非機能要件・信頼性: "`api` バックエ
- * ンドは現行どおり...委譲を変更しない".
+ * see docs/adr/0003-llm-backend-isolation.md 帰結（統一タイムアウト・リトライ
+ * はファサード層の責務）および保証 G-170-19.
  *
  * `timeoutMs` bounds the *whole* call (all retries combined), not each
  * individual attempt: a single `AbortController`/timer is created once up
  * front and shared across every attempt, per
- * docs/features/claude-code-backend.md 非機能要件・信頼性 (2) — "呼び出し全体
- * の期限（120秒）は AbortController で実装し...リクエスト単位タイムアウトや
- * maxTurns で代替しない". `attempt` receives this shared `AbortSignal`, which
+ * 保証 G-170-19（タイムアウト予算は呼び出し全体で共有し、リトライごとに
+ * リセットしない）— 呼び出し全体の期限は `AbortController` で実装し、
+ * リクエスト単位タイムアウトや maxTurns で代替しない。
+ * `attempt` receives this shared `AbortSignal`, which
  * is aborted once the overall budget elapses; any attempt still in flight (or
  * about to start) at that point is treated as a timeout failure.
  *

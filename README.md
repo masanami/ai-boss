@@ -23,8 +23,9 @@ AIが「上司（ボス）」を演じるセルフマネジメント支援アプ
 
 ## ドキュメント
 
-- [機能仕様（MVP）](docs/features/ai-boss-mvp.md) — 要件・クリティカル設計決定・全体設計
-- [将来アイデア](docs/features/future-ideas.md) — MVPスコープ外のバックログ
+- [保証台帳](docs/guarantees.md) — 現に守られている公開面の約束（API・画面・検知ロジック）とテスト未担保の Gaps
+- [設計判断記録（ADR）](docs/adr/) — 恒常的な設計決定と、その背景・却下した代替案
+- [将来アイデア](https://github.com/masanami/ai-boss/issues/169) — MVPスコープ外のバックログ（Issue #169）
 
 ## 開発状況
 

@@ -9,8 +9,8 @@ interface TodaySummaryProps {
 }
 
 /**
- * サイドパネルの「今日のタスク」「進捗」セクション（ai-boss-mvp.md の
- * 画面設計方針: 右サイドパネルに今日のタスクと進捗ゲージを常時表示）。
+ * サイドパネルの「今日のタスク」「進捗」セクション（保証 G-170-155:
+ * 当日分のみを集計し、完了と未完了をマーカーで区別する）。
  * 対象タスクと進捗はサーバーのノルマ進捗と同じ定義で導出する。
  */
 function TodaySummary({ tasks, status }: TodaySummaryProps) {

@@ -1,9 +1,9 @@
-// 日報生成の「値の抽出」段（docs/features/daily-report.md「機能全体の設計 >
-// アーキテクチャ決定」の4段のうち2段目）で使うツール定義。
+// 日報生成の「値の抽出」段（収集 → 値の抽出 → レンダリング → 保存 の4段の
+// うち2段目。docs/adr/0006-renderer-owns-structure.md）で使うツール定義。
 //
 // `server/src/decisions/verdict-tool.ts` に倣い、JSON Schema ＋ 入力バリデータ
-// を1ファイルにまとめる。LLM に Markdown を組み立てさせない（親要件チケット
-// #100 のクリティカル設計決定）ため、ツールが要求するのは「報告の要点」
+// を1ファイルにまとめる。LLM に Markdown を組み立てさせない
+// （ADR 0006 決定 2）ため、ツールが要求するのは「報告の要点」
 // 「ボスの講評」「決定の要点」「翌日への持ち越し」の4つの**値**のみで、
 // 見出し・箇条書き記法などの構造は一切含めない。「決定の要点」は Issue #144
 // （日報「決定事項」セクションの廃止・夕会サマリへの統合）で追加した。
@@ -57,7 +57,7 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 }
 
 /** 空文字（前後の空白のみを含む文字列を含む）は不正形として扱う
- * （docs/features/daily-report.md「LLM による4値抽出」の受入基準）。 */
+ * （保証 G-170-49 — 形式不正はフォールバック経路へ倒す）。 */
 function isNonEmptyString(value: unknown): value is string {
   return typeof value === "string" && value.trim() !== "";
 }

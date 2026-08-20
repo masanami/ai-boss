@@ -6,7 +6,7 @@ import type { BossContentBlock, BossLlmMessage, OnTextDelta } from "../claude-cl
  * moved out of `claude-client.ts` (Issue #78) so the facade can dispatch to
  * either this or the future `claude-code` backend behind a common contract.
  *
- * クリティカル設計決定（docs/features/ai-boss-mvp.md）:
+ * クリティカル設計決定（docs/adr/0002-api-key-and-llm-call-path.md）:
  * - API キーは呼び出し元（ファサード）が `process.env.ANTHROPIC_API_KEY` から
  *   読んで渡す（このモジュールは env を直接読まない）
  * - リトライは指数バックオフで最大2回、タイムアウトはリクエスト単位120秒
