@@ -394,7 +394,7 @@
 - テスト: `server/src/sessions/sessions-routes-daily-report-hook.test.ts::still generates the daily report when the summary is skipped because one already exists`
 - 宣言元: #170
 
-### G-170-39: セッション種別は 3 値のみ受け付け、チャット本文は空白のみを拒否し 10000 文字までを許容する
+### G-170-39: セッション種別は許容値以外を拒否し、チャット本文は空白のみを拒否して 10000 文字までを許容する
 
 - 種別: API契約
 - 領域: セッション・チャット
@@ -479,6 +479,7 @@
 - 関連: ADR 0006
 - テスト: `server/src/reports/render-daily-report.test.ts::renders completed tasks as '- [x] タイトル'`
 - テスト: `server/src/reports/render-daily-report.test.ts::lists completed tasks before in-progress tasks`
+- テスト: `server/src/reports/render-daily-report.test.ts::renders in-progress tasks as '- [ ] タイトル（進行中）' with a single half-width space before the checkbox content`
 - 宣言元: #170
 
 ### G-170-48: 活動記録は着手と休憩が無い場合に固定文言を出し、ある場合は時刻と回数と合計時間を出す
@@ -489,6 +490,7 @@
 - テスト: `server/src/reports/render-daily-report.test.ts::renders '- 着手: なし' when there is no first task_start`
 - テスト: `server/src/reports/render-daily-report.test.ts::renders the HH:mm start time when there is a first task_start`
 - テスト: `server/src/reports/render-daily-report.test.ts::renders the break count and total minutes when breakCount is greater than 0`
+- テスト: `server/src/reports/render-daily-report.test.ts::renders '- 休憩: なし' (not '0回（合計0分）') when breakCount is 0`
 - 宣言元: #170
 
 ### G-170-49: 夕会サマリは抽出成功時に 4 項目を定義順で出し、失敗時は固定の注記 1 行のみとして 4 項目を出さない
@@ -534,6 +536,7 @@
 - 関連: ADR 0006
 - テスト: `server/src/reports/render-work-log.test.ts::merges decisions and activity events by created_at ascending`
 - テスト: `server/src/reports/render-work-log.test.ts::places an activity event before a decision when created_at is identical`
+- テスト: `server/src/reports/render-work-log.test.ts::orders same-kind entries with identical created_at by id ascending, regardless of input order`
 - 宣言元: #170
 
 ### G-170-53: 日報の対象暦日は夕会の開始日となり、前提条件を満たさなければ行を作らない
@@ -648,11 +651,14 @@
 - テスト: `server/src/tasks/tasks-routes.test.ts::sets completed_at when a task is created directly with status done`
 - 宣言元: #170
 
-### G-170-66: タスク作成の不正入力はいずれも 400 を返す
+### G-170-66: タスク作成は title の欠落・空文字、description の型不正、estimated_minutes の非負整数違反、不正 JSON に対して 400 を返す
 
 - 種別: API契約
 - 領域: タスク
+- 関連: GAP-34
 - テスト: `server/src/tasks/tasks-routes.test.ts::returns 400 with a machine-readable error when title is missing`
+- テスト: `server/src/tasks/tasks-routes.test.ts::returns 400 when title is an empty string`
+- テスト: `server/src/tasks/tasks-routes.test.ts::returns 400 when description is not a string`
 - テスト: `server/src/tasks/tasks-routes.test.ts::returns 400 when estimated_minutes is not a non-negative integer`
 - テスト: `server/src/tasks/tasks-routes.test.ts::returns 400 when the request body is not valid JSON`
 - 宣言元: #170
@@ -666,10 +672,11 @@
 - テスト: `server/src/tasks/tasks-routes.test.ts::updates updated_at when a task is patched`
 - 宣言元: #170
 
-### G-170-68: タスク更新の不正な値と更新不可フィールドの指定は 400 を返す
+### G-170-68: タスク更新は status の不正値、title の空文字、更新不可フィールド category の指定に対して 400 を返す
 
 - 種別: API契約
 - 領域: タスク
+- 関連: GAP-34
 - テスト: `server/src/tasks/tasks-routes.test.ts::returns 400 when category is included in the patch`
 - テスト: `server/src/tasks/tasks-routes.test.ts::returns 400 when status is invalid`
 - テスト: `server/src/tasks/tasks-routes.test.ts::returns 400 when title is patched to an empty string`
@@ -1628,6 +1635,8 @@
 - [ ] GAP-29: `api` バックエンドにおける呼び出し全体のタイムアウト・副作用後の再試行抑止。`server/src/llm/backends/api-backend.ts` は Anthropic SDK の `timeout` / `maxRetries` に委譲するのみで `runWithTimeoutAndRetry` を通らず、`LlmTimeoutError` への変換も副作用追跡も行わない。G-170-18 / G-170-19 は claude-code 経路に限定して約束している
 - [ ] GAP-30: 日報生成フックが朝会・随時セッションの終了では発火しないこと。検証テストは実在するが `it.each` でテスト名が動的生成されており台帳から参照できない（本台帳の参照形式の限界。HR-05 参照）。G-170-37 は夕会の初回発火と再終了時の非再発火に限定して約束している
 - [ ] GAP-31: タスク更新で `updated_at` の値が実際に更新されること。参照テストは `updated_at` が非空文字列であることと `created_at` が不変であることのみを検証しており、更新前後の値の変化は比較していない。G-170-67 はその範囲に限定して約束している
+- [ ] GAP-33: セッション種別の**受理**側（`morning` / `evening` / `adhoc` がそれぞれ受理されること）。検証テストは `server/src/sessions/sessions-validation.test.ts` に実在するが `it.each("accepts a valid type: %s")` でテスト名が動的生成され台帳から参照できない（HR-05）。G-170-39 は**拒否側**に限定して約束している
+- [ ] GAP-34: タスク API のバリデーションのうち、**`status` / `priority` の不正値**（作成・更新の両方）。検証テストは `server/src/tasks/tasks-routes.test.ts` に実在するが、`returns 400 when status is invalid` / `returns 400 when priority is invalid` という**同名のテストが作成側と更新側の両方に存在**し、参照形式 `<パス>::<テスト名>` では一意に指せない。あわせて、列挙していないフィールド（`due_at` の形式・`boss_comment` の型など）の不正値も未検証。G-170-66 / G-170-68 は**一意に参照でき、かつ検証済みのケースだけを列挙**して約束している
 - [ ] GAP-32: 日報の完了欄・進行中欄が**対象外ステータス**を除外すること（`completed_at` が当日でも todo / in_progress / dropped は完了欄に入らない、`task_start` が当日でも todo / done / dropped は進行中欄に入らない）。検証テストは `server/src/reports/collect-daily-report-data.test.ts` に実在するが `it.each` でテスト名が動的生成されており台帳から参照できない（HR-05）。**参照できない以上、この排他性は台帳の約束としては未担保**であり、対象外ステータスのテストを削除しても索引ゲートは通る。G-170-54 は日付による包含・除外に限定して約束している
 
 ## 要人間判定（本台帳への採否を保留した項目）
