@@ -37,6 +37,7 @@
 - テスト: `server/src/detection/avoidance.test.ts::returns true when another task had a task_start within the window`
 - テスト: `server/src/detection/avoidance.test.ts::returns false when the activity is older than the window`
 - テスト: `server/src/detection/avoidance.test.ts::returns false for activity types unrelated to task work (e.g. checkin)`
+- テスト: `server/src/detection/avoidance.test.ts::returns false when the activity is on the top-priority task itself`
 - 宣言元: #170
 
 ### G-170-2: 休憩申告の時間（未申告ならフォールバック値）を超過したら呼び戻し対象と判定する
@@ -57,6 +58,7 @@
 - テスト: `server/src/detection/deadline-overdue.test.ts::returns a todo task whose due_at is in the past`
 - テスト: `server/src/detection/deadline-overdue.test.ts::does not include done or dropped tasks even if overdue`
 - テスト: `server/src/detection/deadline-overdue.test.ts::returns every overdue task, not just the top-priority one`
+- テスト: `server/src/detection/deadline-overdue.test.ts::includes an overdue in_progress task`
 - 宣言元: #170
 
 ### G-170-4: 同一事由の催促は L1 から L3 へ段階的に強まり、活動シグナルがあれば L1 へリセットされ、rule_key ごとに独立して管理される
@@ -67,6 +69,7 @@
 - テスト: `server/src/detection/escalation.test.ts::escalates from level 1 to level 2 exactly at the 15min interval`
 - テスト: `server/src/detection/escalation.test.ts::resets to level 1 and fires immediately when an activity signal occurred after the last notification`
 - テスト: `server/src/detection/escalation.test.ts::only considers history for the matching rule_key`
+- テスト: `server/src/detection/escalation.test.ts::escalates from level 2 to level 3 after the 10min interval`
 - 宣言元: #170
 
 ### G-170-5: 設定時刻を過ぎてもその日その種別のセッションが未開始なら催促対象と判定し、時刻設定が不正なら警告して発火しない
@@ -90,7 +93,7 @@
 - テスト: `server/src/detection/priority.test.ts::breaks a full tie by ascending id`
 - 宣言元: #170
 
-### G-170-7: 休憩申告中は休憩延伸以外を抑制し、勤務時間帯外は検知ルールをすべて抑制する。朝会の定時催促は両方のゲートの対象外として発火する
+### G-170-7: 休憩申告中は休憩延伸以外の検知を抑制し、勤務時間帯外は休憩延伸を含む検知を抑制する。朝会の定時催促は両方のゲートの対象外として発火する
 
 - 種別: 検知ロジック
 - 領域: サボり検知
@@ -108,6 +111,7 @@
 - テスト: `server/src/detection/silence.test.ts::clamps the scaled threshold down to the 90min ceiling`
 - テスト: `server/src/detection/silence.test.ts::clamps the scaled threshold up to the 20min floor`
 - テスト: `server/src/detection/silence.test.ts::fires exactly at the threshold`
+- テスト: `server/src/detection/silence.test.ts::does not fire just before the threshold`
 - 宣言元: #170
 
 ### G-170-9: 勤務時間帯は開始を含み終了を含まない範囲で判定し、設定が不正なら既定の 09:00-18:00 へフォールバックする
@@ -193,7 +197,7 @@
 - テスト: `server/src/llm/claude-client.test.ts::defaults to the claude-code backend (DEFAULT_LLM_BACKEND, Issue #118) when the backend argument is omitted and LLM_BACKEND is unset, and never throws MissingApiKeyError even without ANTHROPIC_API_KEY`
 - 宣言元: #170
 
-### G-170-18: DB を書き込むツールの実行後、またはテキスト配信後に失敗した場合は再試行しない
+### G-170-18: claude-code 経路では DB を書き込むツールの実行後、またはテキスト配信後に失敗した場合は再試行しない
 
 - 種別: API契約
 - 領域: LLM バックエンド
@@ -202,7 +206,7 @@
 - テスト: `server/src/llm/claude-client.test.ts::does not retry once text has already been streamed to the caller during the failed attempt (self-review — no duplicated text on retry)`
 - 宣言元: #170
 
-### G-170-19: タイムアウト予算を呼び出し全体で共有し、期限到達で abort して LlmTimeoutError を返し、副作用の無い失敗のみ指数バックオフで再試行する
+### G-170-19: claude-code 経路ではタイムアウト予算を呼び出し全体で共有し、期限到達で abort して LlmTimeoutError を返し、副作用の無い失敗のみ指数バックオフで再試行する
 
 - 種別: API契約
 - 領域: LLM バックエンド
@@ -243,6 +247,8 @@
 - 領域: LLM バックエンド
 - テスト: `server/src/config.test.ts::warns to set LLM_BACKEND=api when the default claude-code backend is in effect and ANTHROPIC_API_KEY is set (Issue #118)`
 - テスト: `server/src/config.test.ts::does not warn about switching backends when LLM_BACKEND=api is set explicitly even if ANTHROPIC_API_KEY is set (Issue #118)`
+- テスト: `server/src/config.test.ts::does not warn about switching backends when ANTHROPIC_API_KEY is not set (Issue #118)`
+- テスト: `server/src/config.test.ts::does not warn about switching backends when LLM_BACKEND=claude-code is set explicitly even if ANTHROPIC_API_KEY is set (Issue #118)`
 - 宣言元: #170
 
 ### G-170-24: 応答が空になる異常時の診断ログに thinking 本文やプロンプトの内容を含めない
@@ -335,6 +341,7 @@
 - テスト: `server/src/activity/checkins-routes.test.ts::records a checkin with only a type and returns 201 with the created event`
 - テスト: `server/src/activity/checkins-routes.test.ts::returns 400 when task_start is missing task_id`
 - テスト: `server/src/activity/checkins-routes.test.ts::returns 404 when task_start references a non-existent task`
+- テスト: `server/src/activity/checkins-routes.test.ts::returns 404 (not a 500) when a non-task_start checkin references a non-existent task_id`
 - 宣言元: #170
 
 ### G-170-34: task_start は todo タスクのみ in_progress へ遷移させ、状態更新に失敗したらイベントごとロールバックする
@@ -345,6 +352,8 @@
 - テスト: `server/src/activity/checkins-routes.test.ts::transitions a todo task to in_progress and keeps completed_at null`
 - テスト: `server/src/activity/checkins-routes.test.ts::rolls back the task_start event when the status update fails, leaving no partial write`
 - テスト: `server/src/activity/checkins-routes.test.ts::does not revert a done task's status or completed_at`
+- テスト: `server/src/activity/checkins-routes.test.ts::does not revert a dropped task's status`
+- テスト: `server/src/activity/checkins-routes.test.ts::leaves status unchanged and records no extra task_update event for an in_progress task`
 - 宣言元: #170
 
 ### G-170-35: 同じローカル日に夕会セッションが既にあれば新規作成は 409 を返し行を挿入しない
@@ -364,9 +373,11 @@
 - テスト: `server/src/sessions/sessions-routes.test.ts::AC-1: ending a morning session generates and persists a summary from its messages`
 - テスト: `server/src/sessions/sessions-routes.test.ts::AC-3: still returns 200 with ended_at set (and summary left null) when summary generation fails`
 - テスト: `server/src/sessions/sessions-routes.test.ts::does not regenerate or overwrite the summary when re-ending an already-summarized session`
+- テスト: `server/src/sessions/sessions-routes-daily-report-hook.test.ts::saves the session summary AND generates the daily report when an evening session ends`
+- テスト: `server/src/sessions/sessions-routes-daily-report-hook.test.ts::still generates the daily report when the summary is skipped because one already exists`
 - 宣言元: #170
 
-### G-170-37: 日報生成フックは夕会の初回終了時にのみ発火し、生成が例外を投げても終了 API は 200 を返す
+### G-170-37: 日報生成フックは夕会の初回終了時に発火し、終了済み夕会を再終了しても再発火せず、生成が例外を投げても終了 API は 200 を返す
 
 - 種別: API契約
 - 領域: 日報・作業ログ
@@ -400,6 +411,7 @@
 - テスト: `server/src/sessions/sessions-routes.test.ts::returns sessions ordered by started_at descending (most recent first)`
 - テスト: `server/src/sessions/sessions-routes.test.ts::returns 404 for a non-existent session id`
 - テスト: `server/src/sessions/sessions-routes.test.ts::returns 404 for a non-numeric session id`
+- テスト: `server/src/sessions/sessions-routes.test.ts::filters sessions by ?type=`
 - 宣言元: #170
 
 ### G-170-41: 日報一覧を新しい日付順で返し、各要素は本文を含まず、再生成しても同じ日付が重複しない
@@ -437,6 +449,7 @@
 - テスト: `server/src/reports/work-logs-routes.test.ts::returns 200 with the fixed '（記録なし）' body when there is no evening session at all (no prerequisite)`
 - テスト: `server/src/reports/work-logs-routes.test.ts::returns 400 with code invalid_date for a malformed date param`
 - テスト: `server/src/reports/work-logs-routes.test.ts::returns 400 with code invalid_date for a non-existent calendar date (e.g. Feb 30)`
+- テスト: `server/src/reports/work-logs-routes.test.ts::returns 200 even when an evening session exists but has not ended (no prerequisite, unlike daily reports)`
 - 宣言元: #170
 
 ### G-170-45: 作業ログは対象暦日の決定と活動イベントのみを時系列でマージし、chat_message を含めない
@@ -456,6 +469,7 @@
 - 関連: ADR 0006
 - テスト: `server/src/reports/render-daily-report.test.ts::renders the title with the local date and a single-kanji weekday`
 - テスト: `server/src/reports/render-daily-report.test.ts::never emits a 決定事項 heading even when eveningSummary.keyDecisions is present`
+- テスト: `server/src/reports/render-daily-report.test.ts::includes the section headings 本日のタスク・活動記録・夕会サマリ in this order, and never emits a 決定事項 heading (Issue #144: 決定事項 was abolished)`
 - 宣言元: #170
 
 ### G-170-47: 完了タスクと進行中タスクを固定のチェックボックス記法で表し、完了を先に列挙する
@@ -484,6 +498,7 @@
 - 関連: ADR 0006
 - テスト: `server/src/reports/render-daily-report.test.ts::renders the four values in the order 報告の要点・ボスの講評・決定の要点・翌日への持ち越し`
 - テスト: `server/src/reports/render-daily-report.test.ts::uses the exact fixed literal text specified by the spec`
+- テスト: `server/src/reports/render-daily-report.test.ts::renders exactly the fixed one-line note and omits all four items when eveningSummary is null`
 - 宣言元: #170
 
 ### G-170-50: 動的値の改行を 1 行へ正規化し、行頭の Markdown 記号をエスケープして構造を壊させない
@@ -503,6 +518,13 @@
 - テスト: `server/src/reports/render-work-log.test.ts::renders the title with the local date and a single-kanji weekday`
 - テスト: `server/src/reports/render-work-log.test.ts::renders the fixed '（記録なし）' line when there are no decisions and no activity events`
 - テスト: `server/src/reports/render-work-log.test.ts::renders a revised decision as '決定（改訂済み）: {content}'`
+- テスト: `server/src/reports/render-work-log.test.ts::renders an active decision as '決定: {content}'`
+- テスト: `server/src/reports/render-work-log.test.ts::renders a withdrawn decision as '決定（撤回）: {content}'`
+- テスト: `server/src/reports/render-work-log.test.ts::renders task_start as '着手: {タスク名}'`
+- テスト: `server/src/reports/render-work-log.test.ts::renders task_update as 'タスク更新: {タスク名}'`
+- テスト: `server/src/reports/render-work-log.test.ts::renders break_start as '休憩開始' (no task name)`
+- テスト: `server/src/reports/render-work-log.test.ts::renders break_end as '休憩終了'`
+- テスト: `server/src/reports/render-work-log.test.ts::renders checkin as 'チェックイン'`
 - 宣言元: #170
 
 ### G-170-52: 作業ログの並び順は created_at 昇順で、同時刻ではイベントを決定より先に、同種では id 昇順にする
@@ -529,8 +551,10 @@
 - 領域: 日報・作業ログ
 - 関連: ADR 0007
 - テスト: `server/src/reports/collect-daily-report-data.test.ts::includes a done task whose completed_at falls on the target day`
+- テスト: `server/src/reports/collect-daily-report-data.test.ts::excludes a done task completed on a different day`
+- テスト: `server/src/reports/collect-daily-report-data.test.ts::includes an in_progress task that has a task_start event on the target day`
 - テスト: `server/src/reports/collect-daily-report-data.test.ts::includes an in_progress task that has only a task_update event on the target day`
-- テスト: `server/src/reports/collect-daily-report-data.test.ts::includes an active decision created on the target day, from any session type`
+- テスト: `server/src/reports/collect-daily-report-data.test.ts::excludes an in_progress task with no activity_events on the target day (long-running task with no movement today)`
 - 宣言元: #170
 
 ### G-170-55: LLM 抽出が遅延・失敗しても例外を投げずフォールバック日報を保存する
@@ -633,7 +657,7 @@
 - テスト: `server/src/tasks/tasks-routes.test.ts::returns 400 when the request body is not valid JSON`
 - 宣言元: #170
 
-### G-170-67: タスク更新は指定フィールドのみを変え、存在しない id は 404 を返し、updated_at のみが変わる
+### G-170-67: タスク更新は指定フィールドのみを変え、存在しない id は 404 を返し、created_at は変わらず updated_at が応答に含まれる
 
 - 種別: API契約
 - 領域: タスク
@@ -724,6 +748,13 @@
 - 関連: ADR 0005
 - テスト: `server/src/db/migrate.test.ts::is idempotent: running migrations twice does not raise an error`
 - テスト: `server/src/db/migrate.test.ts::creates the tasks table`
+- テスト: `server/src/db/migrate.test.ts::creates the sessions table`
+- テスト: `server/src/db/migrate.test.ts::creates the messages table`
+- テスト: `server/src/db/migrate.test.ts::creates the decisions table`
+- テスト: `server/src/db/migrate.test.ts::creates the appeals table`
+- テスト: `server/src/db/migrate.test.ts::creates the settings table`
+- テスト: `server/src/db/migrate.test.ts::creates the notifications table`
+- テスト: `server/src/db/migrate.test.ts::creates the activity_events table`
 - テスト: `server/src/db/migrate.test.ts::creates the daily_reports table (v3)`
 - 宣言元: #170
 
@@ -735,7 +766,7 @@
 - テスト: `server/src/db/migrate.test.ts::upgrades a v2 database to v3 (adds daily_reports) without touching existing tables`
 - 宣言元: #170
 
-### G-170-79: 列挙値を持つカラムは許可された値のみを受け付け、それ以外を拒否する
+### G-170-79: 列挙値を持つ 6 カラムは、許可された値以外を CHECK 制約で拒否する
 
 - 種別: DBスキーマ
 - 領域: DB
@@ -743,6 +774,9 @@
 - テスト: `server/src/db/migrate.test.ts::rejects an invalid tasks.status`
 - テスト: `server/src/db/migrate.test.ts::rejects an invalid appeals.verdict`
 - テスト: `server/src/db/migrate.test.ts::rejects an invalid activity_events.type`
+- テスト: `server/src/db/migrate.test.ts::rejects an invalid sessions.type`
+- テスト: `server/src/db/migrate.test.ts::rejects an invalid messages.role`
+- テスト: `server/src/db/migrate.test.ts::rejects an invalid decisions.status`
 - 宣言元: #170
 
 ### G-170-80: 外部キー制約が有効で、日報の日付には一意制約がある
@@ -1026,7 +1060,7 @@
 - テスト: `web/src/to-date-key.test.ts::zero-pads single-digit months and days`
 - 宣言元: #170
 
-### G-170-112: 本日のタスクは未完了を常に含み、完了は当日完了のもののみを含める
+### G-170-112: 本日のタスクは todo と in_progress を常に含み、done は当日完了のもののみを含め、dropped は含めない
 
 - 種別: 純粋関数
 - 領域: Web ロジック
@@ -1034,6 +1068,8 @@
 - テスト: `web/src/today-tasks.test.ts::includes todo and in_progress tasks`
 - テスト: `web/src/today-tasks.test.ts::includes done tasks completed today (local date)`
 - テスト: `web/src/today-tasks.test.ts::excludes done tasks completed on a past day`
+- テスト: `web/src/today-tasks.test.ts::excludes done tasks without completed_at`
+- テスト: `web/src/today-tasks.test.ts::excludes dropped tasks`
 - 宣言元: #170
 
 ### G-170-113: 作業ログの取得失敗はサーバーの安定コードを保持したエラーとして返り、非 JSON のエラーでも失敗する
@@ -1332,6 +1368,8 @@
 - テスト: `web/src/BossAvatar.test.tsx::renders the normal expression with its Japanese label`
 - テスト: `web/src/BossAvatar.test.tsx::maps each expression to a distinct image`
 - テスト: `web/src/BossAvatar.test.tsx::renders the encouraging expression with its Japanese label`
+- テスト: `web/src/BossAvatar.test.tsx::renders the satisfied expression with its Japanese label`
+- テスト: `web/src/BossAvatar.test.tsx::renders the displeased expression with its Japanese label`
 - 宣言元: #170
 
 ### G-170-149: ダッシュボードは読み込み中と失敗時の表示を持ち、成功時は進捗ゲージを表示する
@@ -1414,12 +1452,12 @@
 - テスト: `web/src/ChatView.test.tsx::does not send the draft when Enter confirms an IME composition`
 - 宣言元: #170
 
-### G-170-157: ボスがタスクを操作したときだけ操作通知を出し、読み取り専用ツールでは出さない
+### G-170-157: タスク書き込みツールの実行時はタスク名を含む専用文言の通知を出し、読み取り専用ツールではタスクの作成・更新を主張する文言を使わない
 
 - 種別: UI
 - 領域: Web 画面
 - テスト: `web/src/ChatView.test.tsx::renders a tool notice when the boss operates a task`
-- テスト: `web/src/ChatView.test.tsx::does not claim a task was updated when a read-only tool (e.g. get_activity_log) runs`
+- テスト: `web/src/ChatView.test.tsx::does not claim a task was updated when a read-only tool (e.g. get_activity_log) runs (self-review: get_activity_log previously fell into the create_task/update_task-only notice text)`
 - 宣言元: #170
 
 ### G-170-158: ストリームがエラーを報告すると読み上げ可能な警告として表示される
@@ -1586,10 +1624,15 @@
 - [ ] GAP-25: チャットのボス返信がストリーム**途中経過**として逐次表示されること。`use-chat` の参照テストはストリーム完了後の最終状態のみを検証しており（完了時点で `streamingText` が空であることを assert）、途中経過が画面へ反映されることは未担保。G-170-117 は完了後の追加のみを約束している
 - [ ] GAP-26: 通知文面の生成が**例外を投げた**発火について、その発火の通知が送信・記録されること。現在の `server/src/scheduler/scheduler-tick.ts` は `processFiring` の例外を捕捉してログするだけで、当該発火の通知は送信も記録もされない（実装の欠陥。#173 で追跡）。G-170-88 は LLM 呼び出し失敗時の定型文フォールバックと、他の発火の処理継続に限定して約束している
 - [ ] GAP-27: 終了済みの当日 adhoc セッションが会話復元の対象にならないこと。`web/src/select-restore-session.ts` の `ended_at === null` フィルタは朝会・夕会にしか掛かっておらず、adhoc は終了済みでも選ばれうる（仕様確定と実装修正は #174 で追跡）。G-170-108 は朝会・夕会の未終了条件に限定して約束している
+- [ ] GAP-28: 読み取り専用ツールの実行時に汎用文言の通知（「ボスがツールを実行しました」）が表示されること、およびツール失敗時に失敗文言が表示されること。`web/src/ChatView.tsx` の `toolNoticeText` は全ツールで通知を返すが、引用テストが検証しているのはタスク書き込みツールの専用文言と、読み取り専用ツールで「タスクを作成／更新しました」と誤表示しないことまで。G-170-157 はその範囲に限定して約束している
+- [ ] GAP-29: `api` バックエンドにおける呼び出し全体のタイムアウト・副作用後の再試行抑止。`server/src/llm/backends/api-backend.ts` は Anthropic SDK の `timeout` / `maxRetries` に委譲するのみで `runWithTimeoutAndRetry` を通らず、`LlmTimeoutError` への変換も副作用追跡も行わない。G-170-18 / G-170-19 は claude-code 経路に限定して約束している
+- [ ] GAP-30: 日報生成フックが朝会・随時セッションの終了では発火しないこと。検証テストは実在するが `it.each` でテスト名が動的生成されており台帳から参照できない（本台帳の参照形式の限界。HR-05 参照）。G-170-37 は夕会の初回発火と再終了時の非再発火に限定して約束している
+- [ ] GAP-31: タスク更新で `updated_at` の値が実際に更新されること。参照テストは `updated_at` が非空文字列であることと `created_at` が不変であることのみを検証しており、更新前後の値の変化は比較していない。G-170-67 はその範囲に限定して約束している
 
 ## 要人間判定（本台帳への採否を保留した項目）
 
 - **HR-01: FR-06「多層方式」の実効性** — 退役した `claude-code-backend.md` の FR-06 は許可判定の多層方式を謳っていたが、許可リストに載るアプリ定義ツールについては**実質単層**であることが Issue #166 で判明している。台帳には**実挙動どおりの約束**（G-170-13 / G-170-14: 未許可ツールを拒否する）のみを載せ、「多層である」ことは保証として載せていない。意図と実挙動の差は [ADR 0003](./adr/0003-llm-backend-isolation.md) の「既知の逸脱」に記録した。#166 の対応後、この項目の再判定が必要。
 - **HR-02: ボスのツール群（`server/src/boss/*-tool.ts`）の扱い** — LLM エージェントのみが呼ぶツールの入力検証・DB 永続化を公開面とみなすかは判断が割れる。本台帳では「ユーザーが画面で観測できる結果」（タスクが作成される・決定が記録される）を各 API・画面の保証で担保しているとみなし、ツール単体の振る舞いは載せていない。ツールを外部へ公開する場合は再判定が必要。
 - **HR-03: 人格プロンプトの内容** — システムプロンプトの文言（口調・厳しさの表現）を固定するテストが存在するが、ユーザーが観測するのは最終的なボスの発話であり、プロンプト文言は中間表現と判断して載せていない。人格の一貫性を製品保証にする場合は再判定が必要。
+- **HR-05: `it.each` のテストは台帳から参照できない** — テスト名が実行時に組み立てられる（`it.each` / テンプレートリテラル）テストは、参照形式 `<パス>::<テスト名>` で静的に指せないため台帳へ引用できない。**コードとしては検証されているのに台帳からは「担保されていない」ように見える**箇所が生じる。既知の該当例: 列挙値カラムの**受理**側（`accepts tasks.status = %s` 等 6 カラム分。G-170-79 は拒否側のみを約束）、日報の対象外ステータス除外（G-170-54）、日報生成フックの朝会・随時での非発火（G-170-37 / GAP-30）。解消するにはテスト側を個別の `it()` へ分割するか、参照形式に動的名を扱う仕組みが要る。これらは **Gaps（テストが無い）とは別種**であり、混同しないこと。
 - **HR-04: 内部レースガードの扱い** — フックの stale-response ガード・二重送信ガードは、ユーザーから見れば「操作が壊れない」という約束だが、実装の防御策としての性格が強いため原則載せていない。ただし G-170-121 / G-170-124 / G-170-163 のように明示的な受入基準があるものは保証として載せている。

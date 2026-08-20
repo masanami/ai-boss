@@ -18,6 +18,11 @@
 2. **`sessions` を第一級の概念として持つ。** 会話は単一スレッドではなく、種別（`morning` / `evening` / `adhoc`）を持つセッションに属する。`messages` は `session_id` に紐づく。決定・日報もセッションを参照する。
 3. **`activity_events` を検知エンジンの単一入力テーブルとする**（[ADR 0004](./0004-deterministic-detection-engine.md)）。
 4. **マイグレーションは単調増加する version 番号で管理する。** 各 version は冪等に適用でき、既存 version の内容は後から書き換えない。新しいスキーマ変更は新しい version として追加する。
+
+> **既知の逸脱（実装が本 ADR に未追従・#175）**: 決定 4 の「各 version は冪等に適用でき」は現状の実装では成立していない。`server/src/db/migrate.ts` は `db.exec(migration)` と `db.pragma("user_version = N")` を**単一トランザクションで囲んでいない**ため、その隙間で停止すると次回起動時に同じ version が再実行される。version 2 の `ALTER TABLE appeals ADD COLUMN response TEXT` は `IF NOT EXISTS` を取れず冪等でないため、この場合 `duplicate column name` で起動に失敗する（version 1・3 は `CREATE TABLE IF NOT EXISTS` のみで偶然冪等）。
+>
+> 適用と version 更新が原子的になるまで、決定 4 の冪等性は**目標状態**であり現状の記述ではない。追跡は #175。
+
 5. **排他制御の作り込みを最小に保つ。** 単一プロセス・単一ライターの前提で、必要な原子性は書き込みトランザクション（`db.transaction`）で足りるものとして扱い、そのためだけの制約カラム・ロックテーブルを追加しない。
 6. **算出できるものは保存しない。** データ源から決定的に再現できる出力（例: 作業ログ）は保存テーブルを持たず、都度算出する。保存するのは、生成に非決定性がある成果物（例: LLM の講評を含む日報）に限る。
 
