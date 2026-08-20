@@ -266,7 +266,7 @@
 - テスト: `server/src/sessions/chat-messages-route.test.ts::executes a create_task tool call via the streamBossMessage callbacks, emits a tool event, and finalizes with the resulting text`
 - 宣言元: #170
 
-### G-170-27: LLM 呼び出しが失敗したらボスメッセージを永続化せず、生のエラー文言を含まない error イベントを送る
+### G-170-27: LLM 呼び出しが失敗したとき、配信済みテキストが無ければボスメッセージを永続化せず、途中まで配信されていればその部分テキストを永続化する。いずれも生のエラー文言を含まない error イベントを送る
 
 - 種別: API契約
 - 領域: セッション・チャット
@@ -1389,7 +1389,7 @@
 - テスト: `web/src/TodaySummary.test.tsx::shows an empty message and 0% progress when there are no tasks for today`
 - 宣言元: #170
 
-### G-170-156: チャットの改行は Shift+Enter で挿入され、Enter 単独や IME 確定では送信されない
+### G-170-156: チャットは Enter 単独で送信し、Shift+Enter は改行を挿入する。IME 確定の Enter では送信されない
 
 - 種別: UI
 - 領域: Web 画面
