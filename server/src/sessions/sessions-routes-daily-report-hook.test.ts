@@ -6,9 +6,9 @@ import { createApp } from "../app.js";
 import type { Session } from "./session.js";
 import type { SessionType } from "./session.js";
 
-// docs/features/daily-report.md「機能全体の設計 > 夕会終了フック」の受入基準
-// 群（初回遷移のみ発火・朝会/随時では発火しない・生成失敗でも終了APIは200・
-// 前提条件未達でも終了APIは200）を検証する。#109 完了条件のテスト5〜9。
+// 保証 G-170-37 / G-170-38（夕会終了フック）の担保テスト。初回遷移のみ発火・
+// 朝会/随時では発火しない・生成失敗でも終了APIは200・前提条件未達でも終了APIは
+// 200、を検証する。#109 完了条件のテスト5〜9。
 //
 // Claude API は必ずモック（CLAUDE.md「テスト方針」）。`generateDailyReport`
 // 自体は既定で実装（`../reports/generate-daily-report.js`）へ委譲しつつ、

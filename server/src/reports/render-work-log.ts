@@ -1,7 +1,8 @@
 // 作業ログ Markdown のレンダラー（純粋関数）。
 //
-// docs/features/work-log.md「作業ログテンプレート」の固定構成を決定するのは
-// この関数だけ。DB・現在時刻・LLM には一切触れず、必要な値はすべて引数
+// 作業ログテンプレートの固定構成（保証 G-170-51 / G-170-52）を決定するのは
+// この関数だけ（docs/adr/0006-renderer-owns-structure.md）。
+// DB・現在時刻・LLM には一切触れず、必要な値はすべて引数
 // （RenderWorkLogInput）で受け取る（collect-work-log-data.ts が既に
 // タスク名を解決済みの状態で渡す）。
 import { toDateKey } from "../detection/time-utils.js";
@@ -63,8 +64,7 @@ function formatTimeHHmm(date: Date): string {
 /**
  * `created_at` 昇順。同時刻は activity_events を決定より先に置き、同一種類
  * （activity_events 同士・決定同士）では `id` 昇順とする
- * （docs/features/work-log.md「作業ログテンプレート」— 順序が決定的になる
- * ようにする）。
+ * （保証 G-170-52 — 順序が決定的になるようにする）。
  */
 function compareEntries(a: MergedEntry, b: MergedEntry): number {
   const timeDiff = a.createdAt.getTime() - b.createdAt.getTime();

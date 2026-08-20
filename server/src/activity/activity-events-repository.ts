@@ -1,7 +1,7 @@
 // This module intentionally has no imports from other feature directories
 // (tasks/, sessions/, boss/, ...). `activity_events` is the single input for
-// the slacking-detection rule engine (see docs/features/ai-boss-mvp.md,
-// "クリティカル設計決定 > サボり検知のシグナル源とエスカレーション"), and
+// the slacking-detection rule engine (see docs/adr/0004-deterministic-detection-engine.md
+// 決定 1「活動シグナルを activity_events に一元化する」), and
 // keeping this repository dependency-free avoids circular imports as other
 // modules (e.g. tasks-repository.ts) call into it to record signals.
 import type Database from "better-sqlite3";

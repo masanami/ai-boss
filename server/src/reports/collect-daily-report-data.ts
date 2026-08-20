@@ -1,5 +1,5 @@
-// 日報生成の「収集」段（docs/features/daily-report.md「機能全体の設計 > アーキ
-// テクチャ決定」の4段のうち1段目）。tasks / activity_events / decisions を
+// 日報生成の「収集」段（収集 → 値の抽出 → レンダリング → 保存 の4段のうち
+// 1段目。docs/adr/0006-renderer-owns-structure.md）。tasks / activity_events / decisions を
 // 読み取り専用で参照する。LLM 呼び出し・API ルート・夕会終了フックはここでは
 // 扱わない（依存チケット #107-#110 の範囲）。
 import type Database from "better-sqlite3";
@@ -34,7 +34,8 @@ export interface CollectedDailyReportData {
  * 側の責務のためここでは行わない）。タスク・決定の集計範囲はこの暦日の
  * 00:00:00.000〜23:59:59.999。休憩の break_end 探索のみ、日跨ぎ夕会に対応する
  * ため夕会セッションの ended_at まで拡張する
- * （docs/features/daily-report.md「休憩イベントの対応付け規則」）。
+ * （保証 G-170-48「活動記録」の休憩回数・合計時間を成立させるための対応付け
+ * 規則。暦日の基準は docs/adr/0007-local-calendar-day-basis.md）。
  *
  * `eveningSession.ended_at` が null（未終了）の場合は呼び出し側の前提条件違反
  * として例外を投げる（前提条件チェック自体は依頼側チケット #107/#108 の生成

@@ -1,5 +1,6 @@
-// 日報生成の「値の抽出」段（docs/features/daily-report.md「機能全体の設計」の
-// 4段のうち2段目）。夕会セッションの会話メッセージ＋当日の active 決定一覧を
+// 日報生成の「値の抽出」段（収集 → 値の抽出 → レンダリング → 保存 の4段の
+// うち2段目。docs/adr/0006-renderer-owns-structure.md）。
+// 夕会セッションの会話メッセージ＋当日の active 決定一覧を
 // Claude に渡し、「報告の要点」「ボスの講評」「決定の要点」「翌日への持ち越し」
 // の4値だけを構造化応答（submit_evening_summary ツール、`evening-summary-tool.ts`）
 // で取得する。
@@ -39,8 +40,8 @@ function buildTranscript(messages: Message[]): string {
 /**
  * 当日の `status = active` 決定一覧（content のみ・作成日時昇順で呼び出し
  * 側から渡される）を箇条書きにする。0件の場合は「（決定なし）」と明示し、
- * LLM が「決定の要点」を「なし」と書く判断材料にする（docs/features/work-log.md
- * 「日報側の変更」）。
+ * LLM が「決定の要点」を「なし」と書く判断材料にする（保証 G-170-49・
+ * 抽出材料の詳細は Issue #144）。
  */
 function buildDecisionsList(decisionContents: string[]): string {
   if (decisionContents.length === 0) {
@@ -117,7 +118,7 @@ function withOptionalTimeout<T>(
  * `content` 一覧（作成日時昇順・呼び出し側 `generate-daily-report.ts` が
  * `collectDailyReportData` の結果をそのまま渡す）。「決定の要点」抽出の
  * 材料としてユーザーメッセージへ注入するだけで、この関数自身は DB を
- * 読まない（docs/features/work-log.md「日報側の変更」）。
+ * 読まない（保証 G-170-54・経緯は Issue #144）。
  *
  * 例外を投げず、失敗時は null を返す（呼び出し側 `generate-daily-report.ts`
  * は null を「同じレンダラーへ4値なしで渡す」フォールバック経路として扱う）。

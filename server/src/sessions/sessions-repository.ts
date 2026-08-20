@@ -81,8 +81,8 @@ export type CreateSessionResult =
  * calendar date already exists, regardless of whether it has ended
  * (`ended_at`). A finished evening session still counts: the product rule is
  * "resume the existing evening session to redo the day's evening chat"
- * (docs/features/daily-report.md), not "one evening session while one is
- * open".
+ * (docs/adr/0008-evening-dialogue-prerequisite.md 決定 4), not "one evening
+ * session while one is open".
  */
 function hasTodaysEveningSession(db: Database.Database, today: string): boolean {
   return listSessions(db, { type: "evening" }).some(
@@ -92,8 +92,8 @@ function hasTodaysEveningSession(db: Database.Database, today: string): boolean 
 
 /**
  * Creates a new session, atomically enforcing "at most one evening session
- * per local calendar day" (docs/features/daily-report.md — "夕会の1日1回制限の
- * 原子性"). The existence check and the INSERT run inside a single
+ * per local calendar day" (保証 G-170-35・docs/adr/0008-evening-dialogue-prerequisite.md
+ * 決定 4). The existence check and the INSERT run inside a single
  * `db.transaction`, so a concurrent request cannot interleave between the
  * check and the write on this single-process/single-writer SQLite
  * connection. Morning and adhoc sessions are never limited and always

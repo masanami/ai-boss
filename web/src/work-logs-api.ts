@@ -8,8 +8,8 @@ const WORK_LOGS_URL = "/api/work-logs";
  * on demand server-side) for the given local date key (`YYYY-MM-DD`).
  *
  * Reuses `ReportApiError` from `daily-reports-api.ts`: the work-log API
- * follows the same `{ error, code }` contract (docs/features/work-log.md
- * 「エラー形式」), and the UI branches on the stable `code` (e.g.
+ * follows the same `{ error, code }` contract (保証 G-170-44 /
+ * G-170-113), and the UI branches on the stable `code` (e.g.
  * `invalid_date`) the same way the daily-report UI does.
  */
 export async function fetchWorkLog(date: string): Promise<WorkLog> {

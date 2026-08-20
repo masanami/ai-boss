@@ -1,8 +1,8 @@
 // 日報 Markdown のレンダラー（純粋関数）。
 //
-// docs/features/daily-report.md「日報テンプレート」の固定構成を決定するのは
-// この関数だけであり、LLM には構造を作らせない（親要件チケット #100 の
-// クリティカル設計決定）。DB・現在時刻・LLM には一切触れず、必要な値は
+// 日報テンプレートの固定構成（保証 G-170-46〜G-170-49）を決定するのは
+// この関数だけであり、LLM には構造を作らせない
+// （docs/adr/0006-renderer-owns-structure.md）。DB・現在時刻・LLM には一切触れず、必要な値は
 // すべて引数（RenderDailyReportInput）で受け取る。
 //
 // 通常経路（eveningSummary あり）とフォールバック経路（eveningSummary が
@@ -25,7 +25,7 @@ export const FALLBACK_EVENING_SUMMARY_NOTE =
  *
  * 日報の「決定事項」セクション（当日の決定全件の逐次列挙）は Issue #144 で
  * 廃止し、最終的な結論の要点は「決定の要点」へ統合した（詳細な時系列出力は
- * 作業ログ `docs/features/work-log.md` の責務）。
+ * 作業ログ（保証 G-170-51 / G-170-52）の責務）。
  */
 export interface EveningSummaryValues {
   reportSummary: string;

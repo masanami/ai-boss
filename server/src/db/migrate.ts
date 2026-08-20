@@ -89,7 +89,7 @@ const MIGRATIONS: Record<number, string> = {
   `,
   // 日報生成（#100 / #106）: 1日1行・再生成は同日行の UPSERT（上書き）で保存する
   // daily_reports テーブルを新設。既存テーブルの変更は行わない
-  // （docs/features/daily-report.md「クリティカル設計決定 > DB スキーマ」）。
+  // （docs/adr/0005-sqlite-schema-policy.md 決定 4・保証 G-170-78 / G-170-80）。
   3: `
     CREATE TABLE IF NOT EXISTS daily_reports (
       id INTEGER PRIMARY KEY AUTOINCREMENT,

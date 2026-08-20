@@ -20,13 +20,13 @@ import { createTimedExecFile, type ExecFileFn } from "../../lib/exec-file.js";
  * execution environment authenticated via the owner's subscription login)
  * instead of the Claude API directly.
  *
- * クリティカル設計決定（docs/features/claude-code-backend.md）:
+ * クリティカル設計決定（docs/adr/0003-llm-backend-isolation.md）:
  * - カスタムツールは in-process MCP サーバ（`createSdkMcpServer` / `tool()`）
  *   として提供する。既存の JSON Schema（`boss-tools.ts` / `task-tools.ts` /
  *   `verdict-tool.ts` / `reports/evening-summary-tool.ts`）は単一ソースとして
  *   変更しない。Zod スキーマはこのファイル内に閉じて手書きし、整合はユニット
  *   テストで担保する（`TOOL_ZOD_SHAPES` を参照）。
- * - 「補足決定（ツール実行主体の一本化）」: サーバ側の実行関数を持つツール
+ * - 「ツール実行主体の一本化」（ADR 0003 決定 2）: サーバ側の実行関数を持つツール
  *   （`create_task` / `update_task` / `record_decision` — DB 書き込み。
  *   `get_activity_log`（Issue #150） — DB 読み出しのみだが同じ経路）は MCP
  *   ハンドラが実行主体となり、`callbacks.executeTool`（呼び出し元が
@@ -630,8 +630,8 @@ function buildMcpServer(toolDefs: Anthropic.Tool[], hooks: McpHooks) {
  * usage and, per the non-functional requirement "信頼性" (3), each such
  * call is itself never retried once it has a side effect, so a long unbounded
  * loop has no other backstop. `maxTurns` is *not* used as a substitute for
- * the timeout (docs/features/claude-code-backend.md 非機能要件・信頼性 (2)
- * explicitly reserves that role for `AbortController`) — it is a
+ * the timeout (保証 G-170-19 explicitly reserves that role for the shared
+ * `AbortController` budget) — it is a
  * defense-in-depth cap set generously above the `api` backend's
  * `MAX_TOOL_ROUNDS` (5) to account for the Agent SDK counting turns
  * differently (a single tool round-trip may span more than one internal

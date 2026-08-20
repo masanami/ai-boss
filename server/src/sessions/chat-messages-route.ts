@@ -213,8 +213,8 @@ export function registerChatMessageRoute(
         // Only log the error's class name, never its message: Claude API
         // errors may embed request details (or, in principle, request
         // headers) in `message`, and this is a critical path where those
-        // must not reach logs (docs/features/ai-boss-mvp.md クリティカル
-        // 設計決定 > 外部システム連携）。
+        // must not reach logs（保証 G-170-27・
+        // docs/adr/0002-api-key-and-llm-call-path.md 決定 4）。
         console.error(
           "chat message stream failed:",
           err instanceof Error ? err.name : typeof err,

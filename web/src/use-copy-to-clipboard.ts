@@ -16,7 +16,7 @@ export interface UseCopyToClipboardResult {
 /**
  * クリップボードコピーと成功/失敗フィードバックの共通フック（Issue #161 で
  * DailyReportView から抽出。日報ビューと作業ログビューで共用する —
- * docs/features/work-log.md「画面」）。
+ * 保証 G-170-125 / G-170-126）。
  *
  * - 成功/失敗の状態は `copyState` で公開し、表示（`role="status"` /
  *   `role="alert"`）は呼び出し側のビューが担う
