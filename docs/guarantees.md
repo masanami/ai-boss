@@ -87,9 +87,10 @@
 - テスト: `server/src/detection/priority.test.ts::picks the higher priority task over a lower priority one`
 - テスト: `server/src/detection/priority.test.ts::breaks a priority tie by earlier due_at`
 - テスト: `server/src/detection/priority.test.ts::excludes done and dropped tasks from the candidates`
+- テスト: `server/src/detection/priority.test.ts::breaks a full tie by ascending id`
 - 宣言元: #170
 
-### G-170-7: 休憩申告中は休憩延伸以外を抑制し、勤務時間帯外は朝会夕会の催促以外をすべて抑制する
+### G-170-7: 休憩申告中は休憩延伸以外を抑制し、勤務時間帯外は検知ルールをすべて抑制する。朝会の定時催促は両方のゲートの対象外として発火する
 
 - 種別: 検知ロジック
 - 領域: サボり検知
@@ -127,6 +128,7 @@
 - テスト: `server/src/detection/unstarted.test.ts::clamps large estimated_minutes down to the 120min ceiling`
 - テスト: `server/src/detection/unstarted.test.ts::fires exactly at the threshold`
 - テスト: `server/src/detection/unstarted.test.ts::does not fire when the task is already in_progress`
+- テスト: `server/src/detection/unstarted.test.ts::clamps small estimated_minutes up to the 15min floor`
 - 宣言元: #170
 
 ### G-170-11: claude-code バックエンドの子プロセス環境から ANTHROPIC_API_KEY を除外し、渡された process.env を変更しない
@@ -138,12 +140,13 @@
 - テスト: `server/src/llm/backends/claude-code-backend.test.ts::does not mutate the given process.env object`
 - 宣言元: #170
 
-### G-170-12: claude-code バックデンドの子プロセス環境にテレメトリ無効化変数を設定し、PATH と HOME を保持する
+### G-170-12: claude-code バックエンドの子プロセス環境にテレメトリ無効化変数を設定し、PATH と HOME を保持する
 
 - 種別: 設定
 - 領域: LLM バックエンド
 - 関連: ADR 0001, ADR 0003
 - テスト: `server/src/llm/backends/claude-code-backend.test.ts::adds DISABLE_TELEMETRY=1 and CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1`
+- テスト: `server/src/llm/backends/claude-code-backend.test.ts::preserves PATH/HOME and other existing variables needed to run/authenticate the subprocess`
 - テスト: `server/src/llm/claude-client.test.ts::excludes ANTHROPIC_API_KEY, adds the telemetry-disable vars, and preserves PATH/HOME (FR-09, AC-06)`
 - 宣言元: #170
 
@@ -187,6 +190,7 @@
 - 領域: LLM バックエンド
 - 関連: ADR 0003
 - テスト: `server/src/config.test.ts::defaults llmBackend to claude-code when LLM_BACKEND is not set (Issue #118)`
+- テスト: `server/src/llm/claude-client.test.ts::defaults to the claude-code backend (DEFAULT_LLM_BACKEND, Issue #118) when the backend argument is omitted and LLM_BACKEND is unset, and never throws MissingApiKeyError even without ANTHROPIC_API_KEY`
 - 宣言元: #170
 
 ### G-170-18: DB を書き込むツールの実行後、またはテキスト配信後に失敗した場合は再試行しない
@@ -205,6 +209,8 @@
 - 関連: ADR 0003
 - テスト: `server/src/llm/claude-client.test.ts::aborts the attempt's signal and rejects with LlmTimeoutError when the timeout elapses`
 - テスト: `server/src/llm/claude-client.test.ts::treats timeoutMs as a whole-call budget shared across retries, not reset per attempt`
+- テスト: `server/src/llm/claude-client.test.ts::retries with exponential backoff after a failure when there was no side effect`
+- テスト: `server/src/llm/claude-client.test.ts::retries once with exponential backoff after a transient failure with no side effect (AC-11)`
 - 宣言元: #170
 
 ### G-170-20: claude-code が利用不可のとき api への切替案内を含む警告を出し、失敗自体は元のエラーで返す
@@ -275,7 +281,7 @@
 - テスト: `server/src/sessions/chat-messages-route.test.ts::persists the partial boss text when the stream fails midway`
 - 宣言元: #170
 
-### G-170-28: 応答にテキストもツール実行も無い場合でも空文字ではなくフォールバック文言を保存して返す
+### G-170-28: 応答にテキストが無い場合でも空文字ではなく、ツール実行の有無に応じたフォールバック文言を保存して返す
 
 - 種別: API契約
 - 領域: セッション・チャット
@@ -294,7 +300,7 @@
 - テスト: `server/src/sessions/chat-messages-route.test.ts::returns 500 JSON without leaking the api key when the Claude client cannot be created`
 - 宣言元: #170
 
-### G-170-30: チャット送信はユーザーメッセージ保存とストリーム開始の前に chat_message の活動イベントを記録する
+### G-170-30: チャット送信はユーザーメッセージ保存の後、ストリーム開始の前に chat_message の活動イベントを記録する
 
 - 種別: データ形式
 - 領域: 活動記録
@@ -384,9 +390,10 @@
 - テスト: `server/src/sessions/sessions-validation.test.ts::rejects an invalid type`
 - テスト: `server/src/sessions/sessions-validation.test.ts::accepts a content at exactly the maximum length`
 - テスト: `server/src/sessions/sessions-validation.test.ts::rejects a content longer than the maximum length`
+- テスト: `server/src/sessions/sessions-validation.test.ts::rejects an empty (whitespace-only) content`
 - 宣言元: #170
 
-### G-170-40: セッション一覧は started_at 降順で種別フィルタ可能に返し、存在しないセッション id は 404 を返す
+### G-170-40: セッション一覧は started_at 降順で種別フィルタ可能に返し、メッセージ取得は存在しないセッション id に 404 を返す
 
 - 種別: API契約
 - 領域: セッション・チャット
@@ -805,11 +812,11 @@
 - テスト: `server/src/scheduler/scheduler-tick.test.ts::does not crash and still records the notification when sending fails (both channels reject)`
 - 宣言元: #170
 
-### G-170-88: 文面生成が失敗しても定型文で通知は送られ、他の発火の処理に影響しない
+### G-170-88: 通知文面の LLM 呼び出しが失敗した場合は定型文へフォールバックした本文を返し、ある発火の処理が例外で失敗しても残りの発火の処理は継続する
 
 - 種別: 実行系
 - 領域: スケジューラ
-- 関連: ADR 0004
+- 関連: ADR 0004, #173
 - テスト: `server/src/scheduler/scheduler-tick.test.ts::continues processing the remaining firings when one firing fails (per-firing isolation)`
 - テスト: `server/src/notifications/notification-body.test.ts::falls back to the fixed template when streamBossMessage rejects, without leaking the error message`
 - 宣言元: #170
@@ -888,6 +895,7 @@
 - テスト: `web/src/chat-api.test.ts::returns the first session of the type-filtered list`
 - テスト: `web/src/chat-api.test.ts::POSTs an adhoc session and returns the created record`
 - テスト: `web/src/chat-api.test.ts::POSTs to the session's /end endpoint and returns the updated record`
+- テスト: `web/src/chat-api.test.ts::throws the server-provided error message on failure`
 - 宣言元: #170
 
 ### G-170-98: チャットの SSE イベントをハンドラへ配送し、不正なイベントデータは失敗させずエラー通知する
@@ -969,6 +977,7 @@
 - 領域: Web 静的アセット
 - テスト: `web/src/public-assets.test.ts::favicon.svg is a valid SVG image`
 - テスト: `web/src/public-assets.test.ts::manifest.webmanifest declares a standalone app with 192px/512px PNG icons`
+- テスト: `web/src/public-assets.test.ts::icon-192.png and icon-512.png referenced by manifest.webmanifest exist as 192x192/512x512 PNGs`
 - 宣言元: #170
 
 ### G-170-107: 既定タスクは優先度が高いものを選び、同順位なら id の小さい方を選ぶ
@@ -980,11 +989,11 @@
 - テスト: `web/src/select-default-task.test.ts::breaks ties between equal priorities by the smaller id`
 - 宣言元: #170
 
-### G-170-108: 復元するセッションは当日の未終了のもののうち開始が新しい方を選び、前日以前は無視する
+### G-170-108: 復元するセッションは当日の未終了の朝会・夕会のうち開始が新しい方を active に選び、当日の adhoc を別枠で返す。前日以前は無視する
 
 - 種別: 純粋関数
 - 領域: Web ロジック
-- 関連: ADR 0007
+- 関連: ADR 0007, #174
 - テスト: `web/src/select-restore-session.test.ts::when both morning and evening are open today, picks the more recently started one regardless of input order`
 - テスト: `web/src/select-restore-session.test.ts::falls back to today's adhoc session when today's morning session is already ended`
 - テスト: `web/src/select-restore-session.test.ts::ignores an open morning session from a previous day`
@@ -1061,7 +1070,7 @@
 - テスト: `web/src/use-chat.test.ts::sets an error status when history restoration fails`
 - 宣言元: #170
 
-### G-170-117: 送信するとユーザー発言が即座に追加され、ボスの返信がストリームで表示される
+### G-170-117: 送信するとユーザー発言が即座に追加され、ストリーム完了後にボスの返信がエントリとして追加される
 
 - 種別: UI
 - 領域: Web フック
@@ -1350,6 +1359,12 @@
 - テスト: `web/src/AppLayout.test.tsx::renders the seven nav items`
 - テスト: `web/src/AppLayout.test.tsx::renders the dashboard as the default main view`
 - テスト: `web/src/AppLayout.test.tsx::switches the main area to the daily report view when the report nav item is clicked`
+- テスト: `web/src/AppLayout.test.tsx::switches the main area to the boss dialogue when the chat nav item is clicked`
+- テスト: `web/src/AppLayout.test.tsx::switches the main area to the task board when the task nav item is clicked`
+- テスト: `web/src/AppLayout.test.tsx::switches the main area to the decision log when the decision log nav item is clicked`
+- テスト: `web/src/AppLayout.test.tsx::switches the main area to the work log view when the work log nav item is clicked`
+- テスト: `web/src/AppLayout.test.tsx::switches the main area to the settings view when the settings nav item is clicked`
+- テスト: `web/src/AppLayout.test.tsx::switches back to the dashboard when the dashboard nav item is clicked`
 - 宣言元: #170
 
 ### G-170-152: ヘッダーにアプリ名と接続状態が表示される
@@ -1394,6 +1409,7 @@
 - 種別: UI
 - 領域: Web 画面
 - テスト: `web/src/ChatView.test.tsx::sends the draft and renders the boss reply`
+- テスト: `web/src/ChatView.test.tsx::sends the draft when Enter is pressed without a modifier`
 - テスト: `web/src/ChatView.test.tsx::does not send the draft when Shift+Enter is pressed (newline)`
 - テスト: `web/src/ChatView.test.tsx::does not send the draft when Enter confirms an IME composition`
 - 宣言元: #170
@@ -1402,8 +1418,7 @@
 
 - 種別: UI
 - 領域: Web 画面
-- テスト: `web/src/ChatView.test.tsx::shows a loading state while the history is being restored`
-- テスト: `web/src/ChatView.test.tsx::shows an error state when the history restoration fails`
+- テスト: `web/src/ChatView.test.tsx::renders a tool notice when the boss operates a task`
 - テスト: `web/src/ChatView.test.tsx::does not claim a task was updated when a read-only tool (e.g. get_activity_log) runs`
 - 宣言元: #170
 
@@ -1490,6 +1505,9 @@
 - テスト: `web/src/TaskCard.test.tsx::shows the priority as a boss decision in Japanese`
 - テスト: `web/src/TaskCard.test.tsx::hides the priority line when priority is null`
 - テスト: `web/src/TaskCard.test.tsx::shows the boss comment when present`
+- テスト: `web/src/TaskCard.test.tsx::hides the boss comment line when boss_comment is null`
+- テスト: `web/src/TaskCard.test.tsx::shows the due date as a boss decision`
+- テスト: `web/src/TaskCard.test.tsx::hides the due date line when due_at is null`
 - 宣言元: #170
 
 ### G-170-168: 編集は既存値が入った状態で開始し、キャンセルで破棄され、更新失敗時は編集モードに留まる
@@ -1532,9 +1550,9 @@
 
 - 種別: UI
 - 領域: Web 画面
-- テスト: `web/src/SettingsView.test.tsx::shows a loading indicator while settings are loading`
 - テスト: `web/src/SettingsView.test.tsx::disables the form fields while saving so in-flight edits are not silently overwritten`
 - テスト: `web/src/SettingsView.test.tsx::shows a success message and the next-effective note after a successful save`
+- テスト: `web/src/SettingsView.test.tsx::shows an error message and keeps the entered values when the save fails`
 - 宣言元: #170
 
 ## Gaps（テストのない公開面）
@@ -1564,6 +1582,10 @@
 - [ ] GAP-21: 作業ログビューでのコピー失敗後の再試行
 - [ ] GAP-22: 休憩超過などのエスカレーション表示がチェックイン画面に現れること
 - [ ] GAP-23: `GET /api/activity/today` の上限境界（翌日 00:00 以降のイベントを除外すること）。`listEventsSince` は `created_at >= ?` のみで上限が無く、参照テストも前日・当日の行しか挿入していないため未担保（#172）
+- [ ] GAP-24: 夕会の定時催促が勤務時間帯外・休憩申告中でも発火すること。実装（`server/src/detection/rule-engine.ts` の朝会・夕会の発火は両ゲートの外側にある）は朝会と同じ扱いだが、テストは朝会側（`fires the morning meeting rule even outside working hours and even while on break`）しか無いため、G-170-7 は朝会に限定して約束している
+- [ ] GAP-25: チャットのボス返信がストリーム**途中経過**として逐次表示されること。`use-chat` の参照テストはストリーム完了後の最終状態のみを検証しており（完了時点で `streamingText` が空であることを assert）、途中経過が画面へ反映されることは未担保。G-170-117 は完了後の追加のみを約束している
+- [ ] GAP-26: 通知文面の生成が**例外を投げた**発火について、その発火の通知が送信・記録されること。現在の `server/src/scheduler/scheduler-tick.ts` は `processFiring` の例外を捕捉してログするだけで、当該発火の通知は送信も記録もされない（実装の欠陥。#173 で追跡）。G-170-88 は LLM 呼び出し失敗時の定型文フォールバックと、他の発火の処理継続に限定して約束している
+- [ ] GAP-27: 終了済みの当日 adhoc セッションが会話復元の対象にならないこと。`web/src/select-restore-session.ts` の `ended_at === null` フィルタは朝会・夕会にしか掛かっておらず、adhoc は終了済みでも選ばれうる（仕様確定と実装修正は #174 で追跡）。G-170-108 は朝会・夕会の未終了条件に限定して約束している
 
 ## 要人間判定（本台帳への採否を保留した項目）
 
