@@ -312,7 +312,7 @@
 - テスト: `server/src/activity/activity-routes.test.ts::does not record a task_update event when the PATCH body has no fields (no real change requested)`
 - 宣言元: #170
 
-### G-170-32: 当日の活動イベントをローカル日付境界で絞り込み created_at 昇順で返す
+### G-170-32: 当日のローカル暦日開始時刻以降の活動イベントを created_at 昇順で返す
 
 - 種別: API契約
 - 領域: 活動記録
@@ -320,6 +320,7 @@
 - テスト: `server/src/activity/activity-routes.test.ts::returns only today's events (local day boundary), ordered by created_at ascending`
 - テスト: `server/src/activity/activity-routes.test.ts::returns an empty array when there are no events today`
 - 宣言元: #170
+- 注記: 実装（`listEventsSince`）の SQL は `created_at >= ?` のみで**上限を持たない**。本保証は下限（当日 00:00 以降）と昇順のみを約束し、翌日以降の除外は約束しない（GAP-23）
 
 ### G-170-33: チェックインは種別と付随項目を検証して活動イベントを作成し、不正入力は 400、存在しないタスク参照は 404 を返す
 
@@ -1562,6 +1563,7 @@
 - [ ] GAP-20: ダッシュボードの表情が文脈に応じて選ばれること
 - [ ] GAP-21: 作業ログビューでのコピー失敗後の再試行
 - [ ] GAP-22: 休憩超過などのエスカレーション表示がチェックイン画面に現れること
+- [ ] GAP-23: `GET /api/activity/today` の上限境界（翌日 00:00 以降のイベントを除外すること）。`listEventsSince` は `created_at >= ?` のみで上限が無く、参照テストも前日・当日の行しか挿入していないため未担保（#172）
 
 ## 要人間判定（本台帳への採否を保留した項目）
 
