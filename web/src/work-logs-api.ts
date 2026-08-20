@@ -9,8 +9,11 @@ const WORK_LOGS_URL = "/api/work-logs";
  *
  * Reuses `ReportApiError` from `daily-reports-api.ts`: the work-log API
  * follows the same `{ error, code }` contract (保証 G-170-44 /
- * G-170-113), and the UI branches on the stable `code` (e.g.
- * `invalid_date`) the same way the daily-report UI does.
+ * G-170-113), so the stable `code` (e.g. `invalid_date`) is preserved on
+ * the thrown error and is available to callers that need to branch on it.
+ * The current work-log UI (`use-work-log.ts` / `WorkLogView.tsx`) only
+ * surfaces the message and does not branch on `code` — unlike the
+ * daily-report UI, which branches on `evening_session_required`.
  */
 export async function fetchWorkLog(date: string): Promise<WorkLog> {
   const response = await fetch(`${WORK_LOGS_URL}/${date}`);
