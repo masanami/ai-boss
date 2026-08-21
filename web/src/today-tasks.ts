@@ -17,6 +17,10 @@ export function selectTodayTasks(tasks: Task[], now: Date): Task[] {
           task.completed_at !== null &&
           isSameLocalDay(new Date(task.completed_at), now)
         );
+      case "paused":
+        // 暫定: paused を対象へ含める変更（G-170-112 の改訂）は #187 の担当。
+        // この時点では paused を作る経路（task_pause チェックイン）が未実装のため到達しない。
+        return false;
       case "dropped":
         return false;
       default:

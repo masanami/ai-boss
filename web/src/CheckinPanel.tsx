@@ -15,6 +15,7 @@ const EVENT_TYPE_LABEL: Record<ActivityEvent["type"], string> = {
   checkin: "チェックイン",
   chat_message: "チャット発言",
   task_update: "タスク操作",
+  task_pause: "一時停止",
 };
 
 function formatTime(iso: string): string {

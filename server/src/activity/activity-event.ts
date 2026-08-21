@@ -5,6 +5,7 @@ export const ACTIVITY_EVENT_TYPES = [
   "checkin",
   "chat_message",
   "task_update",
+  "task_pause",
 ] as const;
 export type ActivityEventType = (typeof ACTIVITY_EVENT_TYPES)[number];
 
@@ -18,6 +19,7 @@ export const CHECKIN_TYPES = [
   "break_start",
   "break_end",
   "checkin",
+  "task_pause",
 ] as const;
 export type CheckinType = (typeof CHECKIN_TYPES)[number];
 
