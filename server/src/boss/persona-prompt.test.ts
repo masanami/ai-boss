@@ -159,6 +159,20 @@ describe("buildPersonaPrompt", () => {
     expect(prompt).toContain("資料作成");
   });
 
+  // TASK_STATUS_LABELS は Record<Task["status"], string> のため paused の
+  // ラベル欠落は型エラーで検知されるが（#183 で追加済み）、実際にプロンプト
+  // の整形行へ反映されることをテストで担保する（Issue #188）。
+  it("タスクが一時停止中（paused）のとき、整形行に「一時停止」ラベルが含まれる", () => {
+    const prompt = buildPersonaPrompt(DEFAULT_PERSONA_SETTINGS, {
+      tasks: [makeTask({ title: "資料作成", status: "paused" })],
+      recentDecisions: [],
+      now,
+    });
+
+    expect(prompt).toContain("[一時停止]");
+    expect(prompt).toContain("資料作成");
+  });
+
   it("タスクがあるとき、そのタスクの数値idが #<id> 形式で整形行に含まれる（update_task 呼び出しに必要）", () => {
     const prompt = buildPersonaPrompt(DEFAULT_PERSONA_SETTINGS, {
       tasks: [makeTask({ id: 12, title: "レポート作成" })],
