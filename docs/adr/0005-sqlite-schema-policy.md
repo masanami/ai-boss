@@ -17,11 +17,7 @@
 1. **永続化先は SQLite の単一ファイルのみ**とする（[ADR 0001](./0001-local-only-data-boundary.md)）。better-sqlite3 による同期 API を使い、単一ライターを前提にする。
 2. **`sessions` を第一級の概念として持つ。** 会話は単一スレッドではなく、種別（`morning` / `evening` / `adhoc`）を持つセッションに属する。`messages` は `session_id` に紐づく。決定・日報もセッションを参照する。
 3. **`activity_events` を検知エンジンの「活動シグナル」の単一入力テーブルとする**（[ADR 0004](./0004-deterministic-detection-engine.md) 決定 1）。**検知エンジンが読む唯一のテーブルという意味ではない** — 発火判定には `tasks`（対象タスクと見積もり）・`notifications`（重複送信防止とエスカレーション履歴）・`settings`（閾値）・`sessions`（当日の朝会夕会の実施有無）も入力として渡る。一元化しているのは「ユーザーが動いたか」を表すシグナルであり、それ以外の判定材料は別テーブルから来る。
-4. **マイグレーションは単調増加する version 番号で管理する。** 各 version は冪等に適用でき、既存 version の内容は後から書き換えない。新しいスキーマ変更は新しい version として追加する。
-
-> **既知の逸脱（実装が本 ADR に未追従・#175）**: 決定 4 の「各 version は冪等に適用でき」は現状の実装では成立していない。`server/src/db/migrate.ts` は `db.exec(migration)` と `db.pragma("user_version = N")` を**単一トランザクションで囲んでいない**ため、その隙間で停止すると次回起動時に同じ version が再実行される。version 2 の `ALTER TABLE appeals ADD COLUMN response TEXT` は `IF NOT EXISTS` を取れず冪等でないため、この場合 `duplicate column name` で起動に失敗する（version 1・3 は `CREATE TABLE IF NOT EXISTS` のみで偶然冪等）。
->
-> 適用と version 更新が原子的になるまで、決定 4 の冪等性は**目標状態**であり現状の記述ではない。追跡は #175。
+4. **マイグレーションは単調増加する version 番号で管理し、各 version の適用と `user_version` の更新を単一トランザクションで原子的に行う。** `server/src/db/migrate.ts` は version ごとに `db.transaction()` で移行 SQL の実行と `PRAGMA user_version` の更新を囲む（`PRAGMA user_version` はトランザクションに参加する）。適用が中断・失敗しても DB は直前の version 境界に戻るため、個々の移行 SQL が冪等でなくても `runMigrations` の呼び出しとしては冪等になる（#175・保証 G-175-1〜G-175-4）。トランザクションはループ全体ではなく version 単位で張り、失敗した version より前は適用済みとして確定させる（復旧を単純にするため）。既存 version の内容は後から書き換えない。新しいスキーマ変更は新しい version として追加する。なお `PRAGMA foreign_keys` はトランザクション内では切り替えられない（黙って無視される）ため、外部キーを持つテーブルの再構築（12-step 手順）を要する将来の version はこの規約のままでは書けず、tx 外での FK 切り替えを含む手順の設計が別途要る（#179 の責務）。
 
 5. **排他制御の作り込みを最小に保つ。** 単一プロセス・単一ライターの前提で、必要な原子性は書き込みトランザクション（`db.transaction`）で足りるものとして扱い、そのためだけの制約カラム・ロックテーブルを追加しない。
 6. **算出できるものは保存しない。** データ源から決定的に再現できる出力（例: 作業ログ）は保存テーブルを持たず、都度算出する。保存するのは、生成に非決定性がある成果物（例: LLM の講評を含む日報）に限る。

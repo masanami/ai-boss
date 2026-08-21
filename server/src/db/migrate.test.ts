@@ -222,6 +222,115 @@ describe("runMigrations", () => {
     );
   });
 
+  // Version-keyed migrations with an injected failure: version 2's first
+  // statement succeeds, then the duplicate-PK INSERT fails at runtime. Used
+  // to verify that a failing version is rolled back as a whole (schema and
+  // user_version) instead of leaving partially applied statements behind.
+  const FAILING_MIGRATIONS: Record<number, string> = {
+    1: "CREATE TABLE first_table (id INTEGER PRIMARY KEY);",
+    2: `
+      CREATE TABLE second_table (id INTEGER PRIMARY KEY);
+      INSERT INTO second_table (id) VALUES (1), (1);
+    `,
+  };
+
+  it("rolls back every statement of a failed version, leaving schema and user_version at the previous version boundary", () => {
+    const failingDb = openDatabase(":memory:");
+
+    expect(() => runMigrations(failingDb, FAILING_MIGRATIONS)).toThrow();
+
+    // Version 1 (applied before the failure) stays committed; version 2 is
+    // rolled back entirely, including its successful CREATE TABLE statement.
+    expect(tableNames(failingDb)).toContain("first_table");
+    expect(tableNames(failingDb)).not.toContain("second_table");
+    expect(failingDb.pragma("user_version", { simple: true })).toBe(1);
+
+    failingDb.close();
+  });
+
+  it("re-running after an interrupted migration brings the database up to the latest version", () => {
+    // An interrupted (rolled-back) migration leaves the DB exactly at the
+    // previous version boundary, so once the transient cause is gone the
+    // *same* migration map is re-run unchanged and completes — no version's
+    // SQL is rewritten after the fact (ADR 0005 decision 4).
+    const interruptibleMigrations: Record<number, string> = {
+      1: "CREATE TABLE seed_rows (value INTEGER);",
+      2: `
+        CREATE TABLE second_table (id INTEGER PRIMARY KEY);
+        INSERT INTO second_table (id) SELECT value FROM seed_rows;
+      `,
+    };
+
+    // Database already at version 1, holding transient data that makes
+    // version 2 fail (duplicate values violate second_table's PK).
+    const interruptedDb = openDatabase(":memory:");
+    interruptedDb.exec("CREATE TABLE seed_rows (value INTEGER);");
+    interruptedDb.pragma("user_version = 1");
+    interruptedDb.prepare("INSERT INTO seed_rows (value) VALUES (1), (1)").run();
+
+    expect(() =>
+      runMigrations(interruptedDb, interruptibleMigrations),
+    ).toThrow();
+    expect(interruptedDb.pragma("user_version", { simple: true })).toBe(1);
+
+    // Transient cause resolved (conflicting row removed); re-run the same map.
+    interruptedDb.prepare("DELETE FROM seed_rows WHERE rowid > 1").run();
+    runMigrations(interruptedDb, interruptibleMigrations);
+
+    expect(interruptedDb.pragma("user_version", { simple: true })).toBe(2);
+    expect(tableNames(interruptedDb)).toContain("second_table");
+
+    interruptedDb.close();
+  });
+
+  it("fails fast with the missing version number when the migrations map has a gap", () => {
+    const gappedDb = openDatabase(":memory:");
+    const gappedMigrations: Record<number, string> = {
+      1: "CREATE TABLE first_table (id INTEGER PRIMARY KEY);",
+      3: "CREATE TABLE third_table (id INTEGER PRIMARY KEY);",
+    };
+
+    expect(() => runMigrations(gappedDb, gappedMigrations)).toThrow(
+      /missing migration for version 2/,
+    );
+    // Versions applied before the gap stay committed; nothing is skipped.
+    expect(gappedDb.pragma("user_version", { simple: true })).toBe(1);
+    expect(tableNames(gappedDb)).not.toContain("third_table");
+
+    gappedDb.close();
+  });
+
+  it("wraps a migration failure in an error naming the failed version", () => {
+    // Legacy half-migrated state from the pre-#175 non-atomic implementation:
+    // v2's ALTER TABLE was applied but user_version was never advanced.
+    // Re-running v2 fails (duplicate column), and the error must say which
+    // version failed instead of surfacing the raw SQLite message alone.
+    const legacyDb = openDatabase(":memory:");
+    legacyDb.exec(V1_AND_V2_SQL);
+    legacyDb.pragma("user_version = 1");
+
+    expect(() => runMigrations(legacyDb)).toThrow(/version 2/);
+
+    legacyDb.close();
+  });
+
+  it("keeps the original SQLite error as the cause of the wrapped migration error", () => {
+    const failingDb = openDatabase(":memory:");
+
+    let thrown: unknown;
+    try {
+      runMigrations(failingDb, FAILING_MIGRATIONS);
+    } catch (error) {
+      thrown = error;
+    }
+
+    expect(thrown).toBeInstanceOf(Error);
+    expect((thrown as Error).cause).toBeInstanceOf(Error);
+    expect(((thrown as Error).cause as Error).message).toMatch(/UNIQUE/);
+
+    failingDb.close();
+  });
+
   it("upgrades a v2 database to v3 (adds daily_reports) without touching existing tables", () => {
     // Simulate a pre-existing v2 database: fresh :memory: db, run only
     // migrations 1-2 by pragma-limiting, then upgrade to v3 via runMigrations.

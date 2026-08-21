@@ -1,7 +1,5 @@
 import type Database from "better-sqlite3";
 
-const LATEST_VERSION = 3;
-
 const MIGRATIONS: Record<number, string> = {
   1: `
     CREATE TABLE IF NOT EXISTS tasks (
@@ -106,13 +104,54 @@ const MIGRATIONS: Record<number, string> = {
  * Applies pending schema migrations using `PRAGMA user_version` as the
  * migration cursor. Safe to call multiple times (idempotent): migrations
  * already applied (version <= current user_version) are skipped.
+ *
+ * Each version is applied atomically: the migration SQL and the
+ * `user_version` update run in a single transaction (`PRAGMA user_version`
+ * participates in the transaction), so an interruption or failure leaves the
+ * database exactly at the previous version boundary — never in a
+ * "applied but not recorded" state that would re-run non-idempotent
+ * statements on the next start (#175). The transaction is per version (not
+ * around the whole loop) so that versions applied before a failure stay
+ * committed, keeping recovery simple.
+ *
+ * @param migrations - Version-keyed migration SQL. Defaults to the real
+ *   schema; injectable so tests can exercise failure scenarios. The target
+ *   (latest) version is derived from the highest key, and every version from
+ *   the current one up to it must be present — a gap in the keys is a
+ *   programming error and fails fast instead of being silently skipped.
  */
-export function runMigrations(db: Database.Database): void {
+export function runMigrations(
+  db: Database.Database,
+  migrations: Record<number, string> = MIGRATIONS,
+): void {
   const currentVersion = db.pragma("user_version", { simple: true }) as number;
+  const versions = Object.keys(migrations).map(Number);
+  const latestVersion = versions.length === 0 ? currentVersion : Math.max(...versions);
 
-  for (let version = currentVersion + 1; version <= LATEST_VERSION; version++) {
-    const migration = MIGRATIONS[version];
-    db.exec(migration);
-    db.pragma(`user_version = ${version}`);
+  let appliedVersion = currentVersion;
+
+  for (let version = currentVersion + 1; version <= latestVersion; version++) {
+    const sql = migrations[version];
+    if (sql === undefined) {
+      throw new Error(
+        `missing migration for version ${version} (latest known version is ${latestVersion}); the database remains at version ${appliedVersion}`,
+      );
+    }
+
+    const applyVersion = db.transaction(() => {
+      db.exec(sql);
+      db.pragma(`user_version = ${version}`);
+    });
+
+    try {
+      applyVersion();
+    } catch (error) {
+      throw new Error(
+        `migration to version ${version} failed; its changes were rolled back and the database remains at version ${appliedVersion}`,
+        { cause: error },
+      );
+    }
+
+    appliedVersion = version;
   }
 }
