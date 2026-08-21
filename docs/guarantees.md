@@ -50,15 +50,16 @@
 - テスト: `server/src/detection/break-overrun.test.ts::falls back to the fallback minutes when expected_minutes is not set`
 - 宣言元: #170
 
-### G-170-3: 締切を過ぎた todo と in_progress のタスクをすべて抽出し、done と dropped は含めない
+### G-170-3: 締切を過ぎた todo と in_progress と paused のタスクをすべて抽出し、done と dropped は含めない
 
 - 種別: 検知ロジック
 - 領域: サボり検知
-- 関連: ADR 0004
+- 関連: ADR 0004, #179
 - テスト: `server/src/detection/deadline-overdue.test.ts::returns a todo task whose due_at is in the past`
 - テスト: `server/src/detection/deadline-overdue.test.ts::does not include done or dropped tasks even if overdue`
 - テスト: `server/src/detection/deadline-overdue.test.ts::returns every overdue task, not just the top-priority one`
 - テスト: `server/src/detection/deadline-overdue.test.ts::includes an overdue in_progress task`
+- テスト: `server/src/detection/deadline-overdue.test.ts::includes an overdue paused task (#179 判断4: G-179-8)`
 - 宣言元: #170
 
 ### G-170-4: 同一事由の催促は L1 から L3 へ段階的に強まり、活動シグナルがあれば L1 へリセットされ、rule_key ごとに独立して管理される
@@ -344,16 +345,17 @@
 - テスト: `server/src/activity/checkins-routes.test.ts::returns 404 (not a 500) when a non-task_start checkin references a non-existent task_id`
 - 宣言元: #170
 
-### G-170-34: task_start は todo タスクのみ in_progress へ遷移させ、状態更新に失敗したらイベントごとロールバックする
+### G-170-34: task_start は todo または paused のタスクのみ in_progress へ遷移させ、状態更新に失敗したらイベントごとロールバックする
 
 - 種別: API契約
 - 領域: 活動記録
-- 関連: ADR 0005
+- 関連: ADR 0005, #179（task_start の遷移元に paused を追加する改訂を裁可）
 - テスト: `server/src/activity/checkins-routes.test.ts::transitions a todo task to in_progress and keeps completed_at null`
 - テスト: `server/src/activity/checkins-routes.test.ts::rolls back the task_start event when the status update fails, leaving no partial write`
 - テスト: `server/src/activity/checkins-routes.test.ts::does not revert a done task's status or completed_at`
 - テスト: `server/src/activity/checkins-routes.test.ts::does not revert a dropped task's status`
 - テスト: `server/src/activity/checkins-routes.test.ts::leaves status unchanged and records no extra task_update event for an in_progress task`
+- テスト: `server/src/activity/checkins-routes.test.ts::transitions a paused task to in_progress (AC-5)`
 - 宣言元: #170
 
 ### G-170-35: 同じローカル日に夕会セッションが既にあれば新規作成は 409 を返し行を挿入しない
@@ -1672,6 +1674,81 @@
 - 関連: ADR 0006, #179
 - テスト: `server/src/reports/render-work-log.test.ts::renders task_pause as '一時停止: {タスク名}' (G-179-13)`
 - テスト: `server/src/reports/collect-work-log-data.test.ts::collects a task_pause event and resolves its task title (G-179-13)`
+- 宣言元: #179
+
+### G-179-7: 一時停止中のタスクを最優先タスクの候補に含めない
+
+- 種別: 検知ロジック
+- 領域: サボり検知
+- 関連: ADR 0004, #179
+- テスト: `server/src/detection/priority.test.ts::excludes a paused task from the candidates (#179 判断4: G-179-7)`
+- 宣言元: #179
+
+### G-179-8: 締切を過ぎた一時停止中のタスクを締切超過の抽出対象に含める
+
+- 種別: 検知ロジック
+- 領域: サボり検知
+- 関連: ADR 0004, #179
+- テスト: `server/src/detection/deadline-overdue.test.ts::includes an overdue paused task (#179 判断4: G-179-8)`
+- 宣言元: #179
+
+### G-179-9: 直近の着手タスクがその後一時停止されている場合は無音許容時間をフォールバック値とする
+
+- 種別: 検知ロジック
+- 領域: サボり検知
+- 関連: ADR 0004, #179
+- テスト: `server/src/detection/silence.test.ts::falls back to 45min when the last task_start target has since been paused (#179 判断4: G-179-9)`
+- 宣言元: #179
+
+### G-179-17: 一時停止中のタスクがあっても休憩延伸の催促を発火させない
+
+- 種別: 検知ロジック
+- 領域: サボり検知
+- 関連: ADR 0004, #179
+- テスト: `server/src/detection/break-overrun.test.ts::ignores task_pause events and still returns the active break (#179 判断4: G-179-17 回帰)`
+- 宣言元: #179
+
+### G-179-2: 一時停止の実行は対象タスクのステータスを一時停止中にする
+
+- 種別: API契約
+- 領域: 活動記録
+- 関連: #179
+- テスト: `server/src/activity/checkins-routes.test.ts::transitions an in_progress task to paused and records a task_pause event`
+- 宣言元: #179
+
+### G-179-3: 一時停止の実行は一時停止の活動イベントを記録する
+
+- 種別: API契約
+- 領域: 活動記録
+- 関連: #179
+- テスト: `server/src/activity/checkins-routes.test.ts::transitions an in_progress task to paused and records a task_pause event`
+- 宣言元: #179
+
+### G-179-5: 着手のチェックインは一時停止中のタスクを着手中へ遷移させる
+
+- 種別: API契約
+- 領域: 活動記録
+- 関連: #179
+- テスト: `server/src/activity/checkins-routes.test.ts::transitions a paused task to in_progress (AC-5)`
+- 宣言元: #179
+
+### G-179-6: 一時停止の実行は休憩開始の活動イベントを記録しない
+
+- 種別: API契約
+- 領域: 活動記録
+- 関連: #179
+- テスト: `server/src/activity/checkins-routes.test.ts::does not record a break_start event as a side effect of task_pause (AC-6)`
+- 宣言元: #179
+
+### G-179-16: 着手中でないタスクへの一時停止のチェックインはそのタスクのステータスを変更しない
+
+- 種別: API契約
+- 領域: 活動記録
+- 関連: #179
+- テスト: `server/src/activity/checkins-routes.test.ts::leaves a todo task's status unchanged and records only the task_pause event (AC-20)`
+- テスト: `server/src/activity/checkins-routes.test.ts::leaves a done task's status unchanged and records only the task_pause event (AC-20)`
+- テスト: `server/src/activity/checkins-routes.test.ts::leaves a dropped task's status unchanged and records only the task_pause event (AC-20)`
+- テスト: `server/src/activity/checkins-routes.test.ts::leaves a paused task's status unchanged and records only the task_pause event (AC-20)`
 - 宣言元: #179
 
 ## Gaps（テストのない公開面）

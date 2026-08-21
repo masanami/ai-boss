@@ -73,6 +73,47 @@ describe("validateCheckinInput", () => {
     });
   });
 
+  describe("task_pause", () => {
+    it("accepts task_pause with a task_id", () => {
+      const result = validateCheckinInput({ type: "task_pause", task_id: 1 });
+
+      expect(result).toEqual({
+        valid: true,
+        data: { type: "task_pause", task_id: 1, note: null, expected_minutes: null },
+      });
+    });
+
+    it("rejects task_pause without a task_id", () => {
+      const result = validateCheckinInput({ type: "task_pause" });
+
+      expect(result.valid).toBe(false);
+      if (!result.valid) {
+        expect(result.error).toContain("task_id");
+      }
+    });
+
+    it("rejects task_pause with a non-numeric task_id", () => {
+      const result = validateCheckinInput({
+        type: "task_pause",
+        task_id: "1",
+      });
+
+      expect(result.valid).toBe(false);
+      if (!result.valid) {
+        expect(result.error).toContain("task_id");
+      }
+    });
+
+    it("rejects task_pause with an explicit null task_id", () => {
+      const result = validateCheckinInput({ type: "task_pause", task_id: null });
+
+      expect(result.valid).toBe(false);
+      if (!result.valid) {
+        expect(result.error).toContain("task_id");
+      }
+    });
+  });
+
   describe("task_id on non-task_start types", () => {
     it("accepts an explicit null task_id (task_id is number | null)", () => {
       const result = validateCheckinInput({ type: "checkin", task_id: null });

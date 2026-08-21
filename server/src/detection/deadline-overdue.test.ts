@@ -52,4 +52,14 @@ describe("findOverdueTasks", () => {
 
     expect(findOverdueTasks([first, second], now)).toEqual([first, second]);
   });
+
+  it("includes an overdue paused task (#179 判断4: G-179-8)", () => {
+    const paused = makeTask({
+      status: "paused",
+      due_at: "2026-07-05T00:00:00.000Z",
+    });
+    const now = new Date("2026-07-05T00:00:01.000Z");
+
+    expect(findOverdueTasks([paused], now)).toEqual([paused]);
+  });
 });
