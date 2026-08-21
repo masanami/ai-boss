@@ -1645,6 +1645,22 @@
 - テスト: `web/src/CheckinPanel.test.tsx::does not show the 一時停止 button when a different task is in_progress but the selected task is not (AC-1, G-179-1)`
 - 宣言元: #179
 
+### G-179-2: 一時停止の実行は対象タスクのステータスを一時停止中にする
+
+- 種別: API契約
+- 領域: 活動記録
+- 関連: #179
+- テスト: `server/src/activity/checkins-routes.test.ts::transitions an in_progress task to paused and records a task_pause event`
+- 宣言元: #179
+
+### G-179-3: 一時停止の実行は一時停止の活動イベントを記録する
+
+- 種別: API契約
+- 領域: 活動記録
+- 関連: #179
+- テスト: `server/src/activity/checkins-routes.test.ts::transitions an in_progress task to paused and records a task_pause event`
+- 宣言元: #179
+
 ### G-179-4: 選択中のタスクが一時停止中のとき着手ボタンのラベルを再開にする
 
 - 種別: UI
@@ -1653,53 +1669,20 @@
 - テスト: `web/src/CheckinPanel.test.tsx::shows 再開 as the primary button label when the selected task is paused (AC-4, G-179-4)`
 - 宣言元: #179
 
-### G-179-12: 一時停止中のタスクをタスクボードの一時停止カラムへ振り分ける
+### G-179-5: 着手のチェックインは一時停止中のタスクを着手中へ遷移させる
 
-- 種別: UI
-- 領域: Web 画面
+- 種別: API契約
+- 領域: 活動記録
 - 関連: #179
-- テスト: `web/src/TaskBoard.test.tsx::distributes a paused task into the 一時停止 column, next to 進行中 (AC-12, G-179-12)`
+- テスト: `server/src/activity/checkins-routes.test.ts::transitions a paused task to in_progress (AC-5)`
 - 宣言元: #179
 
-### G-179-14: v4 へ引き上げた DB はタスクのステータスとして一時停止中を受理する
+### G-179-6: 一時停止の実行は休憩開始の活動イベントを記録しない
 
-- 種別: DBスキーマ
-- 領域: DB
-- 関連: ADR 0005, #179
-- テスト: `server/src/db/migrate.test.ts::accepts tasks.status = 'paused' after migrating to v4`
-- 宣言元: #179
-
-### G-179-15: v4 へ引き上げた DB は活動イベントの種別として一時停止を受理する
-
-- 種別: DBスキーマ
-- 領域: DB
-- 関連: ADR 0005, #179
-- テスト: `server/src/db/migrate.test.ts::accepts activity_events.type = 'task_pause' after migrating to v4`
-- 宣言元: #179
-
-### G-179-10: 一時停止中のタスクを今日のノルマ進捗の対象に含める
-
-- 種別: 純粋関数
-- 領域: ダッシュボード
+- 種別: API契約
+- 領域: 活動記録
 - 関連: #179
-- テスト: `server/src/dashboard/progress.test.ts::counts paused tasks toward total but not done (G-179-10)`
-- 宣言元: #179
-
-### G-179-11: 一時停止中のタスクをサイドパネルの今日のタスクに含める
-
-- 種別: 純粋関数
-- 領域: Web ロジック
-- 関連: #179
-- テスト: `web/src/today-tasks.test.ts::includes paused tasks (G-179-11)`
-- 宣言元: #179
-
-### G-179-13: 作業ログは一時停止を専用の固定フォーマットの行として出力する
-
-- 種別: データ形式
-- 領域: 日報・作業ログ
-- 関連: ADR 0006, #179
-- テスト: `server/src/reports/render-work-log.test.ts::renders task_pause as '一時停止: {タスク名}' (G-179-13)`
-- テスト: `server/src/reports/collect-work-log-data.test.ts::collects a task_pause event and resolves its task title (G-179-13)`
+- テスト: `server/src/activity/checkins-routes.test.ts::does not record a break_start event as a side effect of task_pause (AC-6)`
 - 宣言元: #179
 
 ### G-179-7: 一時停止中のタスクを最優先タスクの候補に含めない
@@ -1726,44 +1709,53 @@
 - テスト: `server/src/detection/silence.test.ts::falls back to 45min when the last task_start target has since been paused (#179 判断4: G-179-9)`
 - 宣言元: #179
 
-### G-179-17: 一時停止中のタスクがあっても休憩延伸の催促を発火させない
+### G-179-10: 一時停止中のタスクを今日のノルマ進捗の対象に含める
 
-- 種別: 検知ロジック
-- 領域: サボり検知
-- 関連: ADR 0004, #179
-- テスト: `server/src/detection/break-overrun.test.ts::ignores task_pause events and still returns the active break (#179 判断4: G-179-17 回帰)`
+- 種別: 純粋関数
+- 領域: ダッシュボード
+- 関連: #179
+- テスト: `server/src/dashboard/progress.test.ts::counts paused tasks toward total but not done (G-179-10)`
 - 宣言元: #179
 
-### G-179-2: 一時停止の実行は対象タスクのステータスを一時停止中にする
+### G-179-11: 一時停止中のタスクをサイドパネルの今日のタスクに含める
 
-- 種別: API契約
-- 領域: 活動記録
+- 種別: 純粋関数
+- 領域: Web ロジック
 - 関連: #179
-- テスト: `server/src/activity/checkins-routes.test.ts::transitions an in_progress task to paused and records a task_pause event`
+- テスト: `web/src/today-tasks.test.ts::includes paused tasks (G-179-11)`
 - 宣言元: #179
 
-### G-179-3: 一時停止の実行は一時停止の活動イベントを記録する
+### G-179-12: 一時停止中のタスクをタスクボードの一時停止カラムへ振り分ける
 
-- 種別: API契約
-- 領域: 活動記録
+- 種別: UI
+- 領域: Web 画面
 - 関連: #179
-- テスト: `server/src/activity/checkins-routes.test.ts::transitions an in_progress task to paused and records a task_pause event`
+- テスト: `web/src/TaskBoard.test.tsx::distributes a paused task into the 一時停止 column, next to 進行中 (AC-12, G-179-12)`
 - 宣言元: #179
 
-### G-179-5: 着手のチェックインは一時停止中のタスクを着手中へ遷移させる
+### G-179-13: 作業ログは一時停止を専用の固定フォーマットの行として出力する
 
-- 種別: API契約
-- 領域: 活動記録
-- 関連: #179
-- テスト: `server/src/activity/checkins-routes.test.ts::transitions a paused task to in_progress (AC-5)`
+- 種別: データ形式
+- 領域: 日報・作業ログ
+- 関連: ADR 0006, #179
+- テスト: `server/src/reports/render-work-log.test.ts::renders task_pause as '一時停止: {タスク名}' (G-179-13)`
+- テスト: `server/src/reports/collect-work-log-data.test.ts::collects a task_pause event and resolves its task title (G-179-13)`
 - 宣言元: #179
 
-### G-179-6: 一時停止の実行は休憩開始の活動イベントを記録しない
+### G-179-14: v4 へ引き上げた DB はタスクのステータスとして一時停止中を受理する
 
-- 種別: API契約
-- 領域: 活動記録
-- 関連: #179
-- テスト: `server/src/activity/checkins-routes.test.ts::does not record a break_start event as a side effect of task_pause (AC-6)`
+- 種別: DBスキーマ
+- 領域: DB
+- 関連: ADR 0005, #179
+- テスト: `server/src/db/migrate.test.ts::accepts tasks.status = 'paused' after migrating to v4`
+- 宣言元: #179
+
+### G-179-15: v4 へ引き上げた DB は活動イベントの種別として一時停止を受理する
+
+- 種別: DBスキーマ
+- 領域: DB
+- 関連: ADR 0005, #179
+- テスト: `server/src/db/migrate.test.ts::accepts activity_events.type = 'task_pause' after migrating to v4`
 - 宣言元: #179
 
 ### G-179-16: 着手中でないタスクへの一時停止のチェックインはそのタスクのステータスを変更しない
@@ -1775,6 +1767,14 @@
 - テスト: `server/src/activity/checkins-routes.test.ts::leaves a done task's status unchanged and records only the task_pause event (AC-20)`
 - テスト: `server/src/activity/checkins-routes.test.ts::leaves a dropped task's status unchanged and records only the task_pause event (AC-20)`
 - テスト: `server/src/activity/checkins-routes.test.ts::leaves a paused task's status unchanged and records only the task_pause event (AC-20)`
+- 宣言元: #179
+
+### G-179-17: 一時停止中のタスクがあっても休憩延伸の催促を発火させない
+
+- 種別: 検知ロジック
+- 領域: サボり検知
+- 関連: ADR 0004, #179
+- テスト: `server/src/detection/break-overrun.test.ts::ignores task_pause events and still returns the active break (#179 判断4: G-179-17 回帰)`
 - 宣言元: #179
 
 ## Gaps（テストのない公開面）
