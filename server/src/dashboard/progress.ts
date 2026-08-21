@@ -5,20 +5,28 @@ import type { DashboardProgress } from "./dashboard.js";
 /**
  * 今日のノルマ対象タスクを判定する（純粋関数、Issue #58 明示的な仮定）。
  * 対象 = 今日完了したタスク（completed_at がローカル日付で今日）
- *      + 現在 todo / in_progress のタスク。
+ *      + 現在 todo / in_progress / paused のタスク（G-179-10）。
  * dropped、および過去日に完了したタスクは対象外。
  */
 function isTargetTask(task: Task, todayKey: string): boolean {
-  if (task.status === "todo" || task.status === "in_progress") {
-    return true;
+  switch (task.status) {
+    case "todo":
+    case "in_progress":
+    case "paused":
+      return true;
+    case "done":
+      return (
+        task.completed_at !== null && toDateKey(new Date(task.completed_at)) === todayKey
+      );
+    case "dropped":
+      return false;
+    default:
+      // TaskStatus に新しい値が追加されたら型エラーで気づけるようにする
+      // （web/src/today-tasks.ts の selectTodayTasks と同じ規律）。実行時に
+      // 未知の値が渡っても対象外（false）に倒す。
+      task.status satisfies never;
+      return false;
   }
-  if (task.status === "done") {
-    return (
-      task.completed_at !== null && toDateKey(new Date(task.completed_at)) === todayKey
-    );
-  }
-  // dropped
-  return false;
 }
 
 /**

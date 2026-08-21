@@ -112,6 +112,30 @@ describe("renderWorkLog — activity_events の行フォーマット", () => {
     expect(md).toContain("- 10:12 休憩終了");
   });
 
+  it("renders task_pause as '一時停止: {タスク名}' (G-179-13)", () => {
+    const md = renderWorkLog(
+      baseInput({
+        activityEvents: [
+          activityEntry({ type: "task_pause", taskTitle: "タスクC", createdAt: new Date(2026, 7, 14, 11, 0) }),
+        ],
+      }),
+    );
+
+    expect(md).toContain("- 11:00 一時停止: タスクC");
+  });
+
+  it("does not append '（予定 ...分）' for task_pause even if expectedMinutes is set", () => {
+    const md = renderWorkLog(
+      baseInput({
+        activityEvents: [
+          activityEntry({ type: "task_pause", taskTitle: "タスクC", expectedMinutes: 30 }),
+        ],
+      }),
+    );
+
+    expect(md).not.toContain("予定");
+  });
+
   it("renders checkin as 'チェックイン'", () => {
     const md = renderWorkLog(
       baseInput({
