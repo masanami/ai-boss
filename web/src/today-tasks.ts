@@ -19,7 +19,10 @@ export function selectTodayTasks(tasks: Task[], now: Date): Task[] {
         );
       case "paused":
         // 暫定: paused を対象へ含める変更（G-170-112 の改訂）は #187 の担当。
-        // この時点では paused を作る経路（task_pause チェックイン）が未実装のため到達しない。
+        // paused はタスク編集フォーム（TaskCard のステータス選択）からは既に
+        // 到達可能で、#179 系のチケット群でチェックイン経由（一時停止操作）
+        // でも到達できるようになる。含めるかどうかの判断自体は #187 に委ね、
+        // 現状は除外を維持する。
         return false;
       case "dropped":
         return false;

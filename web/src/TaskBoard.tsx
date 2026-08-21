@@ -10,6 +10,7 @@ import "./TaskBoard.css";
 const COLUMNS: { status: TaskStatus; label: string }[] = [
   { status: "todo", label: "未着手" },
   { status: "in_progress", label: "進行中" },
+  { status: "paused", label: "一時停止" },
   { status: "done", label: "完了" },
   { status: "dropped", label: "中止" },
 ];

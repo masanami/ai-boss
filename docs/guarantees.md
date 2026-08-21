@@ -1555,6 +1555,7 @@
 - 領域: Web 画面
 - テスト: `web/src/CheckinPanel.test.tsx::renders today's activity with type, time, and task title`
 - テスト: `web/src/CheckinPanel.test.tsx::shows an error message when today's activity fails to load`
+- テスト: `web/src/CheckinPanel.test.tsx::renders task_pause as 一時停止 in today's activity (AC-14)`
 - 宣言元: #170
 
 ### G-170-165: タスクは状態ごとのカラムに振り分けられ、移動の更新に失敗するとカードは元のカラムに残る
@@ -1632,6 +1633,31 @@
 - テスト: `web/src/SettingsView.test.tsx::shows an error message and keeps the entered values when the save fails`
 - 宣言元: #170
 
+### G-179-1: 選択中のタスクが着手中のときだけチェックインパネルに一時停止ボタンを表示する
+
+- 種別: UI
+- 領域: Web 画面
+- 関連: #179
+- テスト: `web/src/CheckinPanel.test.tsx::shows the 一時停止 button only when the selected task is in_progress (AC-1, G-179-1)`
+- テスト: `web/src/CheckinPanel.test.tsx::does not show the 一時停止 button when a different task is in_progress but the selected task is not (AC-1, G-179-1)`
+- 宣言元: #179
+
+### G-179-4: 選択中のタスクが一時停止中のとき着手ボタンのラベルを再開にする
+
+- 種別: UI
+- 領域: Web 画面
+- 関連: #179
+- テスト: `web/src/CheckinPanel.test.tsx::shows 再開 as the primary button label when the selected task is paused (AC-4, G-179-4)`
+- 宣言元: #179
+
+### G-179-12: 一時停止中のタスクをタスクボードの一時停止カラムへ振り分ける
+
+- 種別: UI
+- 領域: Web 画面
+- 関連: #179
+- テスト: `web/src/TaskBoard.test.tsx::distributes a paused task into the 一時停止 column, next to 進行中 (AC-12, G-179-12)`
+- 宣言元: #179
+
 ### G-179-14: v4 へ引き上げた DB はタスクのステータスとして一時停止中を受理する
 
 - 種別: DBスキーマ
@@ -1686,6 +1712,7 @@
 - [ ] GAP-33: セッション種別の**受理**側（`morning` / `evening` / `adhoc` がそれぞれ受理されること）。検証テストは `server/src/sessions/sessions-validation.test.ts` に実在するが `it.each("accepts a valid type: %s")` でテスト名が動的生成され台帳から参照できない（HR-05）。G-170-39 は**拒否側**に限定して約束している
 - [ ] GAP-34: タスク API のバリデーションのうち、**`status` / `priority` の不正値**（作成・更新の両方）。検証テストは `server/src/tasks/tasks-routes.test.ts` に実在するが、`returns 400 when status is invalid` / `returns 400 when priority is invalid` という**同名のテストが作成側と更新側の両方に存在**し、参照形式 `<パス>::<テスト名>` では一意に指せない。あわせて、列挙していないフィールド（`due_at` の形式・`boss_comment` の型など）の不正値も未検証。G-170-66 / G-170-68 は**一意に参照でき、かつ検証済みのケースだけを列挙**して約束している
 - [ ] GAP-32: 日報の完了欄・進行中欄が**対象外ステータス**を除外すること（`completed_at` が当日でも todo / in_progress / dropped は完了欄に入らない、`task_start` が当日でも todo / done / dropped は進行中欄に入らない）。検証テストは `server/src/reports/collect-daily-report-data.test.ts` に実在するが `it.each` でテスト名が動的生成されており台帳から参照できない（HR-05）。**参照できない以上、この排他性は台帳の約束としては未担保**であり、対象外ステータスのテストを削除しても索引ゲートは通る。G-170-54 は日付による包含・除外に限定して約束している
+- [ ] GAP-35: サイドパネル「今日のタスク」（`web/src/today-tasks.ts`）が一時停止中（`paused`）のタスクを対象外にすること。`paused` はタスク編集フォームやタスクボードのカラム移動から到達可能な公開状態だが、`selectTodayTasks` の `paused` 分岐にはテストが無く（G-170-112 は todo/in_progress/done/dropped の包含・除外のみを約束）、`paused` を対象へ含めるかどうかの方針自体は #187 の担当
 
 ## 要人間判定（本台帳への採否を保留した項目）
 

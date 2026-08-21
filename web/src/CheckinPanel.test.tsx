@@ -300,6 +300,26 @@ describe("CheckinPanel", () => {
     await waitFor(() => expect(refresh).toHaveBeenCalledTimes(1));
   });
 
+  it("renders task_pause as 一時停止 in today's activity (AC-14)", async () => {
+    const tasks = [makeTask({ id: 5, title: "資料作成" })];
+    const createdAt = "2026-07-06T09:20:00.000Z";
+    const events = [
+      makeEvent({
+        id: 11,
+        type: "task_pause",
+        task_id: 5,
+        created_at: createdAt,
+      }),
+    ];
+    vi.stubGlobal("fetch", createFetchMock({ events }));
+
+    render(<CheckinPanel tasksState={makeTasksState(tasks)} />);
+
+    const list = await screen.findByRole("list");
+    const item = await within(list).findByText("資料作成");
+    expect(item.closest("li")).toHaveTextContent("一時停止");
+  });
+
   it("renders today's activity with type, time, and task title", async () => {
     const tasks = [makeTask({ id: 5, title: "資料作成" })];
     const createdAt = "2026-07-06T09:15:00.000Z";
@@ -640,6 +660,177 @@ describe("CheckinPanel", () => {
       expect(screen.getByRole("button", { name: "完了" })).toBeEnabled(),
     );
     expect(editTask).toHaveBeenCalledTimes(1);
+  });
+
+  it("shows the 一時停止 button only when the selected task is in_progress (AC-1, G-179-1)", async () => {
+    const tasks = [makeTask({ id: 1, title: "着手中タスク", status: "in_progress" })];
+    vi.stubGlobal("fetch", createFetchMock());
+
+    const { rerender } = render(
+      <CheckinPanel tasksState={makeTasksState(tasks)} />,
+    );
+
+    await waitFor(() =>
+      expect(
+        screen.getByRole("button", { name: "一時停止" }),
+      ).toBeInTheDocument(),
+    );
+
+    rerender(
+      <CheckinPanel
+        tasksState={makeTasksState([
+          makeTask({ id: 1, title: "todoタスク", status: "todo" }),
+        ])}
+      />,
+    );
+
+    await waitFor(() =>
+      expect(
+        screen.queryByRole("button", { name: "一時停止" }),
+      ).not.toBeInTheDocument(),
+    );
+  });
+
+  it("does not show the 一時停止 button when a different task is in_progress but the selected task is not (AC-1, G-179-1)", async () => {
+    // 「完了」ボタンの hasInProgressTask パターン（一覧のどこかに in_progress
+    // がある）と混同していないことの確認。一覧に in_progress のタスクが
+    // 存在していても、選択中タスクが todo なら一時停止ボタンは出ない。
+    const tasks = [
+      makeTask({ id: 1, title: "todoタスク", status: "todo", priority: "high" }),
+      makeTask({ id: 2, title: "着手中タスク", status: "in_progress" }),
+    ];
+    vi.stubGlobal("fetch", createFetchMock());
+
+    render(<CheckinPanel tasksState={makeTasksState(tasks)} />);
+
+    await waitFor(() =>
+      expect(
+        screen.getByRole("combobox", { name: "着手するタスク" }),
+      ).toHaveValue("1"),
+    );
+    expect(
+      screen.queryByRole("button", { name: "一時停止" }),
+    ).not.toBeInTheDocument();
+  });
+
+  it("does not show the 一時停止 button when the selected task is paused", async () => {
+    const tasks = [makeTask({ id: 1, title: "一時停止タスク", status: "paused" })];
+    vi.stubGlobal("fetch", createFetchMock());
+
+    render(<CheckinPanel tasksState={makeTasksState(tasks)} />);
+
+    await waitFor(() =>
+      expect(
+        screen.getByRole("combobox", { name: "着手するタスク" }),
+      ).toHaveValue("1"),
+    );
+    expect(
+      screen.queryByRole("button", { name: "一時停止" }),
+    ).not.toBeInTheDocument();
+  });
+
+  it("sends a task_pause checkin when 一時停止 is clicked", async () => {
+    const tasks = [makeTask({ id: 2, title: "着手中タスク", status: "in_progress" })];
+    const fetchMock = createFetchMock();
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(<CheckinPanel tasksState={makeTasksState(tasks)} />);
+
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: "一時停止" })).toBeEnabled(),
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "一時停止" }));
+
+    await waitFor(() =>
+      expect(fetchMock).toHaveBeenCalledWith(
+        "/api/checkins",
+        expect.objectContaining({
+          method: "POST",
+          body: JSON.stringify({
+            type: "task_pause",
+            task_id: 2,
+            note: null,
+          }),
+        }),
+      ),
+    );
+  });
+
+  it("shows 再開 as the primary button label when the selected task is paused (AC-4, G-179-4)", async () => {
+    const tasks = [makeTask({ id: 1, title: "一時停止タスク", status: "paused" })];
+    vi.stubGlobal("fetch", createFetchMock());
+
+    render(<CheckinPanel tasksState={makeTasksState(tasks)} />);
+
+    await waitFor(() =>
+      expect(
+        screen.getByRole("combobox", { name: "着手するタスク" }),
+      ).toHaveValue("1"),
+    );
+    expect(screen.getByRole("button", { name: "再開" })).toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: "着手" }),
+    ).not.toBeInTheDocument();
+  });
+
+  it("sends the existing task_start checkin when 再開 is clicked for a paused task", async () => {
+    const tasks = [makeTask({ id: 1, title: "一時停止タスク", status: "paused" })];
+    const fetchMock = createFetchMock();
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(<CheckinPanel tasksState={makeTasksState(tasks)} />);
+
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: "再開" })).toBeEnabled(),
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "再開" }));
+
+    await waitFor(() =>
+      expect(fetchMock).toHaveBeenCalledWith(
+        "/api/checkins",
+        expect.objectContaining({
+          method: "POST",
+          body: JSON.stringify({
+            type: "task_start",
+            task_id: 1,
+            note: null,
+          }),
+        }),
+      ),
+    );
+  });
+
+  it("disables the primary button when the selected task is in_progress", async () => {
+    const tasks = [makeTask({ id: 1, title: "着手中タスク", status: "in_progress" })];
+    vi.stubGlobal("fetch", createFetchMock());
+
+    render(<CheckinPanel tasksState={makeTasksState(tasks)} />);
+
+    await waitFor(() =>
+      expect(
+        screen.getByRole("combobox", { name: "着手するタスク" }),
+      ).toHaveValue("1"),
+    );
+    expect(screen.getByRole("button", { name: "着手" })).toBeDisabled();
+  });
+
+  it("includes paused tasks in the selectable task list", async () => {
+    const tasks = [
+      makeTask({ id: 1, title: "一時停止タスク", status: "paused" }),
+    ];
+    vi.stubGlobal("fetch", createFetchMock());
+
+    render(<CheckinPanel tasksState={makeTasksState(tasks)} />);
+
+    await waitFor(() =>
+      expect(
+        within(
+          screen.getByRole("combobox", { name: "着手するタスク" }),
+        ).getByRole("option", { name: "一時停止タスク" }),
+      ).toBeInTheDocument(),
+    );
   });
 
   it("shows an error message when today's activity fails to load", async () => {

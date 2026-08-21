@@ -82,6 +82,31 @@ describe("TaskBoard", () => {
     ).toBeInTheDocument();
   });
 
+  it("distributes a paused task into the 一時停止 column, next to 進行中 (AC-12, G-179-12)", () => {
+    const tasks = [
+      makeTask({ id: 1, title: "一時停止したタスク", status: "paused" }),
+    ];
+
+    render(<TaskBoard tasksState={makeTasksState({ tasks })} />);
+
+    const pausedColumn = screen.getByRole("region", { name: "一時停止" });
+    expect(
+      within(pausedColumn).getByText("一時停止したタスク"),
+    ).toBeInTheDocument();
+
+    // カラムの並び順（進行中の隣・5カラム構成）を検証する。
+    const columnLabels = screen
+      .getAllByRole("region")
+      .map((region) => region.getAttribute("aria-label"));
+    expect(columnLabels).toEqual([
+      "未着手",
+      "進行中",
+      "一時停止",
+      "完了",
+      "中止",
+    ]);
+  });
+
   it("shows the boss comment on a task card", () => {
     const tasks = [makeTask({ id: 1, boss_comment: "早めに着手しろ" })];
 
