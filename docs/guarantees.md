@@ -344,16 +344,17 @@
 - テスト: `server/src/activity/checkins-routes.test.ts::returns 404 (not a 500) when a non-task_start checkin references a non-existent task_id`
 - 宣言元: #170
 
-### G-170-34: task_start は todo タスクのみ in_progress へ遷移させ、状態更新に失敗したらイベントごとロールバックする
+### G-170-34: task_start は todo または paused のタスクのみ in_progress へ遷移させ、状態更新に失敗したらイベントごとロールバックする
 
 - 種別: API契約
 - 領域: 活動記録
-- 関連: ADR 0005
+- 関連: ADR 0005, #179（task_start の遷移元に paused を追加する改訂を裁可）
 - テスト: `server/src/activity/checkins-routes.test.ts::transitions a todo task to in_progress and keeps completed_at null`
 - テスト: `server/src/activity/checkins-routes.test.ts::rolls back the task_start event when the status update fails, leaving no partial write`
 - テスト: `server/src/activity/checkins-routes.test.ts::does not revert a done task's status or completed_at`
 - テスト: `server/src/activity/checkins-routes.test.ts::does not revert a dropped task's status`
 - テスト: `server/src/activity/checkins-routes.test.ts::leaves status unchanged and records no extra task_update event for an in_progress task`
+- テスト: `server/src/activity/checkins-routes.test.ts::transitions a paused task to in_progress (AC-5)`
 - 宣言元: #170
 
 ### G-170-35: 同じローカル日に夕会セッションが既にあれば新規作成は 409 を返し行を挿入しない
@@ -1646,6 +1647,49 @@
 - 領域: DB
 - 関連: ADR 0005, #179
 - テスト: `server/src/db/migrate.test.ts::accepts activity_events.type = 'task_pause' after migrating to v4`
+- 宣言元: #179
+
+### G-179-2: 一時停止の実行は対象タスクのステータスを一時停止中にする
+
+- 種別: API契約
+- 領域: 活動記録
+- 関連: #179
+- テスト: `server/src/activity/checkins-routes.test.ts::transitions an in_progress task to paused and records a task_pause event`
+- 宣言元: #179
+
+### G-179-3: 一時停止の実行は一時停止の活動イベントを記録する
+
+- 種別: API契約
+- 領域: 活動記録
+- 関連: #179
+- テスト: `server/src/activity/checkins-routes.test.ts::transitions an in_progress task to paused and records a task_pause event`
+- 宣言元: #179
+
+### G-179-5: 着手のチェックインは一時停止中のタスクを着手中へ遷移させる
+
+- 種別: API契約
+- 領域: 活動記録
+- 関連: #179
+- テスト: `server/src/activity/checkins-routes.test.ts::transitions a paused task to in_progress (AC-5)`
+- 宣言元: #179
+
+### G-179-6: 一時停止の実行は休憩開始の活動イベントを記録しない
+
+- 種別: API契約
+- 領域: 活動記録
+- 関連: #179
+- テスト: `server/src/activity/checkins-routes.test.ts::does not record a break_start event as a side effect of task_pause (AC-6)`
+- 宣言元: #179
+
+### G-179-16: 着手中でないタスクへの一時停止のチェックインはそのタスクのステータスを変更しない
+
+- 種別: API契約
+- 領域: 活動記録
+- 関連: #179
+- テスト: `server/src/activity/checkins-routes.test.ts::leaves a todo task's status unchanged and records only the task_pause event (AC-20)`
+- テスト: `server/src/activity/checkins-routes.test.ts::leaves a done task's status unchanged and records only the task_pause event (AC-20)`
+- テスト: `server/src/activity/checkins-routes.test.ts::leaves a dropped task's status unchanged and records only the task_pause event (AC-20)`
+- テスト: `server/src/activity/checkins-routes.test.ts::leaves a paused task's status unchanged and records only the task_pause event (AC-20)`
 - 宣言元: #179
 
 ## Gaps（テストのない公開面）
