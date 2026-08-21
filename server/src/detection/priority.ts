@@ -22,6 +22,9 @@ function dueAtRank(dueAt: Task["due_at"]): number {
  * status が todo/in_progress のタスクの中から
  * priority (high > medium > low > null) → due_at 昇順 (null は最後) → id 昇順 の先頭を返す
  * （Issue #36「明示的な仮定」より）。
+ * paused のタスクは候補に含めない（#179 判断4。todo/in_progress のみを候補にする
+ * この filter により自動的に除外される。候補に残すと isTopTaskUnstarted が常に false
+ * を返し、真に未着手の他タスクへの催促を握りつぶすため意図的な挙動）。
  */
 export function pickTopPriorityTask(tasks: Task[]): Task | undefined {
   const candidates = tasks.filter(

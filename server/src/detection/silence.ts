@@ -9,6 +9,12 @@ function getLastActivity(
   return latestByTimestamp(activityEvents, (event) => event.created_at);
 }
 
+/**
+ * 直近の task_start が指すタスクを返す。ただしそのタスクの現在の status が
+ * in_progress でなければ（例: その後 task_pause された場合）undefined を返す
+ * （#179 判断4。G-179-9）。一時停止したタスクの見積もりを無音許容時間の
+ * 根拠に使い続けないため、フォールバック値へ倒す。
+ */
 function getInProgressTask(
   activityEvents: ActivityEvent[],
   tasks: Task[],
@@ -18,7 +24,9 @@ function getInProgressTask(
   );
   const lastTaskStart = latestByTimestamp(taskStarts, (event) => event.created_at);
   if (!lastTaskStart) return undefined;
-  return tasks.find((task) => task.id === lastTaskStart.task_id);
+  const task = tasks.find((task) => task.id === lastTaskStart.task_id);
+  if (!task || task.status !== "in_progress") return undefined;
+  return task;
 }
 
 /**

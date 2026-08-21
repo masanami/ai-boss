@@ -5,7 +5,7 @@ import { runMigrations } from "../db/migrate.js";
 import { createApp } from "../app.js";
 import { insertTask } from "../tasks/tasks-repository.js";
 import type { NewTaskRecord } from "../tasks/tasks-repository.js";
-import type { Task } from "../tasks/task.js";
+import type { Task, TaskStatus } from "../tasks/task.js";
 import { isTopTaskUnstarted } from "../detection/unstarted.js";
 import { DEFAULT_DETECTION_SETTINGS } from "../detection/detection-types.js";
 import type { ActivityEvent } from "./activity-event.js";
@@ -416,6 +416,177 @@ describe("POST /api/checkins", () => {
         .prepare("SELECT status FROM tasks WHERE id = ?")
         .get(task.id) as { status: string };
       expect(updated.status).toBe("todo");
+    });
+
+    it("transitions a paused task to in_progress (AC-5)", async () => {
+      const app = createApp(db);
+      const task = insertWorkTask(db, { status: "paused" });
+
+      const res = await app.request("/api/checkins", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ type: "task_start", task_id: task.id }),
+      });
+
+      expect(res.status).toBe(201);
+
+      const updated = db
+        .prepare("SELECT status FROM tasks WHERE id = ?")
+        .get(task.id) as { status: string };
+      expect(updated.status).toBe("in_progress");
+
+      const events = db
+        .prepare("SELECT type FROM activity_events WHERE task_id = ? ORDER BY id ASC")
+        .all(task.id) as { type: string }[];
+      expect(events.map((event) => event.type)).toEqual(["task_start", "task_update"]);
+    });
+  });
+
+  describe("task_pause status transition", () => {
+    it("transitions an in_progress task to paused and records a task_pause event", async () => {
+      const app = createApp(db);
+      const task = insertWorkTask(db, { status: "in_progress" });
+
+      const res = await app.request("/api/checkins", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ type: "task_pause", task_id: task.id }),
+      });
+
+      expect(res.status).toBe(201);
+      const body = await readJson<ActivityEvent>(res);
+      expect(body).toMatchObject({ type: "task_pause", task_id: task.id });
+
+      const updated = db
+        .prepare("SELECT status FROM tasks WHERE id = ?")
+        .get(task.id) as { status: string };
+      expect(updated.status).toBe("paused");
+
+      // Symmetric with the task_start todo -> in_progress case: the
+      // task_pause event (this route) plus updateTask's own automatic
+      // task_update event are both expected, in that order.
+      const events = db
+        .prepare("SELECT type FROM activity_events WHERE task_id = ? ORDER BY id ASC")
+        .all(task.id) as { type: string }[];
+      expect(events.map((event) => event.type)).toEqual(["task_pause", "task_update"]);
+    });
+
+    it("does not record a break_start event as a side effect of task_pause (AC-6)", async () => {
+      const app = createApp(db);
+      const task = insertWorkTask(db, { status: "in_progress" });
+
+      const res = await app.request("/api/checkins", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ type: "task_pause", task_id: task.id }),
+      });
+
+      expect(res.status).toBe(201);
+
+      // Break events carry task_id = null, so scan ALL events — filtering by
+      // task_id would hide exactly the side effect this test exists to catch.
+      const events = db
+        .prepare("SELECT type FROM activity_events")
+        .all() as { type: string }[];
+      expect(events.map((event) => event.type)).not.toContain("break_start");
+    });
+
+    // Written as individual `it(...)` calls (rather than `it.each`) so each
+    // test has a literal name that docs/guarantees.md can reference exactly
+    // (the guarantee-index-check tooling matches literal `it("...")` names,
+    // not parameterized `it.each` templates).
+    async function expectTaskPauseLeavesStatusUnchanged(status: TaskStatus) {
+      const app = createApp(db);
+      const task = insertWorkTask(db, { status });
+
+      const res = await app.request("/api/checkins", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ type: "task_pause", task_id: task.id }),
+      });
+
+      expect(res.status).toBe(201);
+
+      const updated = db
+        .prepare("SELECT status FROM tasks WHERE id = ?")
+        .get(task.id) as { status: string };
+      expect(updated.status).toBe(status);
+
+      const events = db
+        .prepare("SELECT type FROM activity_events WHERE task_id = ?")
+        .all(task.id) as { type: string }[];
+      expect(events).toHaveLength(1);
+      expect(events[0]?.type).toBe("task_pause");
+    }
+
+    it("leaves a todo task's status unchanged and records only the task_pause event (AC-20)", async () => {
+      await expectTaskPauseLeavesStatusUnchanged("todo");
+    });
+
+    it("leaves a done task's status unchanged and records only the task_pause event (AC-20)", async () => {
+      await expectTaskPauseLeavesStatusUnchanged("done");
+    });
+
+    it("leaves a dropped task's status unchanged and records only the task_pause event (AC-20)", async () => {
+      await expectTaskPauseLeavesStatusUnchanged("dropped");
+    });
+
+    it("leaves a paused task's status unchanged and records only the task_pause event (AC-20)", async () => {
+      await expectTaskPauseLeavesStatusUnchanged("paused");
+    });
+
+    it("returns 400 when task_pause is missing task_id", async () => {
+      const app = createApp(db);
+
+      const res = await app.request("/api/checkins", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ type: "task_pause" }),
+      });
+
+      expect(res.status).toBe(400);
+      const body = await readJson<ErrorBody>(res);
+      expect(body.error).toContain("task_id");
+    });
+
+    it("returns 404 when task_pause references a non-existent task", async () => {
+      const app = createApp(db);
+
+      const res = await app.request("/api/checkins", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ type: "task_pause", task_id: 9999 }),
+      });
+
+      expect(res.status).toBe(404);
+      const body = await readJson<ErrorBody>(res);
+      expect(body.error).toContain("9999");
+    });
+
+    it("rolls back the task_pause event when the status update fails, leaving no partial write", async () => {
+      const app = createApp(db);
+      const task = insertWorkTask(db, { status: "in_progress" });
+      updateTaskMock.mockImplementationOnce(() => {
+        throw new Error("boom");
+      });
+
+      const res = await app.request("/api/checkins", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ type: "task_pause", task_id: task.id }),
+      });
+
+      expect(res.status).toBe(500);
+
+      const events = db
+        .prepare("SELECT * FROM activity_events WHERE task_id = ?")
+        .all(task.id);
+      expect(events).toHaveLength(0);
+
+      const updated = db
+        .prepare("SELECT status FROM tasks WHERE id = ?")
+        .get(task.id) as { status: string };
+      expect(updated.status).toBe("in_progress");
     });
   });
 });

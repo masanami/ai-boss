@@ -49,7 +49,14 @@ function insertRawDecision(
 function insertRawActivityEvent(
   db: Database.Database,
   opts: {
-    type: "task_start" | "task_update" | "break_start" | "break_end" | "checkin" | "chat_message";
+    type:
+      | "task_start"
+      | "task_update"
+      | "break_start"
+      | "break_end"
+      | "checkin"
+      | "task_pause"
+      | "chat_message";
     taskId?: number | null;
     note?: string | null;
     expectedMinutes?: number | null;
@@ -175,6 +182,7 @@ describe("collectWorkLogData", () => {
       ["break_start"],
       ["break_end"],
       ["checkin"],
+      ["task_pause"],
     ] as const)("collects a %s event on the target day", (type) => {
       insertRawActivityEvent(db, { type, createdAt: iso(2026, 8, 14, 10, 0) });
 
@@ -182,6 +190,21 @@ describe("collectWorkLogData", () => {
 
       expect(result.activityEvents).toHaveLength(1);
       expect(result.activityEvents[0].type).toBe(type);
+    });
+
+    it("collects a task_pause event and resolves its task title (G-179-13)", () => {
+      const taskId = insertRawTask(db, { title: "資料作成", createdAt: iso(2026, 8, 14, 9, 0) });
+      insertRawActivityEvent(db, {
+        type: "task_pause",
+        taskId,
+        createdAt: iso(2026, 8, 14, 11, 0),
+      });
+
+      const result = collectWorkLogData(db, new Date(2026, 7, 14));
+
+      expect(result.activityEvents).toEqual([
+        expect.objectContaining({ type: "task_pause", taskTitle: "資料作成" }),
+      ]);
     });
 
     it("resolves the task title from task_id", () => {

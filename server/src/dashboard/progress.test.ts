@@ -69,6 +69,18 @@ describe("calculateProgress", () => {
     expect(result).toEqual({ done: 0, total: 1, ratio: 0 });
   });
 
+  it("counts paused tasks toward total but not done (G-179-10)", () => {
+    const now = new Date(2026, 6, 6, 10, 0);
+    const tasks = [
+      makeTask({ id: 1, status: "todo" }),
+      makeTask({ id: 2, status: "paused" }),
+    ];
+
+    const result = calculateProgress(tasks, now);
+
+    expect(result).toEqual({ done: 0, total: 2, ratio: 0 });
+  });
+
   it("excludes tasks completed on a previous local day", () => {
     const now = new Date(2026, 6, 6, 10, 0);
     const tasks = [

@@ -83,6 +83,8 @@ function formatActivityBody(entry: RenderWorkLogActivityEntry): string {
       return `着手: ${taskTitle}`;
     case "task_update":
       return `タスク更新: ${taskTitle}`;
+    case "task_pause":
+      return `一時停止: ${taskTitle}`;
     case "break_start":
       return "休憩開始";
     case "break_end":
