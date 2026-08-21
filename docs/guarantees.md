@@ -6,7 +6,7 @@
 
 ## 読み方
 
-各保証は `### G-{裁可PR番号}-{枝番}: {約束文}` の見出しと、その直下のメタ行で構成されます。
+各保証は `### G-{裁可番号}-{枝番}: {約束文}` の見出しと、その直下のメタ行で構成されます。裁可番号は、その保証を裁可した PR または Issue（GDD期は `guarantee:approved` ラベルの Issue）の番号です。
 
 | 行 | 意味 |
 |---|---|
@@ -16,7 +16,7 @@
 | `- 領域:` | どのサブシステムの約束か（可読性のための補助情報） |
 | `- 関連:` | 背景にある恒常的な設計決定（ADR）や、宣言のきっかけになった Issue |
 | `- テスト:` | その約束を担保しているテスト。**テストが消えたら保証も消える**（保証を残したままテストを消さない） |
-| `- 宣言元:` | この台帳を裁可した PR |
+| `- 宣言元:` | この保証を裁可した PR または Issue |
 
 ## 運用規律
 
@@ -748,12 +748,11 @@
 - テスト: `server/src/app.test.ts::returns 404 for an unknown /api path instead of index.html`
 - 宣言元: #170
 
-### G-170-77: マイグレーションは全テーブルを作成し、複数回実行しても冪等である
+### G-170-77: マイグレーションは台帳記載の全テーブルを作成する
 
 - 種別: DBスキーマ
 - 領域: DB
-- 関連: ADR 0005
-- テスト: `server/src/db/migrate.test.ts::is idempotent: running migrations twice does not raise an error`
+- 関連: ADR 0005, #175（複合文だった約束を分割し、再実行の無変化側を G-175-4 へ分離する改訂を裁可）
 - テスト: `server/src/db/migrate.test.ts::creates the tasks table`
 - テスト: `server/src/db/migrate.test.ts::creates the sessions table`
 - テスト: `server/src/db/migrate.test.ts::creates the messages table`
@@ -795,6 +794,38 @@
 - テスト: `server/src/db/migrate.test.ts::daily_reports.evening_session_id references sessions and rejects an unknown id`
 - テスト: `server/src/db/migrate.test.ts::enforces daily_reports.date UNIQUE`
 - 宣言元: #170
+
+### G-175-1: マイグレーション version の適用が失敗したとき、DB はその version を適用する前の状態のまま残る
+
+- 種別: DBスキーマ
+- 領域: DB
+- 関連: ADR 0005
+- テスト: `server/src/db/migrate.test.ts::rolls back every statement of a failed version, leaving schema and user_version at the previous version boundary`
+- 宣言元: #175
+
+### G-175-2: マイグレーションが中断された DB に対する `runMigrations` の再実行は、最新 version まで引き上げて正常終了する
+
+- 種別: DBスキーマ
+- 領域: DB
+- 関連: ADR 0005
+- テスト: `server/src/db/migrate.test.ts::re-running after an interrupted migration brings the database up to the latest version`
+- 宣言元: #175
+
+### G-175-3: マイグレーションの適用に失敗したとき、失敗した version 番号を含むエラーを投げる
+
+- 種別: DBスキーマ
+- 領域: DB
+- 関連: ADR 0005
+- テスト: `server/src/db/migrate.test.ts::wraps a migration failure in an error naming the failed version`
+- 宣言元: #175
+
+### G-175-4: 適用済みの DB に対する `runMigrations` の再実行は、テーブル構成を変えずに正常終了する
+
+- 種別: DBスキーマ
+- 領域: DB
+- 関連: ADR 0005
+- テスト: `server/src/db/migrate.test.ts::is idempotent: running migrations twice does not raise an error`
+- 宣言元: #175
 
 ### G-170-81: 通知は terminal-notifier を優先し失敗したら osascript へフォールバックし、両方失敗しても例外を投げない
 
