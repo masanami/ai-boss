@@ -30,6 +30,7 @@
       "Bash(gh issue:*)",
       "Bash(gh pr:*)",
       "Bash(gh api:*)",
+      "Bash(gh label:*)",
       "Bash(gh repo view:*)"
     ],
     "deny": [
