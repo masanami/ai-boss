@@ -135,7 +135,7 @@ function CheckinPanel({ tasksState }: CheckinPanelProps) {
     // task_start のまま変えない（親要件 #179 判断3）。
     runSubmit(
       { type: "task_start", task_id: selectedTaskId, note: noteOrNull() },
-      "着手しました",
+      selectedTask?.status === "paused" ? "再開しました" : "着手しました",
     );
   };
 

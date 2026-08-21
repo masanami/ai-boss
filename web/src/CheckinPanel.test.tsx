@@ -802,6 +802,25 @@ describe("CheckinPanel", () => {
     );
   });
 
+  it("shows 再開しました (not 着手しました) after resuming a paused task", async () => {
+    const tasks = [makeTask({ id: 1, title: "一時停止タスク", status: "paused" })];
+    const fetchMock = createFetchMock();
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(<CheckinPanel tasksState={makeTasksState(tasks)} />);
+
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: "再開" })).toBeEnabled(),
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "再開" }));
+
+    await waitFor(() =>
+      expect(screen.getByText("再開しました")).toBeInTheDocument(),
+    );
+    expect(screen.queryByText("着手しました")).not.toBeInTheDocument();
+  });
+
   it("disables the primary button when the selected task is in_progress", async () => {
     const tasks = [makeTask({ id: 1, title: "着手中タスク", status: "in_progress" })];
     vi.stubGlobal("fetch", createFetchMock());

@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type Database from "better-sqlite3";
 import { openDatabase } from "../db/connection.js";
 import { runMigrations } from "../db/migrate.js";
@@ -29,11 +29,14 @@ describe("executeTaskTool", () => {
   let db: Database.Database;
 
   beforeEach(() => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date(2026, 6, 5, 12, 0, 0));
     db = openDatabase(":memory:");
     runMigrations(db);
   });
 
   afterEach(() => {
+    vi.useRealTimers();
     db.close();
   });
 
