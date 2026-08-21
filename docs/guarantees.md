@@ -770,6 +770,7 @@
 - 領域: DB
 - 関連: ADR 0005
 - テスト: `server/src/db/migrate.test.ts::upgrades a v2 database to v3 (adds daily_reports) without touching existing tables`
+- テスト: `server/src/db/migrate.test.ts::upgrades a v3 database to v4 (adds paused status and task_pause type) without touching existing tables`
 - 宣言元: #170
 
 ### G-170-79: 列挙値を持つ 6 カラムは、許可された値以外を CHECK 制約で拒否する
@@ -1630,6 +1631,22 @@
 - テスト: `web/src/SettingsView.test.tsx::shows a success message and the next-effective note after a successful save`
 - テスト: `web/src/SettingsView.test.tsx::shows an error message and keeps the entered values when the save fails`
 - 宣言元: #170
+
+### G-179-14: v4 へ引き上げた DB はタスクのステータスとして一時停止中を受理する
+
+- 種別: DBスキーマ
+- 領域: DB
+- 関連: ADR 0005, #179
+- テスト: `server/src/db/migrate.test.ts::accepts tasks.status = 'paused' after migrating to v4`
+- 宣言元: #179
+
+### G-179-15: v4 へ引き上げた DB は活動イベントの種別として一時停止を受理する
+
+- 種別: DBスキーマ
+- 領域: DB
+- 関連: ADR 0005, #179
+- テスト: `server/src/db/migrate.test.ts::accepts activity_events.type = 'task_pause' after migrating to v4`
+- 宣言元: #179
 
 ## Gaps（テストのない公開面）
 

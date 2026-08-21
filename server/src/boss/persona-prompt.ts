@@ -97,6 +97,7 @@ const STRICTNESS_DESCRIPTIONS: Record<number, string> = {
 const TASK_STATUS_LABELS: Record<Task["status"], string> = {
   todo: "未着手",
   in_progress: "進行中",
+  paused: "一時停止",
   done: "完了",
   dropped: "取り下げ",
 };

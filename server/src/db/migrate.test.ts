@@ -103,6 +103,25 @@ const V1_AND_V2_SQL = `
   );
 `;
 
+// Self-contained snapshot of the v1+v2+v3 schema (duplicated from
+// `MIGRATIONS[1]`/`MIGRATIONS[2]`/`MIGRATIONS[3]` in migrate.ts), used only
+// to simulate a pre-existing v3 database for the "upgrades a v3 database to
+// v4" test below. Intentionally not imported from migrate.ts: a v3
+// database's schema must stay fixed regardless of future edits to the
+// *current* MIGRATIONS map.
+const V1_THROUGH_V3_SQL = `
+  ${V1_AND_V2_SQL}
+
+  CREATE TABLE IF NOT EXISTS daily_reports (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    date TEXT NOT NULL UNIQUE,
+    content TEXT NOT NULL,
+    evening_session_id INTEGER NOT NULL REFERENCES sessions(id),
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+  );
+`;
+
 function insertSession(db: Database.Database, type = "adhoc"): number {
   return Number(
     db
@@ -343,11 +362,68 @@ describe("runMigrations", () => {
     runMigrations(v2Db);
 
     expect(tableNames(v2Db)).toContain("daily_reports");
-    expect(v2Db.pragma("user_version", { simple: true })).toBe(3);
+    // runMigrations always advances to the latest known version (v3 adds
+    // daily_reports on the way; v4 then rebuilds tasks/activity_events).
+    expect(v2Db.pragma("user_version", { simple: true })).toBe(4);
     // existing tables/rows are untouched
     expect(tableNames(v2Db)).toContain("tasks");
 
     v2Db.close();
+  });
+
+  it("upgrades a v3 database to v4 (adds paused status and task_pause type) without touching existing tables", () => {
+    const v3Db = openDatabase(":memory:");
+    v3Db.exec(V1_THROUGH_V3_SQL);
+    v3Db.pragma("user_version = 3");
+
+    const taskId = Number(
+      v3Db
+        .prepare(
+          "INSERT INTO tasks (title, status, created_at, updated_at) VALUES (?, ?, ?, ?)",
+        )
+        .run("既存タスク", "in_progress", NOW, NOW).lastInsertRowid,
+    );
+    v3Db
+      .prepare(
+        "INSERT INTO activity_events (type, task_id, created_at) VALUES (?, ?, ?)",
+      )
+      .run("task_start", taskId, NOW);
+
+    runMigrations(v3Db);
+
+    expect(v3Db.pragma("user_version", { simple: true })).toBe(4);
+    expect(tableNames(v3Db)).toContain("tasks");
+    expect(tableNames(v3Db)).toContain("activity_events");
+
+    const task = v3Db.prepare("SELECT title, status FROM tasks WHERE id = ?").get(
+      taskId,
+    ) as { title: string; status: string };
+    expect(task).toEqual({ title: "既存タスク", status: "in_progress" });
+
+    const event = v3Db
+      .prepare("SELECT type, task_id FROM activity_events WHERE task_id = ?")
+      .get(taskId) as { type: string; task_id: number };
+    expect(event).toEqual({ type: "task_start", task_id: taskId });
+
+    v3Db.close();
+  });
+
+  it("accepts tasks.status = 'paused' after migrating to v4", () => {
+    expect(() =>
+      db
+        .prepare(
+          "INSERT INTO tasks (title, status, created_at, updated_at) VALUES (?, ?, ?, ?)",
+        )
+        .run("タスク", "paused", NOW, NOW),
+    ).not.toThrow();
+  });
+
+  it("accepts activity_events.type = 'task_pause' after migrating to v4", () => {
+    expect(() =>
+      db
+        .prepare("INSERT INTO activity_events (type, created_at) VALUES (?, ?)")
+        .run("task_pause", NOW),
+    ).not.toThrow();
   });
 
   it("daily_reports.evening_session_id references sessions and rejects an unknown id", () => {
@@ -389,7 +465,7 @@ describe("runMigrations", () => {
   });
 
   describe("CHECK constraints", () => {
-    it.each([["todo"], ["in_progress"], ["done"], ["dropped"]])(
+    it.each([["todo"], ["in_progress"], ["paused"], ["done"], ["dropped"]])(
       "accepts tasks.status = %s",
       (status) => {
         expect(() =>
@@ -508,6 +584,7 @@ describe("runMigrations", () => {
       ["checkin"],
       ["chat_message"],
       ["task_update"],
+      ["task_pause"],
     ])("accepts activity_events.type = %s", (type) => {
       expect(() =>
         db
