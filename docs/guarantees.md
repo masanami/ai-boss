@@ -813,7 +813,7 @@
 
 ### G-175-3: マイグレーションの適用に失敗したとき、失敗した version 番号を含むエラーを投げる
 
-- 種別: DBスキーマ
+- 種別: 実行系
 - 領域: DB
 - 関連: ADR 0005
 - テスト: `server/src/db/migrate.test.ts::wraps a migration failure in an error naming the failed version`
