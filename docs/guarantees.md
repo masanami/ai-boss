@@ -50,15 +50,16 @@
 - テスト: `server/src/detection/break-overrun.test.ts::falls back to the fallback minutes when expected_minutes is not set`
 - 宣言元: #170
 
-### G-170-3: 締切を過ぎた todo と in_progress のタスクをすべて抽出し、done と dropped は含めない
+### G-170-3: 締切を過ぎた todo と in_progress と paused のタスクをすべて抽出し、done と dropped は含めない
 
 - 種別: 検知ロジック
 - 領域: サボり検知
-- 関連: ADR 0004
+- 関連: ADR 0004, #179
 - テスト: `server/src/detection/deadline-overdue.test.ts::returns a todo task whose due_at is in the past`
 - テスト: `server/src/detection/deadline-overdue.test.ts::does not include done or dropped tasks even if overdue`
 - テスト: `server/src/detection/deadline-overdue.test.ts::returns every overdue task, not just the top-priority one`
 - テスト: `server/src/detection/deadline-overdue.test.ts::includes an overdue in_progress task`
+- テスト: `server/src/detection/deadline-overdue.test.ts::includes an overdue paused task (#179 判断4: G-179-8)`
 - 宣言元: #170
 
 ### G-170-4: 同一事由の催促は L1 から L3 へ段階的に強まり、活動シグナルがあれば L1 へリセットされ、rule_key ごとに独立して管理される
@@ -1646,6 +1647,38 @@
 - 領域: DB
 - 関連: ADR 0005, #179
 - テスト: `server/src/db/migrate.test.ts::accepts activity_events.type = 'task_pause' after migrating to v4`
+- 宣言元: #179
+
+### G-179-7: 一時停止中のタスクを最優先タスクの候補に含めない
+
+- 種別: 検知ロジック
+- 領域: サボり検知
+- 関連: ADR 0004, #179
+- テスト: `server/src/detection/priority.test.ts::excludes a paused task from the candidates (#179 判断4: G-179-7)`
+- 宣言元: #179
+
+### G-179-8: 締切を過ぎた一時停止中のタスクを締切超過の抽出対象に含める
+
+- 種別: 検知ロジック
+- 領域: サボり検知
+- 関連: ADR 0004, #179
+- テスト: `server/src/detection/deadline-overdue.test.ts::includes an overdue paused task (#179 判断4: G-179-8)`
+- 宣言元: #179
+
+### G-179-9: 直近の着手タスクがその後一時停止されている場合は無音許容時間をフォールバック値とする
+
+- 種別: 検知ロジック
+- 領域: サボり検知
+- 関連: ADR 0004, #179
+- テスト: `server/src/detection/silence.test.ts::falls back to 45min when the last task_start target has since been paused (#179 判断4: G-179-9)`
+- 宣言元: #179
+
+### G-179-17: 一時停止中のタスクがあっても休憩延伸の催促を発火させない
+
+- 種別: 検知ロジック
+- 領域: サボり検知
+- 関連: ADR 0004, #179
+- テスト: `server/src/detection/break-overrun.test.ts::ignores task_pause events and still returns the active break (#179 判断4: G-179-17 回帰)`
 - 宣言元: #179
 
 ## Gaps（テストのない公開面）
