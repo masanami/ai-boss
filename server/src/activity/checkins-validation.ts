@@ -46,11 +46,11 @@ export function validateCheckinInput(
     return { valid: false, error: TYPE_ERROR };
   }
 
-  if (body.type === "task_start") {
+  if (body.type === "task_start" || body.type === "task_pause") {
     if (typeof body.task_id !== "number") {
       return {
         valid: false,
-        error: "task_id is required and must be a number for task_start",
+        error: `task_id is required and must be a number for ${body.type}`,
       };
     }
   } else if (
