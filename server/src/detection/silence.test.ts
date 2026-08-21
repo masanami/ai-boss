@@ -11,7 +11,7 @@ describe("computeSilenceThresholdMinutes", () => {
   });
 
   it("scales the threshold from the estimated_minutes of the last task_start target", () => {
-    const task = makeTask({ id: 1, estimated_minutes: 60 });
+    const task = makeTask({ id: 1, status: "in_progress", estimated_minutes: 60 });
     const events = [
       makeActivityEvent({ type: "task_start", task_id: 1, created_at: "2026-07-05T09:00:00.000Z" }),
     ];
@@ -20,7 +20,7 @@ describe("computeSilenceThresholdMinutes", () => {
   });
 
   it("clamps the scaled threshold down to the 90min ceiling", () => {
-    const task = makeTask({ id: 1, estimated_minutes: 300 });
+    const task = makeTask({ id: 1, status: "in_progress", estimated_minutes: 300 });
     const events = [
       makeActivityEvent({ type: "task_start", task_id: 1, created_at: "2026-07-05T09:00:00.000Z" }),
     ];
@@ -29,7 +29,7 @@ describe("computeSilenceThresholdMinutes", () => {
   });
 
   it("clamps the scaled threshold up to the 20min floor", () => {
-    const task = makeTask({ id: 1, estimated_minutes: 10 });
+    const task = makeTask({ id: 1, status: "in_progress", estimated_minutes: 10 });
     const events = [
       makeActivityEvent({ type: "task_start", task_id: 1, created_at: "2026-07-05T09:00:00.000Z" }),
     ];
@@ -38,8 +38,8 @@ describe("computeSilenceThresholdMinutes", () => {
   });
 
   it("uses the most recent task_start when there have been several", () => {
-    const oldTask = makeTask({ id: 1, estimated_minutes: 10 });
-    const newTask = makeTask({ id: 2, estimated_minutes: 60 });
+    const oldTask = makeTask({ id: 1, status: "in_progress", estimated_minutes: 10 });
+    const newTask = makeTask({ id: 2, status: "in_progress", estimated_minutes: 60 });
     const events = [
       makeActivityEvent({ type: "task_start", task_id: 1, created_at: "2026-07-05T08:00:00.000Z" }),
       makeActivityEvent({ type: "task_start", task_id: 2, created_at: "2026-07-05T09:00:00.000Z" }),
@@ -48,6 +48,15 @@ describe("computeSilenceThresholdMinutes", () => {
     expect(
       computeSilenceThresholdMinutes(events, [oldTask, newTask], silenceSettings),
     ).toBe(45);
+  });
+
+  it("falls back to 45min when the last task_start target has since been paused (#179 判断4: G-179-9)", () => {
+    const task = makeTask({ id: 1, status: "paused", estimated_minutes: 60 });
+    const events = [
+      makeActivityEvent({ type: "task_start", task_id: 1, created_at: "2026-07-05T09:00:00.000Z" }),
+    ];
+
+    expect(computeSilenceThresholdMinutes(events, [task], silenceSettings)).toBe(45);
   });
 });
 
