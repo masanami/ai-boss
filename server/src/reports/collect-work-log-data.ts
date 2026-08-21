@@ -16,10 +16,11 @@ function endOfLocalDay(date: Date): Date {
 }
 
 /**
- * 作業ログに載せる activity_events の種別（`chat_message` を除く5種）。
+ * 作業ログに載せる activity_events の種別（`chat_message` を除く6種）。
  * 「1メッセージごとに記録される機械イベントでノイズになる」ため
  * `chat_message` は収集段で既に除外する
- * （保証 G-170-45）。
+ * （保証 G-170-45）。`task_pause` は一時停止の事実を時系列に残すため対象に含める
+ * （G-179-13）。
  */
 export const WORK_LOG_ACTIVITY_EVENT_TYPES = [
   "task_start",
@@ -27,6 +28,7 @@ export const WORK_LOG_ACTIVITY_EVENT_TYPES = [
   "break_start",
   "break_end",
   "checkin",
+  "task_pause",
 ] as const;
 export type WorkLogActivityEventType = (typeof WORK_LOG_ACTIVITY_EVENT_TYPES)[number];
 
@@ -77,7 +79,7 @@ interface ActivityEventRow {
 
 /**
  * 対象ローカル暦日（00:00:00.000〜23:59:59.999）の決定ログ全件
- * （`active`/`revised`/`withdrawn`）と、対象5種の activity_events を
+ * （`active`/`revised`/`withdrawn`）と、対象6種の activity_events を
  * 読み取る。夕会 `ended_at` による範囲拡張は行わない
  * （作業ログは夕会に依存しない事実列挙 — 保証 G-170-45・暦日の基準は
  * docs/adr/0007-local-calendar-day-basis.md）。

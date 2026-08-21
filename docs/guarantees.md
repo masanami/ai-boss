@@ -1099,12 +1099,13 @@
 - テスト: `web/src/to-date-key.test.ts::zero-pads single-digit months and days`
 - 宣言元: #170
 
-### G-170-112: 本日のタスクは todo と in_progress を常に含み、done は当日完了のもののみを含め、dropped は含めない
+### G-170-112: 本日のタスクは todo と in_progress と paused を常に含み、done は当日完了のもののみを含め、dropped は含めない
 
 - 種別: 純粋関数
 - 領域: Web ロジック
-- 関連: ADR 0007
+- 関連: ADR 0007, #179（paused を対象へ含める改訂を裁可）
 - テスト: `web/src/today-tasks.test.ts::includes todo and in_progress tasks`
+- テスト: `web/src/today-tasks.test.ts::includes paused tasks (G-179-11)`
 - テスト: `web/src/today-tasks.test.ts::includes done tasks completed today (local date)`
 - テスト: `web/src/today-tasks.test.ts::excludes done tasks completed on a past day`
 - テスト: `web/src/today-tasks.test.ts::excludes done tasks without completed_at`
@@ -1646,6 +1647,31 @@
 - 領域: DB
 - 関連: ADR 0005, #179
 - テスト: `server/src/db/migrate.test.ts::accepts activity_events.type = 'task_pause' after migrating to v4`
+- 宣言元: #179
+
+### G-179-10: 一時停止中のタスクを今日のノルマ進捗の対象に含める
+
+- 種別: 純粋関数
+- 領域: ダッシュボード
+- 関連: #179
+- テスト: `server/src/dashboard/progress.test.ts::counts paused tasks toward total but not done (G-179-10)`
+- 宣言元: #179
+
+### G-179-11: 一時停止中のタスクをサイドパネルの今日のタスクに含める
+
+- 種別: 純粋関数
+- 領域: Web ロジック
+- 関連: #179
+- テスト: `web/src/today-tasks.test.ts::includes paused tasks (G-179-11)`
+- 宣言元: #179
+
+### G-179-13: 作業ログは一時停止を専用の固定フォーマットの行として出力する
+
+- 種別: データ形式
+- 領域: 日報・作業ログ
+- 関連: ADR 0006, #179
+- テスト: `server/src/reports/render-work-log.test.ts::renders task_pause as '一時停止: {タスク名}' (G-179-13)`
+- テスト: `server/src/reports/collect-work-log-data.test.ts::collects a task_pause event and resolves its task title (G-179-13)`
 - 宣言元: #179
 
 ## Gaps（テストのない公開面）
