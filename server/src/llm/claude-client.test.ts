@@ -81,6 +81,36 @@ function apiClient(env: NodeJS.ProcessEnv = { ANTHROPIC_API_KEY: "sk-ant-test-ke
   return createClaudeClient(env, "api");
 }
 
+/**
+ * A fake `MessageStream` whose `finalMessage()` rejects with `error` instead
+ * of resolving — used to simulate a transient SDK-level failure (network
+ * error, etc.) for the api backend's Issue #176 timeout/retry wiring tests
+ * below. Optionally replays `textDeltas` first (via `on("text", ...)`) so a
+ * test can simulate "some text was already relayed before the failure".
+ */
+function createFailingStream(error: Error, textDeltas: string[] = []) {
+  return {
+    on: vi.fn((event: string, listener: (delta: string) => void) => {
+      if (event === "text") {
+        for (const delta of textDeltas) {
+          listener(delta);
+        }
+      }
+    }),
+    finalMessage: vi.fn().mockRejectedValue(error),
+  };
+}
+
+/** A fake `MessageStream` whose `finalMessage()` never resolves — used to
+ * simulate an SDK call that hangs until the facade's shared timeout budget
+ * aborts it (Issue #176). */
+function createHangingStream() {
+  return {
+    on: vi.fn(),
+    finalMessage: vi.fn().mockReturnValue(new Promise(() => {})),
+  };
+}
+
 function textMessage(text: string): FakeMessage {
   return { content: text ? [{ type: "text", text, citations: null }] : [] };
 }
@@ -102,14 +132,14 @@ describe("createClaudeClient", () => {
     expect(() => createClaudeClient({}, "api")).toThrow(MissingApiKeyError);
   });
 
-  it("returns { backend: 'api', client } and constructs the Anthropic client with the api key, 120s timeout, and maxRetries 2", () => {
+  it("returns { backend: 'api', client } and constructs the Anthropic client with the api key, 120s timeout, and maxRetries 0 (Issue #176: SDK-level retry disabled in favor of the facade's runWithTimeoutAndRetry)", () => {
     const result = createClaudeClient({ ANTHROPIC_API_KEY: "sk-ant-test-key" }, "api");
 
     expect(result.backend).toBe("api");
     expect(anthropicCtor).toHaveBeenCalledWith({
       apiKey: "sk-ant-test-key",
       timeout: 120_000,
-      maxRetries: 2,
+      maxRetries: 0,
     });
   });
 
@@ -186,7 +216,13 @@ describe("streamBossMessage (no tools/executeTool — single round)", () => {
       messages: [{ role: "user", content: "こんにちは" }],
     });
 
-    expect(streamMock).toHaveBeenCalledWith(expect.objectContaining({ model: "claude-sonnet-5" }));
+    // Issue #176: the facade now always forwards its own shared AbortSignal
+    // (2nd arg to `client.messages.stream`) — assert its presence alongside
+    // the field under test rather than dropping the arg-count check.
+    expect(streamMock).toHaveBeenCalledWith(
+      expect.objectContaining({ model: "claude-sonnet-5" }),
+      expect.objectContaining({ signal: expect.any(AbortSignal) }),
+    );
   });
 
   it("streams with the given model when one is provided", async () => {
@@ -199,7 +235,10 @@ describe("streamBossMessage (no tools/executeTool — single round)", () => {
       messages: [{ role: "user", content: "こんにちは" }],
     });
 
-    expect(streamMock).toHaveBeenCalledWith(expect.objectContaining({ model: "claude-opus-4-8" }));
+    expect(streamMock).toHaveBeenCalledWith(
+      expect.objectContaining({ model: "claude-opus-4-8" }),
+      expect.objectContaining({ signal: expect.any(AbortSignal) }),
+    );
   });
 
   it("defaults max_tokens to 16000 when not given (Issue #117: max_tokens bounds thinking+text combined)", async () => {
@@ -211,7 +250,10 @@ describe("streamBossMessage (no tools/executeTool — single round)", () => {
       messages: [{ role: "user", content: "こんにちは" }],
     });
 
-    expect(streamMock).toHaveBeenCalledWith(expect.objectContaining({ max_tokens: 16000 }));
+    expect(streamMock).toHaveBeenCalledWith(
+      expect.objectContaining({ max_tokens: 16000 }),
+      expect.objectContaining({ signal: expect.any(AbortSignal) }),
+    );
   });
 
   it("defaults thinking to { type: 'disabled' } when not given (Issue #117 fail-safe default)", async () => {
@@ -225,6 +267,7 @@ describe("streamBossMessage (no tools/executeTool — single round)", () => {
 
     expect(streamMock).toHaveBeenCalledWith(
       expect.objectContaining({ thinking: { type: "disabled" } }),
+      expect.objectContaining({ signal: expect.any(AbortSignal) }),
     );
   });
 
@@ -244,6 +287,7 @@ describe("streamBossMessage (no tools/executeTool — single round)", () => {
         thinking: { type: "adaptive" },
         output_config: { effort: "low" },
       }),
+      expect.objectContaining({ signal: expect.any(AbortSignal) }),
     );
   });
 
@@ -282,14 +326,17 @@ describe("streamBossMessage (no tools/executeTool — single round)", () => {
       maxTokens: 2048,
     });
 
-    expect(streamMock).toHaveBeenCalledWith({
-      model: "claude-sonnet-5",
-      max_tokens: 2048,
-      system: "あなたはボスです",
-      messages,
-      tools,
-      thinking: { type: "disabled" },
-    });
+    expect(streamMock).toHaveBeenCalledWith(
+      {
+        model: "claude-sonnet-5",
+        max_tokens: 2048,
+        system: "あなたはボスです",
+        messages,
+        tools,
+        thinking: { type: "disabled" },
+      },
+      expect.objectContaining({ signal: expect.any(AbortSignal) }),
+    );
   });
 
   it("relays each streamed text delta to onTextDelta", async () => {
@@ -482,7 +529,10 @@ describe("createBossMessage", () => {
       messages: [{ role: "user", content: "進言内容" }],
     });
 
-    expect(createMock).toHaveBeenCalledWith(expect.objectContaining({ model: "claude-sonnet-5" }));
+    expect(createMock).toHaveBeenCalledWith(
+      expect.objectContaining({ model: "claude-sonnet-5" }),
+      expect.objectContaining({ signal: expect.any(AbortSignal) }),
+    );
   });
 
   it("passes system, messages, tools, toolChoice, and maxTokens through unchanged", async () => {
@@ -507,15 +557,18 @@ describe("createBossMessage", () => {
       maxTokens: 2048,
     });
 
-    expect(createMock).toHaveBeenCalledWith({
-      model: "claude-sonnet-5",
-      max_tokens: 2048,
-      system: "あなたはボスです",
-      messages,
-      tools,
-      tool_choice: { type: "tool", name: "submit_verdict" },
-      thinking: { type: "disabled" },
-    });
+    expect(createMock).toHaveBeenCalledWith(
+      {
+        model: "claude-sonnet-5",
+        max_tokens: 2048,
+        system: "あなたはボスです",
+        messages,
+        tools,
+        tool_choice: { type: "tool", name: "submit_verdict" },
+        thinking: { type: "disabled" },
+      },
+      expect.objectContaining({ signal: expect.any(AbortSignal) }),
+    );
   });
 
   it("defaults thinking to { type: 'disabled' } when not given", async () => {
@@ -528,6 +581,7 @@ describe("createBossMessage", () => {
 
     expect(createMock).toHaveBeenCalledWith(
       expect.objectContaining({ thinking: { type: "disabled" } }),
+      expect.objectContaining({ signal: expect.any(AbortSignal) }),
     );
   });
 
@@ -1080,6 +1134,172 @@ describe("createBossMessage / requestVerdict (claude-code backend wiring)", () =
       expect(warnSpy).toHaveBeenCalledWith(CLAUDE_CODE_UNAVAILABLE_HINT);
     } finally {
       warnSpy.mockRestore();
+      vi.useRealTimers();
+    }
+  });
+});
+
+// Issue #176: the `api` backend now shares the same AC-11 timeout/retry
+// policy as `claude-code` (see `dispatchStream`/`dispatchCreate`'s doc
+// comments in claude-client.ts). These tests mirror the equivalent
+// "claude-code backend wiring" blocks above, but exercise the api-backend
+// mocks (`anthropicCtor`/`streamMock`/`createMock`) declared at this file's
+// top instead of the claude-code mocks.
+describe("streamBossMessage (api backend timeout/retry wiring, Issue #176)", () => {
+  it("retries once with exponential backoff after a transient failure with no side effect (AC-11)", async () => {
+    vi.useFakeTimers();
+    try {
+      streamMock
+        .mockReturnValueOnce(createFailingStream(new Error("transient")))
+        .mockReturnValueOnce(createFakeStream(textMessage("ok")));
+
+      const promise = streamBossMessage(apiClient(), {
+        messages: [{ role: "user", content: "hi" }],
+      });
+      await vi.advanceTimersByTimeAsync(1_000);
+
+      const result = await promise;
+      expect(result.content).toEqual([{ type: "text", text: "ok" }]);
+      expect(streamMock).toHaveBeenCalledTimes(2);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("does not retry once text has already been streamed to the caller during the failed attempt (AC-2 — no duplicated text on retry)", async () => {
+    const onTextDelta = vi.fn();
+    streamMock.mockReturnValueOnce(
+      createFailingStream(new Error("failed mid-stream, after text was already relayed"), ["今日は"]),
+    );
+
+    await expect(
+      streamBossMessage(
+        apiClient(),
+        { messages: [{ role: "user", content: "進捗どうですか" }] },
+        { onTextDelta },
+      ),
+    ).rejects.toThrow("failed mid-stream, after text was already relayed");
+
+    // A retry here would have called client.messages.stream a 2nd time and
+    // relayed "今日は" to `onTextDelta` again, duplicating it in both the SSE
+    // stream and the persisted message.
+    expect(streamMock).toHaveBeenCalledTimes(1);
+    expect(onTextDelta).toHaveBeenCalledTimes(1);
+  });
+
+  it("fails with LlmTimeoutError once the shared timeout budget elapses, aborting the in-flight SDK call via the forwarded AbortSignal (AC-1)", async () => {
+    vi.useFakeTimers();
+    try {
+      streamMock.mockReturnValue(createHangingStream());
+
+      const promise = streamBossMessage(apiClient(), {
+        messages: [{ role: "user", content: "hi" }],
+      });
+      promise.catch(() => {});
+      await vi.advanceTimersByTimeAsync(120_000);
+
+      await expect(promise).rejects.toThrow(LlmTimeoutError);
+      // The shared AbortSignal (Issue #176) must reach the SDK call's
+      // request options, not just the caller's own `await` — otherwise the
+      // in-flight HTTP request keeps running after the facade gives up.
+      const [, options] = streamMock.mock.calls[0] as [unknown, { signal?: AbortSignal }];
+      expect(options.signal?.aborted).toBe(true);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("does not exceed 3 total attempts (AC-3): the facade's retries alone, not compounded with the SDK's own maxRetries", async () => {
+    vi.useFakeTimers();
+    try {
+      streamMock.mockReturnValue(createFailingStream(new Error("still failing")));
+
+      const promise = streamBossMessage(apiClient(), {
+        messages: [{ role: "user", content: "hi" }],
+      });
+      promise.catch(() => {});
+      await vi.advanceTimersByTimeAsync(1_000 + 2_000 + 1);
+
+      await expect(promise).rejects.toThrow("still failing");
+      // If the SDK's own maxRetries (2, pre-#176) were still active
+      // alongside the facade's retries, this would be up to 3 × 3 = 9 calls
+      // instead of exactly 3 — see `api-backend.ts`'s `createApiClient`
+      // (maxRetries: 0) and this file's `createApiClient` test above.
+      expect(streamMock).toHaveBeenCalledTimes(3);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("retries a later round even after an earlier round's tool has already executed, without re-executing that tool (multi-round side-effect safety)", async () => {
+    vi.useFakeTimers();
+    try {
+      const executeTool = vi.fn().mockResolvedValue({ content: "ok", isError: false });
+      // Round 1 succeeds and returns a tool_use block.
+      streamMock.mockReturnValueOnce(
+        createFakeStream(toolUseMessage("tool_1", "create_task", { title: "資料作成" })),
+      );
+      // Round 2's first attempt fails transiently (no side effect within
+      // *that* attempt — the round-1 tool already completed before round 2
+      // was even dispatched), is retried once, then succeeds.
+      streamMock
+        .mockReturnValueOnce(createFailingStream(new Error("transient round2 failure")))
+        .mockReturnValueOnce(createFakeStream(textMessage("了解した")));
+
+      const promise = streamBossMessage(
+        apiClient(),
+        { messages: [{ role: "user", content: "タスクを作って" }], tools: [] },
+        { executeTool },
+      );
+      await vi.advanceTimersByTimeAsync(1_000);
+
+      const result = await promise;
+      expect(result.content).toEqual([{ type: "text", text: "了解した" }]);
+      expect(executeTool).toHaveBeenCalledTimes(1);
+      expect(executeTool).toHaveBeenCalledWith("create_task", { title: "資料作成" });
+      expect(streamMock).toHaveBeenCalledTimes(3);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});
+
+describe("createBossMessage (api backend timeout/retry wiring, Issue #176)", () => {
+  it("retries createBossMessage on a transient failure (no tool execution on this path, always safe to retry — AC-11)", async () => {
+    vi.useFakeTimers();
+    try {
+      createMock
+        .mockRejectedValueOnce(new Error("transient"))
+        .mockResolvedValueOnce(textMessage("今日も一日決めた通りにやれ"));
+
+      const promise = createBossMessage(apiClient(), {
+        messages: [{ role: "user", content: "ひとことをくれ" }],
+      });
+      await vi.advanceTimersByTimeAsync(1_000);
+
+      const result = await promise;
+      expect(result.content).toEqual([{ type: "text", text: "今日も一日決めた通りにやれ" }]);
+      expect(createMock).toHaveBeenCalledTimes(2);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("fails with LlmTimeoutError once the shared timeout budget elapses, aborting the in-flight SDK call via the forwarded AbortSignal (AC-1)", async () => {
+    vi.useFakeTimers();
+    try {
+      createMock.mockReturnValue(new Promise(() => {}));
+
+      const promise = createBossMessage(apiClient(), {
+        messages: [{ role: "user", content: "進言内容" }],
+      });
+      promise.catch(() => {});
+      await vi.advanceTimersByTimeAsync(120_000);
+
+      await expect(promise).rejects.toThrow(LlmTimeoutError);
+      const [, options] = createMock.mock.calls[0] as [unknown, { signal?: AbortSignal }];
+      expect(options.signal?.aborted).toBe(true);
+    } finally {
       vi.useRealTimers();
     }
   });

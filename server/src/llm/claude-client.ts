@@ -307,32 +307,88 @@ async function runClaudeCodeDispatch<T>(attempt: () => Promise<T>): Promise<T> {
 }
 
 /**
- * Dispatches a single streaming round. For `claude-code`, the whole call
- * (Agent SDK `query()`, including its own in-process MCP tool execution) is
- * wrapped in {@link runWithTimeoutAndRetry} (AC-11 · non-functional
- * requirement "信頼性"): the 120s/2-retries policy lives here, at the
- * facade layer, rather than being delegated to the SDK/CLI's own client
- * options (unlike the `api` backend — see that function's doc comment for
- * why doubling up would be wrong). `hasSideEffect` becomes `true` the moment
+ * Builds the `sideEffectOccurred`-tracking `onTextDelta`/`executeTool`
+ * wrappers shared by both of {@link dispatchStream}'s backend branches
+ * (self-review: code-reviewer/design-reviewer independently flagged this
+ * ticket's own first-draft duplication of this block between the
+ * `claude-code` and `api` branches (Issue #176 extended the block to the
+ * newly-wrapped `api` branch by copying it, rather than sharing it) as a DRY
+ * violation — the side-effect definition is exactly the
+ * unified AC-11 retry-safety invariant {@link dispatchStream}'s own doc
+ * comment describes, so letting it drift into two copies risked the two
+ * backends' retry-safety silently diverging). Returns fresh closures/state
+ * on every call (never shared across calls) so each `dispatchStream`
+ * invocation gets its own `sideEffectOccurred` flag, per that same doc
+ * comment. `trackedExecuteTool` is only consumed by the `claude-code`
+ * branch (the `api` branch's `executeTool` runs in {@link streamBossMessage}'s
+ * outer round loop, never inside a single `dispatchStream` call — see that
+ * function's doc comment) but is harmless (and typed) to build
+ * unconditionally here rather than splitting this helper in two.
+ */
+function trackSideEffects(callbacks?: StreamBossMessageCallbacks): {
+  trackedOnTextDelta: OnTextDelta | undefined;
+  trackedExecuteTool: BossToolExecutor | undefined;
+  hasSideEffect: () => boolean;
+} {
+  let sideEffectOccurred = false;
+  const trackedOnTextDelta: OnTextDelta | undefined = callbacks?.onTextDelta
+    ? (textDelta) => {
+        sideEffectOccurred = true;
+        callbacks.onTextDelta!(textDelta);
+      }
+    : undefined;
+  const trackedExecuteTool: BossToolExecutor | undefined = callbacks?.executeTool
+    ? async (name, input) => {
+        sideEffectOccurred = true;
+        return callbacks.executeTool!(name, input);
+      }
+    : undefined;
+  return { trackedOnTextDelta, trackedExecuteTool, hasSideEffect: () => sideEffectOccurred };
+}
+
+/**
+ * Dispatches a single streaming round, for either backend. The whole call —
+ * for `claude-code`, the Agent SDK `query()` (including its own in-process
+ * MCP tool execution); for `api` (Issue #176 — previously excluded, see
+ * `runWithTimeoutAndRetry`'s doc comment for the history), a single
+ * `streamApiMessage` request — is wrapped in {@link runWithTimeoutAndRetry}
+ * (AC-11 · non-functional requirement "信頼性"): the timeout/retry policy
+ * lives here, at the facade layer, uniformly across both backends, rather
+ * than being delegated to either backend's own client options. `hasSideEffect`
+ * (built by {@link trackSideEffects} above) becomes `true` the moment
  * `executeTool` **or** `onTextDelta` is invoked at all (regardless of
  * `executeTool`'s result), which is intentionally conservative: once *any*
  * tool call reachable through `executeTool` has been dispatched — DB-writing
  * (`create_task` / `update_task` / `record_decision`) or DB-read-only
- * (`get_activity_log`, Issue #150) alike — or any text has already been
- * streamed to the caller (which relays it via SSE and accumulates it into
- * the message that gets persisted — see `chat-messages-route.ts`'s
- * `fullText`), a later failure in that same attempt must not trigger a
- * retry. Retrying would re-run the whole `query()` from scratch, which would
- * either duplicate a DB write, re-run a read unnecessarily, or duplicate
- * already-relayed text (self-review: without tracking `onTextDelta` too, a
- * mid-stream failure followed by a successful retry would leave the
- * persisted message containing the first attempt's partial text followed by
- * the second attempt's full text). Treating read-only tool calls as a side
- * effect too is deliberately coarse — it costs at most one skipped retry
- * opportunity, not a correctness bug — rather than threading a
- * read-vs-write distinction through this facade for a single tool (self-
- * review: judged out of this ticket's scope). See the non-functional
+ * (`get_activity_log`, Issue #150) alike — or any text has
+ * already been streamed to the caller (which relays it via SSE and
+ * accumulates it into the message that gets persisted — see
+ * `chat-messages-route.ts`'s `fullText`), a later failure in that same
+ * attempt must not trigger a retry. Retrying would re-run the whole attempt
+ * from scratch, which would either duplicate a DB write, re-run a read
+ * unnecessarily, or duplicate already-relayed text (self-review: without
+ * tracking `onTextDelta` too, a mid-stream failure followed by a successful
+ * retry would leave the persisted message containing the first attempt's
+ * partial text followed by the second attempt's full text). Treating
+ * read-only tool calls as a side effect too is deliberately coarse — it costs
+ * at most one skipped retry opportunity, not a correctness bug — rather than
+ * threading a read-vs-write distinction through this facade for a single tool
+ * (self-review: judged out of this ticket's scope). See the non-functional
  * requirement's point 3 and `callbacks.executeTool`'s doc comment.
+ *
+ * For `api` specifically: `executeTool` is never invoked *inside* this
+ * function's own dispatch — `streamApiMessage` has no internal tool loop of
+ * its own; `tool_use` blocks it returns are executed by
+ * {@link streamBossMessage}'s own round loop only *after* this call has
+ * already resolved (Issue #78's "ツール実行主体の一本化" applies at the
+ * facade's outer loop for `api`, not inside a single backend call the way
+ * it does for `claude-code`'s in-process Agent SDK loop). So the `api`
+ * branch below only wires `trackedOnTextDelta` from {@link trackSideEffects}
+ * — there is no `trackedExecuteTool` to wire into `streamApiMessage` because
+ * nothing in that function ever calls it. Each call to this function (i.e.
+ * each `api` round in {@link streamBossMessage}'s tool-use loop) gets its
+ * *own* fresh `hasSideEffect`/timeout budget — see that function's own doc
+ * comment for the multi-round scope this implies.
  */
 async function dispatchStream(
   client: BossLlmClient,
@@ -341,19 +397,7 @@ async function dispatchStream(
 ): Promise<BossLlmMessage> {
   if (client.backend === "claude-code") {
     const resolved = resolveRequest(request);
-    let sideEffectOccurred = false;
-    const trackedOnTextDelta: OnTextDelta | undefined = callbacks?.onTextDelta
-      ? (textDelta) => {
-          sideEffectOccurred = true;
-          callbacks.onTextDelta!(textDelta);
-        }
-      : undefined;
-    const trackedExecuteTool: BossToolExecutor | undefined = callbacks?.executeTool
-      ? async (name, input) => {
-          sideEffectOccurred = true;
-          return callbacks.executeTool!(name, input);
-        }
-      : undefined;
+    const { trackedOnTextDelta, trackedExecuteTool, hasSideEffect } = trackSideEffects(callbacks);
     return runClaudeCodeDispatch(() =>
       runWithTimeoutAndRetry(
         (signal) =>
@@ -372,20 +416,29 @@ async function dispatchStream(
               env: client.env,
             },
           ),
-        () => sideEffectOccurred,
+        hasSideEffect,
       ),
     );
   }
-  return streamApiMessage(client.client, resolveRequest(request), callbacks?.onTextDelta);
+
+  const resolved = resolveRequest(request);
+  const { trackedOnTextDelta, hasSideEffect } = trackSideEffects(callbacks);
+  return runWithTimeoutAndRetry(
+    (signal) => streamApiMessage(client.client, resolved, trackedOnTextDelta, signal),
+    hasSideEffect,
+  );
 }
 
 /**
  * Dispatches a single non-streaming round (`createBossMessage` /
- * `requestVerdict`). Never executes a DB-writing tool itself — `submit_verdict`
- * has no execution function (see `backends/claude-code-backend.ts`'s doc
- * comment) and the dashboard-comment / notification-body callers pass no
- * tools at all — so `hasSideEffect` is always `false` here: every failure is
- * safe to retry (AC-11).
+ * `requestVerdict`), for either backend (Issue #176 extended this to `api` —
+ * see `dispatchStream`'s doc comment for the parallel history). Never
+ * executes a DB-writing tool itself — `submit_verdict` has no execution
+ * function (see `backends/claude-code-backend.ts`'s doc comment), the
+ * dashboard-comment / notification-body callers pass no tools at all, and
+ * `api`'s `createApiMessage` has no tool-execution loop of its own either —
+ * so `hasSideEffect` is always `false` here: every failure is safe to retry
+ * (AC-11).
  */
 async function dispatchCreate(
   client: BossLlmClient,
@@ -409,7 +462,12 @@ async function dispatchCreate(
       ),
     );
   }
-  return createApiMessage(client.client, resolveRequest(request));
+
+  const resolved = resolveRequest(request);
+  return runWithTimeoutAndRetry(
+    (signal) => createApiMessage(client.client, resolved, signal),
+    () => false,
+  );
 }
 
 /**
@@ -440,6 +498,29 @@ async function dispatchCreate(
  * SDK-internal round) rather than strictly "the last round's message" — no
  * caller relies on that distinction today (see the backend module's doc
  * comment).
+ *
+ * Issue #176 — known scope of the shared-timeout guarantee for `api`: each
+ * iteration of this loop is its own {@link dispatchStream} call, so each
+ * gets its *own* fresh `runWithTimeoutAndRetry` budget (default 120s) rather
+ * than the whole tool-use conversation sharing one budget the way a single
+ * `claude-code` dispatch does (its Agent SDK `query()` runs every round
+ * internally, inside one `runWithTimeoutAndRetry` call). This bounds only
+ * the *LLM-call* portion of an `api` conversation: the sum of every round's
+ * budget is capped at `MAX_TOOL_ROUNDS` × the per-round budget (5 × 120s =
+ * 600s default — a hard ceiling on that portion alone, and still a strict
+ * improvement over before Issue #176, where the `api` branch had *no*
+ * facade-level timeout at all and a single round could hang indefinitely on
+ * the underlying HTTP call). It does **not** bound the loop's total
+ * wall-clock time: `callbacks.executeTool`/`callbacks.onToolEvent` (below,
+ * between rounds) run outside every round's `runWithTimeoutAndRetry` call
+ * and carry no timeout of their own — a slow tool execution can extend the
+ * conversation past that 600s figure. Neither of these is the literal "one
+ * continuous clock for the whole call" ADR 0003 帰結 originally described for
+ * `claude-code`; unifying this loop's timeout across rounds (LLM calls and
+ * tool executions alike) would require lifting the
+ * `AbortController`/`runWithTimeoutAndRetry` call above this loop and
+ * reworking `hasSideEffect` to track side effects across rounds too — judged
+ * out of Issue #176's scope (self-review: design-reviewer/code-reviewer).
  */
 export async function streamBossMessage(
   client: BossLlmClient,
@@ -611,13 +692,15 @@ function rejectOnAbort(signal: AbortSignal, error: Error): Promise<never> {
 /**
  * Runs `attempt` under a unified timeout + exponential-backoff retry policy
  * (AC-11). Wired into {@link dispatchStream}/{@link dispatchCreate}'s
- * `claude-code` branches (Issue #79) — see their doc comments for the
- * `hasSideEffect` contract each passes. Do **not** apply this to the `api` backend: it
- * already delegates its timeout/retry policy to the Anthropic SDK's own
- * `timeout`/`maxRetries` client options (see `backends/api-backend.ts`), and
- * wrapping it here too would compound retries (up to 3 × 3 = 9 attempts) —
- * see docs/adr/0003-llm-backend-isolation.md 帰結（統一タイムアウト・リトライ
- * はファサード層の責務）.
+ * `claude-code` **and** `api` branches alike (Issue #79, extended to `api` in
+ * Issue #176) — see their doc comments for the `hasSideEffect` contract each
+ * passes. The `api` backend's own SDK client is constructed with
+ * `maxRetries: 0` (see `backends/api-backend.ts`'s `createApiClient`), so
+ * this facade-level policy is the *only* retry policy in effect for it —
+ * applying it here while the SDK also retried would compound retries (up to
+ * 3 × 3 = 9 attempts), which is exactly what `maxRetries: 0` at the SDK layer
+ * avoids. See docs/adr/0003-llm-backend-isolation.md 帰結（統一タイムアウト・
+ * リトライはファサード層の責務、両バックエンド共通）.
  *
  * `timeoutMs` bounds the *whole* call (all retries combined), not each
  * individual attempt: a single `AbortController`/timer is created once up

@@ -38,13 +38,13 @@ function createFakeStream(finalMessage: FakeMessage, textDeltas: string[] = []) 
 }
 
 describe("createApiClient", () => {
-  it("constructs the Anthropic client with the api key, 120s timeout, and maxRetries 2", () => {
+  it("constructs the Anthropic client with the api key, 120s timeout, and maxRetries 0 (Issue #176: SDK-level retry disabled — the facade's runWithTimeoutAndRetry is the sole retry policy)", () => {
     createApiClient("sk-ant-test-key");
 
     expect(anthropicCtor).toHaveBeenCalledWith({
       apiKey: "sk-ant-test-key",
       timeout: 120_000,
-      maxRetries: 2,
+      maxRetries: 0,
     });
   });
 });
@@ -170,6 +170,45 @@ describe("streamApiMessage", () => {
     // signature intact) — dropping them there would break the follow-up
     // round whenever thinking is enabled.
     expect(result.rawContent).toEqual(finalMessage.content);
+  });
+
+  it("forwards the given AbortSignal to the SDK stream call's request options (Issue #176)", async () => {
+    const fakeStream = createFakeStream({ content: [] });
+    streamMock.mockReturnValue(fakeStream);
+    const client = createApiClient("sk-ant-test-key");
+    const controller = new AbortController();
+
+    await streamApiMessage(
+      client,
+      {
+        model: "claude-sonnet-5",
+        messages: [{ role: "user", content: "こんにちは" }],
+        maxTokens: 1024,
+        thinking: { type: "disabled" },
+      },
+      undefined,
+      controller.signal,
+    );
+
+    expect(streamMock).toHaveBeenCalledWith(
+      expect.objectContaining({ model: "claude-sonnet-5" }),
+      { signal: controller.signal },
+    );
+  });
+
+  it("calls client.messages.stream with a single argument (no request options) when no AbortSignal is given", async () => {
+    const fakeStream = createFakeStream({ content: [] });
+    streamMock.mockReturnValue(fakeStream);
+    const client = createApiClient("sk-ant-test-key");
+
+    await streamApiMessage(client, {
+      model: "claude-sonnet-5",
+      messages: [{ role: "user", content: "こんにちは" }],
+      maxTokens: 1024,
+      thinking: { type: "disabled" },
+    });
+
+    expect(streamMock.mock.calls[0]).toHaveLength(1);
   });
 
   it("does not warn when content is non-empty", async () => {
@@ -314,5 +353,41 @@ describe("createApiMessage", () => {
     expect(result.content).toEqual([
       { type: "tool_use", id: "tool_1", name: "submit_verdict", input: { verdict: "upheld" } },
     ]);
+  });
+
+  it("forwards the given AbortSignal to the SDK create call's request options (Issue #176)", async () => {
+    createMock.mockResolvedValue({ content: [] });
+    const client = createApiClient("sk-ant-test-key");
+    const controller = new AbortController();
+
+    await createApiMessage(
+      client,
+      {
+        model: "claude-sonnet-5",
+        messages: [{ role: "user", content: "進言内容" }],
+        maxTokens: 1024,
+        thinking: { type: "disabled" },
+      },
+      controller.signal,
+    );
+
+    expect(createMock).toHaveBeenCalledWith(
+      expect.objectContaining({ model: "claude-sonnet-5" }),
+      { signal: controller.signal },
+    );
+  });
+
+  it("calls client.messages.create with a single argument (no request options) when no AbortSignal is given", async () => {
+    createMock.mockResolvedValue({ content: [] });
+    const client = createApiClient("sk-ant-test-key");
+
+    await createApiMessage(client, {
+      model: "claude-sonnet-5",
+      messages: [{ role: "user", content: "進言内容" }],
+      maxTokens: 1024,
+      thinking: { type: "disabled" },
+    });
+
+    expect(createMock.mock.calls[0]).toHaveLength(1);
   });
 });
