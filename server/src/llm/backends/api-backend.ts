@@ -9,12 +9,37 @@ import type { BossContentBlock, BossLlmMessage, OnTextDelta } from "../claude-cl
  * クリティカル設計決定（docs/adr/0002-api-key-and-llm-call-path.md）:
  * - API キーは呼び出し元（ファサード）が `process.env.ANTHROPIC_API_KEY` から
  *   読んで渡す（このモジュールは env を直接読まない）
- * - リトライは指数バックオフで最大2回、タイムアウトはリクエスト単位120秒
- *   （SDK 自身のオプションとして委譲。変更しない）
+ *
+ * Issue #176: 呼び出し全体で共有されるタイムアウトと副作用後の再試行抑止と
+ * いう統一ポリシーはファサード層（`claude-client.ts` の
+ * `runWithTimeoutAndRetry`）の責務であり、この `api` バックエンドも
+ * `claude-code` バックエンドと同様にそれへ従う（docs/adr/0003 帰結）。その
+ * ため SDK 自身のリトライは `maxRetries: 0` で無効化する — 有効なまま
+ * ファサード側のリトライで包むと二重にリトライがかかり最大 3 × 3 = 9 回
+ * 試行になってしまう（トレードオフとして、SDK 自身のエラー種別判定・
+ * `Retry-After` 尊重は失われファサードの一律リトライへ一本化される。
+ * `claude-code` 側で Agent SDK 自身がリトライを行うかは本アプリのコードから
+ * は制御・検証できないため、この一本化による相対的な非対称の有無は
+ * 未確認——検証が必要になった場合は別途 Issue を切る、self-review:
+ * design-reviewer）。`streamApiMessage` /
+ * `createApiMessage` はファサードから渡された `AbortSignal` を SDK 呼び出し
+ * のリクエストオプション（第2引数）へ転送し、ファサードが管理する共有の
+ * タイムアウト予算に SDK 呼び出し自体を従わせる。SDK 自身の `timeout`
+ * （`REQUEST_TIMEOUT_MS` = 120秒、`claude-client.ts` の
+ * `DEFAULT_TIMEOUT_MS` と現状同値）は下位のバックストップとして残す —
+ * 本番の唯一の呼び出し元（ファサード）は常に `signal` を渡すため、通常は
+ * ファサードの `AbortController` が先に発火し SDK 側の `timeout` に到達する
+ * ことはない。ファサード既定の `timeoutMs` を将来 120 秒より大きく変える
+ * 場合は、この値もあわせて引き上げないと SDK 側がリクエスト単位の暗黙の
+ * 上限として先に効いてしまう（「呼び出し全体で共有する」という設計と
+ * 矛盾する）点に注意（self-review: code-reviewer/design-reviewer）。
  */
 
 const REQUEST_TIMEOUT_MS = 120_000;
-const MAX_RETRIES = 2;
+/** Issue #176: SDK 自身のリトライを無効化する（理由はこのファイル冒頭の doc
+ * comment、および `claude-client.ts` の `runWithTimeoutAndRetry` の doc
+ * comment を参照）。 */
+const MAX_RETRIES = 0;
 
 /** Constructs a configured Anthropic client for the given (already-resolved,
  * non-empty) API key. Callers (the facade) are responsible for the
@@ -109,13 +134,24 @@ function normalizeMessage(message: Anthropic.Message): BossLlmMessage {
  * "Only consumed by `createBossMessage`"), which no `streamBossMessage`
  * caller has ever relied on. `createApiMessage` below is the one that
  * forwards it.
+ *
+ * `signal` (Issue #176) is the facade's shared `AbortSignal` for the whole
+ * `runWithTimeoutAndRetry` call — forwarded to the SDK as the request
+ * options' second argument so the in-flight HTTP request itself is aborted
+ * once the facade's shared timeout budget elapses, not just the caller's
+ * `await`. Only included in the `client.messages.stream(...)` call when
+ * given (same "omit rather than pass `undefined`" convention as
+ * `output_config` below) so call sites that don't manage a signal (e.g.
+ * `api-backend.test.ts`'s direct-call tests) keep observing a single-
+ * argument call.
  */
 export function streamApiMessage(
   client: Anthropic,
   request: ApiMessageRequest,
   onTextDelta?: OnTextDelta,
+  signal?: AbortSignal,
 ): Promise<BossLlmMessage> {
-  const stream = client.messages.stream({
+  const params = {
     model: request.model,
     max_tokens: request.maxTokens,
     system: request.system,
@@ -127,7 +163,8 @@ export function streamApiMessage(
     // call site needs an explicit "use the API default" signal, so omitting
     // the key entirely when unset keeps the request minimal.
     ...(request.outputConfig !== undefined ? { output_config: request.outputConfig } : {}),
-  });
+  };
+  const stream = signal ? client.messages.stream(params, { signal }) : client.messages.stream(params);
 
   if (onTextDelta) {
     stream.on("text", onTextDelta);
@@ -139,21 +176,26 @@ export function streamApiMessage(
 /**
  * Sends `request` to Claude and resolves with the full response
  * (normalized to `BossLlmMessage`) in one round-trip (no streaming).
+ *
+ * `signal` (Issue #176): see {@link streamApiMessage}'s doc comment — same
+ * shared-`AbortSignal`-forwarding contract, only included in the
+ * `client.messages.create(...)` call when given.
  */
 export function createApiMessage(
   client: Anthropic,
   request: ApiMessageRequest,
+  signal?: AbortSignal,
 ): Promise<BossLlmMessage> {
-  return client.messages
-    .create({
-      model: request.model,
-      max_tokens: request.maxTokens,
-      system: request.system,
-      messages: request.messages,
-      tools: request.tools,
-      tool_choice: request.toolChoice,
-      thinking: request.thinking,
-      ...(request.outputConfig !== undefined ? { output_config: request.outputConfig } : {}),
-    })
-    .then(normalizeMessage);
+  const params = {
+    model: request.model,
+    max_tokens: request.maxTokens,
+    system: request.system,
+    messages: request.messages,
+    tools: request.tools,
+    tool_choice: request.toolChoice,
+    thinking: request.thinking,
+    ...(request.outputConfig !== undefined ? { output_config: request.outputConfig } : {}),
+  };
+  const result = signal ? client.messages.create(params, { signal }) : client.messages.create(params);
+  return result.then(normalizeMessage);
 }
