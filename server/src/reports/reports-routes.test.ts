@@ -73,6 +73,34 @@ vi.mock("../llm/claude-client.js", async (importOriginal) => {
   };
 });
 
+// Issue #214: `POST /:id/end` also drives session-summary generation
+// (Issue #96, sessions-routes.ts step 1) via `generateSessionSummary`, which
+// calls the *real* `createBossMessage` — a call this file never intended to
+// exercise (only `requestVerdict`, used by the report's value-extraction
+// step, is mocked above; `createClaudeClientMock` returns `{ client: {} }`,
+// which has no `.messages`). Before #214 this was harmless: the api
+// backend's `dispatchCreate` called `createApiMessage` directly, so the
+// missing `.messages` threw synchronously and was swallowed by
+// `generateSessionSummary`'s own try/catch with no timer involved. #214
+// wrapped `dispatchCreate`'s `api` branch in `runWithTimeoutAndRetry`, so
+// the same synchronous throw is now caught *inside* the retry loop and
+// followed by a real backoff `delay()` wait before retrying — under this
+// suite's `vi.useFakeTimers()` that delay's `setTimeout` never fires,
+// hanging the 3 tests that call `POST /:id/end` below. Mocking
+// `session-summary.js` (same pattern as
+// `sessions-routes-daily-report-hook.test.ts`) keeps this file's scope to
+// only what it actually tests (report content), sidestepping the
+// unintended real dispatch entirely — session summary text plays no part
+// in daily-report content (sessions-routes.ts's comment: the two steps are
+// independent).
+const { generateSessionSummaryMock } = vi.hoisted(() => ({
+  generateSessionSummaryMock: vi.fn(),
+}));
+
+vi.mock("../sessions/session-summary.js", () => ({
+  generateSessionSummary: generateSessionSummaryMock,
+}));
+
 const env = { ANTHROPIC_API_KEY: "sk-ant-test-key" };
 
 describe("reports routes", () => {
@@ -83,6 +111,7 @@ describe("reports routes", () => {
     runMigrations(db);
     createClaudeClientMock.mockReset();
     requestVerdictMock.mockReset();
+    generateSessionSummaryMock.mockReset();
     createClaudeClientMock.mockReturnValue({ backend: "api", client: {} });
     requestVerdictMock.mockResolvedValue({
       called: true,
@@ -91,6 +120,7 @@ describe("reports routes", () => {
         data: { reportSummary: "要点", bossComment: "講評", keyDecisions: "なし", carryOver: "なし" },
       },
     });
+    generateSessionSummaryMock.mockResolvedValue("夕会の要約");
   });
 
   afterEach(() => {
