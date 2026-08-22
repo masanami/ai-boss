@@ -87,16 +87,19 @@ async function loadTodaysSession(
  *
  * On mount, restores today's (local day) session that should be considered
  * "active": an unfinished morning/evening session if one is open, otherwise
- * today's adhoc session. This is what lets a morning/evening conversation
- * survive a tab switch (Issue #93 lifts this hook up to `AppLayout` so it is
- * not remounted when the chat tab is left) or a page reload. A session from
- * a previous day is left alone either way — adhoc chat is scoped to a daily
- * window, so a stale one is created lazily on the first send instead.
+ * today's unfinished adhoc session. This is what lets a morning/evening
+ * conversation survive a tab switch (Issue #93 lifts this hook up to
+ * `AppLayout` so it is not remounted when the chat tab is left) or a page
+ * reload. A session from a previous day is left alone either way — adhoc
+ * chat is scoped to a daily window, so a stale one is created lazily on the
+ * first send instead. An already-ended adhoc session is treated the same as
+ * having none: it is never restored as active or as the return point below
+ * (Issue #206).
  *
- * When a morning/evening session is restored as active, today's adhoc
- * session (if any) is also fetched and kept in `adhocSnapshotRef` so ending
- * the restored meeting can return to the adhoc conversation without an
- * extra round-trip, exactly like `startSession` already does.
+ * When a morning/evening session is restored as active, today's unfinished
+ * adhoc session (if any) is also fetched and kept in `adhocSnapshotRef` so
+ * ending the restored meeting can return to the adhoc conversation without
+ * an extra round-trip, exactly like `startSession` already does.
  */
 export function useChat(): UseChatResult {
   const [entries, setEntries] = useState<ChatEntry[]>([]);
