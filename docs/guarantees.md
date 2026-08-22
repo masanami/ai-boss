@@ -1774,6 +1774,7 @@
 - 種別: 検知ロジック
 - 領域: サボり検知
 - 関連: ADR 0004, #179
+- テスト: `server/src/detection/rule-engine.test.ts::does not fire break_overrun when only a paused task exists and no break is active (#179 判断4: G-179-17)`
 - テスト: `server/src/detection/break-overrun.test.ts::ignores task_pause events and still returns the active break (#179 判断4: G-179-17 回帰)`
 - 宣言元: #179
 

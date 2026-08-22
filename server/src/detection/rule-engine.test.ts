@@ -113,6 +113,25 @@ describe("evaluateRules", () => {
     expect(result).toEqual([]);
   });
 
+  it("does not fire break_overrun when only a paused task exists and no break is active (#179 判断4: G-179-17)", () => {
+    const paused = makeTask({ id: 1, status: "paused" });
+    const pauseEvent = makeActivityEvent({
+      type: "task_pause",
+      task_id: 1,
+      created_at: "2026-07-05T09:00:00",
+    });
+
+    const result = evaluateRules(
+      baseInput({
+        now: new Date("2026-07-05T10:00:00"),
+        tasks: [paused],
+        activityEvents: [pauseEvent],
+      }),
+    );
+
+    expect(result.map((r) => r.ruleType)).not.toContain("break_overrun");
+  });
+
   it("fires deadline_overdue notifications for every overdue task independently", () => {
     const first = makeTask({ id: 1, status: "todo", due_at: "2026-07-04T00:00:00" });
     const second = makeTask({ id: 2, status: "todo", due_at: "2026-07-05T00:00:00" });

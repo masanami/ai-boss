@@ -51,7 +51,10 @@ describe("computeSilenceThresholdMinutes", () => {
   });
 
   it("falls back to 45min when the last task_start target has since been paused (#179 判断4: G-179-9)", () => {
-    const task = makeTask({ id: 1, status: "paused", estimated_minutes: 60 });
+    // estimated_minutes: 200 はスケール経路なら clamp で 90 になるため、フォールバック
+    // 値 45 と弁別できる（60 だと 60*0.75=45 でフォールバックと偶然一致し、paused の
+    // 判定を外しても pass してしまう）。
+    const task = makeTask({ id: 1, status: "paused", estimated_minutes: 200 });
     const events = [
       makeActivityEvent({ type: "task_start", task_id: 1, created_at: "2026-07-05T09:00:00.000Z" }),
     ];
