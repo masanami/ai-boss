@@ -12,7 +12,7 @@ function getLastActivity(
 /**
  * 直近の task_start が指すタスクを返す。ただしそのタスクの現在の status が
  * in_progress でなければ（例: その後 task_pause された場合）undefined を返す
- * （#179 判断4。G-179-9）。一時停止したタスクの見積もりを無音許容時間の
+ * （#179 判断4）。一時停止したタスクの見積もりを無音許容時間の
  * 根拠に使い続けないため、フォールバック値へ倒す。
  */
 function getInProgressTask(

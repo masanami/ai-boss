@@ -40,8 +40,8 @@ function buildTranscript(messages: Message[]): string {
 /**
  * 当日の `status = active` 決定一覧（content のみ・作成日時昇順で呼び出し
  * 側から渡される）を箇条書きにする。0件の場合は「（決定なし）」と明示し、
- * LLM が「決定の要点」を「なし」と書く判断材料にする（保証 G-170-49・
- * 抽出材料の詳細は Issue #144）。
+ * LLM が「決定の要点」を「なし」と書く判断材料にする
+ * （抽出材料の詳細は Issue #144）。
  */
 function buildDecisionsList(decisionContents: string[]): string {
   if (decisionContents.length === 0) {

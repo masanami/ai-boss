@@ -222,7 +222,7 @@ export function registerChatMessageRoute(
         // Text already streamed to the client is part of the conversation
         // the user actually saw — persist it so the history stays consistent
         // after a reload instead of silently dropping the partial reply
-        // （保証 G-170-27: 配信済みテキストが無ければ永続化せず、途中まで
+        // （配信済みテキストが無ければ永続化せず、途中まで
         // 配信されていればその部分テキストを永続化する）。
         if (fullText !== "") {
           try {

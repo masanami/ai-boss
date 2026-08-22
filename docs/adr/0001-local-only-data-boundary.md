@@ -2,7 +2,7 @@
 
 - **ステータス**: Accepted
 - **日付**: 2026-08-20
-- **関連**: 宣言元は退役した `docs/features/ai-boss-mvp.md`（非機能要件・プライバシー）。適用の詳細は [ADR 0002](./0002-api-key-and-llm-call-path.md)（認証情報）・[ADR 0003](./0003-llm-backend-isolation.md)（Claude Code バックエンドの隔離）。実際に守られている振る舞いは `docs/guarantees.md`。
+- **関連**: 宣言元は退役した `docs/features/ai-boss-mvp.md`（非機能要件・プライバシー）。適用の詳細は [ADR 0002](./0002-api-key-and-llm-call-path.md)（認証情報）・[ADR 0003](./0003-llm-backend-isolation.md)（Claude Code バックエンドの隔離）。実際に守られている振る舞いはコードと `*.test.ts` が正本。
 
 ## 背景
 

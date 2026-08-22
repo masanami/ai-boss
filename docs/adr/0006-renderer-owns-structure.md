@@ -2,7 +2,7 @@
 
 - **ステータス**: Accepted
 - **日付**: 2026-08-20
-- **関連**: 宣言元は退役した `docs/features/daily-report.md`（機能要件・アーキテクチャ決定）。同じ原則を `docs/features/work-log.md` が継承していた。実際に守られている振る舞いは `docs/guarantees.md`。
+- **関連**: 宣言元は退役した `docs/features/daily-report.md`（機能要件・アーキテクチャ決定）。同じ原則を `docs/features/work-log.md` が継承していた。実際に守られている振る舞いは `server/src/reports/render-*.test.ts` が正本。
 
 ## 背景
 

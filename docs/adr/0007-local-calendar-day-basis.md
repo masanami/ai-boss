@@ -2,7 +2,7 @@
 
 - **ステータス**: Accepted
 - **日付**: 2026-08-20
-- **関連**: 宣言元は退役した `docs/features/daily-report.md`（機能要件「日付基準の統一」・非機能要件）・`docs/features/work-log.md`（非機能要件）。実際に守られている振る舞いは `docs/guarantees.md`。
+- **関連**: 宣言元は退役した `docs/features/daily-report.md`（機能要件「日付基準の統一」・非機能要件）・`docs/features/work-log.md`（非機能要件）。実際に守られている振る舞いはコードと `*.test.ts` が正本。
 
 ## 背景
 
@@ -15,7 +15,7 @@
 ## 決定
 
 1. **「当日」は常にサーバーのローカルタイムゾーンでの暦日**を指す。UTC 基準の日付キーを使わない。
-2. **日付キーの導出は実行環境ごとに単一の関数へ集約する**（ローカル基準で `YYYY-MM-DD` を組み立てる）。各所で個別に `toISOString` を切り出さず、必ずその環境の共通関数を呼ぶ（server: `server/src/detection/time-utils.ts` の `toDateKey`、web: `web/src/to-date-key.ts` の `toDateKey`）。**server と web は実行環境が異なりモジュールを共有する仕組みが無いため、この 2 実装は意図的に別々**である（保証台帳でも G-170-111 として web 側を別に登録している）。共有パッケージを導入するまで「1 リポジトリに 1 実装」にはしない。
+2. **日付キーの導出は実行環境ごとに単一の関数へ集約する**（ローカル基準で `YYYY-MM-DD` を組み立てる）。各所で個別に `toISOString` を切り出さず、必ずその環境の共通関数を呼ぶ（server: `server/src/detection/time-utils.ts` の `toDateKey`、web: `web/src/to-date-key.ts` の `toDateKey`）。**server と web は実行環境が異なりモジュールを共有する仕組みが無いため、この 2 実装は意図的に別々**である（それぞれ `server/src/detection/time-utils.test.ts` と `web/src/to-date-key.test.ts` が別々に担保する）。共有パッケージを導入するまで「1 リポジトリに 1 実装」にはしない。
 3. **集計範囲は半開区間 `[対象ローカル暦日の 00:00, 翌ローカル暦日の 00:00)`** とする。閉区間の上限（`23:59:59.999`）を使わない——保存形式がミリ秒より高精度になった場合に当日末尾のレコードを取りこぼすため。翌日の境界は**暦日を 1 日進めて求める**（固定秒数の加算をしない。DST のある地域で 24 時間 ≠ 1 暦日になるため）。
 4. **日付をまたぐ操作の帰属は明示的に決める。** 夕会が 23:50 に始まり翌 00:30 に終わった場合、その夕会と日報は**開始日**に帰属する。判定の基準時刻をどれにするか（`started_at` か `ended_at` か `created_at` か）を機能ごとに曖昧にしない。
 5. **暦日の区切りに関わるテストはタイムゾーン非依存に書く。** 日付キー導出・日跨ぎ判定・当日/前日の絞り込みを検証するテストでは、固定時刻を `new Date(y, m, d, h)` 形式のローカル日時から導出し、UTC 文字列リテラルで固定しない。
@@ -29,7 +29,7 @@
 
 > **既知の逸脱（実装が本 ADR に未追従・#172）**: 本 ADR を Accepted とした時点で、次の 2 箇所が決定 3（半開区間）に反している。
 > - `server/src/reports/collect-daily-report-data.ts` / `collect-work-log-data.ts` の `endOfLocalDay()` は `23:59:59.999` を作り、SQL の `created_at <= ?` で集計している（閉区間）
-> - `GET /api/activity/today` が呼ぶ `listEventsSince` は `created_at >= ?` のみで**上限が無い**（下限だけの開放区間。保証台帳では G-170-32 の範囲を狭め GAP-23 として追跡）
+> - `GET /api/activity/today` が呼ぶ `listEventsSince` は `created_at >= ?` のみで**上限が無い**（下限だけの開放区間。上限境界のテストも無い）
 >
 > 実装と境界テストを半開区間へ揃えるまで、本 ADR の決定 3 は**目標状態**であり現状の記述ではない。追跡は #172。
 

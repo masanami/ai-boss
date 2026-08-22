@@ -9,7 +9,7 @@ export interface DailyReport {
 
 /**
  * Shape returned by `GET /api/reports` (list view): date and timestamps
- * only, no `content` (保証 G-170-41).
+ * only, no `content`.
  */
 export interface DailyReportSummary {
   date: string;

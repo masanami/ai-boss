@@ -5,7 +5,7 @@ import type { DashboardProgress } from "./dashboard.js";
 /**
  * 今日のノルマ対象タスクを判定する（純粋関数、Issue #58 明示的な仮定）。
  * 対象 = 今日完了したタスク（completed_at がローカル日付で今日）
- *      + 現在 todo / in_progress / paused のタスク（G-179-10）。
+ *      + 現在 todo / in_progress / paused のタスク（#179）。
  * dropped、および過去日に完了したタスクは対象外。
  */
 function isTargetTask(task: Task, todayKey: string): boolean {

@@ -49,7 +49,7 @@ export {
  *   実行しない）。`streamBossMessage` がツールループ・`executeTool`・
  *   `onToolEvent` の発火を内包する（ADR 0003 決定 2）。
  * - `api` バックエンド時のみ `ANTHROPIC_API_KEY` を検査する
- *   （ADR 0002・保証 G-170-17）。
+ *   （ADR 0002）。
  */
 
 export const DEFAULT_MODEL = "claude-sonnet-5";
@@ -617,12 +617,12 @@ function rejectOnAbort(signal: AbortSignal, error: Error): Promise<never> {
  * `timeout`/`maxRetries` client options (see `backends/api-backend.ts`), and
  * wrapping it here too would compound retries (up to 3 × 3 = 9 attempts) —
  * see docs/adr/0003-llm-backend-isolation.md 帰結（統一タイムアウト・リトライ
- * はファサード層の責務）および保証 G-170-19.
+ * はファサード層の責務）.
  *
  * `timeoutMs` bounds the *whole* call (all retries combined), not each
  * individual attempt: a single `AbortController`/timer is created once up
- * front and shared across every attempt, per
- * 保証 G-170-19（タイムアウト予算は呼び出し全体で共有し、リトライごとに
+ * front and shared across every attempt
+ * （タイムアウト予算は呼び出し全体で共有し、リトライごとに
  * リセットしない）— 呼び出し全体の期限は `AbortController` で実装し、
  * リクエスト単位タイムアウトや maxTurns で代替しない。
  * `attempt` receives this shared `AbortSignal`, which

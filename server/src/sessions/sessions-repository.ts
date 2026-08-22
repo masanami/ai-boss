@@ -92,7 +92,7 @@ function hasTodaysEveningSession(db: Database.Database, today: string): boolean 
 
 /**
  * Creates a new session, atomically enforcing "at most one evening session
- * per local calendar day" (保証 G-170-35・docs/adr/0008-evening-dialogue-prerequisite.md
+ * per local calendar day" (docs/adr/0008-evening-dialogue-prerequisite.md
  * 決定 4). The existence check and the INSERT run inside a single
  * `db.transaction`, so a concurrent request cannot interleave between the
  * check and the write on this single-process/single-writer SQLite

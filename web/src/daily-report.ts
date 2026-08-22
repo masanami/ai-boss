@@ -1,4 +1,4 @@
-/** `GET /api/reports` の一覧要素（`content` を含まない。保証 G-170-41）。 */
+/** `GET /api/reports` の一覧要素（`content` を含まない）。 */
 export interface DailyReportSummary {
   date: string;
   created_at: string;
