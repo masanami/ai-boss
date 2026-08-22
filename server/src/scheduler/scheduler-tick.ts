@@ -7,7 +7,11 @@ import {
   insertNotification,
   listNotificationsSince,
 } from "../notifications/notifications-repository.js";
-import { generateNotificationBody } from "../notifications/notification-body.js";
+import {
+  generateNotificationBody,
+  buildFallbackBody,
+  type NotificationBodyRequest,
+} from "../notifications/notification-body.js";
 import { sendNotification, type ExecFileFn } from "../notifications/notifier.js";
 import { loadDetectionSettings } from "./detection-settings.js";
 import { listTodaysSessionTypes } from "./todays-sessions.js";
@@ -74,12 +78,41 @@ async function processFiring(
   // back via `notification-history.ts` and matches on `rule_key`/escalation
   // state, not on `type`, but keeping `type` in the engine's own vocabulary
   // avoids a second, silent rule-type mapping showing up in the DB/logs.
-  const body = await generateNotificationBody(deps.db, deps.env, {
+  const bodyRequest: NotificationBodyRequest = {
     ruleType: mapToNotificationRuleType(firing.ruleType),
     escalationLevel: toEscalationLevel(firing.escalationLevel),
     task,
     now,
-  });
+  };
+
+  // `generateNotificationBody` already documents (and its own try/catch
+  // enforces — see that function's body in notification-body.ts) a
+  // never-throws contract: any failure of the LLM call itself (missing API
+  // key, timeout, empty response, etc.) is already recovered internally via
+  // its own fallback template. This try/catch is defense-in-depth for that
+  // contract being violated (e.g. a future change to generateNotificationBody,
+  // or an unexpected input, throws before/outside its own try). Without this, the
+  // notification for this firing would be silently dropped — sending/
+  // recording never runs (Issue #205). Falls back to the same generic
+  // template logic via the exported `buildFallbackBody` rather than
+  // re-deriving fallback copy here (single source of truth).
+  let body: string;
+  try {
+    body = await generateNotificationBody(deps.db, deps.env, bodyRequest);
+  } catch (err) {
+    // Unlike notification-body.ts's own catch (which guards a Claude API
+    // call and therefore only logs the error's class name), anything
+    // reaching *this* catch cannot originate from the Claude API — that
+    // call is fully wrapped inside generateNotificationBody's own try. So
+    // message/stack here is safe to log (same reasoning as runTick's outer
+    // catch below) and is worth keeping: it's the only diagnostic trail for
+    // a genuine bug in generateNotificationBody reaching production.
+    console.error(
+      `scheduler firing: notification body generation threw, falling back to template (rule_key=${firing.ruleKey}):`,
+      err instanceof Error ? (err.stack ?? err.message) : err,
+    );
+    body = buildFallbackBody(bodyRequest);
+  }
 
   // `sendNotification` never throws (it reports delivery failure via its
   // return value instead — see notifier.ts). The notification is recorded

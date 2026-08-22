@@ -8,12 +8,17 @@ import { insertSession } from "../sessions/sessions-repository.js";
 import type { SessionType } from "../sessions/session.js";
 import { listNotificationsSince } from "../notifications/notifications-repository.js";
 
-const { createClaudeClientMock, streamBossMessageMock, generateNotificationBodyMock } =
-  vi.hoisted(() => ({
-    createClaudeClientMock: vi.fn(),
-    streamBossMessageMock: vi.fn(),
-    generateNotificationBodyMock: vi.fn(),
-  }));
+const {
+  createClaudeClientMock,
+  streamBossMessageMock,
+  generateNotificationBodyMock,
+  insertNotificationMock,
+} = vi.hoisted(() => ({
+  createClaudeClientMock: vi.fn(),
+  streamBossMessageMock: vi.fn(),
+  generateNotificationBodyMock: vi.fn(),
+  insertNotificationMock: vi.fn(),
+}));
 
 vi.mock("../llm/claude-client.js", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../llm/claude-client.js")>();
@@ -24,9 +29,8 @@ vi.mock("../llm/claude-client.js", async (importOriginal) => {
   };
 });
 
-// per-firing 分離のテストで「1 件目の firing だけ失敗」を決定的に再現するため
-// モック化する。既定（beforeEach）では実実装へ委譲するので他のテストの挙動は
-// 変わらない。
+// 個別テストで「1 件目の firing だけ失敗」を決定的に再現するためモック化する。
+// 既定（beforeEach）では実実装へ委譲するので他のテストの挙動は変わらない。
 vi.mock("../notifications/notification-body.js", async (importOriginal) => {
   const actual =
     await importOriginal<typeof import("../notifications/notification-body.js")>();
@@ -36,11 +40,27 @@ vi.mock("../notifications/notification-body.js", async (importOriginal) => {
   };
 });
 
+// per-firing 分離のテスト（文面生成より*後ろ*の段階の失敗が、当該 firing だけを
+// 失敗させ、他の firing を止めないこと）で「1 件目の firing だけ DB 記録に失敗」
+// を決定的に再現するためモック化する。既定（beforeEach）では実実装へ委譲する。
+vi.mock("../notifications/notifications-repository.js", async (importOriginal) => {
+  const actual =
+    await importOriginal<typeof import("../notifications/notifications-repository.js")>();
+  return {
+    ...actual,
+    insertNotification: insertNotificationMock,
+  };
+});
+
 const { createTicker } = await import("./scheduler-tick.js");
 const { MissingApiKeyError } = await import("../llm/claude-client.js");
 const { generateNotificationBody: actualGenerateNotificationBody } =
   await vi.importActual<typeof import("../notifications/notification-body.js")>(
     "../notifications/notification-body.js",
+  );
+const { insertNotification: actualInsertNotification } =
+  await vi.importActual<typeof import("../notifications/notifications-repository.js")>(
+    "../notifications/notifications-repository.js",
   );
 
 function ok(): Promise<{ stdout: string; stderr: string }> {
@@ -53,7 +73,10 @@ function ok(): Promise<{ stdout: string; stderr: string }> {
  * (already covered by notification-body.test.ts). No `ANTHROPIC_API_KEY` is
  * ever injected, so `createClaudeClient` always throws `MissingApiKeyError`
  * and every case deterministically exercises the documented fallback-
- * template path.
+ * template path — with one exception: the Issue #205 test below mocks
+ * `generateNotificationBody` itself to throw, which bypasses
+ * `createClaudeClient` entirely and instead exercises `processFiring`'s own
+ * (scheduler-side) fallback path in `scheduler-tick.ts`.
  *
  * The system clock (`Date`, not timers) is faked so that `tick()`'s default
  * `now` and the repositories' server-managed timestamps (`tasks.created_at`,
@@ -77,10 +100,12 @@ describe("createTicker().tick", () => {
     createClaudeClientMock.mockReset();
     streamBossMessageMock.mockReset();
     generateNotificationBodyMock.mockReset();
+    insertNotificationMock.mockReset();
     createClaudeClientMock.mockImplementation(() => {
       throw new MissingApiKeyError();
     });
     generateNotificationBodyMock.mockImplementation(actualGenerateNotificationBody);
+    insertNotificationMock.mockImplementation(actualInsertNotification);
 
     vi.useFakeTimers({ toFake: ["Date"] });
     vi.setSystemTime(new Date("2026-07-05T09:00:00.000"));
@@ -280,10 +305,13 @@ describe("createTicker().tick", () => {
     markTodaysMeetingsDone(db);
     vi.setSystemTime(mockedNow);
 
-    // 1 件目の firing の文面生成だけ失敗させ、2 件目は実実装（定型文フォール
-    // バック経路）で成功させる。
-    generateNotificationBodyMock.mockImplementationOnce(() => {
-      throw new Error("body boom");
+    // 1 件目の firing だけ DB 記録（insertNotification）を失敗させ、2 件目は
+    // 実実装で成功させる。文面生成の失敗はもはや当該 firing 自体を失敗させ
+    // ない（Issue #205: フォールバック文面で救済される）ため、per-firing
+    // 分離（外側の try/catch）を検証するにはそれより後段の失敗を使う必要が
+    // ある。
+    insertNotificationMock.mockImplementationOnce(() => {
+      throw new Error("insert boom");
     });
 
     const consoleErrorSpy = vi.spyOn(console, "error").mockImplementation(() => undefined);
@@ -297,6 +325,58 @@ describe("createTicker().tick", () => {
     expect(recorded[0].type).toBe("deadline_overdue");
     const loggedArgs = consoleErrorSpy.mock.calls.flat().join(" ");
     expect(loggedArgs).toContain("scheduler firing failed");
+    consoleErrorSpy.mockRestore();
+    db.close();
+  });
+
+  it("sends and records the notification using a fallback template when notification body generation itself throws (Issue #205)", async () => {
+    const task = insertTask(db, {
+      title: "資料作成",
+      description: null,
+      category: "work",
+      priority: "high",
+      due_at: null,
+      status: "todo",
+      boss_comment: null,
+      estimated_minutes: 30,
+    });
+    markTodaysMeetingsDone(db);
+    vi.setSystemTime(new Date("2026-07-05T09:31:00.000"));
+
+    // `generateNotificationBody` itself throws (distinct from its own
+    // internal LLM-failure fallback, which is already exercised by every
+    // other test in this file since no ANTHROPIC_API_KEY is ever injected).
+    generateNotificationBodyMock.mockImplementationOnce(() => {
+      throw new Error("body boom");
+    });
+
+    const consoleErrorSpy = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    const execFile = vi.fn().mockImplementation(ok);
+    const ticker = createTicker({ db, env, execFile });
+
+    await expect(ticker.tick()).resolves.toBeUndefined();
+
+    // `todo_stall` (mapped from `unstarted`) L1's fallback template
+    // (notification-body.ts's `FALLBACK_TEMPLATES`), so the actually-sent
+    // payload — not just the DB record — is pinned to the exact fallback
+    // copy rather than merely asserting the flags were present.
+    const fallbackBody = "そろそろ資料作成に着手しよう。";
+    expect(execFile).toHaveBeenCalledWith(
+      "terminal-notifier",
+      expect.arrayContaining(["-title", "-message", fallbackBody]),
+    );
+
+    const recorded = listNotificationsSince(db, "1970-01-01T00:00:00.000Z");
+    expect(recorded).toHaveLength(1);
+    expect(recorded[0]).toMatchObject({
+      type: "unstarted",
+      rule_key: `unstarted:${task.id}`,
+      escalation_level: 1,
+      body: fallbackBody,
+    });
+
+    const loggedArgs = consoleErrorSpy.mock.calls.flat().join(" ");
+    expect(loggedArgs).toContain("notification body generation threw");
     consoleErrorSpy.mockRestore();
     db.close();
   });
