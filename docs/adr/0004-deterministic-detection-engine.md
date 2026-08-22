@@ -2,7 +2,7 @@
 
 - **ステータス**: Accepted
 - **日付**: 2026-08-20
-- **関連**: 宣言元は退役した `docs/features/ai-boss-mvp.md`（クリティカル設計決定「サボり検知のシグナル源とエスカレーション」・機能全体の設計）。上位の制約は [ADR 0001](./0001-local-only-data-boundary.md)。閾値・エスカレーションの実際の振る舞いは `docs/guarantees.md`。
+- **関連**: 宣言元は退役した `docs/features/ai-boss-mvp.md`（クリティカル設計決定「サボり検知のシグナル源とエスカレーション」・機能全体の設計）。上位の制約は [ADR 0001](./0001-local-only-data-boundary.md)。閾値・エスカレーションの実際の振る舞いは `server/src/detection/*.test.ts` が正本。
 
 ## 背景
 

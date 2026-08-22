@@ -100,7 +100,7 @@ function assertNoForeignKeyViolations(
 // it only defers the failure to COMMIT (confirmed experimentally, #179). The
 // `finally` guarantees `foreign_keys` is restored to ON even if the rebuild
 // or the FK check throws, so a failed v4 migration never leaves FK
-// enforcement silently disabled (would otherwise regress G-170-80).
+// enforcement silently disabled (docs/adr/0005-sqlite-schema-policy.md).
 function migrateToV4(db: Database.Database): void {
   db.pragma("foreign_keys = OFF");
   try {
@@ -202,7 +202,7 @@ const MIGRATIONS: Record<number, MigrationEntry> = {
   `,
   // 日報生成（#100 / #106）: 1日1行・再生成は同日行の UPSERT（上書き）で保存する
   // daily_reports テーブルを新設。既存テーブルの変更は行わない
-  // （docs/adr/0005-sqlite-schema-policy.md 決定 4・保証 G-170-78 / G-170-80）。
+  // （docs/adr/0005-sqlite-schema-policy.md 決定 4）。
   3: `
     CREATE TABLE IF NOT EXISTS daily_reports (
       id INTEGER PRIMARY KEY AUTOINCREMENT,

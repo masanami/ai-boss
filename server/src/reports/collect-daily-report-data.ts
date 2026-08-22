@@ -34,7 +34,7 @@ export interface CollectedDailyReportData {
  * 側の責務のためここでは行わない）。タスク・決定の集計範囲はこの暦日の
  * 00:00:00.000〜23:59:59.999。休憩の break_end 探索のみ、日跨ぎ夕会に対応する
  * ため夕会セッションの ended_at まで拡張する
- * （保証 G-170-48「活動記録」の休憩回数・合計時間を成立させるための対応付け
+ * （日報の「活動記録」の休憩回数・合計時間を成立させるための対応付け
  * 規則。暦日の基準は docs/adr/0007-local-calendar-day-basis.md）。
  *
  * `eveningSession.ended_at` が null（未終了）の場合は呼び出し側の前提条件違反

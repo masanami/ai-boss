@@ -24,7 +24,7 @@ function isValidSessionType(value: string): value is SessionType {
 /**
  * Upper bound (ms) for the daily-report generation step triggered by the
  * evening-end hook below — distinct from the LLM client's own ~120s policy
- * (保証 G-170-37 — 夕会終了フック). Kept
+ * (夕会終了フック). Kept
  * separate from `extractEveningSummary`'s own default (no timeout) so only
  * this HTTP-request-bound call site is capped.
  */
@@ -119,7 +119,7 @@ export function createSessionsRouter(
   //    of the end button taking a few extra seconds to respond (explicit
   //    trade-off, see the Issue #96 PR description).
   // 2. Issue #100 — daily report generation for evening sessions
-  //    (保証 G-170-37 / G-170-38 — 夕会終了フック).
+  //    (夕会終了フック).
   //
   // Their guards are deliberately *different* conditions and must not be
   // collapsed into one: the summary is suppressed by `summary !== null`
@@ -133,7 +133,7 @@ export function createSessionsRouter(
     // Captured before `endSession` so we can tell a first-time ended_at
     // transition (NULL -> value) apart from a re-end of an already-ended
     // session — `endSession` itself is idempotent and returns the existing
-    // row unchanged on re-end (保証 G-170-37 — 夕会終了フックは初回の
+    // row unchanged on re-end (夕会終了フックは初回の
     // `ended_at` 遷移でのみ発火する). Only the first transition triggers
     // report generation.
     const before = findSessionById(db, id);

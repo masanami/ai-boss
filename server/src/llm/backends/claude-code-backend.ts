@@ -630,8 +630,8 @@ function buildMcpServer(toolDefs: Anthropic.Tool[], hooks: McpHooks) {
  * usage and, per the non-functional requirement "信頼性" (3), each such
  * call is itself never retried once it has a side effect, so a long unbounded
  * loop has no other backstop. `maxTurns` is *not* used as a substitute for
- * the timeout (保証 G-170-19 explicitly reserves that role for the shared
- * `AbortController` budget) — it is a
+ * the timeout (that role is reserved for the facade's shared
+ * `AbortController` budget in `claude-client.ts`) — it is a
  * defense-in-depth cap set generously above the `api` backend's
  * `MAX_TOOL_ROUNDS` (5) to account for the Agent SDK counting turns
  * differently (a single tool round-trip may span more than one internal

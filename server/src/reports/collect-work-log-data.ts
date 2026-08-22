@@ -2,8 +2,7 @@
 // docs/adr/0006-renderer-owns-structure.md）。decisions / activity_events / tasks を
 // 読み取り専用で参照する。日報の収集段（collect-daily-report-data.ts）と異なり
 // 夕会セッションに依存せず、対象ローカル暦日だけを入力に取る（作業ログは
-// 「いつでも生成可」— 保証 G-170-44・
-// docs/adr/0008-evening-dialogue-prerequisite.md 帰結）。
+// 「いつでも生成可」— docs/adr/0008-evening-dialogue-prerequisite.md 帰結）。
 import type Database from "better-sqlite3";
 import type { DecisionStatus } from "../decisions/decision.js";
 
@@ -18,9 +17,8 @@ function endOfLocalDay(date: Date): Date {
 /**
  * 作業ログに載せる activity_events の種別（`chat_message` を除く6種）。
  * 「1メッセージごとに記録される機械イベントでノイズになる」ため
- * `chat_message` は収集段で既に除外する
- * （保証 G-170-45）。`task_pause` は一時停止の事実を時系列に残すため対象に含める
- * （G-179-13）。
+ * `chat_message` は収集段で既に除外する。`task_pause` は一時停止の事実を
+ * 時系列に残すため対象に含める（#179）。
  */
 export const WORK_LOG_ACTIVITY_EVENT_TYPES = [
   "task_start",
@@ -81,7 +79,7 @@ interface ActivityEventRow {
  * 対象ローカル暦日（00:00:00.000〜23:59:59.999）の決定ログ全件
  * （`active`/`revised`/`withdrawn`）と、対象6種の activity_events を
  * 読み取る。夕会 `ended_at` による範囲拡張は行わない
- * （作業ログは夕会に依存しない事実列挙 — 保証 G-170-45・暦日の基準は
+ * （作業ログは夕会に依存しない事実列挙。暦日の基準は
  * docs/adr/0007-local-calendar-day-basis.md）。
  */
 export function collectWorkLogData(db: Database.Database, targetDate: Date): CollectedWorkLogData {

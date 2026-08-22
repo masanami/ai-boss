@@ -54,7 +54,7 @@ export interface GenerateDailyReportOptions {
  * `now` のローカル日付に属する夕会セッション（`type = evening` かつ
  * `started_at` のローカル日付が一致するもの）を探す。`listSessions` は
  * `started_at DESC, id DESC` で返すため、複数あればその順で先頭（最新）が
- * 選ばれる（保証 G-170-53・帰属の基準は
+ * 選ばれる（帰属の基準は
  * docs/adr/0007-local-calendar-day-basis.md 決定 4）。
  */
 function findTodaysEveningSession(
@@ -91,7 +91,7 @@ function resolveTargetEveningSession(
 /**
  * 前提条件（壁打ち強制）: 対象夕会が存在し、終了済み（`ended_at` が非
  * NULL）で、かつ `role = user` のメッセージが1件以上あるときのみ生成できる
- * （保証 G-170-53・docs/adr/0008-evening-dialogue-prerequisite.md 決定 1）。
+ * （docs/adr/0008-evening-dialogue-prerequisite.md 決定 1）。
  * 満たさない場合は例外を投げず、判別
  * 可能な失敗値 `{ ok: false, code: "evening_session_required" }` を返す。
  * フォールバック経路（LLM 抽出失敗）でもこの前提条件チェックは維持される
@@ -155,7 +155,8 @@ export async function generateDailyReport(
 
   // 収集した当日の active 決定一覧は、日報の「決定事項」セクション（Issue
   // #144 で廃止）へは渡さず、抽出ステップのコンテキストへ渡す（「決定の
-  // 要点」の抽出材料。保証 G-170-46 / G-170-49・経緯は Issue #144）。
+  // 要点」の抽出材料。日報の見出し構成は docs/adr/0006-renderer-owns-structure.md
+  // 決定 1・経緯は Issue #144）。
   const eveningSummary = await extractEveningSummary(
     db,
     env,

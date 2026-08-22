@@ -492,9 +492,7 @@ describe("POST /api/checkins", () => {
     });
 
     // Written as individual `it(...)` calls (rather than `it.each`) so each
-    // test has a literal name that docs/guarantees.md can reference exactly
-    // (the guarantee-index-check tooling matches literal `it("...")` names,
-    // not parameterized `it.each` templates).
+    // status gets its own literal test name in the reporter output.
     async function expectTaskPauseLeavesStatusUnchanged(status: TaskStatus) {
       const app = createApp(db);
       const task = insertWorkTask(db, { status });

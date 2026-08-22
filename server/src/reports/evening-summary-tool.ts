@@ -57,7 +57,8 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 }
 
 /** 空文字（前後の空白のみを含む文字列を含む）は不正形として扱う
- * （保証 G-170-49 — 形式不正はフォールバック経路へ倒す）。 */
+ * （形式不正はフォールバック経路へ倒す。
+ * docs/adr/0006-renderer-owns-structure.md 決定 3）。 */
 function isNonEmptyString(value: unknown): value is string {
   return typeof value === "string" && value.trim() !== "";
 }
