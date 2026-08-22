@@ -5,14 +5,16 @@ export interface RestoreSessions {
   /**
    * The session to show as "active" on mount/reload: today's most recently
    * started unfinished morning/evening session (so an in-progress meeting
-   * survives a tab switch or a page reload), or today's latest adhoc
-   * session when no meeting is open.
+   * survives a tab switch or a page reload), or today's latest unfinished
+   * adhoc session when no meeting is open.
    */
   active: ChatSession | null;
   /**
-   * Today's latest adhoc session, returned separately from `active` so the
-   * caller can restore the adhoc conversation as the return point when a
-   * restored meeting is ended (mirrors `useChat`'s `adhocSnapshotRef`).
+   * Today's latest unfinished adhoc session, returned separately from
+   * `active` so the caller can restore the adhoc conversation as the return
+   * point when a restored meeting is ended (mirrors `useChat`'s
+   * `adhocSnapshotRef`). An already-ended adhoc session is treated the same
+   * as having no adhoc session at all, so it is never picked here.
    */
   adhoc: ChatSession | null;
 }
@@ -46,7 +48,10 @@ export function selectRestoreSessions(
         (session.type === "morning" || session.type === "evening") &&
         session.ended_at === null,
     ) ?? null;
-  const adhoc = sorted.find((session) => session.type === "adhoc") ?? null;
+  const adhoc =
+    sorted.find(
+      (session) => session.type === "adhoc" && session.ended_at === null,
+    ) ?? null;
 
   return { active: openMeeting ?? adhoc, adhoc };
 }
