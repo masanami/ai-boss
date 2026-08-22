@@ -94,4 +94,45 @@ describe("selectRestoreSessions", () => {
       adhoc: null,
     });
   });
+
+  it("returns null for both when today's only adhoc session is already ended", () => {
+    const endedAdhoc = makeSession({
+      id: 1,
+      started_at: localIso(5, 9),
+      ended_at: localIso(5, 10),
+    });
+
+    expect(selectRestoreSessions([endedAdhoc], NOW)).toEqual({
+      active: null,
+      adhoc: null,
+    });
+  });
+
+  it("still restores today's unfinished adhoc session when an ended one started more recently", () => {
+    const openAdhoc = makeSession({ id: 1, started_at: localIso(5, 9) });
+    const endedAdhoc = makeSession({
+      id: 2,
+      started_at: localIso(5, 10),
+      ended_at: localIso(5, 11),
+    });
+
+    expect(selectRestoreSessions([openAdhoc, endedAdhoc], NOW)).toEqual({
+      active: openAdhoc,
+      adhoc: openAdhoc,
+    });
+  });
+
+  it("does not use an ended adhoc session as the return point when an open meeting is active (Issue #206 decision A)", () => {
+    const morning = makeSession({ id: 1, type: "morning", started_at: localIso(5, 8) });
+    const endedAdhoc = makeSession({
+      id: 2,
+      started_at: localIso(5, 7),
+      ended_at: localIso(5, 7),
+    });
+
+    expect(selectRestoreSessions([morning, endedAdhoc], NOW)).toEqual({
+      active: morning,
+      adhoc: null,
+    });
+  });
 });
