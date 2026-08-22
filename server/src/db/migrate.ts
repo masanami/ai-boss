@@ -236,6 +236,13 @@ const MIGRATIONS: Record<number, MigrationEntry> = {
  * `PRAGMA foreign_keys` around a table rebuild, #183) — but is expected to
  * uphold the same atomicity contract.
  *
+ * If the database's `user_version` is already *ahead* of the latest known
+ * migration version (e.g. the database was created by a newer build of the
+ * app and then opened with this older one), this function fails fast before
+ * attempting any migration rather than silently returning with the schema
+ * left unrecognized: the loop below runs zero times in that case, and would
+ * otherwise return without signaling anything is wrong (#204).
+ *
  * @param migrations - Version-keyed migration SQL or migration function.
  *   Defaults to the real schema; injectable so tests can exercise failure
  *   scenarios. The target (latest) version is derived from the highest key,
@@ -249,7 +256,21 @@ export function runMigrations(
 ): void {
   const currentVersion = db.pragma("user_version", { simple: true }) as number;
   const versions = Object.keys(migrations).map(Number);
+  // An empty `migrations` map (only ever passed in tests; the real
+  // MIGRATIONS map, defined above, is never empty) intentionally makes
+  // latestVersion track currentVersion, i.e. "nothing to check against" —
+  // not "latest version is 0". This keeps the version-ahead guard below
+  // inert for that case, same as it was inert before #204 (an explicit,
+  // not-to-regress contract).
   const latestVersion = versions.length === 0 ? currentVersion : Math.max(...versions);
+
+  // Fails fast before the loop below can run (see the fail-fast paragraph
+  // in this function's doc comment above for the rationale).
+  if (currentVersion > latestVersion) {
+    throw new Error(
+      `database user_version is ${currentVersion}, but the latest known migration version is ${latestVersion}; the database remains at version ${currentVersion}`,
+    );
+  }
 
   let appliedVersion = currentVersion;
 
