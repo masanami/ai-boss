@@ -51,31 +51,34 @@ function mcpToolName(name: string): string {
 }
 
 /**
- * FR-06 / AC-05 (layer 5 — deny-by-default permission handler): builds the
- * `canUseTool` callback passed to `query()`. `allowedTools` only
- * auto-approves our own MCP tools; it does not by itself reject a request
- * for anything else, and the spec's multi-layer decision explicitly forbids
- * relying on the allow-list alone. This handler is the app-owned boundary
- * where any tool request outside the fully-qualified allow-list is denied —
- * which also makes AC-05's "未許可ツールの使用要求は拒否する" verifiable in
- * unit tests without depending on SDK-internal behavior.
+ * FR-06 / AC-05 (layer 4 — the sole permission-decision layer): builds the
+ * `canUseTool` callback passed to `query()`. Denies anything not in
+ * `permittedMcpToolNames` — our own fully-qualified MCP tool allow-list —
+ * making this the single app-owned boundary where every tool request is
+ * decided. (Issue #213 removed the Agent SDK's separate `allowedTools`
+ * *option*, which used to auto-approve these same tools before this
+ * callback ever ran, emitting a `CLAUDE_SDK_CAN_USE_TOOL_SHADOWED` warning
+ * and leaving the "multi-layer" design partly single-layer in practice for
+ * app-owned tools. This handler now covers that gap, which also makes
+ * AC-05's "未許可ツールの使用要求は拒否する" verifiable in unit tests
+ * without depending on SDK-internal auto-approval behavior.)
  */
-function buildCanUseTool(allowedTools: readonly string[]) {
+function buildCanUseTool(permittedMcpToolNames: readonly string[]) {
   return async (toolName: string): Promise<{ behavior: "allow" } | { behavior: "deny"; message: string }> =>
-    allowedTools.includes(toolName)
+    permittedMcpToolNames.includes(toolName)
       ? { behavior: "allow" }
       : {
           behavior: "deny",
           message: `Tool "${toolName}" is not permitted: this app only allows its own MCP tools (${
-            allowedTools.length > 0 ? allowedTools.join(", ") : "none for this request"
+            permittedMcpToolNames.length > 0 ? permittedMcpToolNames.join(", ") : "none for this request"
           }).`,
         };
 }
 
 /**
  * The model calls in-process MCP tools by their fully-qualified name
- * (`mcp__<server>__<tool>` — see `mcpToolName`/`allowedTools` above and
- * `sdk.d.ts`'s `disallowedTools`/`mcp_call` doc comments for the same
+ * (`mcp__<server>__<tool>` — see `mcpToolName`/`permittedMcpToolNames` above
+ * and `sdk.d.ts`'s `disallowedTools`/`mcp_call` doc comments for the same
  * qualification scheme), so `SDKAssistantMessage`'s `tool_use` blocks carry
  * that qualified name too. Strip it back to the bare name our own callers
  * use (`requestVerdict`'s `toolName` match, `executeBossTool`'s dispatch)
@@ -689,7 +692,7 @@ async function runClaudeCodeQuery(
           onToolEvent: options.onToolEvent,
         })
       : undefined;
-  const allowedTools = toolDefs.map((toolDef) => mcpToolName(toolDef.name));
+  const permittedMcpToolNames = toolDefs.map((toolDef) => mcpToolName(toolDef.name));
 
   const abortController = new AbortController();
   if (options.signal) {
@@ -726,22 +729,22 @@ async function runClaudeCodeQuery(
         // to the SDK's own internal resolution/error, i.e. unchanged pre-#83
         // behavior.
         pathToClaudeCodeExecutable: CLAUDE_CODE_EXECUTABLE_PATH,
-        // FR-06 (multi-layer built-in tool disablement):
+        // FR-06 (multi-layer built-in tool disablement, 4 layers — Issue
+        // #213 removed the SDK's separate `allowedTools` *option*, which
+        // used to auto-approve these tools before `canUseTool` ran and
+        // emitted a `CLAUDE_SDK_CAN_USE_TOOL_SHADOWED` warning; `canUseTool`
+        // below is now the sole permission-decision layer):
         // 1. `tools: []` — explicit built-in tool set, empty = all disabled.
         // 2. `settingSources: []` — do not load settings-file-declared tools/MCP.
         // 3. `strictMcpConfig: true` — only the `mcpServers` passed here (no
         //    project/user/plugin MCP).
-        // 4. `allowedTools` — auto-approve only our own MCP tools (does not by
-        //    itself restrict availability; combined with 1-3 above per the
-        //    ticket's explicit instruction not to rely on the allow-list alone).
-        // 5. `canUseTool` — deny-by-default permission handler for anything
-        //    outside the allow-list (AC-05's rejection boundary — see
-        //    `buildCanUseTool`).
+        // 4. `canUseTool` — deny-by-default permission handler for anything
+        //    outside `permittedMcpToolNames` (AC-05's rejection boundary —
+        //    see `buildCanUseTool`).
         tools: [],
         settingSources: [],
         strictMcpConfig: true,
-        allowedTools: allowedTools.length > 0 ? allowedTools : undefined,
-        canUseTool: buildCanUseTool(allowedTools),
+        canUseTool: buildCanUseTool(permittedMcpToolNames),
         mcpServers: mcpServer ? { [MCP_SERVER_NAME]: mcpServer } : undefined,
         includePartialMessages: Boolean(options.onTextDelta),
         maxTurns: MAX_AGENT_TURNS,
