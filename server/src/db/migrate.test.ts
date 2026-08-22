@@ -302,6 +302,37 @@ describe("runMigrations", () => {
     interruptedDb.close();
   });
 
+  it("fails fast, without applying any migration, when the database's user_version is ahead of the latest known migration version", () => {
+    // Simulates opening a DB created by a newer build of the app with an
+    // older build: the loop from currentVersion + 1 to latestVersion would
+    // run zero times and silently return, leaving the mismatch undetected.
+    // The guard must fire before any migration in `migrations` is attempted.
+    //
+    // Uses an injected local map (same pattern as FAILING_MIGRATIONS above
+    // and gappedMigrations below) rather than the live default MIGRATIONS
+    // map, so this test stays independent of the app's current latest
+    // schema version and doesn't need updating whenever a new migration is
+    // added (#204 self-review).
+    const futureDb = openDatabase(":memory:");
+    futureDb.pragma("user_version = 9");
+    const smallMigrations: Record<number, string> = {
+      1: "CREATE TABLE first_table (id INTEGER PRIMARY KEY);",
+      2: "CREATE TABLE second_table (id INTEGER PRIMARY KEY);",
+    };
+
+    // Order-sensitive: the DB's user_version (9) must appear before the
+    // implementation's latest known version (2) so the two numbers can't be
+    // silently transposed (#204 AC-1).
+    expect(() => runMigrations(futureDb, smallMigrations)).toThrow(
+      /user_version is 9[\s\S]*latest known migration version is 2/,
+    );
+    // user_version and schema are left untouched (no migration was attempted).
+    expect(futureDb.pragma("user_version", { simple: true })).toBe(9);
+    expect(tableNames(futureDb)).toEqual([]);
+
+    futureDb.close();
+  });
+
   it("fails fast with the missing version number when the migrations map has a gap", () => {
     const gappedDb = openDatabase(":memory:");
     const gappedMigrations: Record<number, string> = {
