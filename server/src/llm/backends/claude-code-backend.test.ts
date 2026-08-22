@@ -233,7 +233,7 @@ describe("TOOL_ZOD_SHAPES alignment with the JSON Schema tool definitions", () =
 // ---------------------------------------------------------------------------
 
 describe("streamClaudeCodeMessage", () => {
-  it("passes model/systemPrompt/tools:[]/settingSources:[]/strictMcpConfig/allowedTools/mcpServers (FR-06, AC-05, AC-08)", async () => {
+  it("passes model/systemPrompt/tools:[]/settingSources:[]/strictMcpConfig/mcpServers (FR-06, AC-05, AC-08)", async () => {
     queryMock.mockReturnValueOnce(toAsyncIterable([assistantTextMessage("了解"), resultMessage()]));
 
     await streamClaudeCodeMessage({
@@ -249,12 +249,11 @@ describe("streamClaudeCodeMessage", () => {
     expect(options.tools).toEqual([]);
     expect(options.settingSources).toEqual([]);
     expect(options.strictMcpConfig).toBe(true);
-    expect(options.allowedTools).toEqual([
-      "mcp__ai-boss__create_task",
-      "mcp__ai-boss__update_task",
-      "mcp__ai-boss__record_decision",
-      "mcp__ai-boss__get_activity_log",
-    ]);
+    // クリティカル設計決定（#213）: 許可判定は canUseTool に一本化し、
+    // allowedTools はもう query() へ渡さない（SDK が allowedTools 記載の
+    // 自前ツールを canUseTool 呼び出し前に自動承認し
+    // CLAUDE_SDK_CAN_USE_TOOL_SHADOWED 警告を出していたため）。
+    expect(options.allowedTools).toBeUndefined();
     expect(Object.keys(options.mcpServers as Record<string, unknown>)).toEqual(["ai-boss"]);
     // Runaway-loop guard (self-review): claude-code has no MAX_TOOL_ROUNDS
     // equivalent from the facade side (see `streamBossMessage`'s doc
@@ -281,7 +280,7 @@ describe("streamClaudeCodeMessage", () => {
     expect(options.persistSession).toBe(false);
   });
 
-  it("registers no MCP server / allowedTools when no tools are given (dashboard comment / notification body)", async () => {
+  it("registers no MCP server when no tools are given (dashboard comment / notification body)", async () => {
     queryMock.mockReturnValueOnce(toAsyncIterable([assistantTextMessage("今日も一日頑張れ"), resultMessage()]));
 
     await streamClaudeCodeMessage({
@@ -292,13 +291,14 @@ describe("streamClaudeCodeMessage", () => {
 
     const options = lastQueryOptions();
     expect(options.mcpServers).toBeUndefined();
-    expect(options.allowedTools).toBeUndefined();
   });
 
-  // AC-05（未許可ツールの使用要求の拒否）: FR-06 の多層方式は許可リスト
-  // （allowedTools＝自動承認）のみに依存しない。第 5 層として自前の
-  // `canUseTool` ハンドラを渡し、許可リスト外のツール使用要求を deny する。
-  // 拒否判定はこのハンドラ（自コード境界）で検証できる。
+  // AC-05（未許可ツールの使用要求の拒否）: FR-06 の多層防御は4層
+  // （tools:[] / settingSources:[] / strictMcpConfig:true / canUseTool）
+  // で構成され、`canUseTool` が唯一の許可判定層。SDK の `allowedTools`
+  // オプション（自動承認）はもう query() へ渡していない（Issue #213）。
+  // 許可リスト外のツール使用要求の拒否はこのハンドラ（自コード境界）で
+  // 検証できる。
   describe("canUseTool — 未許可ツールの使用要求の拒否 (FR-06, AC-05)", () => {
     type CanUseToolFn = (
       toolName: string,
@@ -337,7 +337,23 @@ describe("streamClaudeCodeMessage", () => {
 
       const options = lastQueryOptions();
       const canUseTool = options.canUseTool as CanUseToolFn;
-      for (const allowed of options.allowedTools as string[]) {
+      // `query()` はもう `allowedTools` を受け取らないため（本チケットの
+      // クリティカル設計決定、Issue #213）、内部の許可リストを直接読むこと
+      // はできない。ここでは `BOSS_TOOLS` から動的に導出せず、期待値を
+      // 明示的な完全修飾名のリテラルとして固定する（動的導出だと
+      // `BOSS_TOOLS` からツールが誤って抜け落ちた場合に生成側・期待値側が
+      // 揃って縮小し、このテストが検知できなくなるため）。
+      // `MCP_SERVER_NAME`/`mcpToolName` は非公開なのでプレフィックスを直書き
+      // する（他テスト "strips the MCP-qualified prefix ... (submit_verdict)"
+      // と同じ書き方）。
+      const expectedAllowed = [
+        "mcp__ai-boss__create_task",
+        "mcp__ai-boss__update_task",
+        "mcp__ai-boss__record_decision",
+        "mcp__ai-boss__get_activity_log",
+      ];
+      expect(BOSS_TOOLS.map((toolDef) => `mcp__ai-boss__${toolDef.name}`)).toEqual(expectedAllowed);
+      for (const allowed of expectedAllowed) {
         const result = await canUseTool(allowed, {});
         expect(result.behavior).toBe("allow");
       }
@@ -613,7 +629,7 @@ describe("streamClaudeCodeMessage", () => {
 
   it("strips the MCP-qualified prefix (mcp__ai-boss__submit_verdict) from the tool_use name it surfaces, so requestVerdict's bare-name match still works (self-review regression guard for AC-04)", async () => {
     // The model calls in-process MCP tools by their fully-qualified name
-    // (see `mcpToolName`/`allowedTools`), so a real Agent SDK run would
+    // (see `mcpToolName`/`permittedMcpToolNames`), so a real Agent SDK run would
     // yield an assistant `tool_use` block named `mcp__ai-boss__submit_verdict`
     // — not the bare `submit_verdict` the other tests above assert against
     // for simplicity. Without stripping this prefix back off, `requestVerdict`
