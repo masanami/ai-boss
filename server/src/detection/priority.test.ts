@@ -63,4 +63,11 @@ describe("pickTopPriorityTask", () => {
 
     expect(pickTopPriorityTask([done])).toBeUndefined();
   });
+
+  it("excludes a paused task from the candidates (#179 判断4: G-179-7)", () => {
+    const paused = makeTask({ id: 1, priority: "high", status: "paused" });
+    const todo = makeTask({ id: 2, priority: "low", status: "todo" });
+
+    expect(pickTopPriorityTask([paused, todo])).toEqual(todo);
+  });
 });

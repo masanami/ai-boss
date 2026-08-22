@@ -39,6 +39,13 @@ describe("selectTodayTasks", () => {
     expect(selectTodayTasks([todo, dropped], NOW)).toEqual([todo]);
   });
 
+  it("includes paused tasks (G-179-11)", () => {
+    const todo = makeTask({ id: 1, status: "todo" });
+    const paused = makeTask({ id: 2, status: "paused" });
+
+    expect(selectTodayTasks([todo, paused], NOW)).toEqual([todo, paused]);
+  });
+
   it("includes done tasks completed today (local date)", () => {
     const doneToday = makeTask({
       id: 1,

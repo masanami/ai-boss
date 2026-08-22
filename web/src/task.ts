@@ -1,6 +1,7 @@
 export const TASK_STATUSES = [
   "todo",
   "in_progress",
+  "paused",
   "done",
   "dropped",
 ] as const;

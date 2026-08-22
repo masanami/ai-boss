@@ -47,6 +47,27 @@ describe("getActiveBreak", () => {
       getActiveBreak([firstBreakStart, firstBreakEnd, secondBreakStart]),
     ).toEqual(secondBreakStart);
   });
+
+  it("ignores task_pause events and still returns the active break (#179 判断4: G-179-17 回帰)", () => {
+    const breakStart = makeActivityEvent({
+      type: "break_start",
+      created_at: "2026-07-05T10:00:00.000Z",
+    });
+    const taskPauseBefore = makeActivityEvent({
+      type: "task_pause",
+      task_id: 1,
+      created_at: "2026-07-05T09:00:00.000Z",
+    });
+    const taskPauseAfter = makeActivityEvent({
+      type: "task_pause",
+      task_id: 2,
+      created_at: "2026-07-05T10:05:00.000Z",
+    });
+
+    expect(
+      getActiveBreak([taskPauseBefore, breakStart, taskPauseAfter]),
+    ).toEqual(breakStart);
+  });
 });
 
 describe("isBreakOverrun", () => {

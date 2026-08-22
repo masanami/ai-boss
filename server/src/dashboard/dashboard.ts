@@ -9,7 +9,7 @@
 export interface DashboardProgress {
   /** Number of target tasks completed today. */
   done: number;
-  /** Number of target tasks (today's done + current todo/in_progress). */
+  /** Number of target tasks (today's done + current todo/in_progress/paused). */
   total: number;
   /** `done / total`, or 0 when `total` is 0. */
   ratio: number;

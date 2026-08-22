@@ -25,6 +25,7 @@ const PRIORITY_LABEL: Record<TaskPriority, string> = {
 const STATUS_LABEL: Record<TaskStatus, string> = {
   todo: "未着手",
   in_progress: "進行中",
+  paused: "一時停止",
   done: "完了",
   dropped: "中止",
 };

@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type Database from "better-sqlite3";
 import { openDatabase } from "../db/connection.js";
 import { runMigrations } from "../db/migrate.js";
@@ -29,11 +29,14 @@ describe("executeTaskTool", () => {
   let db: Database.Database;
 
   beforeEach(() => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date(2026, 6, 5, 12, 0, 0));
     db = openDatabase(":memory:");
     runMigrations(db);
   });
 
   afterEach(() => {
+    vi.useRealTimers();
     db.close();
   });
 
@@ -155,6 +158,61 @@ describe("executeTaskTool", () => {
         .prepare("SELECT * FROM activity_events WHERE type = 'task_update'")
         .all() as ActivityEvent[];
       expect(events).toHaveLength(0);
+    });
+
+    // AC-19（Issue #188）: TASK_STATUSES を spread しているため、#183 の定数
+    // 拡張で自動的に受理される見込みだったことをテストで担保する。
+    it("accepts status: 'paused' and transitions the task to paused", () => {
+      const task = insertTask(db, {
+        title: "資料作成",
+        description: null,
+        category: "work",
+        priority: null,
+        due_at: null,
+        status: "in_progress",
+        boss_comment: null,
+        estimated_minutes: null,
+      });
+
+      const result = executeTaskTool(db, "update_task", {
+        id: task.id,
+        status: "paused",
+      });
+
+      expect(result.isError).toBe(false);
+      const updated = JSON.parse(result.content);
+      expect(updated).toMatchObject({ id: task.id, status: "paused" });
+    });
+
+    // 親 #179 の明示的な仮定4: ボスが update_task で paused にしても task_pause
+    // イベントは記録されない（task_update のみ）。チェックインパネル経由の
+    // 「一時停止」（task_pause + task_update の2件）とは非対称。既存の
+    // 「ボスが in_progress にしても task_start は記録されない」と同じ非対称性
+    // であり、本チケットでは揃えない（抑制の実装を足さない・既存挙動の固定）。
+    it("does not record a task_pause activity event when the boss pauses a task via update_task (仮定4の既存非対称性)", () => {
+      const task = insertTask(db, {
+        title: "資料作成",
+        description: null,
+        category: "work",
+        priority: null,
+        due_at: null,
+        status: "in_progress",
+        boss_comment: null,
+        estimated_minutes: null,
+      });
+
+      executeTaskTool(db, "update_task", { id: task.id, status: "paused" });
+
+      const pauseEvents = db
+        .prepare("SELECT * FROM activity_events WHERE type = 'task_pause'")
+        .all() as ActivityEvent[];
+      expect(pauseEvents).toHaveLength(0);
+
+      const updateEvents = db
+        .prepare("SELECT * FROM activity_events WHERE type = 'task_update'")
+        .all() as ActivityEvent[];
+      expect(updateEvents).toHaveLength(1);
+      expect(updateEvents[0]).toMatchObject({ type: "task_update", task_id: task.id });
     });
   });
 

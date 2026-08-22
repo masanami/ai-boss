@@ -15,6 +15,7 @@ const EVENT_TYPE_LABEL: Record<ActivityEvent["type"], string> = {
   checkin: "チェックイン",
   chat_message: "チャット発言",
   task_update: "タスク操作",
+  task_pause: "一時停止",
 };
 
 function formatTime(iso: string): string {
@@ -51,7 +52,10 @@ function CheckinPanel({ tasksState }: CheckinPanelProps) {
   const selectableTasks = useMemo(
     () =>
       tasks.filter(
-        (task) => task.status === "todo" || task.status === "in_progress",
+        (task) =>
+          task.status === "todo" ||
+          task.status === "in_progress" ||
+          task.status === "paused",
       ),
     [tasks],
   );
@@ -127,9 +131,21 @@ function CheckinPanel({ tasksState }: CheckinPanelProps) {
     if (selectedTaskId === "") {
       return;
     }
+    // 選択中タスクが paused でもラベルが「再開」に変わるだけで、送信内容は
+    // task_start のまま変えない（親要件 #179 判断3）。
     runSubmit(
       { type: "task_start", task_id: selectedTaskId, note: noteOrNull() },
-      "着手しました",
+      selectedTask?.status === "paused" ? "再開しました" : "着手しました",
+    );
+  };
+
+  const handlePause = () => {
+    if (selectedTaskId === "") {
+      return;
+    }
+    runSubmit(
+      { type: "task_pause", task_id: selectedTaskId, note: noteOrNull() },
+      "一時停止しました",
     );
   };
 
@@ -197,9 +213,13 @@ function CheckinPanel({ tasksState }: CheckinPanelProps) {
             <button
               type="button"
               onClick={handleStart}
-              disabled={selectedTaskId === "" || isSubmitting}
+              disabled={
+                selectedTaskId === "" ||
+                isSubmitting ||
+                selectedTask?.status === "in_progress"
+              }
             >
-              着手
+              {selectedTask?.status === "paused" ? "再開" : "着手"}
             </button>
             {hasInProgressTask && (
               <button
@@ -212,6 +232,11 @@ function CheckinPanel({ tasksState }: CheckinPanelProps) {
                 }
               >
                 完了
+              </button>
+            )}
+            {selectedTask?.status === "in_progress" && (
+              <button type="button" onClick={handlePause} disabled={isSubmitting}>
+                一時停止
               </button>
             )}
           </div>
