@@ -155,7 +155,14 @@ function resolveFallbackTemplate(request: NotificationBodyRequest): FallbackTemp
   );
 }
 
-function buildFallbackBody(request: NotificationBodyRequest): string {
+/**
+ * Builds the generic fallback template body for `request` without going
+ * through the LLM. Exported so callers can recover when
+ * `generateNotificationBody` itself throws (as opposed to the LLM call
+ * inside it failing, which `generateNotificationBody` already recovers from
+ * internally) — see `scheduler-tick.ts`'s `processFiring` (Issue #205).
+ */
+export function buildFallbackBody(request: NotificationBodyRequest): string {
   const title = request.task?.title ?? DEFAULT_TASK_TITLE;
   return resolveFallbackTemplate(request)(title);
 }
