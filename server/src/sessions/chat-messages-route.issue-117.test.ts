@@ -27,14 +27,12 @@ const { anthropicCtor, streamMock } = vi.hoisted(() => {
 });
 
 // Issue #224: keep the real named `APIError` (and friends) export, not just
-// the default-exported client constructor — `claude-client.ts` now wires
-// `backends/api-backend.ts`'s `isRetryableApiError`/`getApiRetryAfterMs`
-// (both `error instanceof APIError`) into the `api` branch's retry policy,
-// so any error thrown through this file's mocked `streamMock` must reach a
-// real `APIError` (or the `instanceof` check throws `TypeError` instead of
-// classifying it) — same fix as `api-backend.test.ts` and
-// `claude-client.test.ts` (see the heads-up comment `api-backend.test.ts`
-// left for this ticket).
+// the default-exported client constructor. No test here currently rejects
+// from `streamMock`, so nothing in this file reaches the `api` branch's new
+// `error instanceof APIError` retry classification today — this is aligned
+// with `api-backend.test.ts`/`claude-client.test.ts` so that adding a
+// failure case later doesn't fail with a confusing `TypeError` from the
+// classification path instead of the error under test.
 vi.mock("@anthropic-ai/sdk", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@anthropic-ai/sdk")>();
   return { ...actual, default: anthropicCtor };

@@ -874,13 +874,35 @@ describe("runWithTimeoutAndRetry", () => {
       expect(attempt).toHaveBeenCalledTimes(2);
     });
 
-    it("clamps retryAfterMs to the remaining shared budget and fails with LlmTimeoutError instead of waiting the full requested time", async () => {
+    it("fails immediately with the original error, without sleeping, when retryAfterMs exceeds the remaining shared budget", async () => {
       const attempt = vi.fn().mockRejectedValue(new Error("rate limited"));
       const hasSideEffect = vi.fn().mockReturnValue(false);
-      // retryAfterMs (10 minutes) vastly exceeds the 5000ms shared timeout
-      // budget — the wait must be clamped to what's left of that budget, not
-      // handed to setTimeout as-is.
+      // retryAfterMs (10 minutes) vastly exceeds the 5000ms shared budget, so
+      // no retry can happen inside this call however long we wait.
       const classifyError = vi.fn().mockReturnValue({ retryable: true, retryAfterMs: 10 * 60_000 });
+
+      const promise = runWithTimeoutAndRetry(attempt, hasSideEffect, {
+        baseDelayMs: 10,
+        timeoutMs: 5000,
+        classifyError,
+      });
+
+      // Settles without advancing any timer at all: waiting out the budget
+      // first would only delay an already-certain failure and swap the
+      // actionable error for a generic LlmTimeoutError (self-review:
+      // code-reviewer/design-reviewer).
+      await expect(promise).rejects.toThrow("rate limited");
+      expect(attempt).toHaveBeenCalledTimes(1);
+    });
+
+    it("waits (rather than failing fast) when retryAfterMs exactly equals the remaining budget, then reports the shared timeout", async () => {
+      // Boundary of the fail-fast rule above: `retryAfterMs === remainingMs`
+      // is not "exceeds", so the wait is taken — and lands on the deadline,
+      // which the elapsed-time guard resolves as a timeout rather than
+      // letting one extra attempt through.
+      const attempt = vi.fn().mockRejectedValue(new Error("rate limited"));
+      const hasSideEffect = vi.fn().mockReturnValue(false);
+      const classifyError = vi.fn().mockReturnValue({ retryable: true, retryAfterMs: 5000 });
 
       const promise = runWithTimeoutAndRetry(attempt, hasSideEffect, {
         baseDelayMs: 10,
@@ -889,9 +911,6 @@ describe("runWithTimeoutAndRetry", () => {
       });
       promise.catch(() => {});
 
-      // Advance well past the shared budget but far short of the requested
-      // 10-minute retryAfterMs — if the wait were not clamped, the promise
-      // would still be pending here.
       await vi.advanceTimersByTimeAsync(5000);
 
       await expect(promise).rejects.toThrow(LlmTimeoutError);
@@ -1510,23 +1529,21 @@ describe("streamBossMessage (api backend retry-hook wiring, Issue #224)", () => 
     }
   });
 
-  it("fails with LlmTimeoutError, without exceeding the shared timeout budget, when Retry-After exceeds the remaining budget", async () => {
+  it("surfaces the 429 immediately, without burning the shared timeout budget, when Retry-After exceeds what is left of it", async () => {
     vi.useFakeTimers();
     try {
-      // 1 hour vastly exceeds the default 120s shared budget.
+      // 1 hour vastly exceeds the default 120s shared budget, so no retry can
+      // happen within this call no matter how long we wait.
       streamMock.mockReturnValue(createFailingStream(rateLimitError(String(60 * 60))));
 
       const promise = streamBossMessage(apiClient(), {
         messages: [{ role: "user", content: "hi" }],
       });
-      promise.catch(() => {});
 
-      await vi.advanceTimersByTimeAsync(120_000);
-
-      await expect(promise).rejects.toThrow(LlmTimeoutError);
-      // Clamped to the remaining budget, so only the first attempt ever ran
-      // — a 2nd attempt would mean the full (unclamped) hour was awaited
-      // instead, which `vi.advanceTimersByTimeAsync(120_000)` never reaches.
+      // No timer advanced: the failure is reported right away, keeping the
+      // actionable 429 instead of sleeping out 120s and reporting a generic
+      // LlmTimeoutError (a chat SSE turn would otherwise hang for 2 minutes).
+      await expect(promise).rejects.toMatchObject({ status: 429 });
       expect(streamMock).toHaveBeenCalledTimes(1);
     } finally {
       vi.useRealTimers();

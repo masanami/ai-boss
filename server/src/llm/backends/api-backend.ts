@@ -1,5 +1,10 @@
 import Anthropic, { APIError } from "@anthropic-ai/sdk";
-import type { BossContentBlock, BossLlmMessage, OnTextDelta } from "../claude-client.js";
+import type {
+  BossContentBlock,
+  BossLlmMessage,
+  OnTextDelta,
+  RetryDecision,
+} from "../claude-client.js";
 
 /**
  * `api` backend: thin wrapper around the Claude API (`@anthropic-ai/sdk`),
@@ -57,45 +62,30 @@ export function createApiClient(apiKey: string): Anthropic {
 }
 
 /**
- * Issue #223 (part 1/2 of restoring *some* of what SDK-level retry used to
- * give us for free — see the doc comment at the top of this file for why
- * `maxRetries: 0` exists and what it costs): decides whether `error` is
- * worth retrying, using only `APIError#status` (this is the one place in
- * the codebase allowed to depend on the SDK's error shape — the facade
- * (`claude-client.ts`) only imports SDK *types*, never these classes, per
- * docs/adr/0003-llm-backend-isolation.md). Uses the named `APIError` export
- * rather than `Anthropic.APIError` (the static on the default-exported
- * client class) — both refer to the same class at runtime, but the named
- * export doesn't depend on the default export's shape, which keeps this
- * function decoupled from how `Anthropic` itself is constructed/mocked.
+ * Decides whether `error` is worth retrying, using only `APIError#status`.
+ * This module is the only place allowed to depend on the SDK's error shape
+ * (docs/adr/0003-llm-backend-isolation.md).
  *
- * - 408 (Request Timeout) and 429 (Too Many Requests) are retryable — both
- *   are conventionally transient.
- * - Other 4xx (400/401/403/404/422/…) are the caller's fault or won't change
- *   on retry, so they are not retryable. This includes 409 (Conflict) —
- *   note this is *narrower* than the SDK's own built-in retry policy
- *   (`node_modules/@anthropic-ai/sdk/client.js`), which also retries 409 as
- *   a lock-timeout heuristic. Issue #223's completion criteria explicitly
- *   scope retryable 4xx down to 408/429 only, so this is a deliberate
- *   narrowing, not a full "restore SDK behavior" — self-review, code-reviewer.
+ * - 408 and 429 are retryable — conventionally transient.
+ * - Every other 4xx (400/401/403/404/409/422/…) is not: retrying can't
+ *   change the outcome. Excluding 409 is *narrower* than the SDK's own
+ *   policy, which retries it as a lock-timeout heuristic — Issue #223 scopes
+ *   retryable 4xx down to 408/429 only, so this is a deliberate narrowing
+ *   rather than a full "restore SDK behavior".
  * - 5xx is retryable (server-side, conventionally transient).
  * - Anything without a `status` — `APIConnectionError`,
  *   `APIConnectionTimeoutError`, `APIUserAbortError` (all three extend
- *   `APIError` with `status: undefined`), and any error that isn't an
- *   `APIError` at all (e.g. a bug thrown before the SDK could classify it)
- *   — keeps the pre-#223 uniform "always retry" behavior. This is a
- *   deliberate non-regression: we only ever *narrow* retries for errors we
- *   can positively identify as non-transient; anything unrecognized stays
- *   retryable. Note `APIUserAbortError` specifically: since Issue #176 the
- *   facade forwards its own shared `AbortSignal` into every SDK call, so an
- *   aborted-by-timeout request surfaces here as an `APIUserAbortError` with
- *   no `status` — this function alone would call that "retryable", but the
- *   facade's `runWithTimeoutAndRetry` already checks
- *   `controller.signal.aborted` *before* consulting any retry-eligibility
- *   result and throws `LlmTimeoutError` instead, so the abort case never
- *   actually reaches a retry decision in practice. A future caller of this
- *   function must preserve that "abort check first" ordering — self-review,
- *   code-reviewer/design-reviewer.
+ *   `APIError` with `status: undefined`), plus anything that isn't an
+ *   `APIError` at all — keeps the pre-#223 uniform "always retry" behavior.
+ *   Retries are only ever narrowed for errors positively identified as
+ *   non-transient; anything unrecognized stays retryable.
+ *
+ * `APIUserAbortError` deserves a note: since Issue #176 the facade forwards
+ * its shared `AbortSignal` into every SDK call, so a timed-out request
+ * surfaces here as one, with no `status` — "retryable" by the rule above.
+ * That never matters today because `runWithTimeoutAndRetry` checks
+ * `signal.aborted` *before* consulting this function and throws
+ * `LlmTimeoutError` instead; a future caller must preserve that ordering.
  */
 export function isRetryableApiError(error: unknown): boolean {
   if (!(error instanceof APIError)) {
@@ -112,61 +102,44 @@ export function isRetryableApiError(error: unknown): boolean {
 }
 
 /** RFC 9110 §5.6.7 IMF-fixdate — the only `Retry-After` date format handled
- * here (also what `Date.prototype.toUTCString()` produces, which is what
- * this file's own tests — and every server this app talks to — use). This
- * allowlist regex is deliberately stricter than handing the raw header
- * value straight to `Date.parse`: the SDK's underlying JS engine parses far
- * more than the HTTP-date grammar (ISO dates, and even some malformed
- * strings with a leading `-`), which previously let a header value like
- * `"-9999"` — meant to be rejected as an unparsable/negative delay — be
- * silently reinterpreted as a valid far-future date instead (self-review:
- * Codex shadow review + code-reviewer, both independently, Issue #223).
+ * here (also what `Date.prototype.toUTCString()` produces). Deliberately
+ * stricter than handing the raw header value to `Date.parse`, which accepts
+ * far more than the HTTP-date grammar: without this allowlist, a value like
+ * `"-9999"` — meant to be rejected as an unparsable/negative delay — is
+ * silently reinterpreted as a valid far-future date.
  */
 const RETRY_AFTER_HTTP_DATE_RE = /^[A-Za-z]{3}, \d{2} [A-Za-z]{3} \d{4} \d{2}:\d{2}:\d{2} GMT$/;
 
 /**
- * Issue #223 (part 2/2): extracts the caller's requested wait time (in
- * milliseconds) from `error`'s `Retry-After` response header, per RFC 9110
- * §10.2.3 — either a non-negative integer number of seconds, or an
- * HTTP-date. Returns `undefined` ("no preference expressed") whenever
- * `error` isn't an `APIError` with a `retry-after` header, or the header
- * value is present but unparsable/negative — callers fall back to their own
- * default backoff in that case.
+ * Extracts the server's requested wait (in milliseconds) from `error`'s
+ * `Retry-After` response header, per RFC 9110 §10.2.3 — either a
+ * non-negative integer number of seconds, or an HTTP-date. Returns
+ * `undefined` ("no preference expressed") when `error` isn't an `APIError`
+ * carrying a parsable, non-negative `retry-after`; callers fall back to
+ * their own default backoff then.
  *
- * Takes `error: unknown` (mirroring {@link isRetryableApiError}'s
- * signature) rather than a bare `Headers` object so both functions do their
- * own SDK-shape unwrapping internally and stay symmetric — a caller (the
- * future `claude-client.ts` wiring in Issue #224) only ever needs to hand
- * over the caught `error`, never reach into `error.headers` itself. Reaching
- * into `.headers` from the facade would require it to narrow `error` to
- * `APIError` (an `instanceof` check, i.e. an SDK *value* import), which is
- * exactly what docs/adr/0003-llm-backend-isolation.md's "SDK value imports
- * stay inside this file" boundary forbids — self-review: design-reviewer.
+ * Takes `error: unknown` rather than a bare `Headers` so it stays symmetric
+ * with {@link isRetryableApiError} and callers never touch `error.headers`
+ * themselves: narrowing to `APIError` requires an SDK *value* import, which
+ * docs/adr/0003-llm-backend-isolation.md keeps inside this module.
  *
- * `now` defaults to the current time but is a parameter so tests can pin it
- * (needed for the HTTP-date branch, which is computed relative to "now").
- * The returned wait, if any, is **not** clamped to a "sane" maximum — an
- * absurdly-large-but-syntactically-valid `Retry-After: <seconds>` is
- * returned as-is, only ever rejected (`undefined`) if it's literally
- * `Infinity` (i.e. `seconds * 1000` itself overflows `Number`; a merely
- * huge-but-finite value, e.g. several centuries' worth of milliseconds, is
- * returned unchanged). **This is a real caller hazard, not a hypothetical
- * one**: `Number.isFinite` alone is not enough of a safety net if a caller
- * ever hands this value straight to `setTimeout` — Node's `setTimeout`
- * silently coerces any delay beyond the 32-bit signed integer max
- * (~24.8 days) down to effectively `1`ms (`TimeoutOverflowWarning`), which
- * would make the caller retry *sooner* than an unbounded/default backoff
- * for a value this function correctly parsed as "wait a very long time" —
- * the opposite of what `Retry-After` asked for. A caller that turns this
- * return value into an actual sleep (the future `claude-client.ts` wiring,
- * Issue #224) must clamp it against its own sane upper bound before use;
- * this function only extracts what the header literally said, it doesn't
- * second-guess or bound it — self-review: code-reviewer (round 2).
+ * `now` is a parameter so tests can pin the HTTP-date branch's reference
+ * point.
  *
- * Scope (Issue #223 制約): only the standard `Retry-After` header is read.
- * Non-standard headers some providers also send (e.g. `retry-after-ms`,
- * `x-should-retry`) are out of scope (YAGNI) — see this file's doc comment
- * and the ticket for the rationale.
+ * The result is **not** clamped to a sane maximum — a huge-but-finite
+ * `Retry-After: <seconds>` is returned as-is (only a literal `Infinity`,
+ * i.e. `seconds * 1000` overflowing `Number`, is rejected). Bounding it
+ * belongs to whoever turns it into an actual sleep, because only that caller
+ * knows its own budget: `claude-client.ts`'s `runWithTimeoutAndRetry`
+ * compares it against the remaining shared timeout and fails fast rather
+ * than sleeping when it doesn't fit. A caller that skipped that check and
+ * passed the value straight to `setTimeout` would get the opposite of what
+ * the header asked for — Node silently coerces delays past the 32-bit signed
+ * max (~24.8 days) down to ~1ms.
+ *
+ * Scope: only the standard `Retry-After` header. Non-standard headers some
+ * providers also send (`retry-after-ms`, `x-should-retry`) are out of scope
+ * (YAGNI).
  */
 export function getApiRetryAfterMs(error: unknown, now: Date = new Date()): number | undefined {
   if (!(error instanceof APIError)) {
@@ -189,11 +162,9 @@ export function getApiRetryAfterMs(error: unknown, now: Date = new Date()): numb
   if (/^\d+$/.test(trimmed)) {
     const seconds = Number(trimmed);
     const milliseconds = seconds * 1000;
-    // `Number.isFinite` is checked on the *product*, not on `seconds` alone
-    // — `seconds` itself can be finite (e.g. `1e306`) while `seconds * 1000`
-    // overflows to `Infinity`. Checking pre-multiplication was a real bug
-    // caught in this file's own self-review (round 2): it let this function
-    // return `Infinity`, silently breaking its own "milliseconds" contract.
+    // Finiteness is checked on the *product*: `seconds` can be finite (e.g.
+    // 1e306) while `seconds * 1000` overflows to `Infinity`, which would
+    // break this function's "milliseconds" contract.
     return Number.isFinite(milliseconds) ? milliseconds : undefined;
   }
 
@@ -207,6 +178,22 @@ export function getApiRetryAfterMs(error: unknown, now: Date = new Date()): numb
   }
   const waitMs = targetMs - now.getTime();
   return waitMs >= 0 ? waitMs : undefined;
+}
+
+/**
+ * This backend's `RetryTimeoutOptions.classifyError` (Issue #224): the whole
+ * `api` retry policy in one place, so the facade only decides *that* the
+ * `api` branch has a policy, never what it is. Lives here rather than in
+ * `claude-client.ts` so that future refinements (e.g. honoring `Retry-After`
+ * on 429 only, or skipping the header parse when the error is already
+ * non-retryable) stay inside the backend module — the facade sees an opaque
+ * `unknown` → {@link RetryDecision} function either way.
+ */
+export function classifyApiError(error: unknown): RetryDecision {
+  return {
+    retryable: isRetryableApiError(error),
+    retryAfterMs: getApiRetryAfterMs(error),
+  };
 }
 
 /**
