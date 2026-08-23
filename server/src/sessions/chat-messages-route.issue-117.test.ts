@@ -26,7 +26,17 @@ const { anthropicCtor, streamMock } = vi.hoisted(() => {
   return { anthropicCtor, streamMock };
 });
 
-vi.mock("@anthropic-ai/sdk", () => ({ default: anthropicCtor }));
+// Issue #224: keep the real named `APIError` (and friends) export, not just
+// the default-exported client constructor. No test here currently rejects
+// from `streamMock`, so nothing in this file reaches the `api` branch's new
+// `error instanceof APIError` retry classification today — this is aligned
+// with `api-backend.test.ts`/`claude-client.test.ts` so that adding a
+// failure case later doesn't fail with a confusing `TypeError` from the
+// classification path instead of the error under test.
+vi.mock("@anthropic-ai/sdk", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@anthropic-ai/sdk")>();
+  return { ...actual, default: anthropicCtor };
+});
 
 const { createApp } = await import("../app.js");
 

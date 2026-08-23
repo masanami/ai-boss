@@ -9,11 +9,30 @@ const { anthropicCtor, streamMock, createMock } = vi.hoisted(() => {
   return { anthropicCtor, streamMock, createMock };
 });
 
-vi.mock("@anthropic-ai/sdk", () => ({ default: anthropicCtor }));
+vi.mock("@anthropic-ai/sdk", async (importOriginal) => {
+  // Issue #223: keep the real named `APIError`/`RateLimitError`/etc. exports
+  // so `error instanceof APIError` in `isRetryableApiError`/
+  // `getApiRetryAfterMs` (both import the named `APIError` export, not
+  // `Anthropic.APIError`) works in tests — only the default-exported client
+  // constructor is faked. (Before #223 this mock replaced the whole module
+  // with just `{ default: anthropicCtor }`, which left the named `APIError`
+  // export `undefined` and would have thrown a `TypeError` the moment any
+  // test exercised the new `instanceof` check.)
+  const actual = await importOriginal<typeof import("@anthropic-ai/sdk")>();
+  return { ...actual, default: anthropicCtor };
+});
+// Issue #224 resolved the heads-up this comment used to carry: both
+// `claude-client.test.ts` and `chat-messages-route.issue-117.test.ts` now use
+// the same `importOriginal`-based `@anthropic-ai/sdk` mock as this file
+// (rather than the old `() => ({ default: anthropicCtor })`, which dropped
+// the named `APIError` export) — required once `claude-client.ts` wired
+// `isRetryableApiError`/`getApiRetryAfterMs` into the `api` branch's retry
+// policy (`RetryTimeoutOptions.classifyError`), since that policy reaches an
+// `error instanceof APIError` check on every failed `api` attempt.
 
-const { createApiClient, streamApiMessage, createApiMessage } = await import(
-  "./api-backend.js"
-);
+const { createApiClient, streamApiMessage, createApiMessage, isRetryableApiError, getApiRetryAfterMs } =
+  await import("./api-backend.js");
+const AnthropicModule = await import("@anthropic-ai/sdk");
 
 interface FakeMessage {
   content: unknown[];
@@ -389,5 +408,186 @@ describe("createApiMessage", () => {
     });
 
     expect(createMock.mock.calls[0]).toHaveLength(1);
+  });
+});
+
+describe("isRetryableApiError", () => {
+  const {
+    APIError,
+    RateLimitError,
+    BadRequestError,
+    AuthenticationError,
+    PermissionDeniedError,
+    NotFoundError,
+    ConflictError,
+    UnprocessableEntityError,
+    InternalServerError,
+    APIConnectionError,
+    APIConnectionTimeoutError,
+    APIUserAbortError,
+  } = AnthropicModule;
+
+  it("returns false for 400 (Bad Request) — caller's fault, retrying can't help", () => {
+    const error = new BadRequestError(400, { type: "error", error: { type: "invalid_request_error", message: "bad" } }, "bad", new Headers());
+    expect(isRetryableApiError(error)).toBe(false);
+  });
+
+  it("returns false for 401 (Authentication)", () => {
+    const error = new AuthenticationError(401, undefined, "unauthorized", new Headers());
+    expect(isRetryableApiError(error)).toBe(false);
+  });
+
+  it("returns false for 403 (Permission Denied)", () => {
+    const error = new PermissionDeniedError(403, undefined, "forbidden", new Headers());
+    expect(isRetryableApiError(error)).toBe(false);
+  });
+
+  it("returns false for 404 (Not Found)", () => {
+    const error = new NotFoundError(404, undefined, "not found", new Headers());
+    expect(isRetryableApiError(error)).toBe(false);
+  });
+
+  it("returns false for 409 (Conflict) — narrower than the SDK's own lock-timeout retry heuristic, per Issue #223's AC", () => {
+    const error = new ConflictError(409, undefined, "conflict", new Headers());
+    expect(isRetryableApiError(error)).toBe(false);
+  });
+
+  it("returns false for 422 (Unprocessable Entity)", () => {
+    const error = new UnprocessableEntityError(422, undefined, "unprocessable", new Headers());
+    expect(isRetryableApiError(error)).toBe(false);
+  });
+
+  it("returns true for 408 (Request Timeout)", () => {
+    const error = new APIError(408, undefined, "timeout", new Headers());
+    expect(isRetryableApiError(error)).toBe(true);
+  });
+
+  it("returns true for 429 (Too Many Requests / rate limit)", () => {
+    const error = new RateLimitError(429, undefined, "rate limited", new Headers());
+    expect(isRetryableApiError(error)).toBe(true);
+  });
+
+  it("returns true for 500 (Internal Server Error)", () => {
+    const error = new InternalServerError(500, undefined, "internal error", new Headers());
+    expect(isRetryableApiError(error)).toBe(true);
+  });
+
+  it("returns true for 503 (Service Unavailable)", () => {
+    const error = new APIError(503, undefined, "unavailable", new Headers());
+    expect(isRetryableApiError(error)).toBe(true);
+  });
+
+  it("returns true for 529 (Anthropic's overloaded_error, outside the SDK's named 5xx subclasses)", () => {
+    const error = new APIError(529, undefined, "overloaded", new Headers());
+    expect(isRetryableApiError(error)).toBe(true);
+  });
+
+  it("returns true for APIConnectionError (no status — preserves the pre-#223 uniform retry behavior)", () => {
+    const error = new APIConnectionError({ message: "connection failed" });
+    expect(error.status).toBeUndefined();
+    expect(isRetryableApiError(error)).toBe(true);
+  });
+
+  it("returns true for APIConnectionTimeoutError (no status)", () => {
+    const error = new APIConnectionTimeoutError();
+    expect(isRetryableApiError(error)).toBe(true);
+  });
+
+  it("returns true for APIUserAbortError (no status) — see this function's doc comment for why the facade must still check `signal.aborted` before this", () => {
+    const error = new APIUserAbortError();
+    expect(error.status).toBeUndefined();
+    expect(isRetryableApiError(error)).toBe(true);
+  });
+
+  it("returns true for an arbitrary non-APIError (e.g. a plain bug) — non-regression from the pre-#223 uniform retry policy", () => {
+    expect(isRetryableApiError(new TypeError("something else broke"))).toBe(true);
+    expect(isRetryableApiError("not even an Error")).toBe(true);
+    expect(isRetryableApiError(undefined)).toBe(true);
+  });
+});
+
+describe("getApiRetryAfterMs", () => {
+  const { APIError, APIConnectionError } = AnthropicModule;
+
+  /** Builds a 429 `RateLimitError`-shaped `APIError` carrying the given
+   * `retry-after` header value (or no header at all when omitted) — the
+   * realistic shape this function is meant to unwrap. */
+  function rateLimitError(retryAfterHeaderValue?: string): InstanceType<typeof APIError> {
+    const headers = new Headers();
+    if (retryAfterHeaderValue !== undefined) {
+      headers.set("retry-after", retryAfterHeaderValue);
+    }
+    return new APIError(429, undefined, "rate limited", headers);
+  }
+
+  it("returns undefined when error is not an APIError at all", () => {
+    expect(getApiRetryAfterMs(new TypeError("not even an APIError"))).toBeUndefined();
+    expect(getApiRetryAfterMs(undefined)).toBeUndefined();
+  });
+
+  it("returns undefined when the APIError has no headers (e.g. APIConnectionError)", () => {
+    const error = new APIConnectionError({ message: "connection failed" });
+    expect(error.headers).toBeUndefined();
+    expect(getApiRetryAfterMs(error)).toBeUndefined();
+  });
+
+  it("returns undefined when there is no retry-after header", () => {
+    expect(getApiRetryAfterMs(rateLimitError())).toBeUndefined();
+  });
+
+  it("parses the numeric-seconds form into milliseconds", () => {
+    expect(getApiRetryAfterMs(rateLimitError("30"))).toBe(30_000);
+  });
+
+  it("parses '0' as 0ms (a valid, if trivial, wait)", () => {
+    expect(getApiRetryAfterMs(rateLimitError("0"))).toBe(0);
+  });
+
+  it("treats a negative numeric value as unparsable ('指定なし'), not as a (mis-parsed) date — self-review regression coverage: Codex shadow review + code-reviewer both flagged that a lenient Date.parse previously reinterpreted this as a valid far-future date", () => {
+    expect(getApiRetryAfterMs(rateLimitError("-5"))).toBeUndefined();
+    expect(getApiRetryAfterMs(rateLimitError("-9999"))).toBeUndefined();
+  });
+
+  it("treats a non-numeric, non-HTTP-date value as unparsable", () => {
+    expect(getApiRetryAfterMs(rateLimitError("not-a-value"))).toBeUndefined();
+  });
+
+  it("treats a non-HTTP-date-formatted date-like string as unparsable (only the RFC 9110 IMF-fixdate form is accepted, not e.g. ISO 8601)", () => {
+    expect(getApiRetryAfterMs(rateLimitError("2050-01-01T00:00:00Z"))).toBeUndefined();
+  });
+
+  it("treats an empty header value as unparsable", () => {
+    expect(getApiRetryAfterMs(rateLimitError(""))).toBeUndefined();
+  });
+
+  it("parses the HTTP-date form relative to the given `now`, TZ-independently", () => {
+    // Built from local-date components (not a UTC string literal) per this
+    // repo's TZ-independence convention — see CLAUDE.md's testing policy.
+    const now = new Date(2026, 7, 24, 10, 0, 0); // 2026-08-24 10:00:00 local
+    const target = new Date(now.getTime() + 45_000); // 45s later
+    const header = target.toUTCString(); // RFC 7231 HTTP-date, e.g. "Mon, 24 Aug 2026 ... GMT"
+
+    expect(getApiRetryAfterMs(rateLimitError(header), now)).toBe(45_000);
+  });
+
+  it("treats an HTTP-date in the past (relative to `now`) as unparsable ('指定なし'), not a negative number", () => {
+    const now = new Date(2026, 7, 24, 10, 0, 0);
+    const past = new Date(now.getTime() - 60_000); // 60s earlier
+    const header = past.toUTCString();
+
+    expect(getApiRetryAfterMs(rateLimitError(header), now)).toBeUndefined();
+  });
+
+  it("treats an unparsable date string as unparsable", () => {
+    expect(getApiRetryAfterMs(rateLimitError("not a date at all"))).toBeUndefined();
+  });
+
+  it("never returns Infinity for an enormous-but-finite numeric-seconds value — self-review regression coverage: code-reviewer (round 2) caught that checking Number.isFinite on `seconds` before multiplying by 1000 let `seconds * 1000` itself overflow to Infinity and leak out, silently breaking the 'milliseconds' contract", () => {
+    // A 306-digit all-9s string: `Number(...)` alone is still finite
+    // (1e+306), but multiplying by 1000 overflows past `Number.MAX_VALUE`.
+    const enormousSeconds = "9".repeat(306);
+    const result = getApiRetryAfterMs(rateLimitError(enormousSeconds));
+    expect(result).toBeUndefined();
+    expect(result).not.toBe(Infinity);
   });
 });
