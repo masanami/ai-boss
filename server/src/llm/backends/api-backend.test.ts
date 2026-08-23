@@ -21,16 +21,14 @@ vi.mock("@anthropic-ai/sdk", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@anthropic-ai/sdk")>();
   return { ...actual, default: anthropicCtor };
 });
-// Heads-up for Issue #224 (self-review, design-reviewer round 2): other test
-// files that transitively load this module via `claude-client.ts`
-// (`claude-client.test.ts`, `chat-messages-route.issue-117.test.ts` as of
-// this writing) still mock `@anthropic-ai/sdk` the old way — `() => ({
-// default: anthropicCtor })`, dropping the named `APIError` export. That's
-// harmless today because `isRetryableApiError`/`getApiRetryAfterMs` aren't
-// wired into `claude-client.ts` yet (Issue #223's explicit scope), but the
-// moment #224 wires them in, any test path in those files that reaches an
-// `instanceof APIError` check will need the same `importOriginal` fix as
-// above, or it will fail the way this file's own mock would have pre-#223.
+// Issue #224 resolved the heads-up this comment used to carry: both
+// `claude-client.test.ts` and `chat-messages-route.issue-117.test.ts` now use
+// the same `importOriginal`-based `@anthropic-ai/sdk` mock as this file
+// (rather than the old `() => ({ default: anthropicCtor })`, which dropped
+// the named `APIError` export) — required once `claude-client.ts` wired
+// `isRetryableApiError`/`getApiRetryAfterMs` into the `api` branch's retry
+// policy (`RetryTimeoutOptions.classifyError`), since that policy reaches an
+// `error instanceof APIError` check on every failed `api` attempt.
 
 const { createApiClient, streamApiMessage, createApiMessage, isRetryableApiError, getApiRetryAfterMs } =
   await import("./api-backend.js");

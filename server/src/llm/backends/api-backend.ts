@@ -16,12 +16,16 @@ import type { BossContentBlock, BossLlmMessage, OnTextDelta } from "../claude-cl
  * `claude-code` バックエンドと同様にそれへ従う（docs/adr/0003 帰結）。その
  * ため SDK 自身のリトライは `maxRetries: 0` で無効化する — 有効なまま
  * ファサード側のリトライで包むと二重にリトライがかかり最大 3 × 3 = 9 回
- * 試行になってしまう（トレードオフとして、SDK 自身のエラー種別判定・
- * `Retry-After` 尊重は失われファサードの一律リトライへ一本化される。
+ * 試行になってしまう。当初（Issue #176）はこれにより SDK 自身のエラー種別
+ * 判定・`Retry-After` 尊重が失われファサードの一律リトライへ後退する
+ * トレードオフを受け入れていたが、Issue #223（この下の `isRetryableApiError`
+ * / `getApiRetryAfterMs`）と #224（`claude-client.ts` の
+ * `RetryTimeoutOptions.classifyError` 経由でこの2関数を `api` 分岐にのみ接続）
+ * でその判定・待機を二重リトライを再導入せずに回復した——ただし
  * `claude-code` 側で Agent SDK 自身がリトライを行うかは本アプリのコードから
- * は制御・検証できないため、この一本化による相対的な非対称の有無は
- * 未確認——検証が必要になった場合は別途 Issue を切る、self-review:
- * design-reviewer）。`streamApiMessage` /
+ * は制御・検証できないため、両経路間の相対的な非対称の有無は未確認——
+ * 検証が必要になった場合は別途 Issue を切る（self-review: design-reviewer）。
+ * `streamApiMessage` /
  * `createApiMessage` はファサードから渡された `AbortSignal` を SDK 呼び出し
  * のリクエストオプション（第2引数）へ転送し、ファサードが管理する共有の
  * タイムアウト予算に SDK 呼び出し自体を従わせる。SDK 自身の `timeout`

@@ -9,7 +9,17 @@ const { anthropicCtor, streamMock, createMock } = vi.hoisted(() => {
   return { anthropicCtor, streamMock, createMock };
 });
 
-vi.mock("@anthropic-ai/sdk", () => ({ default: anthropicCtor }));
+// Issue #224: keep the real named `APIError` (and friends) export — the
+// `api` branch's retry policy now wires `backends/api-backend.ts`'s
+// `isRetryableApiError`/`getApiRetryAfterMs` (both `error instanceof
+// APIError`) into `runWithTimeoutAndRetry`, so a plain `{ default:
+// anthropicCtor }` mock (which drops the named export) would make those
+// checks throw `TypeError` instead of classifying the error — same fix as
+// `api-backend.test.ts` (see the heads-up comment it left for this ticket).
+vi.mock("@anthropic-ai/sdk", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@anthropic-ai/sdk")>();
+  return { ...actual, default: anthropicCtor };
+});
 
 const { streamClaudeCodeMessageMock, createClaudeCodeMessageMock } = vi.hoisted(() => ({
   streamClaudeCodeMessageMock: vi.fn(),
@@ -50,6 +60,11 @@ const {
   requestVerdict,
   runWithTimeoutAndRetry,
 } = await import("./claude-client.js");
+// Issue #224: used to build real `APIError`-shaped errors (status +
+// `Retry-After` header) for the api-branch retry-wiring tests below — same
+// technique `api-backend.test.ts` uses for `isRetryableApiError`/
+// `getApiRetryAfterMs`'s own tests.
+const AnthropicModule = await import("@anthropic-ai/sdk");
 
 function claudeCodeClient() {
   return createClaudeClient({}, "claude-code");
@@ -797,6 +812,92 @@ describe("runWithTimeoutAndRetry", () => {
     await expect(promise).rejects.toThrow(LlmTimeoutError);
     expect(attempt).toHaveBeenCalledTimes(1);
   });
+
+  // Issue #224: the `classifyError` hook itself, independent of any
+  // particular backend's wiring (that wiring — `api` only — is covered by
+  // the `(api backend timeout/retry wiring, Issue #224)` describe blocks
+  // below).
+  describe("classifyError hook (Issue #224)", () => {
+    it("does not retry when classifyError returns retryable: false, even though hasSideEffect is false and retries remain", async () => {
+      const attempt = vi.fn().mockRejectedValue(new Error("non-transient"));
+      const hasSideEffect = vi.fn().mockReturnValue(false);
+      const classifyError = vi.fn().mockReturnValue({ retryable: false });
+
+      const promise = runWithTimeoutAndRetry(attempt, hasSideEffect, {
+        baseDelayMs: 10,
+        timeoutMs: 5000,
+        classifyError,
+      });
+      promise.catch(() => {});
+
+      await expect(promise).rejects.toThrow("non-transient");
+      expect(attempt).toHaveBeenCalledTimes(1);
+      expect(classifyError).toHaveBeenCalledTimes(1);
+    });
+
+    it("still retries when classifyError returns retryable: true (with no retryAfterMs), using the default exponential backoff", async () => {
+      const attempt = vi.fn().mockRejectedValueOnce(new Error("transient")).mockResolvedValueOnce("ok");
+      const hasSideEffect = vi.fn().mockReturnValue(false);
+      const classifyError = vi.fn().mockReturnValue({ retryable: true });
+
+      const promise = runWithTimeoutAndRetry(attempt, hasSideEffect, {
+        baseDelayMs: 10,
+        timeoutMs: 5000,
+        classifyError,
+      });
+      await vi.advanceTimersByTimeAsync(10);
+
+      await expect(promise).resolves.toBe("ok");
+      expect(attempt).toHaveBeenCalledTimes(2);
+    });
+
+    it("waits exactly retryAfterMs (not the default backoff) before retrying when classifyError supplies one", async () => {
+      const attempt = vi.fn().mockRejectedValueOnce(new Error("rate limited")).mockResolvedValueOnce("ok");
+      const hasSideEffect = vi.fn().mockReturnValue(false);
+      // retryAfterMs (5000) is far larger than the default backoff
+      // (baseDelayMs=10) would ever produce on the first attempt — proves
+      // the hook's value drives the wait, not the exponential formula.
+      const classifyError = vi.fn().mockReturnValue({ retryable: true, retryAfterMs: 5000 });
+
+      const promise = runWithTimeoutAndRetry(attempt, hasSideEffect, {
+        baseDelayMs: 10,
+        timeoutMs: 60_000,
+        classifyError,
+      });
+
+      // Not yet retried just after the default backoff would have fired.
+      await vi.advanceTimersByTimeAsync(10);
+      expect(attempt).toHaveBeenCalledTimes(1);
+
+      await vi.advanceTimersByTimeAsync(5000 - 10);
+      await expect(promise).resolves.toBe("ok");
+      expect(attempt).toHaveBeenCalledTimes(2);
+    });
+
+    it("clamps retryAfterMs to the remaining shared budget and fails with LlmTimeoutError instead of waiting the full requested time", async () => {
+      const attempt = vi.fn().mockRejectedValue(new Error("rate limited"));
+      const hasSideEffect = vi.fn().mockReturnValue(false);
+      // retryAfterMs (10 minutes) vastly exceeds the 5000ms shared timeout
+      // budget — the wait must be clamped to what's left of that budget, not
+      // handed to setTimeout as-is.
+      const classifyError = vi.fn().mockReturnValue({ retryable: true, retryAfterMs: 10 * 60_000 });
+
+      const promise = runWithTimeoutAndRetry(attempt, hasSideEffect, {
+        baseDelayMs: 10,
+        timeoutMs: 5000,
+        classifyError,
+      });
+      promise.catch(() => {});
+
+      // Advance well past the shared budget but far short of the requested
+      // 10-minute retryAfterMs — if the wait were not clamped, the promise
+      // would still be pending here.
+      await vi.advanceTimersByTimeAsync(5000);
+
+      await expect(promise).rejects.toThrow(LlmTimeoutError);
+      expect(attempt).toHaveBeenCalledTimes(1);
+    });
+  });
 });
 
 describe("streamBossMessage (claude-code backend wiring)", () => {
@@ -1299,6 +1400,194 @@ describe("createBossMessage (api backend timeout/retry wiring, Issue #176)", () 
       await expect(promise).rejects.toThrow(LlmTimeoutError);
       const [, options] = createMock.mock.calls[0] as [unknown, { signal?: AbortSignal }];
       expect(options.signal?.aborted).toBe(true);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});
+
+// Issue #224: `dispatchStream`/`dispatchCreate`'s `api` branches now pass
+// `classifyError` (backed by `backends/api-backend.ts`'s
+// `isRetryableApiError`/`getApiRetryAfterMs`, Issue #223) into
+// `runWithTimeoutAndRetry`. These tests exercise that wiring through the
+// real `streamApiMessage`/`createApiMessage` (only `client.messages.stream`/
+// `.create` are mocked, same as the `Issue #176` describe blocks above), with
+// *real* `APIError` instances thrown from the mocked SDK call — proving the
+// facade correctly narrows `error instanceof APIError` end to end (the
+// reason both this file's and `chat-messages-route.issue-117.test.ts`'s
+// `@anthropic-ai/sdk` mocks were updated to keep the named export).
+describe("streamBossMessage (api backend retry-hook wiring, Issue #224)", () => {
+  const { APIError } = AnthropicModule;
+
+  function apiError(status: number, headers: Headers = new Headers()) {
+    return new APIError(status, undefined, "api error", headers);
+  }
+
+  function rateLimitError(retryAfterHeaderValue?: string) {
+    const headers = new Headers();
+    if (retryAfterHeaderValue !== undefined) {
+      headers.set("retry-after", retryAfterHeaderValue);
+    }
+    return apiError(429, headers);
+  }
+
+  it.each([
+    ["401 (Authentication)", 401],
+    ["400 (Bad Request)", 400],
+  ])("fails after exactly 1 attempt for a %s api error — not retried", async (_label, status) => {
+    vi.useFakeTimers();
+    try {
+      streamMock.mockReturnValue(createFailingStream(apiError(status)));
+
+      const promise = streamBossMessage(apiClient(), {
+        messages: [{ role: "user", content: "hi" }],
+      });
+      promise.catch(() => {});
+
+      // Asserts the *original* `APIError` (with the expected `status`)
+      // propagates unchanged — not just "rejects with something". A bare
+      // `.rejects.toThrow()` would also pass if `classifyApiError`'s
+      // `instanceof APIError` check itself threw a `TypeError` (e.g. from a
+      // regressed `@anthropic-ai/sdk` mock dropping the named `APIError`
+      // export — see this file's own mock update above): that `TypeError`
+      // would also reject the promise after exactly 1 `streamMock` call,
+      // silently passing this test for the wrong reason (self-review:
+      // code-reviewer).
+      await expect(promise).rejects.toMatchObject({ status });
+      expect(streamMock).toHaveBeenCalledTimes(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it.each([
+    ["408 (Request Timeout)", () => apiError(408)],
+    ["429 (rate limited, no Retry-After header — falls back to default backoff)", () => rateLimitError()],
+    ["500 (Internal Server Error)", () => apiError(500)],
+    ["network error (non-APIError, no status — pre-#223 uniform-retry non-regression)", () => new Error("ECONNRESET")],
+  ])("still retries (default exponential backoff, non-regression) for %s", async (_label, buildError) => {
+    vi.useFakeTimers();
+    try {
+      streamMock
+        .mockReturnValueOnce(createFailingStream(buildError()))
+        .mockReturnValueOnce(createFakeStream(textMessage("ok")));
+
+      const promise = streamBossMessage(apiClient(), {
+        messages: [{ role: "user", content: "hi" }],
+      });
+      await vi.advanceTimersByTimeAsync(1_000);
+
+      const result = await promise;
+      expect(result.content).toEqual([{ type: "text", text: "ok" }]);
+      expect(streamMock).toHaveBeenCalledTimes(2);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("waits exactly the Retry-After duration (not the default backoff) before retrying on 429", async () => {
+    vi.useFakeTimers();
+    try {
+      streamMock
+        .mockReturnValueOnce(createFailingStream(rateLimitError("30")))
+        .mockReturnValueOnce(createFakeStream(textMessage("ok")));
+
+      const promise = streamBossMessage(apiClient(), {
+        messages: [{ role: "user", content: "hi" }],
+      });
+
+      // The default backoff (1000ms) alone must not be enough to trigger the
+      // retry — proves the wait comes from `Retry-After`, not the formula.
+      await vi.advanceTimersByTimeAsync(1_000);
+      expect(streamMock).toHaveBeenCalledTimes(1);
+
+      await vi.advanceTimersByTimeAsync(30_000 - 1_000);
+      const result = await promise;
+      expect(result.content).toEqual([{ type: "text", text: "ok" }]);
+      expect(streamMock).toHaveBeenCalledTimes(2);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("fails with LlmTimeoutError, without exceeding the shared timeout budget, when Retry-After exceeds the remaining budget", async () => {
+    vi.useFakeTimers();
+    try {
+      // 1 hour vastly exceeds the default 120s shared budget.
+      streamMock.mockReturnValue(createFailingStream(rateLimitError(String(60 * 60))));
+
+      const promise = streamBossMessage(apiClient(), {
+        messages: [{ role: "user", content: "hi" }],
+      });
+      promise.catch(() => {});
+
+      await vi.advanceTimersByTimeAsync(120_000);
+
+      await expect(promise).rejects.toThrow(LlmTimeoutError);
+      // Clamped to the remaining budget, so only the first attempt ever ran
+      // — a 2nd attempt would mean the full (unclamped) hour was awaited
+      // instead, which `vi.advanceTimersByTimeAsync(120_000)` never reaches.
+      expect(streamMock).toHaveBeenCalledTimes(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});
+
+describe("createBossMessage (api backend retry-hook wiring, Issue #224)", () => {
+  const { APIError } = AnthropicModule;
+
+  it("fails after exactly 1 attempt for a 401 (Authentication) api error — not retried (proves dispatchCreate is wired too)", async () => {
+    vi.useFakeTimers();
+    try {
+      createMock.mockRejectedValue(new APIError(401, undefined, "unauthorized", new Headers()));
+
+      const promise = createBossMessage(apiClient(), {
+        messages: [{ role: "user", content: "ひとことをくれ" }],
+      });
+      promise.catch(() => {});
+
+      // See the equivalent `streamBossMessage` test's comment above for why
+      // `status` is asserted rather than a bare `.rejects.toThrow()`.
+      await expect(promise).rejects.toMatchObject({ status: 401 });
+      expect(createMock).toHaveBeenCalledTimes(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});
+
+// Issue #224 AC-3: the `claude-code` branches of `dispatchStream`/
+// `dispatchCreate` never pass `classifyError` — this is the negative-space
+// proof: an error shaped exactly like a non-retryable `api`-branch error
+// (same `status`) must still be retried uniformly on the `claude-code`
+// path, because that branch never consults `isRetryableApiError` at all.
+describe("streamBossMessage (claude-code backend — api retry-hook is not applied, Issue #224)", () => {
+  const { APIError } = AnthropicModule;
+
+  it("still retries a claude-code failure carrying a status that would be non-retryable on the api branch (401)", async () => {
+    vi.useFakeTimers();
+    try {
+      // A *real* `APIError` (not merely an error with a `status` property):
+      // `isRetryableApiError` returns `true` for anything that isn't an
+      // `instanceof APIError`, so a look-alike would be retried here even if
+      // the hook *were* wrongly wired into the `claude-code` branch — making
+      // this test pass for the wrong reason. With a genuine 401 `APIError`,
+      // the hook would classify it non-retryable and cut the run to a single
+      // attempt, so the 2-attempt assertion below is real negative-space
+      // evidence for AC-3 (lead review, Issue #224).
+      const nonRetryableOnApiBranch = new APIError(401, undefined, "unauthorized", new Headers());
+      streamClaudeCodeMessageMock
+        .mockRejectedValueOnce(nonRetryableOnApiBranch)
+        .mockResolvedValueOnce({ content: [{ type: "text", text: "ok" }] });
+
+      const promise = streamBossMessage(claudeCodeClient(), {
+        messages: [{ role: "user", content: "hi" }],
+      });
+      await vi.advanceTimersByTimeAsync(1_000);
+
+      await expect(promise).resolves.toEqual({ content: [{ type: "text", text: "ok" }] });
+      expect(streamClaudeCodeMessageMock).toHaveBeenCalledTimes(2);
     } finally {
       vi.useRealTimers();
     }
