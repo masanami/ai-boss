@@ -7,6 +7,8 @@ import {
   createApiClient,
   streamApiMessage,
   createApiMessage,
+  isRetryableApiError,
+  getApiRetryAfterMs,
   type ApiMessageRequest,
 } from "./backends/api-backend.js";
 import {
@@ -282,6 +284,25 @@ function isToolUseBlock(block: BossContentBlock): block is BossToolUseBlock {
 }
 
 /**
+ * {@link RetryTimeoutOptions.classifyError} for the `api` backend only
+ * (Issue #224). Delegates entirely to `backends/api-backend.ts`'s
+ * `isRetryableApiError`/`getApiRetryAfterMs` (Issue #223) — this facade
+ * never inspects the SDK's error shape itself (ADR 0003: SDK value imports
+ * stay inside the backend module; this function only ever receives
+ * `unknown` and hands it straight through to those two functions, which do
+ * their own `instanceof APIError` narrowing internally). Never passed to the
+ * `claude-code` branches of {@link dispatchStream}/{@link dispatchCreate} —
+ * see `RetryTimeoutOptions.classifyError`'s doc comment for why that keeps
+ * `claude-code`'s retry behavior completely unchanged.
+ */
+function classifyApiError(error: unknown): RetryDecision {
+  return {
+    retryable: isRetryableApiError(error),
+    retryAfterMs: getApiRetryAfterMs(error),
+  };
+}
+
+/**
  * Issue #118: when the (now-default) `claude-code` backend's execution
  * environment is unavailable, logs {@link CLAUDE_CODE_UNAVAILABLE_HINT} via
  * `console.warn` before letting the error continue to propagate unchanged —
@@ -426,6 +447,7 @@ async function dispatchStream(
   return runWithTimeoutAndRetry(
     (signal) => streamApiMessage(client.client, resolved, trackedOnTextDelta, signal),
     hasSideEffect,
+    { classifyError: classifyApiError },
   );
 }
 
@@ -467,6 +489,7 @@ async function dispatchCreate(
   return runWithTimeoutAndRetry(
     (signal) => createApiMessage(client.client, resolved, signal),
     () => false,
+    { classifyError: classifyApiError },
   );
 }
 
@@ -651,6 +674,28 @@ export async function requestVerdict<T>(
   return { called: true, result: validate(toolUse.input) };
 }
 
+/**
+ * Result of {@link RetryTimeoutOptions.classifyError} for a single failed
+ * attempt (Issue #224).
+ */
+export interface RetryDecision {
+  /** Whether this error is worth retrying at all. `false` short-circuits the
+   * remaining retry budget (`maxRetries`) and rethrows immediately — same
+   * effect as `hasSideEffect()` returning `true`, but keyed on the error
+   * itself rather than on what the attempt already did. */
+  retryable: boolean;
+  /** Server-requested wait before the next attempt, in milliseconds (e.g.
+   * from a `Retry-After` header), if the error carried one. `undefined`
+   * falls back to the existing exponential backoff
+   * (`baseDelayMs * 2 ** attemptIndex`). Not pre-clamped by the caller —
+   * {@link runWithTimeoutAndRetry} itself clamps it against the *remaining*
+   * shared timeout budget before ever handing it to `setTimeout` (see that
+   * function's doc comment for why: an unclamped, astronomically large value
+   * would silently overflow Node's 32-bit `setTimeout` delay and fire almost
+   * immediately — the opposite of "wait longer"). */
+  retryAfterMs?: number;
+}
+
 export interface RetryTimeoutOptions {
   /** Overall timeout for the *whole* call, shared across every attempt (not
    * reset per retry — see {@link runWithTimeoutAndRetry}'s doc comment).
@@ -662,6 +707,22 @@ export interface RetryTimeoutOptions {
   /** Base delay for the exponential backoff between retries
    * (`baseDelayMs * 2 ** attemptIndex`). */
   baseDelayMs?: number;
+  /**
+   * Optional per-error retry-eligibility/backoff-override hook (Issue #224).
+   * Consulted after every failed attempt, *after* the existing
+   * `hasSideEffect()`/`maxRetries` checks (so those two always win first —
+   * a side-effecting failure or an exhausted retry budget is never
+   * overridden into "retry anyway" by this hook). Left `undefined` by every
+   * `claude-code` call site ({@link dispatchStream}/{@link dispatchCreate}) —
+   * only the `api` branches pass one (backed by
+   * `backends/api-backend.ts`'s `isRetryableApiError`/`getApiRetryAfterMs`,
+   * Issue #223) — so that backend's behavior is completely untouched.
+   * Leaving this `undefined` (the default for every other caller, including
+   * every existing test) reproduces the pre-#224 behavior exactly: always
+   * retry (until `maxRetries`/`hasSideEffect` says otherwise) with the plain
+   * exponential backoff.
+   */
+  classifyError?: (error: unknown) => RetryDecision;
 }
 
 const DEFAULT_TIMEOUT_MS = 120_000;
@@ -716,6 +777,25 @@ function rejectOnAbort(signal: AbortSignal, error: Error): Promise<never> {
  * `true` (e.g. a tool already wrote to the DB during that attempt), the
  * failure is thrown immediately without retrying — retrying after a
  * side-effecting failure could duplicate the side effect.
+ *
+ * `options.classifyError` (Issue #224) is consulted next, only when
+ * `hasSideEffect()` was `false` and the retry budget (`maxRetries`) is not
+ * yet exhausted. `{ retryable: false }` throws the failure immediately, same
+ * as `hasSideEffect()` — this is how the `api` backend stops retrying
+ * non-transient errors (401/400/etc., via `isRetryableApiError`) that the
+ * pre-#224 policy retried unconditionally. `{ retryable: true, retryAfterMs
+ * }` overrides the exponential backoff with the given wait instead — this is
+ * how a `Retry-After` header (`getApiRetryAfterMs`) is honored. That wait is
+ * clamped here to the *remaining* shared timeout budget before it is ever
+ * handed to `delay`/`setTimeout`: without the clamp, an
+ * astronomically-large-but-syntactically-valid `Retry-After` would silently
+ * overflow Node's 32-bit `setTimeout` delay and fire almost immediately
+ * (the opposite of "wait longer" — see `getApiRetryAfterMs`'s doc comment),
+ * and separately, an unclamped-but-merely-large wait could itself overshoot
+ * `timeoutMs` before the shared-deadline race below ever got a chance to
+ * reject it. Left `undefined` (every `claude-code` call site, and every
+ * pre-#224 caller), this hook changes nothing: the loop falls straight
+ * through to the original exponential backoff below, exactly as before.
  */
 export async function runWithTimeoutAndRetry<T>(
   attempt: (signal: AbortSignal) => Promise<T>,
@@ -726,6 +806,7 @@ export async function runWithTimeoutAndRetry<T>(
   const maxRetries = options.maxRetries ?? DEFAULT_MAX_RETRIES;
   const baseDelayMs = options.baseDelayMs ?? DEFAULT_BASE_DELAY_MS;
 
+  const startedAt = Date.now();
   const controller = new AbortController();
   const timeoutError = new LlmTimeoutError(timeoutMs);
   const timer = setTimeout(() => controller.abort(), timeoutMs);
@@ -744,13 +825,42 @@ export async function runWithTimeoutAndRetry<T>(
         if (hasSideEffect() || attemptIndex >= maxRetries) {
           throw err;
         }
+        const decision = options.classifyError?.(err);
+        if (decision && !decision.retryable) {
+          throw err;
+        }
+        let backoffMs = baseDelayMs * 2 ** attemptIndex;
+        if (decision?.retryAfterMs !== undefined) {
+          // Clamp to the remaining shared budget — see this function's doc
+          // comment for why an unclamped value is unsafe here.
+          const remainingMs = Math.max(0, timeoutMs - (Date.now() - startedAt));
+          backoffMs = Math.min(decision.retryAfterMs, remainingMs);
+        }
         // Race the backoff wait against the shared deadline too — otherwise
         // a failure late in the overall budget could overshoot `timeoutMs`
         // by up to the full backoff delay before the caller ever finds out.
-        await Promise.race([
-          delay(baseDelayMs * 2 ** attemptIndex),
-          rejectOnAbort(controller.signal, timeoutError),
-        ]);
+        await Promise.race([delay(backoffMs), rejectOnAbort(controller.signal, timeoutError)]);
+        // When `backoffMs` was clamped to `remainingMs` above (Issue #224),
+        // its `delay` and the abort timer above are scheduled for the exact
+        // same instant — a tie whose winner depends on the runtime's timer
+        // implementation (self-review round 2, design-reviewer: an earlier
+        // version of this guard checked `controller.signal.aborted` instead,
+        // which is a no-op whenever `rejectOnAbort` already won the race —
+        // the only case it would matter is `delay`'s callback running
+        // *before* the abort timer's, and Node drains microtasks after each
+        // individual timer callback, so at that exact point `abort()` may
+        // simply not have run yet — that check could not close the gap it
+        // was meant to close). Checking elapsed wall-clock time directly
+        // instead does not depend on which timer callback the runtime
+        // happened to invoke first: if we're here at or past `timeoutMs`
+        // (whether the tie fell one way or the other), the shared budget is
+        // exhausted regardless of `signal.aborted`'s current value — without
+        // this, a same-tick tie could let one extra `attempt` fire (and
+        // reach the network) after the shared budget had already nominally
+        // expired.
+        if (controller.signal.aborted || Date.now() - startedAt >= timeoutMs) {
+          throw timeoutError;
+        }
       }
     }
   } finally {
