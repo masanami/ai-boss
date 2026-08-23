@@ -839,7 +839,7 @@ export async function runWithTimeoutAndRetry<T>(
         // a failure late in the overall budget could overshoot `timeoutMs`
         // by up to the full backoff delay before the caller ever finds out.
         await Promise.race([delay(backoffMs), rejectOnAbort(controller.signal, timeoutError)]);
-        if (decision?.retryAfterMs !== undefined) {
+        if (decision !== undefined) {
           // A `Retry-After` of exactly the remaining budget schedules this
           // `delay` and the abort timer for the same instant; which callback
           // the runtime runs first is not guaranteed, and `signal.aborted`
@@ -847,20 +847,29 @@ export async function runWithTimeoutAndRetry<T>(
           // so `abort()` may not have run yet when `delay` wins). Comparing
           // elapsed time is order-independent.
           //
-          // Scoped to this branch on purpose, and *not* because the plain
-          // exponential backoff can't hit the same tie — it can (a failure at
+          // The same tie exists on the plain exponential backoff (a failure at
           // t=119s with a 1s backoff lands exactly on the default 120s
-          // deadline), and losing that tie lets one extra attempt reach the
-          // network before `rejectOnAbort` turns it into an `LlmTimeoutError`.
-          // That tie is pre-#224 behavior, and it survives here on two paths.
-          // On `claude-code` it must: that backend never passes
-          // `classifyError`, so widening the guard would change it, and AC-3
-          // requires leaving it alone. On `api` it need not — widening to
-          // `decision !== undefined` would cover the `Retry-After`-less 429s
-          // and 5xx this ticket does own, without touching `claude-code` at
-          // all — but that is a behavior change landing after this ticket's
-          // review closed, so it is left for a follow-up rather than slipped
-          // in unreviewed (self-review round 3: design-reviewer).
+          // deadline), and losing it lets one extra attempt reach the network
+          // before `rejectOnAbort` turns it into an `LlmTimeoutError`. So the
+          // guard is scoped to `decision !== undefined` — every error the
+          // `api` path classified, including the `Retry-After`-less 429s and
+          // 5xx this ticket owns — rather than to `retryAfterMs` alone.
+          // `claude-code` never passes `classifyError`, so `decision` stays
+          // `undefined` there and its pre-#224 behavior is untouched, which
+          // AC-3 requires (self-review round 3 + CodeRabbit on PR #227).
+          //
+          // Not unit-tested, deliberately: this guard is only reachable when
+          // `delay` wins a same-instant race against the abort timer. Under
+          // vitest fake timers the abort timer is registered first (at the
+          // top of this function) and therefore always fires first for the
+          // same expiry, so `rejectOnAbort` settles the race and control
+          // never reaches here. A test written against that path passes with
+          // the guard scoped either way — verified by mutation: reverting
+          // this condition to `decision?.retryAfterMs !== undefined` leaves
+          // the whole suite green. The guard is defense-in-depth for real
+          // runtime ordering (Node drains microtasks per timer callback, so
+          // `abort()` may not have run when `delay` wins), and adding a test
+          // that cannot fail would assert coverage this code does not have.
           if (controller.signal.aborted || Date.now() - startedAt >= timeoutMs) {
             throw timeoutError;
           }

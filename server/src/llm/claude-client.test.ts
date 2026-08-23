@@ -916,6 +916,7 @@ describe("runWithTimeoutAndRetry", () => {
       await expect(promise).rejects.toThrow(LlmTimeoutError);
       expect(attempt).toHaveBeenCalledTimes(1);
     });
+
   });
 });
 
