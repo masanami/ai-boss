@@ -11,8 +11,11 @@ function startOfLocalDay(date: Date): Date {
   return new Date(date.getFullYear(), date.getMonth(), date.getDate(), 0, 0, 0, 0);
 }
 
-function endOfLocalDay(date: Date): Date {
-  return new Date(date.getFullYear(), date.getMonth(), date.getDate(), 23, 59, 59, 999);
+// 翌ローカル暦日の 00:00:00.000（半開区間の排他的上限）。暦日を 1 日進めて
+// 求める（固定秒数の加算はしない。DST のある地域で 24 時間 ≠ 1 暦日になる
+// ため。ADR 0007 決定3）。
+function startOfNextLocalDay(date: Date): Date {
+  return new Date(date.getFullYear(), date.getMonth(), date.getDate() + 1, 0, 0, 0, 0);
 }
 
 export interface CollectedDailyReportData {
@@ -32,8 +35,9 @@ export interface CollectedDailyReportData {
  * 対象ローカル暦日は「夕会セッションの started_at のローカル日付」
  * （`toDateKey` と同じ基準で日付を切り出す。日付キー自体の文字列化はレンダラー
  * 側の責務のためここでは行わない）。タスク・決定の集計範囲はこの暦日の
- * 00:00:00.000〜23:59:59.999。休憩の break_end 探索のみ、日跨ぎ夕会に対応する
- * ため夕会セッションの ended_at まで拡張する
+ * `[00:00:00.000, 翌ローカル暦日 00:00:00.000)`（半開区間。翌日境界は暦日を
+ * 1 日進めて求め、固定秒数の加算はしない。ADR 0007 決定3）。休憩の break_end
+ * 探索のみ、日跨ぎ夕会に対応するため夕会セッションの ended_at まで拡張する
  * （日報の「活動記録」の休憩回数・合計時間を成立させるための対応付け
  * 規則。暦日の基準は docs/adr/0007-local-calendar-day-basis.md）。
  *
@@ -54,18 +58,22 @@ export function collectDailyReportData(
 
   const targetDate = new Date(eveningSession.started_at);
   const dayStartIso = startOfLocalDay(targetDate).toISOString();
-  const dayEndIso = endOfLocalDay(targetDate).toISOString();
+  const nextDayStartIso = startOfNextLocalDay(targetDate).toISOString();
   // break_end の探索範囲だけ、日跨ぎ夕会に対応するため夕会終了時刻まで拡張する
-  const breakEndSearchEndIso = sessionEndedAtIso > dayEndIso ? sessionEndedAtIso : dayEndIso;
+  // （排他的上限。break_end が夕会 ended_at と完全一致する場合はこの上限に
+  // より検索から除外されるが、computeActivityRecord が対応する break_start を
+  // sessionEndedAt で打ち切るため breakCount/breakTotalMinutes は等価になる。
+  // ADR 0007 決定3）
+  const breakEndSearchEndIso = sessionEndedAtIso > nextDayStartIso ? sessionEndedAtIso : nextDayStartIso;
 
   const completedTasks = (
     db
       .prepare(
         `SELECT title FROM tasks
-         WHERE status = 'done' AND completed_at >= ? AND completed_at <= ?
+         WHERE status = 'done' AND completed_at >= ? AND completed_at < ?
          ORDER BY completed_at ASC, id ASC`,
       )
-      .all(dayStartIso, dayEndIso) as { title: string }[]
+      .all(dayStartIso, nextDayStartIso) as { title: string }[]
   ).map((row) => row.title);
 
   const inProgressTasks = (
@@ -75,32 +83,32 @@ export function collectDailyReportData(
          JOIN activity_events e ON e.task_id = t.id
          WHERE t.status = 'in_progress'
            AND e.type IN ('task_start', 'task_update')
-           AND e.created_at >= ? AND e.created_at <= ?
+           AND e.created_at >= ? AND e.created_at < ?
          ORDER BY t.created_at ASC, t.id ASC`,
       )
-      .all(dayStartIso, dayEndIso) as { title: string }[]
+      .all(dayStartIso, nextDayStartIso) as { title: string }[]
   ).map((row) => row.title);
 
   const taskStarts = db
     .prepare(
       `SELECT id, created_at FROM activity_events
-       WHERE type = 'task_start' AND created_at >= ? AND created_at <= ?
+       WHERE type = 'task_start' AND created_at >= ? AND created_at < ?
        ORDER BY created_at ASC, id ASC`,
     )
-    .all(dayStartIso, dayEndIso) as ActivityRecordEvent[];
+    .all(dayStartIso, nextDayStartIso) as ActivityRecordEvent[];
 
   const breakStarts = db
     .prepare(
       `SELECT id, created_at FROM activity_events
-       WHERE type = 'break_start' AND created_at >= ? AND created_at <= ?
+       WHERE type = 'break_start' AND created_at >= ? AND created_at < ?
        ORDER BY created_at ASC, id ASC`,
     )
-    .all(dayStartIso, dayEndIso) as ActivityRecordEvent[];
+    .all(dayStartIso, nextDayStartIso) as ActivityRecordEvent[];
 
   const breakEnds = db
     .prepare(
       `SELECT id, created_at FROM activity_events
-       WHERE type = 'break_end' AND created_at >= ? AND created_at <= ?
+       WHERE type = 'break_end' AND created_at >= ? AND created_at < ?
        ORDER BY created_at ASC, id ASC`,
     )
     .all(dayStartIso, breakEndSearchEndIso) as ActivityRecordEvent[];
@@ -116,10 +124,10 @@ export function collectDailyReportData(
     db
       .prepare(
         `SELECT content FROM decisions
-         WHERE status = 'active' AND created_at >= ? AND created_at <= ?
+         WHERE status = 'active' AND created_at >= ? AND created_at < ?
          ORDER BY created_at ASC, id ASC`,
       )
-      .all(dayStartIso, dayEndIso) as { content: string }[]
+      .all(dayStartIso, nextDayStartIso) as { content: string }[]
   ).map((row) => row.content);
 
   return {
