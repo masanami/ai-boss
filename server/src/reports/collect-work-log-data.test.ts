@@ -6,8 +6,8 @@ import { collectWorkLogData } from "./collect-work-log-data.js";
 
 // ローカル日付基準・TZ非依存: new Date(y, m, d, h, mi) から toISOString() で
 // DB 用の値を作る（CLAUDE.md「テスト方針」）。
-function iso(y: number, m: number, d: number, h: number, mi: number, s = 0): string {
-  return new Date(y, m - 1, d, h, mi, s).toISOString();
+function iso(y: number, m: number, d: number, h: number, mi: number, s = 0, ms = 0): string {
+  return new Date(y, m - 1, d, h, mi, s, ms).toISOString();
 }
 
 function insertRawTask(
@@ -165,6 +165,39 @@ describe("collectWorkLogData", () => {
 
       expect(result.decisions).toEqual([]);
     });
+
+    // 本番の書き込み（decisions-repository.ts / activity-events-repository.ts）は
+    // いずれも `new Date().toISOString()` で常に固定ミリ秒精度・`Z` 付きの
+    // created_at を生成するため、実データでは旧実装（閉区間 `<= 23:59:59.999`）
+    // でもこの境界は同じ結果になる。つまりこのテストは回帰再現ではなく、
+    // 半開区間の契約を明文化するもの（ADR 0007 決定3）。
+    it("excludes a decision created at exactly the next local day's 00:00:00.000 (half-open upper bound)", () => {
+      const sessionId = insertRawSession(db, iso(2026, 8, 15, 0, 0));
+      insertRawDecision(db, {
+        sessionId,
+        content: "翌日0時ちょうどの決定",
+        status: "active",
+        createdAt: iso(2026, 8, 15, 0, 0, 0),
+      });
+
+      const result = collectWorkLogData(db, new Date(2026, 7, 14));
+
+      expect(result.decisions).toEqual([]);
+    });
+
+    it("includes a decision created at exactly the target day's own 00:00:00.000 (half-open lower bound, inclusive)", () => {
+      const sessionId = insertRawSession(db, iso(2026, 8, 14, 0, 0));
+      insertRawDecision(db, {
+        sessionId,
+        content: "当日0時ちょうどの決定",
+        status: "active",
+        createdAt: iso(2026, 8, 14, 0, 0, 0),
+      });
+
+      const result = collectWorkLogData(db, new Date(2026, 7, 14));
+
+      expect(result.decisions).toHaveLength(1);
+    });
   });
 
   describe("activity_events", () => {
@@ -271,9 +304,18 @@ describe("collectWorkLogData", () => {
       expect(result.activityEvents).toEqual([]);
     });
 
+    it("excludes an event created at exactly the next local day's 00:00:00.000 (half-open upper bound)", () => {
+      insertRawActivityEvent(db, { type: "task_start", createdAt: iso(2026, 8, 14, 23, 59, 59, 999) });
+      insertRawActivityEvent(db, { type: "checkin", createdAt: iso(2026, 8, 15, 0, 0, 0, 0) });
+
+      const result = collectWorkLogData(db, new Date(2026, 7, 14));
+
+      expect(result.activityEvents.map((e) => e.type)).toEqual(["task_start"]);
+    });
+
     it("includes events at the exact day boundaries (00:00:00.000 and 23:59:59.999)", () => {
-      insertRawActivityEvent(db, { type: "task_start", createdAt: iso(2026, 8, 14, 0, 0, 0) });
-      insertRawActivityEvent(db, { type: "checkin", createdAt: iso(2026, 8, 14, 23, 59, 59) });
+      insertRawActivityEvent(db, { type: "task_start", createdAt: iso(2026, 8, 14, 0, 0, 0, 0) });
+      insertRawActivityEvent(db, { type: "checkin", createdAt: iso(2026, 8, 14, 23, 59, 59, 999) });
 
       const result = collectWorkLogData(db, new Date(2026, 7, 14));
 
