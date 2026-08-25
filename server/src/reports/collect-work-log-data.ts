@@ -10,8 +10,18 @@ function startOfLocalDay(date: Date): Date {
   return new Date(date.getFullYear(), date.getMonth(), date.getDate(), 0, 0, 0, 0);
 }
 
-function endOfLocalDay(date: Date): Date {
-  return new Date(date.getFullYear(), date.getMonth(), date.getDate(), 23, 59, 59, 999);
+/**
+ * 対象ローカル暦日の翌日 00:00:00.000（半開区間の上限、境界自体は含まない）。
+ * 暦日を1日進めて求める（固定秒数の加算はしない。DST のある地域では
+ * 24時間 ≠ 1暦日になるため。docs/adr/0007-local-calendar-day-basis.md 決定3）。
+ *
+ * 注意: このDST非依存性そのものを検証するテストは現時点で書けない
+ * （タイムゾーンをテストへ注入する仕組みが無い。ADR 0007「既知の逸脱」
+ * #177）。将来 `+ 86400000` 等の固定秒数加算へ書き換える回帰があっても、
+ * 現行テストスイートだけでは検出できない点に留意する。
+ */
+function startOfNextLocalDay(date: Date): Date {
+  return new Date(date.getFullYear(), date.getMonth(), date.getDate() + 1, 0, 0, 0, 0);
 }
 
 /**
@@ -76,23 +86,23 @@ interface ActivityEventRow {
 }
 
 /**
- * 対象ローカル暦日（00:00:00.000〜23:59:59.999）の決定ログ全件
- * （`active`/`revised`/`withdrawn`）と、対象6種の activity_events を
+ * 対象ローカル暦日（半開区間 `[対象ローカル暦日 00:00, 翌ローカル暦日 00:00)`）の
+ * 決定ログ全件（`active`/`revised`/`withdrawn`）と、対象6種の activity_events を
  * 読み取る。夕会 `ended_at` による範囲拡張は行わない
  * （作業ログは夕会に依存しない事実列挙。暦日の基準は
  * docs/adr/0007-local-calendar-day-basis.md）。
  */
 export function collectWorkLogData(db: Database.Database, targetDate: Date): CollectedWorkLogData {
   const dayStartIso = startOfLocalDay(targetDate).toISOString();
-  const dayEndIso = endOfLocalDay(targetDate).toISOString();
+  const nextDayStartIso = startOfNextLocalDay(targetDate).toISOString();
 
   const decisionRows = db
     .prepare(
       `SELECT id, status, content, created_at FROM decisions
-       WHERE created_at >= ? AND created_at <= ?
+       WHERE created_at >= ? AND created_at < ?
        ORDER BY created_at ASC, id ASC`,
     )
-    .all(dayStartIso, dayEndIso) as DecisionRow[];
+    .all(dayStartIso, nextDayStartIso) as DecisionRow[];
 
   const decisions: CollectedWorkLogDecision[] = decisionRows.map((row) => ({
     id: row.id,
@@ -109,10 +119,10 @@ export function collectWorkLogData(db: Database.Database, targetDate: Date): Col
               t.title AS task_title
        FROM activity_events e
        LEFT JOIN tasks t ON t.id = e.task_id
-       WHERE e.type IN (${typePlaceholders}) AND e.created_at >= ? AND e.created_at <= ?
+       WHERE e.type IN (${typePlaceholders}) AND e.created_at >= ? AND e.created_at < ?
        ORDER BY e.created_at ASC, e.id ASC`,
     )
-    .all(...WORK_LOG_ACTIVITY_EVENT_TYPES, dayStartIso, dayEndIso) as ActivityEventRow[];
+    .all(...WORK_LOG_ACTIVITY_EVENT_TYPES, dayStartIso, nextDayStartIso) as ActivityEventRow[];
 
   const activityEvents: CollectedWorkLogActivityEvent[] = eventRows.map((row) => ({
     id: row.id,
