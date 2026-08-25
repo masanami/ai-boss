@@ -113,6 +113,23 @@ describe("listEventsSince", () => {
 
     expect(events).toEqual([]);
   });
+
+  it("excludes a record exactly at the exclusive upper bound when one is given", () => {
+    const lowerBound = new Date(2026, 6, 5, 0, 0, 0, 0).toISOString();
+    const justBeforeUpperBound = new Date(2026, 6, 5, 9, 0, 0, 0).toISOString();
+    const upperBound = new Date(2026, 6, 6, 0, 0, 0, 0).toISOString();
+
+    db.prepare(
+      "INSERT INTO activity_events (type, created_at) VALUES (?, ?)",
+    ).run("checkin", justBeforeUpperBound);
+    db.prepare(
+      "INSERT INTO activity_events (type, created_at) VALUES (?, ?)",
+    ).run("checkin", upperBound);
+
+    const events = listEventsSince(db, lowerBound, upperBound);
+
+    expect(events.map((e) => e.created_at)).toEqual([justBeforeUpperBound]);
+  });
 });
 
 describe("findLatestEvent", () => {

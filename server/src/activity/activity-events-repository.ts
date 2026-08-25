@@ -51,20 +51,39 @@ export function recordActivityEvent(
 }
 
 /**
- * Returns all activity events created at or after `isoTime`, ordered by
- * `created_at` ascending (id as a tie-breaker). Used by callers such as
- * `GET /api/activity/today` and, later, the slacking-detection rule engine
- * to build its input window.
+ * Returns all activity events created at or after `isoTime` (and, when
+ * `untilIsoExclusive` is given, strictly before it — an *exclusive* upper
+ * bound), ordered by `created_at` ascending (id as a tie-breaker).
+ *
+ * Used by callers such as `GET /api/activity/today` (Issue #230: passes
+ * the next local day's start as `untilIsoExclusive` so the query itself
+ * bounds "today" instead of relying on the caller never having
+ * future-dated rows) and, with no upper bound, the slacking-detection rule
+ * engine to build its full-history input window.
+ *
+ * Note: this exclusive-upper-bound contract is local to this function. The
+ * boss tool layer (`boss/activity-log-tool.ts`'s `get_activity_log`) applies
+ * its own *inclusive* (`<=`) `until` filter in memory after calling this
+ * function with no upper bound — the two are independent boundary
+ * semantics, not a shared contract (self-review: design-reviewer flagged
+ * the two conventions coexisting in the codebase).
  */
 export function listEventsSince(
   db: Database.Database,
   isoTime: string,
+  untilIsoExclusive?: string,
 ): ActivityEvent[] {
-  return db
-    .prepare(
-      "SELECT * FROM activity_events WHERE created_at >= ? ORDER BY created_at ASC, id ASC",
-    )
-    .all(isoTime) as ActivityEvent[];
+  let sql = "SELECT * FROM activity_events WHERE created_at >= ?";
+  const params: string[] = [isoTime];
+
+  if (untilIsoExclusive !== undefined) {
+    sql += " AND created_at < ?";
+    params.push(untilIsoExclusive);
+  }
+
+  sql += " ORDER BY created_at ASC, id ASC";
+
+  return db.prepare(sql).all(...params) as ActivityEvent[];
 }
 
 /**
