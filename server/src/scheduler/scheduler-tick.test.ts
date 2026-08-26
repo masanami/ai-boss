@@ -99,6 +99,24 @@ function addMinutes(baseTime: Date, minutes: number): Date {
 }
 
 /**
+ * 現在のフェイクシステム時刻を返す（`vi.useFakeTimers` 未適用なら、原因が
+ * 分かりにくい形で downstream が壊れる前にここで明示的に落とす）。
+ */
+function currentMockedTime(): Date {
+  const current = vi.getMockedSystemTime();
+  if (!current) throw new Error("expected the system clock to be faked");
+  return current;
+}
+
+/**
+ * 現在のフェイクシステム時刻から `minutes` 分だけ進める（TZ 非依存: 相対計算
+ * のみ）。
+ */
+function advanceSystemTimeByMinutes(minutes: number): void {
+  vi.setSystemTime(addMinutes(currentMockedTime(), minutes));
+}
+
+/**
  * `from` から、`intervalMinutes`（`resolveEscalation` の間隔判定に使うエスカ
  * レーション間隔）の**内側**（`(0, intervalMinutes)`、両端を含まない）に収まる
  * オフセットだけ進めた `Date` を返す。`fraction`（0〜1）は間隔のどのあたりを
@@ -140,6 +158,17 @@ function withinEscalationInterval(from: Date, intervalMinutes: number, fraction:
  * `RULE_GATE_SCENARIOS` 中で最大の経過時間（silence の 46 分）より十分大きい。
  */
 const NEVER_OVERRUNNING_BREAK_MINUTES = 999;
+
+/**
+ * avoidance シナリオ（RULE_GATE_SCENARIOS 参照）が `baseTime` から他タスクへ
+ * の `task_update` を記録するオフセット（分）。GAP-05（#241）の「escalation
+ * promotion via tick」guard テストが、このオフセットと L1 発火オフセットの
+ * 差（avoidance 判定の窓に対する余裕）を独立に再計算しないよう、両者が同じ
+ * 定数を参照する。
+ */
+const AVOIDANCE_OTHER_TASK_UPDATE_OFFSET_MINUTES = 16;
+/** avoidance シナリオが `baseTime` から tick1（L1 発火）まで進めるオフセット（分） */
+const AVOIDANCE_L1_FIRE_OFFSET_MINUTES = 20;
 
 /**
  * 個別ルールを tick 経由で発火させるための最小セットアップ。`setup` は
@@ -204,11 +233,11 @@ const RULE_GATE_SCENARIOS: RuleGateScenario[] = [
       markTodaysMeetingsDone(db);
       // Recent activity on the *other* (non-top-priority) task, inside the
       // avoidance window (30 min default).
-      vi.setSystemTime(addMinutes(baseTime, 16));
+      vi.setSystemTime(addMinutes(baseTime, AVOIDANCE_OTHER_TASK_UPDATE_OFFSET_MINUTES));
       recordActivityEvent(db, { type: "task_update", task_id: otherTask.id });
       // Past the top task's (scaled) unstarted threshold (15 min) and still
       // inside the avoidance window relative to the task_update above.
-      vi.setSystemTime(addMinutes(baseTime, 20));
+      vi.setSystemTime(addMinutes(baseTime, AVOIDANCE_L1_FIRE_OFFSET_MINUTES));
       return `avoidance:${topTask.id}`;
     },
   },
@@ -272,6 +301,100 @@ it("RULE_GATE_SCENARIOS declares exactly one scenario per rule type the working-
   ).sort();
   expect(coveredRuleTypes).toEqual(gatedRuleTypes);
 });
+
+// GAP-05 (#196, #241): avoidance の回避判定（hasRecentActivityOnOtherTasks,
+// avoidance.ts）は「今から遡って avoidanceWindowMinutes（既定 30 分、settings
+// 非対応で常にこの既定値 — detection-settings.ts のコメント参照）以内に他
+// タスクへの活動シグナルがあるか」という*ローリングな*時間窓に依存する点で、
+// 他の 4 ルール種別（一度条件が成立すればタスクの status・締切等が変わらない
+// 限り時間経過で条件が崩れない）と異なる。RULE_GATE_SCENARIOS の avoidance
+// シナリオは他タスクへの task_update を「L1 発火の
+// AVOIDANCE_L1_FIRE_OFFSET_MINUTES - AVOIDANCE_OTHER_TASK_UPDATE_OFFSET_MINUTES
+// 分前」に固定しているため、下の「escalation promotion」describe の
+// L1→L2→L3 ラダー（既定合計 25 分）はこの窓に収まるが、その前提は
+// level1ToLevel2Minutes/level2ToLevel3Minutes が settings テーブル経由で
+// 上書きされると静かに壊れうる（rule_key が avoidance から unstarted へ
+// 切り替わり、ラダー側のアサーションが「type 不一致」という分かりにくい形で
+// 落ちる）。ここでその前提を独立した1テストとして明示的にアサートし、壊れた
+// 場合はこのテスト自体が分かりやすい理由で落ちるようにする。
+//
+// ラダー側と同じ `loadDetectionSettings(db)`（settings テーブル経由で
+// escalation の間隔が上書きされうる本番同様の読み出し経路）を使うため、この
+// テスト専用の :memory: db を自前で開閉する（DB を使わない他の module-scope
+// ガード — 上の「RULE_GATE_SCENARIOS declares...」— とは異なり、ここでは
+// describe("createTicker().tick") の beforeEach/afterEach のライフサイクルに
+// 依存せず自己完結させる）。
+it("guards the invariant the avoidance scenario below depends on: the escalation intervals scheduler-tick.ts actually reads keep its seeded activity signal within the avoidance window through L1 -> L2 -> L3", () => {
+  const guardDb = openDatabase(":memory:");
+  try {
+    runMigrations(guardDb);
+    const { escalation, avoidanceWindowMinutes } = loadDetectionSettings(guardDb);
+    const avoidanceSeedToL1GapMinutes =
+      AVOIDANCE_L1_FIRE_OFFSET_MINUTES - AVOIDANCE_OTHER_TASK_UPDATE_OFFSET_MINUTES;
+    const elapsedFromSeedToL3 =
+      avoidanceSeedToL1GapMinutes + escalation.level1ToLevel2Minutes + escalation.level2ToLevel3Minutes;
+    expect(elapsedFromSeedToL3).toBeLessThanOrEqual(avoidanceWindowMinutes);
+  } finally {
+    guardDb.close();
+  }
+});
+
+/**
+ * L1 → L2 → L3 のエスカレーション昇格を tick 経由で3回進め、各レベルで
+ * 記録された通知の `type`/`rule_key`/`escalation_level` を検証する。
+ * 「escalation promotion」テストと「L3 上限」テストの共有ヘルパ（DRY）。
+ * 呼び出し後、次の tick（あれば）は L3 到達直後の状態から始まる。
+ * describe スコープの状態をキャプチャしない（`db`/`ticker` は引数で渡す）
+ * ため、他のヘルパ同様 module scope に置く。
+ *
+ * 間隔ちょうどまで進める（`advanceSystemTimeByMinutes(interval)`）のは
+ * 意図的な境界値テスト: `resolveEscalation`（escalation.ts）の間隔判定は
+ * `elapsed < interval` の場合のみ抑制するため、`elapsed === interval`
+ * （間隔ちょうど）は既に昇格条件を満たす（境界を含む）。この境界包含の挙動
+ * そのものをこのヘルパが固定する。
+ */
+async function tickThroughL1ToL3(
+  db: Database.Database,
+  ticker: ReturnType<typeof createTicker>,
+  ruleType: DetectionRuleType,
+  expectedRuleKey: string,
+): Promise<void> {
+  const { level1ToLevel2Minutes, level2ToLevel3Minutes } = loadDetectionSettings(db).escalation;
+
+  // L1 (tick 1): setup already advanced the clock past the rule's firing
+  // threshold.
+  await ticker.tick();
+  let recorded = listNotificationsSince(db, "1970-01-01T00:00:00.000Z");
+  expect(recorded).toHaveLength(1);
+  expect(recorded[0]).toMatchObject({
+    type: ruleType,
+    rule_key: expectedRuleKey,
+    escalation_level: 1,
+  });
+
+  // L2 (tick 2): advance to exactly the L1->L2 interval boundary (see the
+  // boundary-inclusive note above), no new activity signal recorded.
+  advanceSystemTimeByMinutes(level1ToLevel2Minutes);
+  await ticker.tick();
+  recorded = listNotificationsSince(db, "1970-01-01T00:00:00.000Z");
+  expect(recorded).toHaveLength(2);
+  expect(recorded[1]).toMatchObject({
+    type: ruleType,
+    rule_key: expectedRuleKey,
+    escalation_level: 2,
+  });
+
+  // L3 (tick 3): advance to exactly the L2->L3 interval boundary.
+  advanceSystemTimeByMinutes(level2ToLevel3Minutes);
+  await ticker.tick();
+  recorded = listNotificationsSince(db, "1970-01-01T00:00:00.000Z");
+  expect(recorded).toHaveLength(3);
+  expect(recorded[2]).toMatchObject({
+    type: ruleType,
+    rule_key: expectedRuleKey,
+    escalation_level: 3,
+  });
+}
 
 describe("createTicker().tick", () => {
   let db: Database.Database;
@@ -843,8 +966,7 @@ describe("createTicker().tick", () => {
           // hardcoded default), so this stays correct even if `settings`
           // ever overrides it.
           const interval = loadDetectionSettings(db).escalation.level1ToLevel2Minutes;
-          const fireTime = vi.getMockedSystemTime();
-          if (!fireTime) throw new Error("expected the system clock to be faked");
+          const fireTime = currentMockedTime();
 
           vi.setSystemTime(withinEscalationInterval(fireTime, interval, 1 / 3));
           recordActivityEvent(db, {
@@ -906,13 +1028,89 @@ describe("createTicker().tick", () => {
           // test here. Interval read via loadDetectionSettings(db) — see the
           // comment on the GAP-01 describe above for why.
           const interval = loadDetectionSettings(db).escalation.level1ToLevel2Minutes;
-          const fireTime = vi.getMockedSystemTime();
-          if (!fireTime) throw new Error("expected the system clock to be faked");
+          const fireTime = currentMockedTime();
           vi.setSystemTime(withinEscalationInterval(fireTime, interval, 1 / 2));
           await ticker.tick();
 
           const afterDuplicateTick = listNotificationsSince(db, "1970-01-01T00:00:00.000Z");
           expect(afterDuplicateTick).toHaveLength(1);
+        } finally {
+          db.close();
+        }
+      },
+    );
+  });
+
+  // GAP-05 (#196, #241): 時間経過による L1 → L2 → L3 のエスカレーション
+  // 昇格が tick 経由（スケジューラ層）で起きることを、ルール種別ごとに
+  // テーブル駆動で検証する。#240 は「間隔未経過では発火しない」（重複送信
+  // 防止）までを担保しており、間隔経過後に実際に次のレベルへ進むこと自体は
+  // 本チケットが担当範囲として引き継ぐ（#240 の describe コメント参照）。
+  // 下記 2 つの describe（昇格・L3 上限）で共有する。
+  //
+  // avoidance を含む全 5 ルール種別で共通の RULE_GATE_SCENARIOS をそのまま
+  // 再利用できる: avoidance の回避判定が依存する時間窓の前提は、この describe
+  // の外（module scope）の guard テストが明示的にアサート済み。
+  const ESCALATION_LADDER_BASE_TIME = new Date("2026-07-05T09:00:00.000");
+
+  describe("escalation promotion via tick (L1 -> L2 -> L3) is table-driven by rule type (tick-level; GAP-05 per #196, #241)", () => {
+    it.each(RULE_GATE_SCENARIOS.map((s) => [s.ruleType, s.setup] as const))(
+      "escalates %s from L1 to L2 to L3 across successive ticks spaced by the configured intervals",
+      async (ruleType, setup) => {
+        try {
+          const expectedRuleKey = setup(db, ESCALATION_LADDER_BASE_TIME);
+          const execFile = vi.fn().mockImplementation(ok);
+          const ticker = createTicker({ db, env, execFile });
+
+          await tickThroughL1ToL3(db, ticker, ruleType, expectedRuleKey);
+        } finally {
+          db.close();
+        }
+      },
+    );
+  });
+
+  // GAP-05 (#196, #241): L3 が上限であること — さらに時間が経過しても
+  // escalation_level が 4 にならず、L3 の再通知（level3RepeatMinutes 経過後）
+  // として記録され続けることを検証する。
+  //
+  // avoidance はこの describe から除外する: 既定間隔では L1→L2→L3→L3 再送の
+  // 合計経過が level1ToLevel2Minutes + level2ToLevel3Minutes +
+  // level3RepeatMinutes = 15 + 10 + 10 = 35 分となり、avoidanceWindowMinutes
+  // （既定 30 分）を上回るため、4 回目の tick 時点では種となる task_update が
+  // 窓の外に出てしまい、ルールが avoidance から unstarted へ切り替わって
+  // rule_key が変わってしまう（＝L3 上限の検証にならない）。avoidance の
+  // L1→L2→L3 自体は上の describe（合計 25 分で窓内に収まる。上のガードテスト
+  // 参照）で担保済み。L3 上限のクランプ（escalation.ts の
+  // `Math.min(..., MAX_ESCALATION_LEVEL)`）自体はルール種別に依存しないため、
+  // 残り 4 ルール種別のカバレッジで十分に担保される。
+  describe("escalation stays capped at L3 on the repeat tick after reaching the maximum level (tick-level; GAP-05 per #196, #241)", () => {
+    const CAPPED_RULE_SCENARIOS = RULE_GATE_SCENARIOS.filter((s) => s.ruleType !== "avoidance");
+
+    it.each(CAPPED_RULE_SCENARIOS.map((s) => [s.ruleType, s.setup] as const))(
+      "keeps %s at escalation_level 3 (not 4) on the repeat tick after L3 is reached",
+      async (ruleType, setup) => {
+        try {
+          const expectedRuleKey = setup(db, ESCALATION_LADDER_BASE_TIME);
+          const execFile = vi.fn().mockImplementation(ok);
+          const ticker = createTicker({ db, env, execFile });
+
+          await tickThroughL1ToL3(db, ticker, ruleType, expectedRuleKey);
+
+          // Repeat tick at exactly the L3-repeat interval boundary (same
+          // boundary-inclusive semantics as tickThroughL1ToL3) — must not
+          // become 4.
+          const { level3RepeatMinutes } = loadDetectionSettings(db).escalation;
+          advanceSystemTimeByMinutes(level3RepeatMinutes);
+          await ticker.tick();
+
+          const recorded = listNotificationsSince(db, "1970-01-01T00:00:00.000Z");
+          // Asserts the *full* level sequence (not just the last entry) so a
+          // regression earlier in the ladder (e.g. L2 stalling at 2 forever)
+          // can't slip through unnoticed just because the final tick still
+          // happens to read 3.
+          expect(recorded.map((entry) => entry.escalation_level)).toEqual([1, 2, 3, 3]);
+          expect(recorded[3]).toMatchObject({ type: ruleType, rule_key: expectedRuleKey });
         } finally {
           db.close();
         }
