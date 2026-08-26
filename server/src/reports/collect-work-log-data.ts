@@ -5,24 +5,10 @@
 // 「いつでも生成可」— docs/adr/0008-evening-dialogue-prerequisite.md 帰結）。
 import type Database from "better-sqlite3";
 import type { DecisionStatus } from "../decisions/decision.js";
-
-function startOfLocalDay(date: Date): Date {
-  return new Date(date.getFullYear(), date.getMonth(), date.getDate(), 0, 0, 0, 0);
-}
-
-/**
- * 対象ローカル暦日の翌日 00:00:00.000（半開区間の上限、境界自体は含まない）。
- * 暦日を1日進めて求める（固定秒数の加算はしない。DST のある地域では
- * 24時間 ≠ 1暦日になるため。docs/adr/0007-local-calendar-day-basis.md 決定3）。
- *
- * 注意: このDST非依存性そのものを検証するテストは現時点で書けない
- * （タイムゾーンをテストへ注入する仕組みが無い。ADR 0007「既知の逸脱」
- * #177）。将来 `+ 86400000` 等の固定秒数加算へ書き換える回帰があっても、
- * 現行テストスイートだけでは検出できない点に留意する。
- */
-function startOfNextLocalDay(date: Date): Date {
-  return new Date(date.getFullYear(), date.getMonth(), date.getDate() + 1, 0, 0, 0, 0);
-}
+// 集計範囲の境界は activity/local-day.ts へ集約する（ADR 0007 帰結。収集段ごとに
+// 自前の境界計算を持たない）。dashboard/today-escalation.ts に 4 個目の重複が
+// 残っており、その取り込みは #236。
+import { startOfLocalDayIso, startOfNextLocalDayIso } from "../activity/local-day.js";
 
 /**
  * 作業ログに載せる activity_events の種別（`chat_message` を除く6種）。
@@ -93,8 +79,8 @@ interface ActivityEventRow {
  * docs/adr/0007-local-calendar-day-basis.md）。
  */
 export function collectWorkLogData(db: Database.Database, targetDate: Date): CollectedWorkLogData {
-  const dayStartIso = startOfLocalDay(targetDate).toISOString();
-  const nextDayStartIso = startOfNextLocalDay(targetDate).toISOString();
+  const dayStartIso = startOfLocalDayIso(targetDate);
+  const nextDayStartIso = startOfNextLocalDayIso(targetDate);
 
   const decisionRows = db
     .prepare(

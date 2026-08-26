@@ -61,12 +61,10 @@ export function recordActivityEvent(
  * future-dated rows) and, with no upper bound, the slacking-detection rule
  * engine to build its full-history input window.
  *
- * Note: this exclusive-upper-bound contract is local to this function. The
- * boss tool layer (`boss/activity-log-tool.ts`'s `get_activity_log`) applies
- * its own *inclusive* (`<=`) `until` filter in memory after calling this
- * function with no upper bound — the two are independent boundary
- * semantics, not a shared contract (self-review: design-reviewer flagged
- * the two conventions coexisting in the codebase).
+ * The upper bound of this function is *exclusive* per ADR 0007 決定3. Callers
+ * that apply their own upper bound must not assume it shares this
+ * convention — check the caller's own contract before pushing a filter down
+ * into this query (Issue #230).
  */
 export function listEventsSince(
   db: Database.Database,

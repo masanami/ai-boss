@@ -7,16 +7,10 @@ import type { Session } from "../sessions/session.js";
 import { computeActivityRecord } from "./activity-record.js";
 import type { ActivityRecordEvent } from "./activity-record.js";
 
-function startOfLocalDay(date: Date): Date {
-  return new Date(date.getFullYear(), date.getMonth(), date.getDate(), 0, 0, 0, 0);
-}
-
-// 翌ローカル暦日の 00:00:00.000（半開区間の排他的上限）。暦日を 1 日進めて
-// 求める（固定秒数の加算はしない。DST のある地域で 24 時間 ≠ 1 暦日になる
-// ため。ADR 0007 決定3）。
-function startOfNextLocalDay(date: Date): Date {
-  return new Date(date.getFullYear(), date.getMonth(), date.getDate() + 1, 0, 0, 0, 0);
-}
+// 集計範囲の境界は activity/local-day.ts へ集約する（ADR 0007 帰結。収集段ごとに
+// 自前の境界計算を持たない）。dashboard/today-escalation.ts に 4 個目の重複が
+// 残っており、その取り込みは #236。
+import { startOfLocalDayIso, startOfNextLocalDayIso } from "../activity/local-day.js";
 
 export interface CollectedDailyReportData {
   /** 対象ローカル暦日（夕会セッションの started_at のローカル日付） */
@@ -57,13 +51,14 @@ export function collectDailyReportData(
   const sessionEndedAtIso = eveningSession.ended_at;
 
   const targetDate = new Date(eveningSession.started_at);
-  const dayStartIso = startOfLocalDay(targetDate).toISOString();
-  const nextDayStartIso = startOfNextLocalDay(targetDate).toISOString();
-  // break_end の探索範囲だけ、日跨ぎ夕会に対応するため夕会終了時刻まで拡張する
-  // （排他的上限。break_end が夕会 ended_at と完全一致する場合はこの上限に
-  // より検索から除外されるが、computeActivityRecord が対応する break_start を
-  // sessionEndedAt で打ち切るため breakCount/breakTotalMinutes は等価になる。
-  // ADR 0007 決定3）
+  const dayStartIso = startOfLocalDayIso(targetDate);
+  const nextDayStartIso = startOfNextLocalDayIso(targetDate);
+  // break_end の探索範囲だけ、日跨ぎ夕会に対応するため夕会終了時刻まで拡張する。
+  // 上限は排他（ADR 0007 決定3）で、日跨ぎ夕会のときだけ翌暦日 00:00 より先へ
+  // 伸びる。その場合に限り break_end が ended_at と完全一致すると検索から外れる
+  // が、computeActivityRecord が対応する break_start を sessionEndedAt で打ち切る
+  // ため breakCount/breakTotalMinutes は等価になる（activity-record.ts の
+  // ActivityRecordInput.breakEnds の doc と対で読むこと）。
   const breakEndSearchEndIso = sessionEndedAtIso > nextDayStartIso ? sessionEndedAtIso : nextDayStartIso;
 
   const completedTasks = (

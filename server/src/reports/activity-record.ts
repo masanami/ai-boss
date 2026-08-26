@@ -15,8 +15,19 @@ export interface ActivityRecordInput {
   /** 対象ローカル暦日の範囲でフィルタ済みの break_start イベント */
   breakStarts: ActivityRecordEvent[];
   /**
-   * 対象ローカル暦日の範囲 ＋ 夕会セッションの ended_at まででフィルタ済みの
-   * break_end イベント（日跨ぎ休憩を実測で対応付けるための拡張範囲）
+   * `[対象ローカル暦日 00:00, max(翌ローカル暦日 00:00, 夕会 ended_at))` で
+   * フィルタ済みの break_end イベント。上限は**排他**（ADR 0007 決定3 の半開
+   * 区間）で、日跨ぎ夕会のときだけ翌暦日 00:00 より先へ伸びる——日跨ぎ休憩を
+   * 実測で対応付けるための拡張範囲（collect-daily-report-data.ts の
+   * `breakEndSearchEndIso`）。
+   *
+   * 日跨ぎ夕会（`ended_at` > 翌暦日 00:00）の場合に限り、上限が `sessionEndedAt`
+   * そのものになるため、`created_at` が `sessionEndedAt` と完全一致する break_end
+   * は**この配列に含まれない**。その break_start は未対応として扱われ、下記
+   * `sessionEndedAt` での打ち切りにより同じ時刻まで計上される——結果として
+   * breakCount / breakTotalMinutes は「実測で対応付けた場合」と等価になる。
+   * 同日内で終わる夕会ではそもそも上限が翌暦日 00:00 なので、`ended_at` ちょうどの
+   * break_end は普通に含まれ、通常どおり対応付けられる。
    */
   breakEnds: ActivityRecordEvent[];
   /** 夕会セッションの ended_at（ISO文字列）。未対応の break_start の打ち切りに使う */

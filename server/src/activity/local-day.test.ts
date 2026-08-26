@@ -37,23 +37,29 @@ describe("startOfNextLocalDayIso", () => {
     );
   });
 
-  it("defaults to advancing from the current time when no argument is given", () => {
-    const before = new Date();
-    const result = new Date(startOfNextLocalDayIso());
-    const after = new Date();
+  it("always lands on local midnight of the next calendar date, whatever time of day it is given", () => {
+    // 「翌暦日の 00:00 ちょうど」であることを、時刻成分の異なる複数の入力で固定する。
+    //
+    // 限界（誇張しないこと）: これは `date.getTime() + 86400000`（時刻成分を保つ形）
+    // の退行は検出するが、`new Date(startOfLocalDayIso(date)).getTime() + 86400000`
+    // のような「暦日の 00:00 に固定秒数を足す」形は**検出しない** — DST を採用しない
+    // TZ（実行環境の Asia/Tokyo を含む）ではその実装も常に 00:00 へ着地するため。
+    // 固定秒数加算そのものを禁じる契約は、TZ をテストへ注入できるようになるまで
+    // テストでは担保できない（ADR 0007「既知の逸脱」#177）。
+    const probes = [
+      new Date(2026, 2, 8, 1, 30, 0),
+      new Date(2026, 2, 8, 23, 59, 59, 999),
+      new Date(2026, 9, 25, 2, 30, 0),
+    ];
 
-    const expectedFromBefore = new Date(
-      before.getFullYear(),
-      before.getMonth(),
-      before.getDate() + 1,
-    );
-    const expectedFromAfter = new Date(
-      after.getFullYear(),
-      after.getMonth(),
-      after.getDate() + 1,
-    );
+    for (const probe of probes) {
+      const result = new Date(startOfNextLocalDayIso(probe));
 
-    expect(result.getTime()).toBeGreaterThanOrEqual(expectedFromBefore.getTime());
-    expect(result.getTime()).toBeLessThanOrEqual(expectedFromAfter.getTime());
+      expect(result.getHours()).toBe(0);
+      expect(result.getMinutes()).toBe(0);
+      expect(result.getSeconds()).toBe(0);
+      expect(result.getMilliseconds()).toBe(0);
+      expect(result.getDate()).toBe(new Date(probe.getFullYear(), probe.getMonth(), probe.getDate() + 1).getDate());
+    }
   });
 });
