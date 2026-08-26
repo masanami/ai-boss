@@ -7,13 +7,10 @@ import type { Session } from "../sessions/session.js";
 import { computeActivityRecord } from "./activity-record.js";
 import type { ActivityRecordEvent } from "./activity-record.js";
 
-function startOfLocalDay(date: Date): Date {
-  return new Date(date.getFullYear(), date.getMonth(), date.getDate(), 0, 0, 0, 0);
-}
-
-function endOfLocalDay(date: Date): Date {
-  return new Date(date.getFullYear(), date.getMonth(), date.getDate(), 23, 59, 59, 999);
-}
+// 集計範囲の境界は activity/local-day.ts へ集約する（ADR 0007 帰結。収集段ごとに
+// 自前の境界計算を持たない）。dashboard/today-escalation.ts に 4 個目の重複が
+// 残っており、その取り込みは #236。
+import { startOfLocalDayIso, startOfNextLocalDayIso } from "../activity/local-day.js";
 
 export interface CollectedDailyReportData {
   /** 対象ローカル暦日（夕会セッションの started_at のローカル日付） */
@@ -32,8 +29,9 @@ export interface CollectedDailyReportData {
  * 対象ローカル暦日は「夕会セッションの started_at のローカル日付」
  * （`toDateKey` と同じ基準で日付を切り出す。日付キー自体の文字列化はレンダラー
  * 側の責務のためここでは行わない）。タスク・決定の集計範囲はこの暦日の
- * 00:00:00.000〜23:59:59.999。休憩の break_end 探索のみ、日跨ぎ夕会に対応する
- * ため夕会セッションの ended_at まで拡張する
+ * `[00:00:00.000, 翌ローカル暦日 00:00:00.000)`（半開区間。翌日境界は暦日を
+ * 1 日進めて求め、固定秒数の加算はしない。ADR 0007 決定3）。休憩の break_end
+ * 探索のみ、日跨ぎ夕会に対応するため夕会セッションの ended_at まで拡張する
  * （日報の「活動記録」の休憩回数・合計時間を成立させるための対応付け
  * 規則。暦日の基準は docs/adr/0007-local-calendar-day-basis.md）。
  *
@@ -53,19 +51,24 @@ export function collectDailyReportData(
   const sessionEndedAtIso = eveningSession.ended_at;
 
   const targetDate = new Date(eveningSession.started_at);
-  const dayStartIso = startOfLocalDay(targetDate).toISOString();
-  const dayEndIso = endOfLocalDay(targetDate).toISOString();
-  // break_end の探索範囲だけ、日跨ぎ夕会に対応するため夕会終了時刻まで拡張する
-  const breakEndSearchEndIso = sessionEndedAtIso > dayEndIso ? sessionEndedAtIso : dayEndIso;
+  const dayStartIso = startOfLocalDayIso(targetDate);
+  const nextDayStartIso = startOfNextLocalDayIso(targetDate);
+  // break_end の探索範囲だけ、日跨ぎ夕会に対応するため夕会終了時刻まで拡張する。
+  // 上限は排他（ADR 0007 決定3）で、日跨ぎ夕会のときだけ翌暦日 00:00 より先へ
+  // 伸びる。その場合に限り break_end が ended_at と完全一致すると検索から外れる
+  // が、computeActivityRecord が対応する break_start を sessionEndedAt で打ち切る
+  // ため breakCount/breakTotalMinutes は等価になる（activity-record.ts の
+  // ActivityRecordInput.breakEnds の doc と対で読むこと）。
+  const breakEndSearchEndIso = sessionEndedAtIso > nextDayStartIso ? sessionEndedAtIso : nextDayStartIso;
 
   const completedTasks = (
     db
       .prepare(
         `SELECT title FROM tasks
-         WHERE status = 'done' AND completed_at >= ? AND completed_at <= ?
+         WHERE status = 'done' AND completed_at >= ? AND completed_at < ?
          ORDER BY completed_at ASC, id ASC`,
       )
-      .all(dayStartIso, dayEndIso) as { title: string }[]
+      .all(dayStartIso, nextDayStartIso) as { title: string }[]
   ).map((row) => row.title);
 
   const inProgressTasks = (
@@ -75,32 +78,32 @@ export function collectDailyReportData(
          JOIN activity_events e ON e.task_id = t.id
          WHERE t.status = 'in_progress'
            AND e.type IN ('task_start', 'task_update')
-           AND e.created_at >= ? AND e.created_at <= ?
+           AND e.created_at >= ? AND e.created_at < ?
          ORDER BY t.created_at ASC, t.id ASC`,
       )
-      .all(dayStartIso, dayEndIso) as { title: string }[]
+      .all(dayStartIso, nextDayStartIso) as { title: string }[]
   ).map((row) => row.title);
 
   const taskStarts = db
     .prepare(
       `SELECT id, created_at FROM activity_events
-       WHERE type = 'task_start' AND created_at >= ? AND created_at <= ?
+       WHERE type = 'task_start' AND created_at >= ? AND created_at < ?
        ORDER BY created_at ASC, id ASC`,
     )
-    .all(dayStartIso, dayEndIso) as ActivityRecordEvent[];
+    .all(dayStartIso, nextDayStartIso) as ActivityRecordEvent[];
 
   const breakStarts = db
     .prepare(
       `SELECT id, created_at FROM activity_events
-       WHERE type = 'break_start' AND created_at >= ? AND created_at <= ?
+       WHERE type = 'break_start' AND created_at >= ? AND created_at < ?
        ORDER BY created_at ASC, id ASC`,
     )
-    .all(dayStartIso, dayEndIso) as ActivityRecordEvent[];
+    .all(dayStartIso, nextDayStartIso) as ActivityRecordEvent[];
 
   const breakEnds = db
     .prepare(
       `SELECT id, created_at FROM activity_events
-       WHERE type = 'break_end' AND created_at >= ? AND created_at <= ?
+       WHERE type = 'break_end' AND created_at >= ? AND created_at < ?
        ORDER BY created_at ASC, id ASC`,
     )
     .all(dayStartIso, breakEndSearchEndIso) as ActivityRecordEvent[];
@@ -116,10 +119,10 @@ export function collectDailyReportData(
     db
       .prepare(
         `SELECT content FROM decisions
-         WHERE status = 'active' AND created_at >= ? AND created_at <= ?
+         WHERE status = 'active' AND created_at >= ? AND created_at < ?
          ORDER BY created_at ASC, id ASC`,
       )
-      .all(dayStartIso, dayEndIso) as { content: string }[]
+      .all(dayStartIso, nextDayStartIso) as { content: string }[]
   ).map((row) => row.content);
 
   return {

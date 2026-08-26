@@ -93,7 +93,7 @@ describe("collectDailyReportData", () => {
   });
 
   describe("日付境界: 23:50開始・翌00:30終了の夕会", () => {
-    it("uses the session's start-day local date as the target date, and only collects data within the start day's 00:00:00.000-23:59:59.999 range", () => {
+    it("uses the session's start-day local date as the target date, and only collects data within the start day's [00:00:00.000, next local day 00:00:00.000) half-open range", () => {
       const session = insertRawSession(
         db,
         "evening",
@@ -168,6 +168,27 @@ describe("collectDailyReportData", () => {
         expect(result.completedTasks).toEqual([]);
       },
     );
+
+    it("excludes a done task whose completed_at is exactly the next local day's 00:00:00.000 while keeping the last in-range one (half-open interval upper bound, ADR 0007 決定3)", () => {
+      const session = insertRawSession(db, "evening", iso(2026, 8, 14, 19, 0), iso(2026, 8, 14, 19, 30));
+      // 上限直前は含む（対照。これが無いと「常に空を返す」壊れ方でも通ってしまう）
+      insertRawTask(db, {
+        title: "当日末尾完了タスク",
+        status: "done",
+        createdAt: iso(2026, 8, 14, 9, 0),
+        completedAt: iso(2026, 8, 14, 23, 59, 59),
+      });
+      insertRawTask(db, {
+        title: "翌日0時ちょうど完了タスク",
+        status: "done",
+        createdAt: iso(2026, 8, 14, 9, 0),
+        completedAt: iso(2026, 8, 15, 0, 0), // 翌ローカル暦日 00:00:00.000 ちょうど
+      });
+
+      const result = collectDailyReportData(db, session);
+
+      expect(result.completedTasks).toEqual(["当日末尾完了タスク"]);
+    });
   });
 
   describe("本日のタスク（進行中タスク）", () => {
@@ -229,6 +250,35 @@ describe("collectDailyReportData", () => {
         expect(result.inProgressTasks).toEqual([]);
       },
     );
+
+    it("excludes an in_progress task whose only task_start event is exactly the next local day's 00:00:00.000 while keeping the last in-range one (half-open interval upper bound, ADR 0007 決定3)", () => {
+      const session = insertRawSession(db, "evening", iso(2026, 8, 14, 19, 0), iso(2026, 8, 14, 19, 30));
+      // 上限直前は含む（対照。これが無いと「常に空を返す」壊れ方でも通ってしまう）
+      const inRangeTaskId = insertRawTask(db, {
+        title: "当日末尾着手タスク",
+        status: "in_progress",
+        createdAt: iso(2026, 8, 14, 8, 0),
+      });
+      insertRawActivityEvent(db, {
+        type: "task_start",
+        taskId: inRangeTaskId,
+        createdAt: iso(2026, 8, 14, 23, 59, 59),
+      });
+      const taskId = insertRawTask(db, {
+        title: "翌日0時ちょうど着手タスク",
+        status: "in_progress",
+        createdAt: iso(2026, 8, 14, 9, 0),
+      });
+      insertRawActivityEvent(db, {
+        type: "task_start",
+        taskId,
+        createdAt: iso(2026, 8, 15, 0, 0), // 翌ローカル暦日 00:00:00.000 ちょうど
+      });
+
+      const result = collectDailyReportData(db, session);
+
+      expect(result.inProgressTasks).toEqual(["当日末尾着手タスク"]);
+    });
   });
 
   describe("決定事項", () => {
@@ -297,6 +347,27 @@ describe("collectDailyReportData", () => {
 
       expect(result.decisions).toEqual([]);
     });
+
+    it("excludes an active decision created exactly at the next local day's 00:00:00.000 while keeping the last in-range one (half-open interval upper bound, ADR 0007 決定3)", () => {
+      const session = insertRawSession(db, "evening", iso(2026, 8, 14, 19, 0), iso(2026, 8, 14, 19, 30));
+      // 上限直前は含む（対照。これが無いと「常に空を返す」壊れ方でも通ってしまう）
+      insertRawDecision(db, {
+        sessionId: session.id,
+        content: "当日末尾の決定",
+        status: "active",
+        createdAt: iso(2026, 8, 14, 23, 59, 59),
+      });
+      insertRawDecision(db, {
+        sessionId: session.id,
+        content: "翌日0時ちょうどの決定",
+        status: "active",
+        createdAt: iso(2026, 8, 15, 0, 0), // 翌ローカル暦日 00:00:00.000 ちょうど
+      });
+
+      const result = collectDailyReportData(db, session);
+
+      expect(result.decisions).toEqual(["当日末尾の決定"]);
+    });
   });
 
   describe("活動記録との統合", () => {
@@ -328,6 +399,47 @@ describe("collectDailyReportData", () => {
       expect(result.firstTaskStartAt).toBeNull();
       expect(result.breakCount).toBe(0);
       expect(result.breakTotalMinutes).toBe(0);
+    });
+
+    it("produces the same breakCount/breakTotalMinutes whether or not a break_end record exists exactly at the evening session's ended_at (ADR 0007 決定3: half-open interval excludes it from the query, but computeActivityRecord's sessionEndedAt cutoff yields an equivalent result)", () => {
+      const startedAt = iso(2026, 8, 14, 23, 50);
+      const endedAt = iso(2026, 8, 15, 0, 30);
+
+      // Case A: break_end イベントが存在しない（休憩が未終了のまま夕会が終了した）
+      const sessionA = insertRawSession(db, "evening", startedAt, endedAt);
+      insertRawActivityEvent(db, { type: "break_start", createdAt: iso(2026, 8, 14, 23, 55) });
+      const resultA = collectDailyReportData(db, sessionA);
+
+      // Case B: break_end が夕会 ended_at と完全一致する（半開区間のクエリからは
+      // 除外されるが、computeActivityRecord の打ち切りで同じ値になるはず）
+      const db2 = openDatabase(":memory:");
+      runMigrations(db2);
+      const sessionB = insertRawSession(db2, "evening", startedAt, endedAt);
+      insertRawActivityEvent(db2, { type: "break_start", createdAt: iso(2026, 8, 14, 23, 55) });
+      insertRawActivityEvent(db2, { type: "break_end", createdAt: endedAt });
+      const resultB = collectDailyReportData(db2, sessionB);
+      db2.close();
+
+      expect(resultB.breakCount).toBe(resultA.breakCount);
+      expect(resultB.breakTotalMinutes).toBe(resultA.breakTotalMinutes);
+      expect(resultB.breakCount).toBe(1);
+      expect(resultB.breakTotalMinutes).toBe(35);
+    });
+
+    it("excludes a task_start/break_start event exactly at the next local day's 00:00:00.000 from firstTaskStartAt/breakCount while keeping the in-range ones (half-open interval upper bound, ADR 0007 決定3)", () => {
+      const session = insertRawSession(db, "evening", iso(2026, 8, 14, 19, 0), iso(2026, 8, 14, 19, 30));
+      // break_start だけ上限直前の対照を置く（breakCount は件数なので 1→2 で
+      // 上限の退行を検出できる）。task_start 側は対照を置かない——firstTaskStartAt は
+      // 範囲内の**最小値**なので、より早い対照を足すと上限が包含へ退行しても
+      // 期待値が変わらず、境界の検証にならないため。
+      insertRawActivityEvent(db, { type: "break_start", createdAt: iso(2026, 8, 14, 23, 59, 59) });
+      insertRawActivityEvent(db, { type: "task_start", createdAt: iso(2026, 8, 15, 0, 0) });
+      insertRawActivityEvent(db, { type: "break_start", createdAt: iso(2026, 8, 15, 0, 0) });
+
+      const result = collectDailyReportData(db, session);
+
+      expect(result.firstTaskStartAt).toBeNull();
+      expect(result.breakCount).toBe(1);
     });
   });
 });

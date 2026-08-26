@@ -60,6 +60,29 @@ describe("activity routes", () => {
       const body = await readJson<ActivityEvent[]>(res);
       expect(body.map((e) => e.type)).toEqual(["checkin", "break_start"]);
     });
+
+    it("excludes an event exactly at next-day local midnight (exclusive upper bound)", async () => {
+      vi.useFakeTimers();
+      vi.setSystemTime(new Date(2026, 6, 5, 15, 30, 0));
+
+      const insertAt = (isoDate: Date, type: string) => {
+        db.prepare(
+          "INSERT INTO activity_events (type, created_at) VALUES (?, ?)",
+        ).run(type, isoDate.toISOString());
+      };
+
+      // today, later — included
+      insertAt(new Date(2026, 6, 5, 10, 0, 0, 0), "checkin");
+      // tomorrow, exactly at midnight — excluded (exclusive upper bound)
+      insertAt(new Date(2026, 6, 6, 0, 0, 0, 0), "break_start");
+
+      const app = createApp(db);
+      const res = await app.request("/api/activity/today");
+
+      expect(res.status).toBe(200);
+      const body = await readJson<ActivityEvent[]>(res);
+      expect(body.map((e) => e.type)).toEqual(["checkin"]);
+    });
   });
 
   describe("task_update auto-recording", () => {
