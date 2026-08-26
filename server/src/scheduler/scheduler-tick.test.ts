@@ -8,6 +8,8 @@ import { insertSession } from "../sessions/sessions-repository.js";
 import type { SessionType } from "../sessions/session.js";
 import { listNotificationsSince } from "../notifications/notifications-repository.js";
 import { DETECTION_RULE_TYPES, type DetectionRuleType } from "../detection/detection-types.js";
+import { ACTIVITY_EVENT_TYPES, type ActivityEventType } from "../activity/activity-event.js";
+import { loadDetectionSettings } from "./detection-settings.js";
 
 const {
   createClaudeClientMock,
@@ -94,6 +96,39 @@ function markTodaysMeetingsDone(db: Database.Database): void {
 /** `baseTime` から `minutes` 分だけ進めた `Date` を返す（TZ 非依存: 相対計算のみ） */
 function addMinutes(baseTime: Date, minutes: number): Date {
   return new Date(baseTime.getTime() + minutes * 60 * 1000);
+}
+
+/**
+ * `from` から、`intervalMinutes`（`resolveEscalation` の間隔判定に使うエスカ
+ * レーション間隔）の**内側**（`(0, intervalMinutes)`、両端を含まない）に収まる
+ * オフセットだけ進めた `Date` を返す。`fraction`（0〜1）は間隔のどのあたりを
+ * 狙うかの目安（例: 1/3 なら間隔の手前寄り）。
+ *
+ * `intervalMinutes >= 2` であれば `Math.max(1, …)` と
+ * `Math.min(intervalMinutes - 1, …)` により必ず `[1, intervalMinutes - 1]`
+ * の範囲（＝間隔の内側）に収める — 素朴に `interval * fraction` や
+ * `interval - 5` を使うと、`intervalMinutes` が小さい設定値のときにオフセット
+ * が 0 以下に潰れ、「間隔内だから抑制された／リセットされた」ではなく単に
+ * 時刻が進んでいない（またはリセット対象の `sentAt` 以前に戻ってしまう）こと
+ * で assertion が意味を失ったまま通ってしまう（`DEFAULT_DETECTION_SETTINGS`
+ * の既定値 15 では問題にならないが、`settings` テーブル経由でより小さい値に
+ * 上書きされた場合に備える）。`intervalMinutes <= 1` の場合は `[1,
+ * intervalMinutes - 1]` という区間自体が空になるため、この関数は代わりに
+ * `intervalMinutes` 以上のオフセットを返す（＝間隔の外側になる）。この分岐は
+ * フェイルセーフ（意味を失ったまま assertion が通ってしまう側には倒れない）
+ * ではあるが、呼び出し元によって具体的な結果は異なる: 重複抑制側の
+ * assertion は（抑制されず次のレベルへ進んでしまうため）失敗する一方、
+ * リセット側の assertion は `hasActivitySince` の厳密な `>` 比較により、
+ * リセットが効いていない限りやはり失敗する（正当な理由で pass する場合と
+ * 区別できる）。この呼び出し元が想定する `intervalMinutes`（既定 15）では
+ * そもそも到達しないケース。
+ */
+function withinEscalationInterval(from: Date, intervalMinutes: number, fraction: number): Date {
+  const offsetMinutes = Math.max(
+    1,
+    Math.min(intervalMinutes - 1, Math.round(intervalMinutes * fraction)),
+  );
+  return addMinutes(from, offsetMinutes);
 }
 
 /**
@@ -715,6 +750,169 @@ describe("createTicker().tick", () => {
             type: ruleType,
             rule_key: `${sessionType}_meeting:2026-07-05`,
           });
+        } finally {
+          db.close();
+        }
+      },
+    );
+  });
+
+  // GAP-01 (#196, #240): エスカレーションの L1 リセット（escalation.ts の
+  // hasActivitySince）は活動シグナルの種別を問わない実装だが、既存の
+  // "resets the escalation level to L1 after an activity signal is recorded"
+  // は task_update 1 種のみを tick 経由で検証していた。他の種別でも同じ挙動に
+  // なることをテーブル駆動で確認する。
+  //
+  // `break_start` は使わない（休憩ゲートが立ち unstarted 自体を抑制してしま
+  // うため）。それ以外の ACTIVITY_EVENT_TYPES は `ACTIVITY_SIGNAL_TYPES` を
+  // `ACTIVITY_EVENT_TYPES` からの導出（filter）にすることで構造的に全種を
+  // 含む——RULE_GATE_SCENARIOS のような独立の手書きテーブルではないため、
+  // 突き合わせる別ソースが無く、専用の網羅性ガードテストは書けない（書いても
+  // 同じ式を2回評価するだけの恒真テストになる）。将来 break_start 以外にも
+  // 除外が必要になった場合はこの filter 条件を更新すること。
+  //
+  // `task_start`/`task_pause` は `checkins-routes.ts` 経由（本番の唯一の記録
+  // 経路）では、`task_id` が指すタスクの status を同一トランザクション内で
+  // 遷移させる（task_start: todo/paused → in_progress、task_pause:
+  // in_progress → paused）。ここでは unstarted シナリオ（トップタスクが
+  // todo のまま）を土台に `recordActivityEvent` を直接呼ぶため、
+  // `task_pause`（status が in_progress でなければ本番でも no-op）は本番と
+  // 矛盾しないが、`task_start`（本番では必ず in_progress へ遷移する）は
+  // 「task_start イベントは存在するが status は todo のまま」という、本番の
+  // 呼び出し経路単体では作れない組み合わせになる。これは意図的な単純化: この
+  // describe が検証したいのは `hasActivitySince`（escalation.ts）が活動シグ
+  // ナルの種別を一切見ない、という repository レベルの挙動そのものであり、
+  // `checkins-routes.ts` の status 遷移との整合は本テストのスコープ外
+  // （プロダクションコード変更を伴う再設計は本チケット #240 の対象外）。
+  describe("escalation reset to L1 is triggered by any activity signal type (tick-level; GAP-01 per #196, #240)", () => {
+    const BASE_TIME = new Date("2026-07-05T09:00:00.000");
+    // Manually maintained subset of ACTIVITY_SIGNAL_TYPES that must target the
+    // top task's own id (see the `taskId` guard/usage below) rather than
+    // `null` — i.e. every type `checkins-validation.ts` requires a `task_id`
+    // for (`task_start`/`task_pause`) plus `task_update` (whose only
+    // production source, `tasks-repository.ts`'s `updateTask`, always
+    // targets a specific task). Not derived from a shared constant: unlike
+    // `ACTIVITY_SIGNAL_TYPES` below, "does this event type carry a task_id
+    // in practice" isn't expressed anywhere else in the codebase as a single
+    // exhaustive list, so there is nothing structural to derive this from. If
+    // a future ActivityEventType gains task-id semantics, add it here too.
+    const TASK_SCOPED_ACTIVITY_TYPES: ActivityEventType[] = ["task_start", "task_update", "task_pause"];
+    // Derived (not a hand-maintained literal) from ACTIVITY_EVENT_TYPES so
+    // that adding a new ActivityEventType automatically gains coverage here
+    // — this makes exhaustiveness structural rather than something a
+    // separate runtime test could verify (a test asserting this filter
+    // equals itself would be tautological).
+    const ACTIVITY_SIGNAL_TYPES: ActivityEventType[] = ACTIVITY_EVENT_TYPES.filter(
+      (type) => type !== "break_start",
+    );
+
+    it.each(ACTIVITY_SIGNAL_TYPES)(
+      "resets the escalation level to L1 after a %s activity signal is recorded",
+      async (activityType) => {
+        const unstartedScenario = RULE_GATE_SCENARIOS.find((s) => s.ruleType === "unstarted");
+        if (!unstartedScenario) {
+          throw new Error("expected an 'unstarted' scenario in RULE_GATE_SCENARIOS");
+        }
+        try {
+          // `task_update`/`task_start`/`task_pause` must target the top
+          // task's own id (not some other task) — otherwise
+          // `hasRecentActivityOnOtherTasks` would flip the rule from
+          // `unstarted` to `avoidance`, changing `rule_key`.
+          const expectedRuleKey = unstartedScenario.setup(db, BASE_TIME);
+          const taskId = Number(expectedRuleKey.split(":")[1]);
+          if (!Number.isInteger(taskId)) {
+            throw new Error(
+              `expected the unstarted scenario's rule_key ("${expectedRuleKey}") to end with a numeric task id`,
+            );
+          }
+
+          const execFile = vi.fn().mockImplementation(ok);
+          const ticker = createTicker({ db, env, execFile });
+
+          // First tick: L1 fires (the scenario's setup already advanced the
+          // clock past the unstarted threshold).
+          await ticker.tick();
+
+          // Record the activity signal, then re-tick, both strictly *within*
+          // the L1->L2 escalation interval. Without the reset,
+          // resolveEscalation's interval check alone would suppress this
+          // second tick entirely (duplicate prevention) — so a level-1
+          // second notification proves the *reset* (not merely "an interval
+          // elapsed") caused it. The interval is read via the same
+          // `loadDetectionSettings` the scheduler itself uses (not the
+          // hardcoded default), so this stays correct even if `settings`
+          // ever overrides it.
+          const interval = loadDetectionSettings(db).escalation.level1ToLevel2Minutes;
+          const fireTime = vi.getMockedSystemTime();
+          if (!fireTime) throw new Error("expected the system clock to be faked");
+
+          vi.setSystemTime(withinEscalationInterval(fireTime, interval, 1 / 3));
+          recordActivityEvent(db, {
+            type: activityType,
+            task_id: TASK_SCOPED_ACTIVITY_TYPES.includes(activityType) ? taskId : null,
+          });
+
+          vi.setSystemTime(withinEscalationInterval(fireTime, interval, 2 / 3));
+          await ticker.tick();
+
+          const recorded = listNotificationsSince(db, "1970-01-01T00:00:00.000Z");
+          expect(recorded).toHaveLength(2);
+          expect(recorded[1]).toMatchObject({
+            escalation_level: 1,
+            rule_key: expectedRuleKey,
+          });
+        } finally {
+          db.close();
+        }
+      },
+    );
+  });
+
+  // GAP-03 + GAP-06 (#196, #240): 未着手 (`unstarted`) 以外のルール種別でも
+  // エスカレーション間隔内の重複送信防止が tick 経由で効くこと、および
+  // 全ルール種別で一貫した `rule_key`（重複防止キー）と検知語彙の `type` が
+  // 記録されることを、RULE_GATE_SCENARIOS を再利用してテーブル駆動で検証する。
+  // 朝会・夕会の rule_key は「meeting reminders fire outside both gates via
+  // tick」で既に検証済みのため、ここでは重複して書かない（DRY）。
+  //
+  // L1→L2 のエスカレーション「昇格」自体（間隔経過後に次のレベルへ進むこと）
+  // の tick 経由での検証は、本チケット #240 の対象外（#241 の担当範囲。チケッ
+  // ト本文の「対象外スコープ」参照）。ここで検証するのは「間隔未経過では発火
+  // しない」（重複送信防止）ことのみ。
+  describe("duplicate suppression and rule_key consistency across rule types (tick-level; GAP-03/GAP-06 per #196, #240)", () => {
+    const BASE_TIME = new Date("2026-07-05T09:00:00.000");
+
+    it.each(RULE_GATE_SCENARIOS.map((s) => [s.ruleType, s.setup] as const))(
+      "records %s once with its expected rule_key/type, then suppresses a duplicate within the escalation interval",
+      async (ruleType, setup) => {
+        try {
+          const expectedRuleKey = setup(db, BASE_TIME);
+          const execFile = vi.fn().mockImplementation(ok);
+          const ticker = createTicker({ db, env, execFile });
+
+          await ticker.tick();
+
+          const firstRecorded = listNotificationsSince(db, "1970-01-01T00:00:00.000Z");
+          expect(firstRecorded).toHaveLength(1);
+          expect(firstRecorded[0]).toMatchObject({
+            type: ruleType,
+            rule_key: expectedRuleKey,
+            escalation_level: 1,
+          });
+
+          // Re-tick strictly *within* the L1->L2 escalation interval without
+          // recording any new activity signal, so it is resolveEscalation's
+          // interval check (not the hasActivitySince reset) that is under
+          // test here. Interval read via loadDetectionSettings(db) — see the
+          // comment on the GAP-01 describe above for why.
+          const interval = loadDetectionSettings(db).escalation.level1ToLevel2Minutes;
+          const fireTime = vi.getMockedSystemTime();
+          if (!fireTime) throw new Error("expected the system clock to be faked");
+          vi.setSystemTime(withinEscalationInterval(fireTime, interval, 1 / 2));
+          await ticker.tick();
+
+          const afterDuplicateTick = listNotificationsSince(db, "1970-01-01T00:00:00.000Z");
+          expect(afterDuplicateTick).toHaveLength(1);
         } finally {
           db.close();
         }
