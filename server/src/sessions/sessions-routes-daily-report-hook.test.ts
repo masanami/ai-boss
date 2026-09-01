@@ -16,9 +16,20 @@ import type { SessionType } from "./session.js";
 // 呼び出し回数を計測できるよう spy でラップする。例外系のテストのみ
 // `mockRejectedValueOnce` で一時的に上書きする。
 
-const { createClaudeClientMock, requestVerdictMock } = vi.hoisted(() => ({
+const { createClaudeClientMock, requestVerdictMock, createBossMessageMock } = vi.hoisted(() => ({
   createClaudeClientMock: vi.fn(),
   requestVerdictMock: vi.fn(),
+  // Issue #271: every `postSession(app, "evening" | "morning")` call in this
+  // file now also triggers the meeting-opening generator (`createBossMessage`
+  // — a call site this test file predates), which is otherwise left
+  // unmocked. Left unmocked, it would fall through to the real `api`-backend
+  // dispatch against the fake `{ client: {} }` handle below, fail, and
+  // retry with the facade's real (non-faked, since only `Date` is faked
+  // here — see the beforeEach comment) exponential backoff, adding several
+  // real seconds to every test in this file. Mocked here purely to keep
+  // those calls fast/deterministic; this file's own assertions are about
+  // the daily-report hook, not the opening line's content.
+  createBossMessageMock: vi.fn(),
 }));
 
 vi.mock("../llm/claude-client.js", async (importOriginal) => {
@@ -27,6 +38,7 @@ vi.mock("../llm/claude-client.js", async (importOriginal) => {
     ...actual,
     createClaudeClient: createClaudeClientMock,
     requestVerdict: requestVerdictMock,
+    createBossMessage: createBossMessageMock,
   };
 });
 
@@ -94,7 +106,12 @@ describe("evening session end -> daily report generation hook", () => {
     runMigrations(db);
     createClaudeClientMock.mockReset();
     requestVerdictMock.mockReset();
+    createBossMessageMock.mockReset();
     createClaudeClientMock.mockReturnValue({ backend: "api", client: {} });
+    // Empty content -> meeting-opening's own "text === ''" branch -> its
+    // fixed fallback text is persisted. Resolves immediately (no retry path
+    // reached), keeping every postSession() call in this file fast.
+    createBossMessageMock.mockResolvedValue({ content: [] });
     requestVerdictMock.mockResolvedValue({
       called: true,
       result: {

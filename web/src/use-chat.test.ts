@@ -78,6 +78,20 @@ const MORNING_HISTORY: ChatMessage[] = [
   },
 ];
 
+// Issue #271: `POST /api/sessions` may generate this as a synchronous side
+// effect for a brand-new morning/evening session, before the client sends
+// anything. `startSession` cannot assume it from the create response alone
+// (the server response shape didn't change — re-fetch is how the client
+// picks it up), so it must be modeled as a follow-up
+// `GET /api/sessions/:id/messages` response in these tests.
+const MORNING_OPENING_MESSAGE: ChatMessage = {
+  id: 31,
+  session_id: 20,
+  role: "boss",
+  content: "今日はA案件から片付けろ。",
+  created_at: "2026-07-05T00:00:01.000Z",
+};
+
 function jsonResponse(body: unknown, status = 200) {
   return { ok: true, status, json: () => Promise.resolve(body) };
 }
@@ -189,6 +203,7 @@ describe("useChat draft", () => {
       .mockResolvedValueOnce(jsonResponse([])) // mount: no adhoc session
       .mockResolvedValueOnce(jsonResponse([])) // startSession: no morning session today
       .mockResolvedValueOnce(jsonResponse(MORNING_SESSION_TODAY, 201)) // create
+      .mockResolvedValueOnce(jsonResponse([])) // Issue #271: opening-line re-fetch (none generated)
       .mockResolvedValueOnce(
         jsonResponse({ ...MORNING_SESSION_TODAY, ended_at: localIso(5, 9) }),
       ); // end
@@ -685,7 +700,10 @@ describe("useChat session switching", () => {
       .fn()
       .mockResolvedValueOnce(jsonResponse([])) // mount: no adhoc session
       .mockResolvedValueOnce(jsonResponse([])) // startSession: no morning session today
-      .mockResolvedValueOnce(jsonResponse(MORNING_SESSION_TODAY, 201)); // create
+      .mockResolvedValueOnce(jsonResponse(MORNING_SESSION_TODAY, 201)) // create
+      // Issue #271: the client re-fetches the new session's messages to pick
+      // up any meeting-opening line POST /api/sessions may have generated.
+      .mockResolvedValueOnce(jsonResponse([MORNING_OPENING_MESSAGE]));
     vi.stubGlobal("fetch", fetchMock);
 
     const { result } = renderHook(() => useChat());
@@ -701,8 +719,18 @@ describe("useChat session switching", () => {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ type: "morning" }),
     });
+    expect(fetchMock).toHaveBeenNthCalledWith(4, "/api/sessions/20/messages");
     expect(result.current.sessionType).toBe("morning");
-    expect(result.current.entries).toEqual([]);
+    // The generated opening line is visible in the timeline without the
+    // user having to send anything first (AC-1/AC-2).
+    expect(result.current.entries).toEqual([
+      {
+        kind: "message",
+        key: "message-31",
+        role: "boss",
+        content: "今日はA案件から片付けろ。",
+      },
+    ]);
     expect(result.current.switching).toBe(false);
     expect(result.current.error).toBeNull();
   });
@@ -738,7 +766,8 @@ describe("useChat session switching", () => {
       .fn()
       .mockResolvedValueOnce(jsonResponse([]))
       .mockResolvedValueOnce(jsonResponse([MORNING_SESSION_YESTERDAY]))
-      .mockResolvedValueOnce(jsonResponse(MORNING_SESSION_TODAY, 201));
+      .mockResolvedValueOnce(jsonResponse(MORNING_SESSION_TODAY, 201))
+      .mockResolvedValueOnce(jsonResponse([])); // Issue #271: opening-line re-fetch (none generated)
     vi.stubGlobal("fetch", fetchMock);
 
     const { result } = renderHook(() => useChat());
@@ -818,6 +847,7 @@ describe("useChat session switching", () => {
       .mockResolvedValueOnce(jsonResponse(HISTORY))
       .mockResolvedValueOnce(jsonResponse([])) // startSession: no morning session today
       .mockResolvedValueOnce(jsonResponse(MORNING_SESSION_TODAY, 201)) // create morning
+      .mockResolvedValueOnce(jsonResponse([])) // Issue #271: opening-line re-fetch (none generated)
       .mockResolvedValueOnce(jsonResponse({ ...MORNING_SESSION_TODAY, ended_at: "2026-07-05T01:00:00.000Z" })); // end
     vi.stubGlobal("fetch", fetchMock);
 
@@ -833,7 +863,7 @@ describe("useChat session switching", () => {
       await result.current.endSession();
     });
 
-    expect(fetchMock).toHaveBeenNthCalledWith(5, "/api/sessions/20/end", {
+    expect(fetchMock).toHaveBeenNthCalledWith(6, "/api/sessions/20/end", {
       method: "POST",
     });
     expect(result.current.sessionType).toBe("adhoc");
@@ -850,6 +880,7 @@ describe("useChat session switching", () => {
       .mockResolvedValueOnce(jsonResponse(HISTORY))
       .mockResolvedValueOnce(jsonResponse([]))
       .mockResolvedValueOnce(jsonResponse(MORNING_SESSION_TODAY, 201))
+      .mockResolvedValueOnce(jsonResponse([])) // Issue #271: opening-line re-fetch (none generated)
       .mockResolvedValueOnce(jsonResponse({ ...MORNING_SESSION_TODAY, ended_at: "2026-07-05T01:00:00.000Z" }))
       .mockResolvedValueOnce(
         sseResponse([`event: done\ndata: ${JSON.stringify(BOSS_REPLY)}\n\n`]),
@@ -870,7 +901,7 @@ describe("useChat session switching", () => {
     });
 
     expect(fetchMock).toHaveBeenNthCalledWith(
-      6,
+      7,
       "/api/sessions/1/messages",
       expect.objectContaining({ method: "POST" }),
     );
@@ -882,6 +913,7 @@ describe("useChat session switching", () => {
       .mockResolvedValueOnce(jsonResponse([])) // mount: no adhoc session
       .mockResolvedValueOnce(jsonResponse([]))
       .mockResolvedValueOnce(jsonResponse(MORNING_SESSION_TODAY, 201))
+      .mockResolvedValueOnce(jsonResponse([])) // Issue #271: opening-line re-fetch (none generated)
       .mockResolvedValueOnce(jsonResponse({ ...MORNING_SESSION_TODAY, ended_at: "2026-07-05T01:00:00.000Z" }));
     vi.stubGlobal("fetch", fetchMock);
 
@@ -905,6 +937,7 @@ describe("useChat session switching", () => {
       .mockResolvedValueOnce(jsonResponse([]))
       .mockResolvedValueOnce(jsonResponse([]))
       .mockResolvedValueOnce(jsonResponse(MORNING_SESSION_TODAY, 201))
+      .mockResolvedValueOnce(jsonResponse([])) // Issue #271: opening-line re-fetch (none generated)
       .mockRejectedValueOnce(new Error("network error"));
     vi.stubGlobal("fetch", fetchMock);
 

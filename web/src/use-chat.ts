@@ -292,12 +292,24 @@ export function useChat(): UseChatResult {
         };
 
         const { session, messages } = await loadTodaysSession(type);
+        const isNewSession = session === null;
         const active = session ?? (await createSession(type));
+        // Issue #271: `POST /api/sessions` may have generated a "meeting
+        // opening" boss message as a synchronous side effect (best-effort —
+        // morning/evening only). `loadTodaysSession`'s `messages` is always
+        // [] for a brand-new session (it only reads history for an
+        // *existing* one, above), so that line — if any — has to be
+        // fetched separately here rather than assumed absent. Skipped when
+        // an existing session was resumed instead: its history (including
+        // any past opening line) is already in `messages`.
+        const activeMessages = isNewSession
+          ? await fetchSessionMessages(active.id)
+          : messages;
 
         sessionIdRef.current = active.id;
         ifMounted(() => {
           setSessionType(type);
-          setEntries(messages.map(messageEntry));
+          setEntries(activeMessages.map(messageEntry));
         });
       } catch (err) {
         ifMounted(() =>
