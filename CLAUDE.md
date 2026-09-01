@@ -43,7 +43,9 @@ AI が「上司（ボス）」を演じるセルフマネジメント支援ア�
 - 要件化 `/define-feature` → 起票 `/create-ticket` → 実装 `/para-impl`（内部で TDD・QC 通過まで）
 - 単発実装は `/tdd-impl`、品質確認は `/quality-check`、コミットは `/commit`
 - 恒常的な設計決定の記録は `/create-adr`（定常フローの必須ステップではなく、必要時に呼ぶオンデマンドスキル）
-- レビュー対応 `/pr-review-respond` → マージ `/pr-merge`（**`main` への昇格マージのみ人間承認**）
+- レビュー対応 `/pr-review-respond` → 昇格前検証 `/promote-verify` → マージ `/pr-merge`（**`main` への昇格マージのみ人間承認**）
+- E2E は `/create-e2e` で実装し `/explain-e2e` で解説・検証する。テスト未担保の公開面の洗い出しは `/surface-audit`
+- マイルストーン完了後は `/demo`（テストケースカタログと突き合わせるなら `/demo-e2e`）で実ブラウザ検証する。QC・AI レビューをすり抜ける結合欠陥に有効
 
 > 新機能は `/define-feature` で機能仕様を作ってから `/create-ticket` へ渡す。機能仕様は**実装を駆動する作業文書**であり、リリース後も経緯の記録として残してよい（**権威は持たない**。上記「開発方針」節）。
 
@@ -56,6 +58,8 @@ AI が「上司（ボス）」を演じるセルフマネジメント支援ア�
   - type: `feat`, `fix`, `docs`, `style`, `refactor`, `perf`, `test`, `chore`, `ci`
   - scope: `server`, `web`, `db`, `docs`
 - **PR**: ≤400行目安、squash マージ
+- **統合ブランチ**: 親 Issue の実装は統合ブランチ `feat/issue-{親Issue番号}` に集約し、実装チケットの子 PR は統合ブランチへマージする（本番非反映）。`main` への昇格は統合ブランチからの PR 1 本で行う
+- **stacked PR を作らない**: 統合ブランチは常に最新 `main` から独立に切る。base が他の統合ブランチの PR を作ると、先行 PR が `--delete-branch` でマージされた時点で base ブランチが消え、**後続 PR は自動クローズされ reopen も base 変更も 422 で拒否されて復旧不能**になる（2026-08-18 実測）。依存があってどうしても stacked にする場合は「先行マージ前に base を `main` へ付け替える」必要を PR 本文の冒頭に明記する
 
 ### 命名規則
 
