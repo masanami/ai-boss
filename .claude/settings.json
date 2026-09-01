@@ -3,6 +3,8 @@
     "allow": [
       "Bash(claude-harness-run:*)",
       "Bash(cd:*)",
+      "Bash(bash:*)",
+      "Bash(git ls-remote:*)",
       "Bash(npm:*)",
       "Bash(npx vitest:*)",
       "Bash(npx tsc:*)",
