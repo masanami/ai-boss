@@ -23,18 +23,17 @@ describe("fetchTasks", () => {
   });
 
   it("returns the parsed task list when the request succeeds", async () => {
-    vi.stubGlobal(
-      "fetch",
-      vi.fn().mockResolvedValue({
-        ok: true,
-        status: 200,
-        json: () => Promise.resolve([SAMPLE_TASK]),
-      }),
-    );
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      json: () => Promise.resolve([SAMPLE_TASK]),
+    });
+    vi.stubGlobal("fetch", fetchMock);
 
     const tasks = await fetchTasks();
 
     expect(tasks).toEqual([SAMPLE_TASK]);
+    expect(fetchMock).toHaveBeenCalledWith("/api/tasks");
   });
 
   it("throws with the server error message when the request fails", async () => {

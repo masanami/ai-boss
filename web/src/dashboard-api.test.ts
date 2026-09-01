@@ -17,18 +17,17 @@ describe("fetchDashboard", () => {
   });
 
   it("returns the parsed dashboard response when the request succeeds", async () => {
-    vi.stubGlobal(
-      "fetch",
-      vi.fn().mockResolvedValue({
-        ok: true,
-        status: 200,
-        json: () => Promise.resolve(SAMPLE_DASHBOARD),
-      }),
-    );
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      json: () => Promise.resolve(SAMPLE_DASHBOARD),
+    });
+    vi.stubGlobal("fetch", fetchMock);
 
     const dashboard = await fetchDashboard();
 
     expect(dashboard).toEqual(SAMPLE_DASHBOARD);
+    expect(fetchMock).toHaveBeenCalledWith("/api/dashboard");
   });
 
   it("throws with the server error message when the request fails", async () => {
