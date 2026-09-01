@@ -1,6 +1,6 @@
 import { useEffect, useLayoutEffect, useRef } from "react";
-import type { ChatEntry, UseChatResult } from "./use-chat";
-import type { ChatToolEvent } from "./chat";
+import type { UseChatResult } from "./use-chat";
+import type { ChatEntry, ChatToolEvent, MeetingSessionType } from "./chat";
 import "./ChatView.css";
 
 const ROLE_LABELS = { user: "自分", boss: "ボス" } as const;
@@ -45,9 +45,33 @@ function toolNoticeText(tool: ChatToolEvent): string {
     : `ボスがタスクを${action}しました`;
 }
 
+// 明示的な仮定4（Issue #272）: 会の区間を示すのが目的なので、随時チャットは
+// 「会でない区間」として境界の外側になり、専用の文言を持たない。`adhoc` が
+// この Record に無いのは意図的で、`MeetingSessionType` が型で保証している。
+const BOUNDARY_LABELS: Record<MeetingSessionType, Record<"start" | "end", string>> = {
+  morning: { start: "朝会が開始されました", end: "朝会が終了しました" },
+  evening: { start: "夕会が開始されました", end: "夕会が終了しました" },
+};
+
 function ChatEntryItem({ entry }: { entry: ChatEntry }) {
   if (entry.kind === "tool") {
     return <li className="chat-tool-notice">{toolNoticeText(entry.tool)}</li>;
+  }
+  if (entry.kind === "boundary") {
+    // A rule with the label inline: the divider is what makes "どこからどこ
+    // までが会か" readable at a glance when scrolling, so the boundary is
+    // drawn as a separator rather than as another centered notice line
+    // (which would be indistinguishable from a tool notice).
+    return (
+      <li
+        className={`chat-boundary chat-boundary-${entry.event}`}
+        data-session-type={entry.sessionType}
+      >
+        <span className="chat-boundary-label">
+          {BOUNDARY_LABELS[entry.sessionType][entry.event]}
+        </span>
+      </li>
+    );
   }
   return (
     <li className={`chat-message chat-message-${entry.role}`}>

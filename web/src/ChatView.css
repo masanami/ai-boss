@@ -95,6 +95,52 @@
   padding: 0.3rem 0.75rem;
 }
 
+/* 会の境界（Issue #272 判断5）。ツール通知（上）が「中央に浮かぶ小さな札」
+   なのに対し、境界は会話を左右いっぱいに断ち切る罫線として描く — スクロール
+   中に「どこからどこまでが会か」を一目で追えるようにするため、両者は意図的に
+   別の見え方にしている。ラベルは罫線に食い込ませて置く。 */
+.chat-boundary {
+  align-self: stretch;
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  margin: 0.35rem 0;
+  font-size: 0.78rem;
+  letter-spacing: 0.04em;
+  color: var(--color-accent);
+}
+
+.chat-boundary::before,
+.chat-boundary::after {
+  content: "";
+  flex: 1;
+  height: 1px;
+  background: linear-gradient(
+    to right,
+    transparent,
+    var(--color-accent) 35%,
+    var(--color-accent) 65%,
+    transparent
+  );
+  opacity: 0.5;
+}
+
+.chat-boundary-label {
+  white-space: nowrap;
+}
+
+/* 終了はトーンを落とす: 開始は「これから始まる」ことの合図で、終了は
+   既に閉じた区間の目印にすぎないため、同じ強さで主張させない。 */
+.chat-boundary-end {
+  color: var(--color-text-muted);
+}
+
+.chat-boundary-end::before,
+.chat-boundary-end::after {
+  background: var(--color-border);
+  opacity: 1;
+}
+
 .chat-error {
   margin: 0;
   color: var(--color-danger);

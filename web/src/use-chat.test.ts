@@ -6,9 +6,14 @@ import type { ChatMessage, ChatSession } from "./chat";
 // Local-time anchors: `isSameLocalDay` compares local dates, so all
 // "today"/"yesterday" session timestamps are derived from local-date
 // constructors (not fixed UTC strings) to stay TZ-independent.
+// Message timestamps are local-derived too (not UTC literals): Issue #272
+// merges several sessions into one chronological timeline, so the *relative*
+// order of session boundaries and messages is now asserted — mixing
+// local-derived session times with UTC-literal message times would make that
+// order depend on the runner's timezone (ADR 0007 決定5).
 const LOCAL_NOW = new Date(2026, 6, 5, 12, 0, 0); // 2026-07-05 12:00 local
-const localIso = (day: number, hour: number) =>
-  new Date(2026, 6, day, hour, 0, 0).toISOString();
+const localIso = (day: number, hour: number, minute = 0, second = 0) =>
+  new Date(2026, 6, day, hour, minute, second).toISOString();
 
 const SESSION: ChatSession = {
   id: 1,
@@ -24,14 +29,14 @@ const HISTORY: ChatMessage[] = [
     session_id: 1,
     role: "user",
     content: "おはようございます",
-    created_at: "2026-07-05T09:00:00.000Z",
+    created_at: localIso(5, 9),
   },
   {
     id: 2,
     session_id: 1,
     role: "boss",
     content: "今日は A 案件からだ。",
-    created_at: "2026-07-05T09:00:05.000Z",
+    created_at: localIso(5, 9, 0, 5),
   },
 ];
 
@@ -40,7 +45,7 @@ const BOSS_REPLY: ChatMessage = {
   session_id: 1,
   role: "boss",
   content: "その相談なら B 案件を後回しにしろ。",
-  created_at: "2026-07-05T10:00:00.000Z",
+  created_at: localIso(5, 10),
 };
 
 // Started the local day before the fake "now" set in beforeEach below.
@@ -74,7 +79,7 @@ const MORNING_HISTORY: ChatMessage[] = [
     session_id: 20,
     role: "user",
     content: "今日の予定です",
-    created_at: "2026-07-05T00:05:00.000Z",
+    created_at: localIso(5, 8, 5),
   },
 ];
 
@@ -89,11 +94,82 @@ const MORNING_OPENING_MESSAGE: ChatMessage = {
   session_id: 20,
   role: "boss",
   content: "今日はA案件から片付けろ。",
-  created_at: "2026-07-05T00:00:01.000Z",
+  created_at: localIso(5, 8, 0, 1),
 };
 
 function jsonResponse(body: unknown, status = 200) {
   return { ok: true, status, json: () => Promise.resolve(body) };
+}
+
+interface RoutedFetchState {
+  /** Sessions returned by `GET /api/sessions`. Mutated in place by the
+   * create/end routes so later reads observe earlier writes, like the real
+   * server does. */
+  sessions: ChatSession[];
+  /** Messages per session id, keyed for `GET /api/sessions/:id/messages`. */
+  messages?: Record<number, ChatMessage[]>;
+  /** Session returned by `POST /api/sessions` (and appended to `sessions`). */
+  created?: ChatSession;
+  /** SSE response for `POST /api/sessions/:id/messages`. */
+  stream?: unknown;
+}
+
+/**
+ * A `fetch` stub that dispatches on URL + method instead of on call order.
+ *
+ * Issue #272 made the call sequence data-dependent: `loadTimeline` fetches
+ * messages for *every* session in today's view, so the number and order of
+ * requests now varies with the session list. Ordered
+ * `mockResolvedValueOnce` chains encoded the old fixed sequence and broke on
+ * changes that were not actually regressions; routing by URL keeps these
+ * tests pinned to the observable contract (what is requested, and what the
+ * hook does with the answers) rather than to an incidental ordering.
+ */
+function routedFetch(state: RoutedFetchState) {
+  // Later than every fixture timestamp (and than LOCAL_NOW), so an ended
+  // session's closing boundary always lands at the end of the timeline.
+  const endedAt = localIso(5, 13);
+  return vi.fn((url: string, init?: { method?: string }) => {
+    const method = init?.method ?? "GET";
+
+    if (url === "/api/sessions" && method === "POST") {
+      const created = state.created;
+      if (created === undefined) {
+        throw new Error(`unexpected POST /api/sessions (no "created" configured)`);
+      }
+      state.sessions = [...state.sessions, created];
+      return Promise.resolve(jsonResponse(created, 201));
+    }
+    if (url === "/api/sessions") {
+      return Promise.resolve(jsonResponse(state.sessions));
+    }
+
+    const endMatch = /^\/api\/sessions\/(\d+)\/end$/.exec(url);
+    if (endMatch) {
+      const id = Number(endMatch[1]);
+      const ended = { ...state.sessions.find((s) => s.id === id)!, ended_at: endedAt };
+      state.sessions = state.sessions.map((s) => (s.id === id ? ended : s));
+      return Promise.resolve(jsonResponse(ended));
+    }
+
+    const messagesMatch = /^\/api\/sessions\/(\d+)\/messages$/.exec(url);
+    if (messagesMatch) {
+      if (method === "POST") {
+        return Promise.resolve(state.stream);
+      }
+      return Promise.resolve(
+        jsonResponse(state.messages?.[Number(messagesMatch[1])] ?? []),
+      );
+    }
+
+    throw new Error(`unexpected fetch: ${method} ${url}`);
+  });
+}
+
+/** The URLs requested, in order — for asserting *what* was fetched without
+ * pinning the exact interleaving. */
+function requestedUrls(fetchMock: ReturnType<typeof routedFetch>): string[] {
+  return fetchMock.mock.calls.map(([url]) => url);
 }
 
 function sseResponse(chunks: string[]) {
@@ -198,15 +274,10 @@ describe("useChat draft", () => {
   });
 
   it("keeps the draft across startSession/endSession session switches, which actually happen (GAP-19)", async () => {
-    const fetchMock = vi
-      .fn()
-      .mockResolvedValueOnce(jsonResponse([])) // mount: no adhoc session
-      .mockResolvedValueOnce(jsonResponse([])) // startSession: no morning session today
-      .mockResolvedValueOnce(jsonResponse(MORNING_SESSION_TODAY, 201)) // create
-      .mockResolvedValueOnce(jsonResponse([])) // Issue #271: opening-line re-fetch (none generated)
-      .mockResolvedValueOnce(
-        jsonResponse({ ...MORNING_SESSION_TODAY, ended_at: localIso(5, 9) }),
-      ); // end
+    const fetchMock = routedFetch({
+      sessions: [],
+      created: MORNING_SESSION_TODAY,
+    });
     vi.stubGlobal("fetch", fetchMock);
 
     const { result } = renderHook(() => useChat());
@@ -611,35 +682,45 @@ describe("useChat", () => {
 });
 
 describe("useChat mount restoration (Issue #93: surviving a tab switch/reload)", () => {
-  it("restores today's open morning session as active on mount, keeping today's adhoc conversation as the return-to snapshot", async () => {
-    const fetchMock = vi
-      .fn()
-      .mockResolvedValueOnce(jsonResponse([MORNING_SESSION_TODAY, SESSION])) // fetchSessions()
-      .mockResolvedValueOnce(jsonResponse(MORNING_HISTORY)) // active (morning) messages
-      .mockResolvedValueOnce(jsonResponse(HISTORY)); // today's adhoc messages (snapshot)
+  it("restores today's open morning session as active on mount and shows the whole day's timeline", async () => {
+    const fetchMock = routedFetch({
+      sessions: [MORNING_SESSION_TODAY, SESSION],
+      messages: { 20: MORNING_HISTORY, 1: HISTORY },
+    });
     vi.stubGlobal("fetch", fetchMock);
 
     const { result } = renderHook(() => useChat());
 
     await waitFor(() => expect(result.current.status).toBe("ready"));
     expect(result.current.sessionType).toBe("morning");
+    // Issue #272: both sessions' messages are shown in one chronological
+    // timeline (the 08:00 morning meeting, then the 09:00 adhoc chat), with
+    // the meeting's start boundary in place — the adhoc conversation is no
+    // longer swapped out (AC-9/AC-12).
     expect(result.current.entries).toEqual([
+      {
+        kind: "boundary",
+        key: "boundary-20-start",
+        sessionType: "morning",
+        event: "start",
+      },
       { kind: "message", key: "message-30", role: "user", content: "今日の予定です" },
+      { kind: "message", key: "message-1", role: "user", content: "おはようございます" },
+      { kind: "message", key: "message-2", role: "boss", content: "今日は A 案件からだ。" },
     ]);
-    expect(fetchMock).toHaveBeenNthCalledWith(1, "/api/sessions");
-    expect(fetchMock).toHaveBeenNthCalledWith(2, "/api/sessions/20/messages");
-    expect(fetchMock).toHaveBeenNthCalledWith(3, "/api/sessions/1/messages");
+    expect(requestedUrls(fetchMock)).toEqual([
+      "/api/sessions",
+      "/api/sessions/20/messages",
+      "/api/sessions/1/messages",
+    ]);
   });
 
-  it("returns to today's adhoc conversation when ending a meeting that was restored on mount", async () => {
-    const fetchMock = vi
-      .fn()
-      .mockResolvedValueOnce(jsonResponse([MORNING_SESSION_TODAY, SESSION]))
-      .mockResolvedValueOnce(jsonResponse(MORNING_HISTORY))
-      .mockResolvedValueOnce(jsonResponse(HISTORY))
-      .mockResolvedValueOnce(
-        jsonResponse({ ...MORNING_SESSION_TODAY, ended_at: "2026-07-05T01:00:00.000Z" }),
-      ); // end
+  // AC-10
+  it("keeps the meeting's messages on screen when ending a meeting that was restored on mount", async () => {
+    const fetchMock = routedFetch({
+      sessions: [MORNING_SESSION_TODAY, SESSION],
+      messages: { 20: MORNING_HISTORY, 1: HISTORY },
+    });
     vi.stubGlobal("fetch", fetchMock);
 
     const { result } = renderHook(() => useChat());
@@ -650,22 +731,35 @@ describe("useChat mount restoration (Issue #93: surviving a tab switch/reload)",
       await result.current.endSession();
     });
 
-    expect(fetchMock).toHaveBeenNthCalledWith(4, "/api/sessions/20/end", {
-      method: "POST",
-    });
+    expect(requestedUrls(fetchMock)).toContain("/api/sessions/20/end");
     expect(result.current.sessionType).toBe("adhoc");
+    // The morning conversation stays, now closed off by an end boundary
+    // (routedFetch ends sessions at 13:00 local, after every fixture).
     expect(result.current.entries).toEqual([
+      {
+        kind: "boundary",
+        key: "boundary-20-start",
+        sessionType: "morning",
+        event: "start",
+      },
+      { kind: "message", key: "message-30", role: "user", content: "今日の予定です" },
       { kind: "message", key: "message-1", role: "user", content: "おはようございます" },
       { kind: "message", key: "message-2", role: "boss", content: "今日は A 案件からだ。" },
+      {
+        kind: "boundary",
+        key: "boundary-20-end",
+        sessionType: "morning",
+        event: "end",
+      },
     ]);
   });
 
-  it("falls back to restoring today's adhoc session when today's morning session is already ended", async () => {
-    const endedMorning = { ...MORNING_SESSION_TODAY, ended_at: "2026-07-05T09:00:00.000Z" };
-    const fetchMock = vi
-      .fn()
-      .mockResolvedValueOnce(jsonResponse([endedMorning, SESSION]))
-      .mockResolvedValueOnce(jsonResponse(HISTORY));
+  it("treats an already-ended morning session as inactive but still shows it in the timeline", async () => {
+    const endedMorning = { ...MORNING_SESSION_TODAY, ended_at: localIso(5, 8, 30) };
+    const fetchMock = routedFetch({
+      sessions: [endedMorning, SESSION],
+      messages: { 20: MORNING_HISTORY, 1: HISTORY },
+    });
     vi.stubGlobal("fetch", fetchMock);
 
     const { result } = renderHook(() => useChat());
@@ -673,10 +767,100 @@ describe("useChat mount restoration (Issue #93: surviving a tab switch/reload)",
     await waitFor(() => expect(result.current.status).toBe("ready"));
     expect(result.current.sessionType).toBe("adhoc");
     expect(result.current.entries).toEqual([
+      {
+        kind: "boundary",
+        key: "boundary-20-start",
+        sessionType: "morning",
+        event: "start",
+      },
+      { kind: "message", key: "message-30", role: "user", content: "今日の予定です" },
+      {
+        kind: "boundary",
+        key: "boundary-20-end",
+        sessionType: "morning",
+        event: "end",
+      },
       { kind: "message", key: "message-1", role: "user", content: "おはようございます" },
       { kind: "message", key: "message-2", role: "boss", content: "今日は A 案件からだ。" },
     ]);
-    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  // AC-13: ADR 0007 決定4 で日跨ぎの夕会は開始日に帰属するため、23:50 開始の
+  // 夕会は 00:30 時点で「当日」から外れる。補正が無いと、会を終了した瞬間に
+  // その会の会話が画面から消える。
+  it("keeps a meeting that started before midnight on screen when it is ended after the day rolls over", async () => {
+    const crossMidnightEvening: ChatSession = {
+      id: 40,
+      type: "evening",
+      started_at: localIso(4, 23, 50),
+      ended_at: null,
+      summary: null,
+    };
+    const eveningHistory: ChatMessage[] = [
+      {
+        id: 50,
+        session_id: 40,
+        role: "user",
+        content: "今日の進捗です",
+        created_at: localIso(4, 23, 55),
+      },
+    ];
+    // Mount while it is still the meeting's own local day...
+    vi.setSystemTime(new Date(2026, 6, 4, 23, 55, 0));
+    const fetchMock = routedFetch({
+      sessions: [crossMidnightEvening],
+      messages: { 40: eveningHistory },
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const { result } = renderHook(() => useChat());
+    await waitFor(() => expect(result.current.status).toBe("ready"));
+    expect(result.current.sessionType).toBe("evening");
+
+    // ...then the clock rolls past midnight before the user ends the meeting.
+    vi.setSystemTime(new Date(2026, 6, 5, 0, 30, 0));
+    await act(async () => {
+      await result.current.endSession();
+    });
+
+    expect(result.current.sessionType).toBe("adhoc");
+    expect(result.current.entries).toEqual([
+      {
+        kind: "boundary",
+        key: "boundary-40-start",
+        sessionType: "evening",
+        event: "start",
+      },
+      { kind: "message", key: "message-50", role: "user", content: "今日の進捗です" },
+      {
+        kind: "boundary",
+        key: "boundary-40-end",
+        sessionType: "evening",
+        event: "end",
+      },
+    ]);
+  });
+
+  // AC-14
+  it("excludes a previous day's ended session from the timeline", async () => {
+    const yesterdayEnded: ChatSession = {
+      ...MORNING_SESSION_YESTERDAY,
+      ended_at: localIso(4, 9),
+    };
+    const fetchMock = routedFetch({
+      sessions: [yesterdayEnded, SESSION],
+      messages: { 19: MORNING_HISTORY, 1: HISTORY },
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const { result } = renderHook(() => useChat());
+
+    await waitFor(() => expect(result.current.status).toBe("ready"));
+    expect(requestedUrls(fetchMock)).not.toContain("/api/sessions/19/messages");
+    expect(result.current.entries).toEqual([
+      { kind: "message", key: "message-1", role: "user", content: "おはようございます" },
+      { kind: "message", key: "message-2", role: "boss", content: "今日は A 案件からだ。" },
+    ]);
   });
 
   it("does not restore a morning session from a previous day on mount", async () => {
@@ -696,14 +880,11 @@ describe("useChat mount restoration (Issue #93: surviving a tab switch/reload)",
 
 describe("useChat session switching", () => {
   it("creates a new morning session when none exists for today", async () => {
-    const fetchMock = vi
-      .fn()
-      .mockResolvedValueOnce(jsonResponse([])) // mount: no adhoc session
-      .mockResolvedValueOnce(jsonResponse([])) // startSession: no morning session today
-      .mockResolvedValueOnce(jsonResponse(MORNING_SESSION_TODAY, 201)) // create
-      // Issue #271: the client re-fetches the new session's messages to pick
-      // up any meeting-opening line POST /api/sessions may have generated.
-      .mockResolvedValueOnce(jsonResponse([MORNING_OPENING_MESSAGE]));
+    const fetchMock = routedFetch({
+      sessions: [],
+      created: MORNING_SESSION_TODAY,
+      messages: { 20: [MORNING_OPENING_MESSAGE] },
+    });
     vi.stubGlobal("fetch", fetchMock);
 
     const { result } = renderHook(() => useChat());
@@ -713,17 +894,22 @@ describe("useChat session switching", () => {
       await result.current.startSession("morning");
     });
 
-    expect(fetchMock).toHaveBeenNthCalledWith(2, "/api/sessions?type=morning");
-    expect(fetchMock).toHaveBeenNthCalledWith(3, "/api/sessions", {
+    expect(fetchMock).toHaveBeenCalledWith("/api/sessions", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ type: "morning" }),
     });
-    expect(fetchMock).toHaveBeenNthCalledWith(4, "/api/sessions/20/messages");
+    expect(requestedUrls(fetchMock)).toContain("/api/sessions/20/messages");
     expect(result.current.sessionType).toBe("morning");
-    // The generated opening line is visible in the timeline without the
-    // user having to send anything first (AC-1/AC-2).
+    // The Issue #271 opening line is visible without the user having to send
+    // anything first (AC-1/AC-2), below the meeting's start boundary.
     expect(result.current.entries).toEqual([
+      {
+        kind: "boundary",
+        key: "boundary-20-start",
+        sessionType: "morning",
+        event: "start",
+      },
       {
         kind: "message",
         key: "message-31",
@@ -735,12 +921,11 @@ describe("useChat session switching", () => {
     expect(result.current.error).toBeNull();
   });
 
-  it("restores today's existing morning session instead of creating a new one", async () => {
-    const fetchMock = vi
-      .fn()
-      .mockResolvedValueOnce(jsonResponse([])) // mount: no adhoc session
-      .mockResolvedValueOnce(jsonResponse([MORNING_SESSION_TODAY]))
-      .mockResolvedValueOnce(jsonResponse(MORNING_HISTORY));
+  it("resumes today's existing morning session instead of creating a new one", async () => {
+    const fetchMock = routedFetch({
+      sessions: [MORNING_SESSION_TODAY],
+      messages: { 20: MORNING_HISTORY },
+    });
     vi.stubGlobal("fetch", fetchMock);
 
     const { result } = renderHook(() => useChat());
@@ -750,24 +935,27 @@ describe("useChat session switching", () => {
       await result.current.startSession("morning");
     });
 
-    expect(fetchMock).toHaveBeenCalledTimes(3);
-    expect(fetchMock).toHaveBeenNthCalledWith(
-      3,
-      "/api/sessions/20/messages",
+    expect(fetchMock).not.toHaveBeenCalledWith(
+      "/api/sessions",
+      expect.objectContaining({ method: "POST" }),
     );
     expect(result.current.sessionType).toBe("morning");
     expect(result.current.entries).toEqual([
+      {
+        kind: "boundary",
+        key: "boundary-20-start",
+        sessionType: "morning",
+        event: "start",
+      },
       { kind: "message", key: "message-30", role: "user", content: "今日の予定です" },
     ]);
   });
 
   it("ignores a morning session from a previous day and creates a new one", async () => {
-    const fetchMock = vi
-      .fn()
-      .mockResolvedValueOnce(jsonResponse([]))
-      .mockResolvedValueOnce(jsonResponse([MORNING_SESSION_YESTERDAY]))
-      .mockResolvedValueOnce(jsonResponse(MORNING_SESSION_TODAY, 201))
-      .mockResolvedValueOnce(jsonResponse([])); // Issue #271: opening-line re-fetch (none generated)
+    const fetchMock = routedFetch({
+      sessions: [MORNING_SESSION_YESTERDAY],
+      created: MORNING_SESSION_TODAY,
+    });
     vi.stubGlobal("fetch", fetchMock);
 
     const { result } = renderHook(() => useChat());
@@ -777,12 +965,21 @@ describe("useChat session switching", () => {
       await result.current.startSession("morning");
     });
 
-    expect(fetchMock).toHaveBeenNthCalledWith(3, "/api/sessions", {
+    expect(fetchMock).toHaveBeenCalledWith("/api/sessions", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ type: "morning" }),
     });
-    expect(result.current.entries).toEqual([]);
+    // Yesterday's session is not merged in (AC-14); only the new meeting's
+    // start boundary shows.
+    expect(result.current.entries).toEqual([
+      {
+        kind: "boundary",
+        key: "boundary-20-start",
+        sessionType: "morning",
+        event: "start",
+      },
+    ]);
   });
 
   it("surfaces an error when starting a session fails", async () => {
@@ -840,15 +1037,28 @@ describe("useChat session switching", () => {
     errorSpy.mockRestore();
   });
 
-  it("ends the current session and restores the adhoc conversation from before switching", async () => {
-    const fetchMock = vi
-      .fn()
-      .mockResolvedValueOnce(jsonResponse([SESSION])) // mount: restore today's adhoc
-      .mockResolvedValueOnce(jsonResponse(HISTORY))
-      .mockResolvedValueOnce(jsonResponse([])) // startSession: no morning session today
-      .mockResolvedValueOnce(jsonResponse(MORNING_SESSION_TODAY, 201)) // create morning
-      .mockResolvedValueOnce(jsonResponse([])) // Issue #271: opening-line re-fetch (none generated)
-      .mockResolvedValueOnce(jsonResponse({ ...MORNING_SESSION_TODAY, ended_at: "2026-07-05T01:00:00.000Z" })); // end
+  // AC-9/AC-10: 会の開始でも終了でも、直前までの会話が画面から消えない。
+  it("keeps the adhoc conversation on screen across starting and ending a meeting", async () => {
+    // A meeting started now, i.e. after the 09:00 adhoc conversation — unlike
+    // the shared MORNING_SESSION_TODAY fixture, which is anchored at 08:00.
+    const startedNow: ChatSession = {
+      ...MORNING_SESSION_TODAY,
+      started_at: localIso(5, 12),
+    };
+    const meetingHistory: ChatMessage[] = [
+      {
+        id: 30,
+        session_id: 20,
+        role: "user",
+        content: "今日の予定です",
+        created_at: localIso(5, 12, 1),
+      },
+    ];
+    const fetchMock = routedFetch({
+      sessions: [SESSION],
+      created: startedNow,
+      messages: { 1: HISTORY, 20: meetingHistory },
+    });
     vi.stubGlobal("fetch", fetchMock);
 
     const { result } = renderHook(() => useChat());
@@ -858,33 +1068,52 @@ describe("useChat session switching", () => {
       await result.current.startSession("morning");
     });
     expect(result.current.sessionType).toBe("morning");
+    // AC-9: the adhoc history is still there, above the start boundary.
+    expect(result.current.entries.slice(0, 3)).toEqual([
+      { kind: "message", key: "message-1", role: "user", content: "おはようございます" },
+      { kind: "message", key: "message-2", role: "boss", content: "今日は A 案件からだ。" },
+      {
+        kind: "boundary",
+        key: "boundary-20-start",
+        sessionType: "morning",
+        event: "start",
+      },
+    ]);
 
     await act(async () => {
       await result.current.endSession();
     });
 
-    expect(fetchMock).toHaveBeenNthCalledWith(6, "/api/sessions/20/end", {
-      method: "POST",
-    });
+    expect(requestedUrls(fetchMock)).toContain("/api/sessions/20/end");
     expect(result.current.sessionType).toBe("adhoc");
+    // AC-10: the meeting's own messages stay too, now bracketed by boundaries.
     expect(result.current.entries).toEqual([
       { kind: "message", key: "message-1", role: "user", content: "おはようございます" },
       { kind: "message", key: "message-2", role: "boss", content: "今日は A 案件からだ。" },
+      {
+        kind: "boundary",
+        key: "boundary-20-start",
+        sessionType: "morning",
+        event: "start",
+      },
+      { kind: "message", key: "message-30", role: "user", content: "今日の予定です" },
+      {
+        kind: "boundary",
+        key: "boundary-20-end",
+        sessionType: "morning",
+        event: "end",
+      },
     ]);
   });
 
-  it("reuses the restored adhoc session id after ending a morning session", async () => {
-    const fetchMock = vi
-      .fn()
-      .mockResolvedValueOnce(jsonResponse([SESSION])) // mount: restore today's adhoc (id 1)
-      .mockResolvedValueOnce(jsonResponse(HISTORY))
-      .mockResolvedValueOnce(jsonResponse([]))
-      .mockResolvedValueOnce(jsonResponse(MORNING_SESSION_TODAY, 201))
-      .mockResolvedValueOnce(jsonResponse([])) // Issue #271: opening-line re-fetch (none generated)
-      .mockResolvedValueOnce(jsonResponse({ ...MORNING_SESSION_TODAY, ended_at: "2026-07-05T01:00:00.000Z" }))
-      .mockResolvedValueOnce(
-        sseResponse([`event: done\ndata: ${JSON.stringify(BOSS_REPLY)}\n\n`]),
-      );
+  // 判断8: 表示は統一されても、送信先セッションの規則は変えない。
+  it("sends to the adhoc session again after ending a morning session", async () => {
+    const fetchMock = routedFetch({
+      sessions: [SESSION],
+      created: MORNING_SESSION_TODAY,
+      messages: { 1: HISTORY },
+      stream: sseResponse([`event: done\ndata: ${JSON.stringify(BOSS_REPLY)}\n\n`]),
+    });
     vi.stubGlobal("fetch", fetchMock);
 
     const { result } = renderHook(() => useChat());
@@ -900,21 +1129,17 @@ describe("useChat session switching", () => {
       await result.current.send("続きの相談です");
     });
 
-    expect(fetchMock).toHaveBeenNthCalledWith(
-      7,
+    expect(fetchMock).toHaveBeenCalledWith(
       "/api/sessions/1/messages",
       expect.objectContaining({ method: "POST" }),
     );
   });
 
-  it("returns to an empty adhoc conversation when there was none before switching", async () => {
-    const fetchMock = vi
-      .fn()
-      .mockResolvedValueOnce(jsonResponse([])) // mount: no adhoc session
-      .mockResolvedValueOnce(jsonResponse([]))
-      .mockResolvedValueOnce(jsonResponse(MORNING_SESSION_TODAY, 201))
-      .mockResolvedValueOnce(jsonResponse([])) // Issue #271: opening-line re-fetch (none generated)
-      .mockResolvedValueOnce(jsonResponse({ ...MORNING_SESSION_TODAY, ended_at: "2026-07-05T01:00:00.000Z" }));
+  it("has no adhoc session to send to when there was none before switching", async () => {
+    const fetchMock = routedFetch({
+      sessions: [],
+      created: MORNING_SESSION_TODAY,
+    });
     vi.stubGlobal("fetch", fetchMock);
 
     const { result } = renderHook(() => useChat());
@@ -928,7 +1153,22 @@ describe("useChat session switching", () => {
     });
 
     expect(result.current.sessionType).toBe("adhoc");
-    expect(result.current.entries).toEqual([]);
+    // The meeting itself is still on screen (AC-10) — what is empty is the
+    // adhoc conversation, which `send` will create lazily.
+    expect(result.current.entries).toEqual([
+      {
+        kind: "boundary",
+        key: "boundary-20-start",
+        sessionType: "morning",
+        event: "start",
+      },
+      {
+        kind: "boundary",
+        key: "boundary-20-end",
+        sessionType: "morning",
+        event: "end",
+      },
+    ]);
   });
 
   it("surfaces an error when ending a session fails", async () => {
