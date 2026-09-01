@@ -26,18 +26,17 @@ describe("fetchSettings", () => {
   });
 
   it("returns the parsed settings when the request succeeds", async () => {
-    vi.stubGlobal(
-      "fetch",
-      vi.fn().mockResolvedValue({
-        ok: true,
-        status: 200,
-        json: () => Promise.resolve(SAMPLE_SETTINGS),
-      }),
-    );
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      json: () => Promise.resolve(SAMPLE_SETTINGS),
+    });
+    vi.stubGlobal("fetch", fetchMock);
 
     const settings = await fetchSettings();
 
     expect(settings).toEqual(SAMPLE_SETTINGS);
+    expect(fetchMock).toHaveBeenCalledWith("/api/settings");
   });
 
   it("throws with the server error message when the request fails", async () => {
