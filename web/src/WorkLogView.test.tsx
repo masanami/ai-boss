@@ -168,6 +168,30 @@ describe("WorkLogView", () => {
     expect(selectSpy).toHaveBeenCalled();
   });
 
+  it("retries the copy on a second click of the copy button after a failure", async () => {
+    vi.stubGlobal("fetch", routedFetchMock({ [TODAY]: TODAY_LOG }));
+    const writeText = vi
+      .fn()
+      .mockRejectedValueOnce(new Error("denied"))
+      .mockResolvedValueOnce(undefined);
+    Object.defineProperty(navigator, "clipboard", {
+      value: { writeText },
+      configurable: true,
+    });
+
+    render(<WorkLogView />);
+    await waitFor(() => expect(currentLogContent()).toBe(TODAY_LOG.content));
+
+    fireEvent.click(screen.getByRole("button", { name: "コピー" }));
+    await waitFor(() => expect(screen.getByRole("alert")).toBeInTheDocument());
+
+    fireEvent.click(screen.getByRole("button", { name: "コピー" }));
+    await waitFor(() =>
+      expect(screen.getByRole("status")).toHaveTextContent("コピーしました"),
+    );
+    expect(writeText).toHaveBeenCalledTimes(2);
+  });
+
   it("disables the copy button until the work log is loaded", () => {
     vi.stubGlobal(
       "fetch",
