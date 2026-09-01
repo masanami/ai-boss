@@ -2,6 +2,7 @@
   "permissions": {
     "allow": [
       "Bash(claude-harness-run:*)",
+      "Bash(cd:*)",
       "Bash(npm:*)",
       "Bash(npx vitest:*)",
       "Bash(npx tsc:*)",
