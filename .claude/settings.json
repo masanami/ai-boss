@@ -1,7 +1,6 @@
 {
   "permissions": {
     "allow": [
-      "Bash(bash:*)",
       "Bash(cd:*)",
       "Bash(claude-harness-run:*)",
       "Bash(gh api:*)",
