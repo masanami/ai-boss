@@ -98,6 +98,36 @@ function sseResponse(chunks: string[]) {
   };
 }
 
+/**
+ * Like `sseResponse`, but the caller controls exactly when each chunk is
+ * enqueued via the returned `push`/`close`, instead of `sseResponse`
+ * enqueueing all of them synchronously inside `start()`. Needed to observe a
+ * genuine mid-stream moment (GAP-25): chunks enqueued synchronously all
+ * resolve through a chain of microtasks with no real gap in between, so by
+ * the time any macrotask-based check (e.g. `waitFor`/`findBy*`) runs, the
+ * whole stream has already fully drained to its final state. A controllable
+ * stream leaves `reader.read()` genuinely pending between pushes, giving a
+ * real point in time at which the mid-stream state can actually be observed.
+ */
+function controllableSseStream() {
+  let streamController: ReadableStreamDefaultController<Uint8Array> | null = null;
+  const encoder = new TextEncoder();
+  const body = new ReadableStream<Uint8Array>({
+    start(controller) {
+      streamController = controller;
+    },
+  });
+  return {
+    response: { ok: true, status: 200, body },
+    push(chunk: string) {
+      streamController?.enqueue(encoder.encode(chunk));
+    },
+    close() {
+      streamController?.close();
+    },
+  };
+}
+
 beforeEach(() => {
   // Only `Date` is faked (not timers), so React Testing Library's `waitFor`
   // (which polls via real `setTimeout`) keeps working. "now" is fixed to the
@@ -112,14 +142,24 @@ afterEach(() => {
 });
 
 // The hook's own state contract for `draft`/`setDraft` (Issue #153, same
-// pattern as the rest of `UseChatResult`). This does not exercise the
-// unmount/remount invariant the ticket is actually about — a `renderHook`
-// hook instance never unmounts on its own here, so that survives-a-tab-switch
-// behaviour is covered where it can actually regress: AppLayout.test.tsx's
-// real conditional-rendering integration test ("keeps the chat draft across
-// a chat -> tasks -> chat round trip"). ChatView.test.tsx only covers that
-// ChatView reads/writes `chatState.draft`/`setDraft` (wiring), not the
-// unmount/remount survival itself.
+// pattern as the rest of `UseChatResult`), including that the value survives
+// the hook's own startSession/endSession session switches (GAP-19).
+//
+// This deliberately does NOT attempt to reproduce "the consuming component
+// unmounts and remounts" at the hook level. An earlier version of this test
+// rendered a small hand-rolled harness (a parent holding `useChat()` plus a
+// child, toggled on/off, that merely displayed `chat.draft`) and asserted
+// the draft survived the child's unmount/remount — but that assertion could
+// never fail: `draft` lives in the *parent's* `useState`, so no `useChat`
+// implementation could lose it just because an unrelated child unmounted.
+// That harness was a tautological test (self-review finding) and was
+// removed. The real "draft survives leaving/revisiting the chat tab"
+// regression test lives in AppLayout.test.tsx's real conditional-rendering
+// integration test instead ("keeps the chat draft across a chat -> tasks ->
+// chat round trip"), which actually mounts/unmounts `ChatView` itself.
+// ChatView.test.tsx only covers that ChatView reads/writes
+// `chatState.draft`/`setDraft` (wiring), not the unmount/remount survival
+// itself.
 describe("useChat draft", () => {
   it("initializes draft as an empty string", async () => {
     vi.stubGlobal("fetch", vi.fn().mockResolvedValueOnce(jsonResponse([])));
@@ -140,6 +180,41 @@ describe("useChat draft", () => {
       result.current.setDraft("書きかけの相談");
     });
 
+    expect(result.current.draft).toBe("書きかけの相談");
+  });
+
+  it("keeps the draft across startSession/endSession session switches, which actually happen (GAP-19)", async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(jsonResponse([])) // mount: no adhoc session
+      .mockResolvedValueOnce(jsonResponse([])) // startSession: no morning session today
+      .mockResolvedValueOnce(jsonResponse(MORNING_SESSION_TODAY, 201)) // create
+      .mockResolvedValueOnce(
+        jsonResponse({ ...MORNING_SESSION_TODAY, ended_at: localIso(5, 9) }),
+      ); // end
+    vi.stubGlobal("fetch", fetchMock);
+
+    const { result } = renderHook(() => useChat());
+    await waitFor(() => expect(result.current.status).toBe("ready"));
+
+    act(() => {
+      result.current.setDraft("書きかけの相談");
+    });
+
+    await act(async () => {
+      await result.current.startSession("morning");
+    });
+    // Asserting sessionType alongside draft proves the switch actually
+    // happened (a startSession/endSession that regressed into an early-return
+    // no-op would otherwise leave draft untouched and this test green without
+    // ever exercising the switch it is named for).
+    expect(result.current.sessionType).toBe("morning");
+    expect(result.current.draft).toBe("書きかけの相談");
+
+    await act(async () => {
+      await result.current.endSession();
+    });
+    expect(result.current.sessionType).toBe("adhoc");
     expect(result.current.draft).toBe("書きかけの相談");
   });
 });
@@ -215,6 +290,53 @@ describe("useChat", () => {
     expect(result.current.sending).toBe(false);
     expect(result.current.streamingText).toBe("");
     expect(result.current.error).toBeNull();
+  });
+
+  it("grows streamingText as SSE text deltas arrive, before the reply is complete (GAP-25)", async () => {
+    const stream = controllableSseStream();
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(jsonResponse([SESSION]))
+      .mockResolvedValueOnce(jsonResponse([]))
+      .mockResolvedValueOnce(stream.response);
+    vi.stubGlobal("fetch", fetchMock);
+
+    const { result } = renderHook(() => useChat());
+    await waitFor(() => expect(result.current.status).toBe("ready"));
+
+    let sendPromise: Promise<void> = Promise.resolve();
+    act(() => {
+      sendPromise = result.current.send("進捗を教えて");
+    });
+
+    stream.push('event: text\ndata: {"text":"考え中"}\n\n');
+    await waitFor(() => expect(result.current.streamingText).toBe("考え中"));
+    // The reply has not been appended yet: this is a genuine mid-stream
+    // observation, not the post-completion state.
+    expect(
+      result.current.entries.some(
+        (entry) => entry.kind === "message" && entry.role === "boss",
+      ),
+    ).toBe(false);
+
+    stream.push('event: text\ndata: {"text":"です…"}\n\n');
+    await waitFor(() =>
+      expect(result.current.streamingText).toBe("考え中です…"),
+    );
+
+    stream.push(`event: done\ndata: ${JSON.stringify(BOSS_REPLY)}\n\n`);
+    stream.close();
+    await act(async () => {
+      await sendPromise;
+    });
+
+    expect(result.current.streamingText).toBe("");
+    expect(result.current.entries).toContainEqual({
+      kind: "message",
+      key: "message-3",
+      role: "boss",
+      content: BOSS_REPLY.content,
+    });
   });
 
   it("reuses the restored session on send", async () => {

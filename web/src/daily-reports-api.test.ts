@@ -26,18 +26,17 @@ describe("fetchDailyReportSummaries", () => {
   });
 
   it("returns the parsed summary list when the request succeeds", async () => {
-    vi.stubGlobal(
-      "fetch",
-      vi.fn().mockResolvedValue({
-        ok: true,
-        status: 200,
-        json: () => Promise.resolve([SAMPLE_SUMMARY]),
-      }),
-    );
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      json: () => Promise.resolve([SAMPLE_SUMMARY]),
+    });
+    vi.stubGlobal("fetch", fetchMock);
 
     const summaries = await fetchDailyReportSummaries();
 
     expect(summaries).toEqual([SAMPLE_SUMMARY]);
+    expect(fetchMock).toHaveBeenCalledWith("/api/reports");
   });
 
   it("throws a ReportApiError with the server-provided code on failure", async () => {

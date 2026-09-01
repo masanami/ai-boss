@@ -13,7 +13,13 @@ import type { ChatMessage, ChatSession } from "./chat";
 // The Issue #153 regression test for "draft survives leaving/revisiting the
 // chat tab" lives in AppLayout.test.tsx instead of here: it needs the real
 // AppLayout conditional rendering (not a synthetic stand-in for it) to catch
-// a regression if that wiring ever changes.
+// a regression in that wiring. use-chat.test.ts separately covers the
+// underlying hook-level contract that makes that possible — draft survives
+// the hook's own startSession/endSession session switches (GAP-19) — but
+// does not attempt to reproduce unmounting the consuming component itself: a
+// hand-rolled toggle harness for that turned out to be unable to fail (draft
+// lives in the *parent's* `useState`, so no `useChat` implementation could
+// lose it there) and was removed as tautological (self-review finding).
 function ChatViewHarness() {
   const chatState = useChat();
   return <ChatView chatState={chatState} />;
@@ -77,6 +83,36 @@ function sseResponse(chunks: string[]) {
         controller.close();
       },
     }),
+  };
+}
+
+/**
+ * Like `sseResponse`, but the caller controls exactly when each chunk is
+ * enqueued via the returned `push`/`close`, instead of `sseResponse`
+ * enqueueing all of them synchronously inside `start()`. Needed to observe a
+ * genuine mid-stream moment (GAP-25): chunks enqueued synchronously all
+ * resolve through a chain of microtasks with no real gap in between, so by
+ * the time any macrotask-based check (e.g. `waitFor`/`findBy*`) runs, the
+ * whole stream has already fully drained to its final state. A controllable
+ * stream leaves `reader.read()` genuinely pending between pushes, giving a
+ * real point in time at which the mid-stream state can actually be observed.
+ */
+function controllableSseStream() {
+  let streamController: ReadableStreamDefaultController<Uint8Array> | null = null;
+  const encoder = new TextEncoder();
+  const body = new ReadableStream<Uint8Array>({
+    start(controller) {
+      streamController = controller;
+    },
+  });
+  return {
+    response: { ok: true, status: 200, body },
+    push(chunk: string) {
+      streamController?.enqueue(encoder.encode(chunk));
+    },
+    close() {
+      streamController?.close();
+    },
   };
 }
 
@@ -209,6 +245,46 @@ describe("ChatView", () => {
     );
     expect(screen.getByText("相談があります")).toBeInTheDocument();
     expect(screen.getByLabelText("メッセージ")).toHaveValue("");
+  });
+
+  it("renders the streaming reply as it grows, before the boss's message is appended (GAP-25)", async () => {
+    const stream = controllableSseStream();
+    vi.stubGlobal(
+      "fetch",
+      vi
+        .fn()
+        .mockResolvedValueOnce(jsonResponse([SESSION]))
+        .mockResolvedValueOnce(jsonResponse([]))
+        .mockResolvedValueOnce(stream.response),
+    );
+
+    render(<ChatViewHarness />);
+    await waitFor(() =>
+      expect(screen.getByLabelText("メッセージ")).toBeEnabled(),
+    );
+
+    fireEvent.change(screen.getByLabelText("メッセージ"), {
+      target: { value: "進捗を教えて" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "送信" }));
+
+    stream.push('event: text\ndata: {"text":"考え中"}\n\n');
+    await screen.findByText("考え中");
+    expect(
+      screen.queryByText("B 案件は後回しにしろ。"),
+    ).not.toBeInTheDocument();
+
+    stream.push('event: text\ndata: {"text":"です…"}\n\n');
+    await screen.findByText("考え中です…");
+
+    stream.push(`event: done\ndata: ${JSON.stringify(BOSS_REPLY)}\n\n`);
+    stream.close();
+    await waitFor(() =>
+      expect(screen.getByText("B 案件は後回しにしろ。")).toBeInTheDocument(),
+    );
+    // The streaming bubble must be cleared once the final message lands, or
+    // its last mid-stream text would double up alongside the appended reply.
+    expect(screen.queryByText("考え中です…")).not.toBeInTheDocument();
   });
 
   it("renders the message input as a multi-line textarea", async () => {
@@ -439,7 +515,7 @@ describe("ChatView", () => {
     );
   });
 
-  it("does not claim a task was updated when a read-only tool (e.g. get_activity_log) runs (self-review: get_activity_log previously fell into the create_task/update_task-only notice text)", async () => {
+  it("shows the generic tool-executed notice — not a task-update claim — when a read-only tool (e.g. get_activity_log) runs (GAP-28; self-review: get_activity_log previously fell into the create_task/update_task-only notice text)", async () => {
     const toolEvent = {
       name: "get_activity_log",
       input: { task_id: 5 },
@@ -471,10 +547,50 @@ describe("ChatView", () => {
     fireEvent.click(screen.getByRole("button", { name: "送信" }));
 
     await waitFor(() =>
-      expect(screen.getByText("B 案件は後回しにしろ。")).toBeInTheDocument(),
+      expect(
+        screen.getByText("ボスがツールを実行しました"),
+      ).toBeInTheDocument(),
     );
     expect(screen.queryByText(/タスクを更新しました/)).not.toBeInTheDocument();
     expect(screen.queryByText(/タスクを作成しました/)).not.toBeInTheDocument();
+  });
+
+  it("shows a tool-failure notice when the tool event reports isError (GAP-28)", async () => {
+    const toolEvent = {
+      name: "create_task",
+      input: { title: "資料作成" },
+      result: JSON.stringify({ error: "database is locked" }),
+      isError: true,
+    };
+    vi.stubGlobal(
+      "fetch",
+      vi
+        .fn()
+        .mockResolvedValueOnce(jsonResponse([SESSION]))
+        .mockResolvedValueOnce(jsonResponse([]))
+        .mockResolvedValueOnce(
+          sseResponse([
+            `event: tool\ndata: ${JSON.stringify(toolEvent)}\n\n`,
+            `event: done\ndata: ${JSON.stringify(BOSS_REPLY)}\n\n`,
+          ]),
+        ),
+    );
+
+    render(<ChatViewHarness />);
+    await waitFor(() =>
+      expect(screen.getByLabelText("メッセージ")).toBeEnabled(),
+    );
+
+    fireEvent.change(screen.getByLabelText("メッセージ"), {
+      target: { value: "タスク化して" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "送信" }));
+
+    await waitFor(() =>
+      expect(
+        screen.getByText("ツールの実行に失敗しました（create_task）"),
+      ).toBeInTheDocument(),
+    );
   });
 
   it("shows an alert when the stream reports an error", async () => {

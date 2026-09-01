@@ -27,18 +27,17 @@ describe("fetchDecisions", () => {
   });
 
   it("returns the parsed decision list when the request succeeds", async () => {
-    vi.stubGlobal(
-      "fetch",
-      vi.fn().mockResolvedValue({
-        ok: true,
-        status: 200,
-        json: () => Promise.resolve([SAMPLE_DECISION]),
-      }),
-    );
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      json: () => Promise.resolve([SAMPLE_DECISION]),
+    });
+    vi.stubGlobal("fetch", fetchMock);
 
     const decisions = await fetchDecisions();
 
     expect(decisions).toEqual([SAMPLE_DECISION]);
+    expect(fetchMock).toHaveBeenCalledWith("/api/decisions");
   });
 
   it("throws with the server error message when the request fails", async () => {

@@ -58,18 +58,17 @@ describe("fetchTodayActivity", () => {
   });
 
   it("returns the parsed activity event list when the request succeeds", async () => {
-    vi.stubGlobal(
-      "fetch",
-      vi.fn().mockResolvedValue({
-        ok: true,
-        status: 200,
-        json: () => Promise.resolve([SAMPLE_EVENT]),
-      }),
-    );
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      json: () => Promise.resolve([SAMPLE_EVENT]),
+    });
+    vi.stubGlobal("fetch", fetchMock);
 
     const events = await fetchTodayActivity();
 
     expect(events).toEqual([SAMPLE_EVENT]);
+    expect(fetchMock).toHaveBeenCalledWith("/api/activity/today");
   });
 
   it("throws with the server error message when the request fails", async () => {
