@@ -125,6 +125,82 @@ describe("Dashboard", () => {
     );
   });
 
+  it("resolves the boss's expression from the dashboard context (displeased when escalation overrides a high ratio)", async () => {
+    stubFetchOnce(
+      makeDashboard({
+        progress: { done: 9, total: 10, ratio: 0.9 },
+        eveningSessionHeld: true,
+        todayMaxEscalationLevel: 2,
+      }),
+    );
+
+    render(<Dashboard />);
+
+    await waitFor(() =>
+      expect(screen.getByRole("img", { name: "不機嫌" })).toBeInTheDocument(),
+    );
+  });
+
+  it("resolves the boss's expression from the dashboard context (encouraging when morning session held and ratio is low)", async () => {
+    stubFetchOnce(
+      makeDashboard({
+        progress: { done: 1, total: 10, ratio: 0.1 },
+        morningSessionHeld: true,
+        eveningSessionHeld: false,
+        todayMaxEscalationLevel: 0,
+      }),
+    );
+
+    render(<Dashboard />);
+
+    await waitFor(() =>
+      expect(screen.getByRole("img", { name: "激励" })).toBeInTheDocument(),
+    );
+  });
+
+  it("resolves the boss's expression from the dashboard context (normal when no rule applies)", async () => {
+    stubFetchOnce(makeDashboard());
+
+    render(<Dashboard />);
+
+    await waitFor(() =>
+      expect(screen.getByRole("img", { name: "通常" })).toBeInTheDocument(),
+    );
+  });
+
+  it("resolves the boss's expression from the dashboard context (displeased via the evening-specific rule, proving eveningSessionHeld is wired independently of escalation)", async () => {
+    stubFetchOnce(
+      makeDashboard({
+        progress: { done: 3, total: 10, ratio: 0.3 },
+        eveningSessionHeld: true,
+        todayMaxEscalationLevel: 0,
+      }),
+    );
+
+    render(<Dashboard />);
+
+    await waitFor(() =>
+      expect(screen.getByRole("img", { name: "不機嫌" })).toBeInTheDocument(),
+    );
+  });
+
+  it("resolves the boss's expression from the dashboard context (normal despite a low ratio when the morning session has not been held, proving morningSessionHeld is wired)", async () => {
+    stubFetchOnce(
+      makeDashboard({
+        progress: { done: 1, total: 10, ratio: 0.1 },
+        morningSessionHeld: false,
+        eveningSessionHeld: false,
+        todayMaxEscalationLevel: 0,
+      }),
+    );
+
+    render(<Dashboard />);
+
+    await waitFor(() =>
+      expect(screen.getByRole("img", { name: "通常" })).toBeInTheDocument(),
+    );
+  });
+
   it("does not render the evening evaluation panel when the evening session has not been held", async () => {
     stubFetchOnce(makeDashboard({ eveningSessionHeld: false }));
 
