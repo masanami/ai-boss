@@ -59,9 +59,18 @@ function insertRawDailyReport(
   ).run(date, content, eveningSessionId, createdAt, updatedAt);
 }
 
-const { createClaudeClientMock, requestVerdictMock } = vi.hoisted(() => ({
+const { createClaudeClientMock, requestVerdictMock, createBossMessageMock } = vi.hoisted(() => ({
   createClaudeClientMock: vi.fn(),
   requestVerdictMock: vi.fn(),
+  // Issue #271: `POST /api/sessions` with `type: "evening"` now also
+  // triggers the meeting-opening generator (`createBossMessage`), which this
+  // file never intended to exercise (only `requestVerdict` is mocked below).
+  // Left unmocked, this hits the exact same real-dispatch/real-retry hazard
+  // documented on `generateSessionSummaryMock` below — and worse under this
+  // file's `vi.useFakeTimers()` (no automatic advancement) tests: the retry
+  // loop's backoff `delay()` never resolves, hanging the test outright
+  // rather than merely slowing it down.
+  createBossMessageMock: vi.fn(),
 }));
 
 vi.mock("../llm/claude-client.js", async (importOriginal) => {
@@ -70,6 +79,7 @@ vi.mock("../llm/claude-client.js", async (importOriginal) => {
     ...actual,
     createClaudeClient: createClaudeClientMock,
     requestVerdict: requestVerdictMock,
+    createBossMessage: createBossMessageMock,
   };
 });
 
@@ -111,8 +121,12 @@ describe("reports routes", () => {
     runMigrations(db);
     createClaudeClientMock.mockReset();
     requestVerdictMock.mockReset();
+    createBossMessageMock.mockReset();
     generateSessionSummaryMock.mockReset();
     createClaudeClientMock.mockReturnValue({ backend: "api", client: {} });
+    // Empty content -> meeting-opening's own "text === ''" branch -> its
+    // fixed fallback text is persisted, without touching the retry path.
+    createBossMessageMock.mockResolvedValue({ content: [] });
     requestVerdictMock.mockResolvedValue({
       called: true,
       result: {

@@ -208,6 +208,129 @@ describe("sessions routes", () => {
     });
   });
 
+  describe("POST /api/sessions — meeting opening (Issue #271, docs/features/meeting-start-announcement.md 判断1〜4)", () => {
+    it("AC-1: creates an evening session and persists a generated boss opening message", async () => {
+      const app = createApp(db);
+      createBossMessageMock.mockResolvedValue(fakeTextMessage("今日の進捗を聞かせろ。"));
+
+      const res = await postSession(app, "evening");
+      const session = await readJson<Session>(res);
+
+      expect(res.status).toBe(201);
+      const messages = db
+        .prepare("SELECT * FROM messages WHERE session_id = ?")
+        .all(session.id) as Message[];
+      expect(messages).toHaveLength(1);
+      expect(messages[0]).toMatchObject({
+        role: "boss",
+        content: "今日の進捗を聞かせろ。",
+      });
+    });
+
+    it("AC-2: creates a morning session and persists a generated boss opening message", async () => {
+      const app = createApp(db);
+      createBossMessageMock.mockResolvedValue(fakeTextMessage("今日はA案件から片付けろ。"));
+
+      const res = await postSession(app, "morning");
+      const session = await readJson<Session>(res);
+
+      expect(res.status).toBe(201);
+      const messages = db
+        .prepare("SELECT * FROM messages WHERE session_id = ?")
+        .all(session.id) as Message[];
+      expect(messages).toHaveLength(1);
+      expect(messages[0]).toMatchObject({
+        role: "boss",
+        content: "今日はA案件から片付けろ。",
+      });
+    });
+
+    it("AC-3: does not generate an opening message for an adhoc session", async () => {
+      const app = createApp(db);
+
+      const res = await postSession(app, "adhoc");
+      const session = await readJson<Session>(res);
+
+      expect(res.status).toBe(201);
+      const messages = db
+        .prepare("SELECT * FROM messages WHERE session_id = ?")
+        .all(session.id) as Message[];
+      expect(messages).toHaveLength(0);
+      expect(createClaudeClientMock).not.toHaveBeenCalled();
+    });
+
+    it("AC-4/AC-5: still returns 201 and persists the fixed fallback text when generation fails", async () => {
+      const app = createApp(db);
+      createBossMessageMock.mockRejectedValue(new Error("connection reset with request id xyz"));
+
+      const res = await postSession(app, "evening");
+      const session = await readJson<Session>(res);
+
+      expect(res.status).toBe(201);
+      const messages = db
+        .prepare("SELECT * FROM messages WHERE session_id = ?")
+        .all(session.id) as Message[];
+      expect(messages).toHaveLength(1);
+      expect(messages[0].role).toBe("boss");
+      expect(messages[0].content.length).toBeGreaterThan(0);
+    });
+
+    it("AC-7: does not record a chat_message activity event when generating the opening message", async () => {
+      const app = createApp(db);
+      createBossMessageMock.mockResolvedValue(fakeTextMessage("今日の進捗を聞かせろ。"));
+
+      await postSession(app, "evening");
+
+      const events = db.prepare("SELECT * FROM activity_events").all() as Array<{
+        type: string;
+      }>;
+      expect(events.map((e) => e.type)).not.toContain("chat_message");
+    });
+
+    // AC-6 の純粋関数側（type × messageCount の真理値表）は
+    // meeting-opening.test.ts の shouldGenerateMeetingOpening が担保する。
+    // ここで固定するのは、ユーザーに見える「同じ日の同じ会を再開しても
+    // 開始ひとことが重複しない」というルート層の振る舞いのほう。
+    it("AC-6: re-creating today's evening session is rejected and does not add a second opening message", async () => {
+      const app = createApp(db);
+      vi.useFakeTimers();
+      vi.setSystemTime(new Date(2026, 7, 14, 18, 0));
+      createBossMessageMock.mockResolvedValue(fakeTextMessage("今日の進捗を聞かせろ。"));
+
+      const session = await readJson<Session>(await postSession(app, "evening"));
+      const second = await postSession(app, "evening");
+
+      expect(second.status).toBe(409);
+      const messages = db
+        .prepare("SELECT * FROM messages WHERE session_id = ?")
+        .all(session.id) as Message[];
+      expect(messages).toHaveLength(1);
+      expect(createBossMessageMock).toHaveBeenCalledTimes(1);
+    });
+
+    it("AC-6: a session that already has messages does not get a second opening message", async () => {
+      const app = createApp(db);
+      createBossMessageMock.mockResolvedValue(fakeTextMessage("今日はA案件から片付けろ。"));
+
+      const session = await readJson<Session>(await postSession(app, "morning"));
+      insertMessage(db, {
+        session_id: session.id,
+        role: "user",
+        content: "了解、A案件からやる",
+      });
+      createBossMessageMock.mockClear();
+
+      // 同じ行に対してトリガが再度走っても（クライアントの loadTodaysSession
+      // による再利用に依存せず）生成しないことを、サーバ側のガードで固定する。
+      await postSession(app, "morning");
+
+      const messages = db
+        .prepare("SELECT * FROM messages WHERE session_id = ? AND role = 'boss'")
+        .all(session.id) as Message[];
+      expect(messages).toHaveLength(1);
+    });
+  });
+
   describe("GET /api/sessions", () => {
     it("returns an empty array when no sessions exist", async () => {
       const app = createApp(db);
@@ -501,6 +624,12 @@ describe("sessions routes", () => {
         }),
       );
       insertMessage(db, { session_id: session.id, role: "user", content: "報告します" });
+      // Issue #271: session creation above already invoked createBossMessage
+      // once for the (unconfigured, fallback-triggering) meeting-opening
+      // generation. Clear the call count here so this test's assertion below
+      // only reflects the summary-generation call count it's actually named
+      // for — unrelated to whether the opening line was generated.
+      createBossMessageMock.mockClear();
       createBossMessageMock.mockResolvedValue(fakeTextMessage("最初の要約"));
 
       const first = await readJson<Session>(

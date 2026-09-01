@@ -26,11 +26,38 @@ import type { Message } from "./message.js";
  * handling requirement. */
 const GENERIC_STREAM_ERROR_MESSAGE = "ボスの応答中にエラーが発生しました";
 
+/**
+ * Maps stored messages to the Anthropic `MessageParam` shape, then drops any
+ * leading `assistant` entries (Issue #271 — 機能仕様
+ * docs/features/meeting-start-announcement.md「実装時に必ず対処する波及点」).
+ *
+ * A meeting-opening line (`role: "boss"`, `meeting-opening.ts`) is persisted
+ * with the oldest `created_at` in its session, so once one exists the
+ * conversation's first message is `role: "boss"` -> normalized to
+ * `"assistant"`. The Anthropic Messages API rejects a request whose first
+ * message isn't `role: "user"` ("First message must be `user`"). The
+ * `claude-code` backend never sees this (its `buildClaudeCodePrompt` flattens
+ * the history into a plain transcript instead), so this bug is invisible on
+ * the default backend and only reachable with `LLM_BACKEND=api` — the
+ * regression test on this function's caller side is the only guard against
+ * it silently coming back.
+ *
+ * Drops every *leading* `assistant` entry (not just one), rather than
+ * assuming exactly one meeting-opening message can appear: correct even if
+ * that assumption ever changes, and a no-op whenever the first message is
+ * already `user` (the common case today).
+ */
 function toClaudeMessages(messages: Message[]): Anthropic.MessageParam[] {
-  return messages.map((message) => ({
+  const normalized: Anthropic.MessageParam[] = messages.map((message) => ({
     role: message.role === "boss" ? "assistant" : "user",
     content: message.content,
   }));
+
+  let start = 0;
+  while (start < normalized.length && normalized[start].role === "assistant") {
+    start += 1;
+  }
+  return normalized.slice(start);
 }
 
 /**

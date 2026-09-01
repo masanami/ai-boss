@@ -646,7 +646,8 @@ describe("ChatView", () => {
         .fn()
         .mockResolvedValueOnce(jsonResponse([])) // mount: no adhoc session
         .mockResolvedValueOnce(jsonResponse([])) // no morning session today
-        .mockResolvedValueOnce(jsonResponse(MORNING_SESSION, 201)), // create
+        .mockResolvedValueOnce(jsonResponse(MORNING_SESSION, 201)) // create
+        .mockResolvedValueOnce(jsonResponse([])), // Issue #271: opening-line re-fetch (none generated)
     );
 
     render(<ChatViewHarness />);
@@ -675,6 +676,7 @@ describe("ChatView", () => {
         .mockResolvedValueOnce(jsonResponse([]))
         .mockResolvedValueOnce(jsonResponse([]))
         .mockResolvedValueOnce(jsonResponse(MORNING_SESSION, 201))
+        .mockResolvedValueOnce(jsonResponse([])) // Issue #271: opening-line re-fetch (none generated)
         .mockResolvedValueOnce(
           jsonResponse({ ...MORNING_SESSION, ended_at: "2026-07-05T01:00:00.000Z" }),
         ),
@@ -710,7 +712,8 @@ describe("ChatView", () => {
         .fn()
         .mockResolvedValueOnce(jsonResponse([]))
         .mockResolvedValueOnce(jsonResponse([]))
-        .mockResolvedValueOnce(jsonResponse(eveningSession, 201)),
+        .mockResolvedValueOnce(jsonResponse(eveningSession, 201))
+        .mockResolvedValueOnce(jsonResponse([])), // Issue #271: opening-line re-fetch (none generated)
     );
 
     render(<ChatViewHarness />);
