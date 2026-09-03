@@ -257,6 +257,21 @@ export interface StreamBossMessageCallbacks {
   executeTool?: BossToolExecutor;
 }
 
+export interface StreamBossMessageOptions {
+  /**
+   * Caller-owned signal that cuts the generation short (Issue #254). Passed
+   * down to every {@link runWithTimeoutAndRetry} dispatch this call makes —
+   * for the `api` backend that is one per tool-use round, so aborting stops
+   * the conversation at whatever round is in flight rather than only the
+   * first. Left unset, this function behaves exactly as before (only the
+   * timeout can cut a call short).
+   *
+   * See `RetryTimeoutOptions.signal` for why an abort surfaces as the
+   * existing timeout error rather than a new error type.
+   */
+  signal?: AbortSignal;
+}
+
 /** Returns {@link ApiMessageRequest} rather than an inline structural copy of
  * it so the two stay in sync by construction: adding a field on one side
  * without the other is now a compile error (self-review: design-reviewer
@@ -395,6 +410,7 @@ async function dispatchStream(
   client: BossLlmClient,
   request: ClaudeMessageRequest,
   callbacks?: StreamBossMessageCallbacks,
+  externalSignal?: AbortSignal,
 ): Promise<BossLlmMessage> {
   if (client.backend === "claude-code") {
     const resolved = resolveRequest(request);
@@ -418,6 +434,7 @@ async function dispatchStream(
             },
           ),
         hasSideEffect,
+        { signal: externalSignal },
       ),
     );
   }
@@ -427,7 +444,7 @@ async function dispatchStream(
   return runWithTimeoutAndRetry(
     (signal) => streamApiMessage(client.client, resolved, trackedOnTextDelta, signal),
     hasSideEffect,
-    { classifyError: classifyApiError },
+    { classifyError: classifyApiError, signal: externalSignal },
   );
 }
 
@@ -529,16 +546,22 @@ export async function streamBossMessage(
   client: BossLlmClient,
   request: ClaudeMessageRequest,
   callbacks?: StreamBossMessageCallbacks,
+  options?: StreamBossMessageOptions,
 ): Promise<BossLlmMessage> {
   if (client.backend === "claude-code") {
-    return dispatchStream(client, request, callbacks);
+    return dispatchStream(client, request, callbacks, options?.signal);
   }
 
   const messages: Anthropic.MessageParam[] = [...request.messages];
   let finalMessage: BossLlmMessage = { content: [] };
 
   for (let round = 0; round < MAX_TOOL_ROUNDS; round++) {
-    finalMessage = await dispatchStream(client, { ...request, messages }, callbacks);
+    finalMessage = await dispatchStream(
+      client,
+      { ...request, messages },
+      callbacks,
+      options?.signal,
+    );
 
     const toolUseBlocks = finalMessage.content.filter(isToolUseBlock);
     if (toolUseBlocks.length === 0 || !callbacks?.executeTool) {
@@ -703,6 +726,24 @@ export interface RetryTimeoutOptions {
    * otherwise) with the plain exponential backoff (AC-3).
    */
   classifyError?: (error: unknown) => RetryDecision;
+  /**
+   * Caller-owned signal that cuts this call short before its timeout budget
+   * elapses (Issue #254 — チャットの応答生成の停止). Linked to the internal
+   * timeout `AbortController` below, so aborting it aborts the in-flight
+   * attempt exactly the way a timeout does: both backends already forward
+   * `attempt`'s signal into their SDK call, so nothing further down needs to
+   * change.
+   *
+   * Deliberately **not** given its own error type. The chat route is the only
+   * caller that passes one, and it distinguishes "the user stopped it" from
+   * "the budget elapsed" by reading `c.req.raw.signal.aborted` itself —
+   * cheaper and more direct than threading a new error class through a retry
+   * loop whose existing semantics are pinned by a large test suite. Callers
+   * that don't pass a signal keep byte-for-byte the previous behavior (the
+   * only observable difference is one `addEventListener`/`removeEventListener`
+   * pair that never fires).
+   */
+  signal?: AbortSignal;
 }
 
 const DEFAULT_TIMEOUT_MS = 120_000;
@@ -802,6 +843,24 @@ export async function runWithTimeoutAndRetry<T>(
   const timeoutError = new LlmTimeoutError(timeoutMs);
   const timer = setTimeout(() => controller.abort(), timeoutMs);
 
+  // Link the caller's signal (Issue #254) into the same controller the
+  // timeout uses, so an external abort travels down the identical path a
+  // timeout already does — into `attempt`'s signal and from there into each
+  // backend's SDK call. Registered here rather than inside the attempt loop
+  // so a single `streamBossMessage` tool-use conversation (up to
+  // MAX_TOOL_ROUNDS dispatches, each its own `runWithTimeoutAndRetry` call)
+  // never accumulates listeners on a long-lived request signal; `finally`
+  // below removes it either way.
+  const externalSignal = options.signal;
+  const abortFromExternal = () => controller.abort();
+  if (externalSignal !== undefined) {
+    if (externalSignal.aborted) {
+      controller.abort();
+    } else {
+      externalSignal.addEventListener("abort", abortFromExternal, { once: true });
+    }
+  }
+
   try {
     for (let attemptIndex = 0; ; attemptIndex++) {
       try {
@@ -878,5 +937,6 @@ export async function runWithTimeoutAndRetry<T>(
     }
   } finally {
     clearTimeout(timer);
+    externalSignal?.removeEventListener("abort", abortFromExternal);
   }
 }
