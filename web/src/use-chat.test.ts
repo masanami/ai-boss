@@ -29,6 +29,7 @@ const HISTORY: ChatMessage[] = [
     session_id: 1,
     role: "user",
     content: "おはようございます",
+    interrupted: 0,
     created_at: localIso(5, 9),
   },
   {
@@ -36,6 +37,7 @@ const HISTORY: ChatMessage[] = [
     session_id: 1,
     role: "boss",
     content: "今日は A 案件からだ。",
+    interrupted: 0,
     created_at: localIso(5, 9, 0, 5),
   },
 ];
@@ -45,6 +47,7 @@ const BOSS_REPLY: ChatMessage = {
   session_id: 1,
   role: "boss",
   content: "その相談なら B 案件を後回しにしろ。",
+  interrupted: 0,
   created_at: localIso(5, 10),
 };
 
@@ -79,6 +82,7 @@ const MORNING_HISTORY: ChatMessage[] = [
     session_id: 20,
     role: "user",
     content: "今日の予定です",
+    interrupted: 0,
     created_at: localIso(5, 8, 5),
   },
 ];
@@ -94,6 +98,7 @@ const MORNING_OPENING_MESSAGE: ChatMessage = {
   session_id: 20,
   role: "boss",
   content: "今日はA案件から片付けろ。",
+  interrupted: 0,
   created_at: localIso(5, 8, 0, 1),
 };
 
@@ -802,6 +807,7 @@ describe("useChat mount restoration (Issue #93: surviving a tab switch/reload)",
         session_id: 40,
         role: "user",
         content: "今日の進捗です",
+        interrupted: 0,
         created_at: localIso(4, 23, 55),
       },
     ];
@@ -1051,6 +1057,7 @@ describe("useChat session switching", () => {
         session_id: 20,
         role: "user",
         content: "今日の予定です",
+        interrupted: 0,
         created_at: localIso(5, 12, 1),
       },
     ];

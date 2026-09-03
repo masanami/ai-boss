@@ -15,6 +15,15 @@ export interface ChatMessage {
   session_id: number;
   role: ChatRole;
   content: string;
+  /**
+   * `0` = 完結した応答 / `1` = 途中で終わった応答（#254）。サーバの
+   * `messages.interrupted` をそのまま受ける。
+   *
+   * 「ユーザーが停止した」ではなく「この応答は途中で終わっており完結していない」
+   * ことを表す（LLM 失敗・タイムアウトで部分テキストだけが残った場合も `1`）。
+   * 定義の正本は `server/src/db/migrate.ts` の version 5 のコメント。
+   */
+  interrupted: number;
   created_at: string;
 }
 

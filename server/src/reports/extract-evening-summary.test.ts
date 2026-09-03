@@ -41,8 +41,8 @@ function notCalled() {
 const now = new Date(2026, 7, 14, 20, 0);
 
 const eveningMessages: Message[] = [
-  { id: 1, session_id: 1, role: "user", content: "今日はタスクAを終わらせた", created_at: now.toISOString() },
-  { id: 2, session_id: 1, role: "boss", content: "よくやったな", created_at: now.toISOString() },
+  { id: 1, session_id: 1, role: "user", content: "今日はタスクAを終わらせた", interrupted: 0, created_at: now.toISOString() },
+  { id: 2, session_id: 1, role: "boss", content: "よくやったな", interrupted: 0, created_at: now.toISOString() },
 ];
 
 const noDecisions: string[] = [];

@@ -25,6 +25,7 @@ function message(
   return {
     role: "user",
     content: `message ${overrides.id}`,
+    interrupted: 0,
     created_at: at(5, 10),
     ...overrides,
   };

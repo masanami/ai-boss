@@ -39,6 +39,7 @@ const HISTORY: ChatMessage[] = [
     session_id: 1,
     role: "user",
     content: "おはようございます",
+    interrupted: 0,
     created_at: "2026-07-05T09:00:00.000Z",
   },
   {
@@ -46,6 +47,7 @@ const HISTORY: ChatMessage[] = [
     session_id: 1,
     role: "boss",
     content: "今日は A 案件からだ。",
+    interrupted: 0,
     created_at: "2026-07-05T09:00:05.000Z",
   },
 ];
@@ -55,6 +57,7 @@ const BOSS_REPLY: ChatMessage = {
   session_id: 1,
   role: "boss",
   content: "B 案件は後回しにしろ。",
+  interrupted: 0,
   created_at: "2026-07-05T10:00:00.000Z",
 };
 
@@ -216,6 +219,7 @@ describe("ChatView", () => {
         session_id: 20,
         role: "user",
         content: "今日の予定です",
+        interrupted: 0,
         created_at: "2026-07-05T03:30:00.000Z",
       },
     ];

@@ -22,6 +22,7 @@ const BOSS_MESSAGE: ChatMessage = {
   session_id: 1,
   role: "boss",
   content: "A案件から着手しろ。",
+  interrupted: 0,
   created_at: "2026-07-05T09:00:05.000Z",
 };
 
