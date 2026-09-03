@@ -216,6 +216,27 @@ const MIGRATIONS: Record<number, MigrationEntry> = {
   // 一時停止（#179 判断1）: tasks.status に 'paused'、activity_events.type に
   // 'task_pause' を追加するため両テーブルを再構築する（#183）。
   4: migrateToV4,
+  // 応答生成の停止（#254 論点1）: 応答が途中で終わったことを記録する列を足す。
+  //
+  // `interrupted` が表すのは「**その応答は途中で終わっており完結していない**」
+  // ことであり、**ユーザーが停止したケースに限らない**。ユーザーが停止ボタン／
+  // ESC で打ち切った場合だけでなく、LLM 呼び出しが失敗・タイムアウトして部分
+  // テキストだけが永続化される既存のエラー経路（`chat-messages-route.ts` の
+  // catch 節）でも 1 を立てる。画面に出したい情報は「この応答は途中で終わって
+  // いる」であって原因ではないため（#254 オーナー・親決定）。
+  //
+  // この定義を読み違えて「ユーザー起因のみ」と解釈すると、エラー経路の扱いが
+  // 黙って変えられてしまう。`migrate.test.ts` の
+  // 「treats interrupted as "this reply ended early", not "the user stopped it"
+  //  — the LLM-failure path sets it too (#254)」もこの定義を固定している。
+  //
+  // 既存 version は書き換えず新しい version として追加する
+  // （docs/adr/0005-sqlite-schema-policy.md 決定 4）。SQLite に真偽型は無いため
+  // 既存慣習に合わせて INTEGER を使い、既存行は DEFAULT 0（＝完結した応答）に
+  // なる。
+  5: `
+    ALTER TABLE messages ADD COLUMN interrupted INTEGER NOT NULL DEFAULT 0;
+  `,
 };
 
 /**

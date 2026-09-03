@@ -489,6 +489,7 @@ describe("AppLayout", () => {
         session_id: 7,
         role: "user",
         content: "おはようございます",
+        interrupted: 0,
         created_at: chatSession.started_at,
       },
     ];
