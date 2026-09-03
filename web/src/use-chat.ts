@@ -2,25 +2,17 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import {
   createSession,
   endSession as endSessionRequest,
-  fetchLatestSession,
   fetchSessionMessages,
   fetchSessions,
   sendChatMessage,
 } from "./chat-api";
-import type { ChatMessage, ChatToolEvent, SessionType } from "./chat";
-import { isSameLocalDay } from "./is-same-local-day";
+import type { ChatEntry, ChatMessage, ChatSession, SessionType } from "./chat";
 import { selectRestoreSessions } from "./select-restore-session";
+import { buildTimeline, selectTimelineSessions } from "./merge-timeline";
 
 export type ChatLoadStatus = "loading" | "ready" | "error";
 
-/**
- * A single item in the chat timeline: a persisted/optimistic message or a
- * notice that the boss executed a task tool. `key` is a client-side render
- * key (optimistic user messages have no server id).
- */
-export type ChatEntry =
-  | { kind: "message"; key: string; role: "user" | "boss"; content: string }
-  | { kind: "tool"; key: string; tool: ChatToolEvent };
+export type { ChatEntry };
 
 export interface UseChatResult {
   entries: ChatEntry[];
@@ -47,14 +39,9 @@ export interface UseChatResult {
   endSession: () => Promise<void>;
 }
 
-/** Snapshot of the adhoc conversation, kept in memory while a morning/evening
- * session is active so ending it can return to exactly where adhoc chat left
- * off without an extra round-trip. */
-interface AdhocSnapshot {
-  sessionId: number | null;
-  entries: ChatEntry[];
-}
-
+/** Appends a just-persisted message to the timeline without a full rebuild.
+ * Uses the same `message-{id}` key `buildTimeline` produces, so the entry is
+ * stable across the next rebuild. */
 function messageEntry(message: ChatMessage): ChatEntry {
   return {
     kind: "message",
@@ -65,20 +52,64 @@ function messageEntry(message: ChatMessage): ChatEntry {
 }
 
 /**
- * Loads the session that should be considered "active" for the given type:
- * today's session of that type if one exists (restoring its history), or
- * `null` history when none exists yet (the caller decides whether to create
- * one immediately or lazily on first send).
+ * Rebuilds the unified timeline (Issue #272 判断5・判断6): every session that
+ * belongs in today's view, merged into one `created_at`-ascending list with
+ * derived meeting boundaries.
+ *
+ * `pinnedSessionIds` is passed through to `selectTimelineSessions` so a
+ * meeting that started before midnight stays visible across the day boundary
+ * (ADR 0007 決定4 attributes it to its start day).
+ *
+ * Replaces the previous `adhocSnapshotRef` save/restore dance: the timeline
+ * no longer swaps out when a meeting starts or ends, so there is nothing to
+ * snapshot — the server is the single source of truth for what to show.
  */
-async function loadTodaysSession(
-  type: SessionType,
-): Promise<{ session: { id: number } | null; messages: ChatMessage[] }> {
-  const session = await fetchLatestSession(type);
-  if (session === null || !isSameLocalDay(new Date(), new Date(session.started_at))) {
-    return { session: null, messages: [] };
+async function loadTimeline(
+  sessions: ChatSession[],
+  now: Date,
+  pinnedSessionIds: readonly (number | null)[],
+): Promise<ChatEntry[]> {
+  const selected = selectTimelineSessions(sessions, now, pinnedSessionIds);
+  const loaded = await Promise.all(
+    selected.map(async (session) => ({
+      session,
+      messages: await fetchSessionMessages(session.id),
+    })),
+  );
+  return buildTimeline(loaded);
+}
+
+/** Replaces `session` in `sessions` by id, appending it when it isn't there
+ * yet. Lets `startSession`/`endSession` fold a just-created or just-ended
+ * session into the list they already fetched, instead of paying for a second
+ * `GET /api/sessions` round-trip to observe their own write. */
+function withSession(sessions: ChatSession[], session: ChatSession): ChatSession[] {
+  const index = sessions.findIndex((candidate) => candidate.id === session.id);
+  if (index === -1) {
+    return [...sessions, session];
   }
-  const messages = await fetchSessionMessages(session.id);
-  return { session, messages };
+  return sessions.map((candidate) =>
+    candidate.id === session.id ? session : candidate,
+  );
+}
+
+/**
+ * Finds today's session of the given type, or `null` when none exists yet
+ * (the caller decides whether to create one immediately or lazily on first
+ * send). Only the session is returned — its messages arrive through
+ * `loadTimeline`, which rebuilds the whole timeline rather than just this
+ * session's slice.
+ */
+function findTodaysSession(
+  sessions: ChatSession[],
+  type: SessionType,
+  now: Date,
+): ChatSession | null {
+  return (
+    selectTimelineSessions(sessions, now, []).find(
+      (session) => session.type === type,
+    ) ?? null
+  );
 }
 
 /**
@@ -93,13 +124,15 @@ async function loadTodaysSession(
  * reload. A session from a previous day is left alone either way — adhoc
  * chat is scoped to a daily window, so a stale one is created lazily on the
  * first send instead. An already-ended adhoc session is treated the same as
- * having none: it is never restored as active or as the return point below
- * (Issue #206).
+ * having none: it is never restored as active (Issue #206).
  *
- * When a morning/evening session is restored as active, today's unfinished
- * adhoc session (if any) is also fetched and kept in `adhocSnapshotRef` so
- * ending the restored meeting can return to the adhoc conversation without
- * an extra round-trip, exactly like `startSession` already does.
+ * **The displayed timeline is independent of which session is active**
+ * (Issue #272): it always shows every session that belongs in today's view,
+ * merged into one chronological list with meeting boundaries derived from
+ * `sessions.started_at` / `ended_at`. Starting or ending a meeting therefore
+ * changes where messages are *sent* and what the session bar shows, but never
+ * swaps the history out — which is why the old `adhocSnapshotRef` save/restore
+ * is gone.
  */
 export function useChat(): UseChatResult {
   const [entries, setEntries] = useState<ChatEntry[]>([]);
@@ -113,7 +146,6 @@ export function useChat(): UseChatResult {
   const sessionIdRef = useRef<number | null>(null);
   const sessionTypeRef = useRef<SessionType>("adhoc");
   const entriesRef = useRef<ChatEntry[]>([]);
-  const adhocSnapshotRef = useRef<AdhocSnapshot | null>(null);
   const entryCounterRef = useRef(0);
   // Ref-based guards: unlike the `sending`/`switching` state (which update
   // asynchronously), these refs flip synchronously, so two calls in the same
@@ -152,42 +184,23 @@ export function useChat(): UseChatResult {
   useEffect(() => {
     let cancelled = false;
 
+    const now = new Date();
     fetchSessions()
       .then(async (sessions) => {
-        const { active, adhoc } = selectRestoreSessions(sessions, new Date());
-
-        if (active !== null && active.type !== "adhoc") {
-          // An unfinished morning/evening session takes priority: restore it
-          // as active, and separately restore today's adhoc conversation (if
-          // any) into the snapshot so `endSession` has somewhere to return.
-          const [activeMessages, adhocMessages] = await Promise.all([
-            fetchSessionMessages(active.id),
-            adhoc !== null ? fetchSessionMessages(adhoc.id) : Promise.resolve([]),
-          ]);
-          if (cancelled) {
-            return;
-          }
-          sessionIdRef.current = active.id;
-          adhocSnapshotRef.current = {
-            sessionId: adhoc?.id ?? null,
-            entries: adhocMessages.map(messageEntry),
-          };
-          setSessionType(active.type);
-          setEntries(activeMessages.map(messageEntry));
-          setStatus("ready");
-          return;
-        }
-
-        // No open meeting today: fall back to restoring the adhoc
-        // conversation, exactly like before this feature (adhocSnapshotRef
-        // stays null, matching the "started fresh in adhoc" state).
-        const messages =
-          active !== null ? await fetchSessionMessages(active.id) : [];
+        // Which session is "active" (where sends go, what the session bar
+        // shows) is still decided by `selectRestoreSessions` — an unfinished
+        // meeting wins over today's adhoc conversation. What changed in
+        // Issue #272 is that this no longer decides what is *displayed*.
+        const { active } = selectRestoreSessions(sessions, now);
+        const timeline = await loadTimeline(sessions, now, [active?.id ?? null]);
         if (cancelled) {
           return;
         }
         sessionIdRef.current = active?.id ?? null;
-        setEntries(messages.map(messageEntry));
+        if (active !== null && active.type !== "adhoc") {
+          setSessionType(active.type);
+        }
+        setEntries(timeline);
         setStatus("ready");
       })
       .catch(() => {
@@ -274,9 +287,9 @@ export function useChat(): UseChatResult {
 
   const startSession = useCallback(
     async (type: "morning" | "evening") => {
-      // Only reachable from adhoc in the UI (start buttons only render there),
-      // but guarded here too: starting from a non-adhoc session would
-      // overwrite the adhoc snapshot with the wrong conversation.
+      // Only reachable from adhoc in the UI (start buttons only render
+      // there), but guarded here too so a meeting cannot be started from
+      // inside another one.
       if (switchingRef.current || sendingRef.current || sessionTypeRef.current !== "adhoc") {
         return;
       }
@@ -284,20 +297,27 @@ export function useChat(): UseChatResult {
       setSwitching(true);
       setError(null);
       try {
-        // Remember exactly where the adhoc conversation was so ending this
-        // session can restore it without a re-fetch.
-        adhocSnapshotRef.current = {
-          sessionId: sessionIdRef.current,
-          entries: entriesRef.current,
-        };
+        const now = new Date();
+        const sessions = await fetchSessions();
+        const existing = findTodaysSession(sessions, type, now);
+        const active = existing ?? (await createSession(type));
 
-        const { session, messages } = await loadTodaysSession(type);
-        const active = session ?? (await createSession(type));
+        // Rebuild the whole timeline rather than swapping in this session's
+        // messages: the adhoc conversation the user was just having stays on
+        // screen above the new meeting's start boundary (AC-9). This is also
+        // what surfaces the Issue #271 meeting-opening line, which
+        // `POST /api/sessions` may have just generated as a synchronous side
+        // effect.
+        const timeline = await loadTimeline(
+          withSession(sessions, active),
+          now,
+          [active.id],
+        );
 
         sessionIdRef.current = active.id;
         ifMounted(() => {
           setSessionType(type);
-          setEntries(messages.map(messageEntry));
+          setEntries(timeline);
         });
       } catch (err) {
         ifMounted(() =>
@@ -327,12 +347,26 @@ export function useChat(): UseChatResult {
     try {
       await endSessionRequest(id);
 
-      const snapshot = adhocSnapshotRef.current;
-      adhocSnapshotRef.current = null;
-      sessionIdRef.current = snapshot?.sessionId ?? null;
+      // Sends go back to the adhoc conversation, but the meeting's messages
+      // stay on screen between its boundaries (AC-10) — the timeline is
+      // rebuilt from the server, not restored from a snapshot. `null` when
+      // no adhoc session exists yet: `send` creates one lazily.
+      //
+      // The session list is fetched *after* the end request, so it already
+      // carries the `ended_at` that turns into the closing boundary.
+      const now = new Date();
+      const sessions = await fetchSessions();
+      const { adhoc } = selectRestoreSessions(sessions, now);
+      // `id` (the meeting just ended) is pinned alongside the adhoc session:
+      // ending a meeting on the far side of midnight must not make it vanish
+      // from the screen the moment it closes (ADR 0007 決定4 attributes it to
+      // its start day, which is now "yesterday").
+      const timeline = await loadTimeline(sessions, now, [id, adhoc?.id ?? null]);
+
+      sessionIdRef.current = adhoc?.id ?? null;
       ifMounted(() => {
         setSessionType("adhoc");
-        setEntries(snapshot?.entries ?? []);
+        setEntries(timeline);
       });
     } catch (err) {
       ifMounted(() =>

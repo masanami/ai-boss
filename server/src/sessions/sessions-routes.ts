@@ -2,7 +2,7 @@ import { Hono } from "hono";
 import type Database from "better-sqlite3";
 import { readJsonBody } from "../lib/read-json-body.js";
 import { SESSION_TYPES } from "./session.js";
-import type { SessionType } from "./session.js";
+import type { Session, SessionType } from "./session.js";
 import {
   createSession,
   endSession,
@@ -11,9 +11,10 @@ import {
   updateSessionSummary,
 } from "./sessions-repository.js";
 import { validateCreateSessionInput } from "./sessions-validation.js";
-import { listMessagesBySessionId } from "./messages-repository.js";
+import { insertMessage, listMessagesBySessionId } from "./messages-repository.js";
 import { registerChatMessageRoute } from "./chat-messages-route.js";
 import { generateSessionSummary } from "./session-summary.js";
+import { generateMeetingOpening, shouldGenerateMeetingOpening } from "./meeting-opening.js";
 import type { LlmBackend } from "../config.js";
 import { generateDailyReport } from "../reports/generate-daily-report.js";
 
@@ -54,6 +55,46 @@ async function triggerDailyReportGeneration(
   } catch (err) {
     console.error(
       "session end: daily report generation failed:",
+      err instanceof Error ? err.name : typeof err,
+    );
+  }
+}
+
+/**
+ * Best-effort meeting-opening generation (Issue #271, 機能仕様
+ * docs/features/meeting-start-announcement.md 判断1〜4), fired synchronously
+ * as part of `POST /api/sessions` for morning/evening sessions only.
+ *
+ * Idempotency (AC-6) is guarded by {@link shouldGenerateMeetingOpening}'s
+ * "target session has zero messages" check rather than "the session was
+ * just created": `sessions-repository.ts`'s `createSession` only enforces a
+ * once-per-day limit for `evening` sessions, so a morning session can be
+ * created more than once per day and a naive "just created" guard would not
+ * actually protect against duplicate generation if this trigger were ever
+ * invoked more than once for the same row (defense in depth, mirrors
+ * `POST /:id/end`'s `session.summary === null` guard above — 決まったやり方
+ * を増やさない).
+ *
+ * Never throws: `generateMeetingOpening` already never throws (its own
+ * contract, boss-comment.ts と同じ), so the try/catch here only guards
+ * against a failure in `insertMessage` itself — either way, this function
+ * must not turn `POST /api/sessions` into anything but 201 (AC-4).
+ */
+async function triggerMeetingOpening(
+  db: Database.Database,
+  env: NodeJS.ProcessEnv,
+  session: Session,
+): Promise<void> {
+  const existingMessageCount = listMessagesBySessionId(db, session.id).length;
+  if (!shouldGenerateMeetingOpening(session.type, existingMessageCount)) {
+    return;
+  }
+  try {
+    const result = await generateMeetingOpening(db, env, new Date(), session.type);
+    insertMessage(db, { session_id: session.id, role: "boss", content: result.text });
+  } catch (err) {
+    console.error(
+      "session create: meeting opening generation failed:",
       err instanceof Error ? err.name : typeof err,
     );
   }
@@ -105,6 +146,14 @@ export function createSessionsRouter(
         409,
       );
     }
+
+    // Issue #271 (AC-1/AC-2): fires the meeting-opening line for morning/
+    // evening sessions before responding. Awaited (not fire-and-forget) so
+    // the message is guaranteed persisted by the time the client re-fetches
+    // — same synchronous-side-effect precedent as POST /:id/end's summary
+    // generation below. Never affects the response: see
+    // triggerMeetingOpening's own doc comment for why it never throws.
+    await triggerMeetingOpening(db, env, created.session);
 
     return c.json(created.session, 201);
   });

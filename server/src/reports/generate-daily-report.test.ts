@@ -4,6 +4,7 @@ import { openDatabase } from "../db/connection.js";
 import { runMigrations } from "../db/migrate.js";
 import type { SessionType } from "../sessions/session.js";
 import { FALLBACK_EVENING_SUMMARY_NOTE } from "./render-daily-report.js";
+import { EVENING_OPENING_FALLBACK } from "../sessions/meeting-opening.js";
 
 const { createClaudeClientMock, requestVerdictMock } = vi.hoisted(() => ({
   createClaudeClientMock: vi.fn(),
@@ -141,6 +142,30 @@ describe("generateDailyReport", () => {
 
       expect(result).toEqual({ ok: false, code: "evening_session_required" });
       expect(reportRowCount()).toBe(0);
+    });
+
+    // AC-17 (Issue #271): the meeting-opening line (`role: "boss"`,
+    // `sessions/meeting-opening.ts`) is the only message a freshly-opened
+    // evening session has until the user replies. It must not, by itself,
+    // satisfy the "role = user" prerequisite (ADR 0008 決定1) — otherwise a
+    // user could end an evening session having said nothing and still get a
+    // daily report. Uses the real fallback text (not an arbitrary string) so
+    // this test breaks if the two modules' contracts ever drift apart.
+    it("AC-17: 夕会に開始ひとこと（role=boss）だけがある状態では前提条件を満たさない", async () => {
+      const now = new Date(2026, 7, 14, 21, 0);
+      const sessionId = insertRawSession(
+        db,
+        "evening",
+        iso(2026, 8, 14, 19, 0),
+        iso(2026, 8, 14, 19, 30),
+      );
+      insertRawMessage(db, sessionId, "boss", EVENING_OPENING_FALLBACK, iso(2026, 8, 14, 19, 0, 1));
+
+      const result = await generateDailyReport(db, env, now);
+
+      expect(result).toEqual({ ok: false, code: "evening_session_required" });
+      expect(reportRowCount()).toBe(0);
+      expect(requestVerdictMock).not.toHaveBeenCalled();
     });
   });
 

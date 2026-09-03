@@ -5,13 +5,25 @@ import { runMigrations } from "../db/migrate.js";
 import { listTasks } from "../tasks/tasks-repository.js";
 import { listDecisions } from "../decisions/decisions-repository.js";
 import { updateSessionSummary } from "./sessions-repository.js";
+import { insertMessage } from "./messages-repository.js";
 import type { Session } from "./session.js";
 import type { Message } from "./message.js";
 
-const { createClaudeClientMock, streamBossMessageMock } = vi.hoisted(() => ({
-  createClaudeClientMock: vi.fn(),
-  streamBossMessageMock: vi.fn(),
-}));
+const { createClaudeClientMock, streamBossMessageMock, createBossMessageMock } = vi.hoisted(
+  () => ({
+    createClaudeClientMock: vi.fn(),
+    streamBossMessageMock: vi.fn(),
+    // Issue #271: creating a morning/evening session now also triggers the
+    // meeting-opening generator (`createBossMessage`), which this file
+    // otherwise never exercises. Left unmocked, `createClaudeClientMock`'s
+    // `{}` stub (no `.client`) would reach the real `api`-backend dispatch,
+    // fail, and retry with real (non-faked) exponential backoff, adding
+    // several seconds to every test that creates a morning/evening session.
+    // Mocked purely to keep those calls fast — this file's own assertions
+    // are about the chat message route, not the opening line's content.
+    createBossMessageMock: vi.fn(),
+  }),
+);
 
 vi.mock("../llm/claude-client.js", async (importOriginal) => {
   const actual =
@@ -20,6 +32,7 @@ vi.mock("../llm/claude-client.js", async (importOriginal) => {
     ...actual,
     createClaudeClient: createClaudeClientMock,
     streamBossMessage: streamBossMessageMock,
+    createBossMessage: createBossMessageMock,
   };
 });
 
@@ -90,7 +103,11 @@ describe("POST /api/sessions/:id/messages", () => {
     runMigrations(db);
     createClaudeClientMock.mockReset();
     streamBossMessageMock.mockReset();
+    createBossMessageMock.mockReset();
     createClaudeClientMock.mockReturnValue({});
+    // Empty content -> meeting-opening's own "text === ''" branch -> its
+    // fixed fallback text is persisted, without touching the retry path.
+    createBossMessageMock.mockResolvedValue({ content: [] });
   });
 
   afterEach(() => {
@@ -277,6 +294,39 @@ describe("POST /api/sessions/:id/messages", () => {
       .all(session.id) as Message[];
     expect(messages).toHaveLength(2);
     expect(messages[1]).toMatchObject({ role: "boss", content: "今日は資料作成からだ" });
+  });
+
+  // Issue #271 (AC-8): a meeting-opening line (role: "boss") persisted before
+  // the first user message would otherwise put an "assistant" message first
+  // in the request sent to the `api` backend, which Anthropic's Messages API
+  // rejects outright. The `claude-code` backend never surfaces this (its
+  // prompt builder flattens history into plain text instead), so this test
+  // is the only guard against the normalization regressing — see
+  // toClaudeMessages's own doc comment in chat-messages-route.ts.
+  it("AC-8: drops a leading boss message (e.g. the meeting-opening line) so the request sent to streamBossMessage starts with role user", async () => {
+    const session = await createSession();
+    insertMessage(db, {
+      session_id: session.id,
+      role: "boss",
+      content: "夕会が始まった。今日の進捗を報告しろ。",
+    });
+    streamBossMessageMock.mockResolvedValue(fakeTextMessage("了解した"));
+    const app = createApp(db, env);
+
+    const res = await app.request(`/api/sessions/${session.id}/messages`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ content: "資料作成を進めています" }),
+    });
+    await res.text();
+
+    expect(streamBossMessageMock).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        messages: [{ role: "user", content: "資料作成を進めています" }],
+      }),
+      expect.anything(),
+    );
   });
 
   it("builds the system prompt from persona settings/tasks and passes the two task tools", async () => {

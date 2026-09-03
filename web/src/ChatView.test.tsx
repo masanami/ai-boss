@@ -201,6 +201,48 @@ describe("ChatView", () => {
     expect(screen.getByText("ボス")).toBeInTheDocument();
   });
 
+  // AC-11 (Issue #272). `started_at` is pinned to the faked "now" itself so
+  // the session is unambiguously on today's local day in any timezone
+  // (ADR 0007 決定5), without this test having to model a day boundary.
+  it("renders the meeting start and end boundaries around the meeting's messages", async () => {
+    const endedMorning: ChatSession = {
+      ...MORNING_SESSION,
+      started_at: "2026-07-05T03:00:00.000Z",
+      ended_at: "2026-07-05T04:00:00.000Z",
+    };
+    const morningHistory: ChatMessage[] = [
+      {
+        id: 30,
+        session_id: 20,
+        role: "user",
+        content: "今日の予定です",
+        created_at: "2026-07-05T03:30:00.000Z",
+      },
+    ];
+    vi.stubGlobal(
+      "fetch",
+      vi
+        .fn()
+        .mockResolvedValueOnce(jsonResponse([endedMorning]))
+        .mockResolvedValue(jsonResponse(morningHistory)),
+    );
+
+    render(<ChatViewHarness />);
+
+    await waitFor(() =>
+      expect(screen.getByText("朝会が開始されました")).toBeInTheDocument(),
+    );
+    expect(screen.getByText("今日の予定です")).toBeInTheDocument();
+    expect(screen.getByText("朝会が終了しました")).toBeInTheDocument();
+
+    // The boundaries bracket the meeting's messages in DOM order, which is
+    // what makes "どこからどこまでが会か" readable while scrolling.
+    const timeline = screen.getByRole("list", { name: "会話履歴" });
+    expect(
+      Array.from(timeline.children).map((item) => item.textContent),
+    ).toEqual(["朝会が開始されました", "自分今日の予定です", "朝会が終了しました"]);
+  });
+
   it("shows an error state when the history restoration fails", async () => {
     vi.stubGlobal(
       "fetch",
@@ -646,7 +688,8 @@ describe("ChatView", () => {
         .fn()
         .mockResolvedValueOnce(jsonResponse([])) // mount: no adhoc session
         .mockResolvedValueOnce(jsonResponse([])) // no morning session today
-        .mockResolvedValueOnce(jsonResponse(MORNING_SESSION, 201)), // create
+        .mockResolvedValueOnce(jsonResponse(MORNING_SESSION, 201)) // create
+        .mockResolvedValueOnce(jsonResponse([])), // Issue #271: opening-line re-fetch (none generated)
     );
 
     render(<ChatViewHarness />);
@@ -675,9 +718,15 @@ describe("ChatView", () => {
         .mockResolvedValueOnce(jsonResponse([]))
         .mockResolvedValueOnce(jsonResponse([]))
         .mockResolvedValueOnce(jsonResponse(MORNING_SESSION, 201))
+        .mockResolvedValueOnce(jsonResponse([])) // Issue #271: opening-line re-fetch (none generated)
         .mockResolvedValueOnce(
           jsonResponse({ ...MORNING_SESSION, ended_at: "2026-07-05T01:00:00.000Z" }),
-        ),
+        )
+        // Issue #272: ending rebuilds the whole timeline, so `endSession`
+        // re-lists the sessions (and then their messages) instead of
+        // restoring an in-memory snapshot. This test only cares about the
+        // session bar, so an empty day is enough.
+        .mockResolvedValue(jsonResponse([])),
     );
 
     render(<ChatViewHarness />);
@@ -710,7 +759,8 @@ describe("ChatView", () => {
         .fn()
         .mockResolvedValueOnce(jsonResponse([]))
         .mockResolvedValueOnce(jsonResponse([]))
-        .mockResolvedValueOnce(jsonResponse(eveningSession, 201)),
+        .mockResolvedValueOnce(jsonResponse(eveningSession, 201))
+        .mockResolvedValueOnce(jsonResponse([])), // Issue #271: opening-line re-fetch (none generated)
     );
 
     render(<ChatViewHarness />);
