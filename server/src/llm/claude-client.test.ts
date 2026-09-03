@@ -813,6 +813,137 @@ describe("runWithTimeoutAndRetry", () => {
     expect(attempt).toHaveBeenCalledTimes(1);
   });
 
+  // Issue #254: the caller-supplied abort signal, independent of any
+  // particular backend's wiring (that wiring is covered by the backend
+  // describe blocks below).
+  describe("caller-supplied signal (Issue #254)", () => {
+    it("aborts the in-flight attempt's signal when the caller's signal aborts before the timeout", async () => {
+      let observedSignal: AbortSignal | undefined;
+      const attempt = vi.fn().mockImplementation(
+        (signal: AbortSignal) =>
+          new Promise(() => {
+            observedSignal = signal;
+          }),
+      );
+      const hasSideEffect = vi.fn().mockReturnValue(false);
+      const caller = new AbortController();
+
+      const promise = runWithTimeoutAndRetry(attempt, hasSideEffect, {
+        timeoutMs: 120_000,
+        maxRetries: 0,
+        signal: caller.signal,
+      });
+      promise.catch(() => {});
+
+      // Well before the 120s budget would have elapsed on its own.
+      caller.abort();
+      await vi.advanceTimersByTimeAsync(0);
+
+      await expect(promise).rejects.toThrow(LlmTimeoutError);
+      expect(observedSignal?.aborted).toBe(true);
+    });
+
+    it("gives the attempt an already-aborted signal when the caller's signal was aborted before the call", async () => {
+      let observedSignal: AbortSignal | undefined;
+      const attempt = vi.fn().mockImplementation(
+        (signal: AbortSignal) =>
+          new Promise(() => {
+            observedSignal = signal;
+          }),
+      );
+      const hasSideEffect = vi.fn().mockReturnValue(false);
+      const caller = new AbortController();
+      caller.abort();
+
+      const promise = runWithTimeoutAndRetry(attempt, hasSideEffect, {
+        timeoutMs: 120_000,
+        maxRetries: 0,
+        signal: caller.signal,
+      });
+      promise.catch(() => {});
+      await vi.advanceTimersByTimeAsync(0);
+
+      await expect(promise).rejects.toThrow(LlmTimeoutError);
+      expect(observedSignal?.aborted).toBe(true);
+    });
+
+    // 中断は「もう一度やり直す」ことではないので、リトライ予算が残っていても
+    // 次の attempt を始めてはならない。既存の hasSideEffect による抑止とは別に、
+    // 副作用がまだ無い状態でもこれが成り立つことを固定する。
+    it("does not start another attempt after the caller aborts, even with retry budget left and no side effect yet", async () => {
+      const attempt = vi.fn().mockImplementation(
+        (signal: AbortSignal) =>
+          new Promise((_resolve, reject) => {
+            signal.addEventListener(
+              "abort",
+              () => reject(new Error("aborted by signal")),
+              { once: true },
+            );
+          }),
+      );
+      const hasSideEffect = vi.fn().mockReturnValue(false);
+      const caller = new AbortController();
+
+      const promise = runWithTimeoutAndRetry(attempt, hasSideEffect, {
+        timeoutMs: 120_000,
+        baseDelayMs: 10,
+        maxRetries: 5,
+        signal: caller.signal,
+      });
+      promise.catch(() => {});
+
+      caller.abort();
+      await vi.advanceTimersByTimeAsync(1000);
+
+      await expect(promise).rejects.toThrow(LlmTimeoutError);
+      expect(attempt).toHaveBeenCalledTimes(1);
+    });
+
+    it("removes its listener from the caller's signal once the call settles, so a reused signal does not accumulate listeners", async () => {
+      const caller = new AbortController();
+      const addSpy = vi.spyOn(caller.signal, "addEventListener");
+      const removeSpy = vi.spyOn(caller.signal, "removeEventListener");
+      const hasSideEffect = vi.fn().mockReturnValue(false);
+
+      // The chat route reuses one request signal across every tool-use round,
+      // so each round's runWithTimeoutAndRetry must clean up after itself.
+      await runWithTimeoutAndRetry(vi.fn().mockResolvedValue("ok"), hasSideEffect, {
+        signal: caller.signal,
+      });
+      await runWithTimeoutAndRetry(vi.fn().mockResolvedValue("ok"), hasSideEffect, {
+        signal: caller.signal,
+      });
+
+      expect(addSpy).toHaveBeenCalledTimes(2);
+      expect(removeSpy).toHaveBeenCalledTimes(2);
+    });
+
+    it("behaves exactly as before when no signal is supplied: the timeout is still the only thing that cuts a call short", async () => {
+      let observedSignal: AbortSignal | undefined;
+      const attempt = vi.fn().mockImplementation(
+        (signal: AbortSignal) =>
+          new Promise(() => {
+            observedSignal = signal;
+          }),
+      );
+      const hasSideEffect = vi.fn().mockReturnValue(false);
+
+      const promise = runWithTimeoutAndRetry(attempt, hasSideEffect, {
+        timeoutMs: 5000,
+        maxRetries: 0,
+      });
+      promise.catch(() => {});
+
+      // Nothing external can abort it; only the budget elapsing does.
+      await vi.advanceTimersByTimeAsync(4999);
+      expect(observedSignal?.aborted).toBe(false);
+
+      await vi.advanceTimersByTimeAsync(1);
+      await expect(promise).rejects.toThrow(LlmTimeoutError);
+      expect(observedSignal?.aborted).toBe(true);
+    });
+  });
+
   // Issue #224: the `classifyError` hook itself, independent of any
   // particular backend's wiring (that wiring — `api` only — is covered by
   // the `(api backend timeout/retry wiring, Issue #224)` describe blocks
@@ -917,6 +1048,69 @@ describe("runWithTimeoutAndRetry", () => {
       expect(attempt).toHaveBeenCalledTimes(1);
     });
 
+  });
+});
+
+// Issue #254: the caller's stop signal has to survive the whole trip down to
+// each backend's SDK call. The backends themselves already honor the signal
+// they are handed (`api-backend.ts` forwards it to `messages.stream`,
+// `claude-code-backend.ts` re-wraps it into the Agent SDK's AbortController),
+// so what needs pinning here is the facade handing them a signal that the
+// caller can actually trip.
+describe("streamBossMessage (caller stop signal reaches both backends, Issue #254)", () => {
+  it("aborts the signal handed to the claude-code backend when the caller's signal aborts", async () => {
+    let observedSignal: AbortSignal | undefined;
+    streamClaudeCodeMessageMock.mockImplementation(
+      (_request: unknown, options: { signal?: AbortSignal }) =>
+        new Promise(() => {
+          observedSignal = options.signal;
+        }),
+    );
+    const caller = new AbortController();
+
+    const promise = streamBossMessage(
+      claudeCodeClient(),
+      { messages: [{ role: "user", content: "止めてくれ" }] },
+      undefined,
+      { signal: caller.signal },
+    );
+    promise.catch(() => {});
+    await Promise.resolve();
+
+    expect(observedSignal?.aborted).toBe(false);
+    caller.abort();
+
+    await expect(promise).rejects.toThrow(LlmTimeoutError);
+    expect(observedSignal?.aborted).toBe(true);
+  });
+
+  it("aborts the signal handed to the api backend's SDK call when the caller's signal aborts", async () => {
+    let observedSignal: AbortSignal | undefined;
+    streamMock.mockImplementation(
+      (_params: unknown, options?: { signal?: AbortSignal }) => {
+        observedSignal = options?.signal;
+        return {
+          on: () => {},
+          finalMessage: () => new Promise(() => {}),
+        };
+      },
+    );
+    const caller = new AbortController();
+
+    const promise = streamBossMessage(
+      apiClient(),
+      { messages: [{ role: "user", content: "止めてくれ" }] },
+      undefined,
+      { signal: caller.signal },
+    );
+    promise.catch(() => {});
+    await Promise.resolve();
+
+    expect(observedSignal?.aborted).toBe(false);
+    caller.abort();
+
+    await expect(promise).rejects.toThrow(LlmTimeoutError);
+    expect(observedSignal?.aborted).toBe(true);
   });
 });
 
