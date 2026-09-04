@@ -244,12 +244,17 @@ export function useChat(): UseChatResult {
       setError(null);
 
       const controller = new AbortController();
-      abortRef.current = controller;
       // Mirrors `setStreamingText`, but readable synchronously from the
       // catch below — state read there would be the stale value captured
       // when this callback was created. Same role the server's `fullText`
       // plays: "what actually reached the user before this stopped".
       let deliveredText = "";
+      // Set once the `done` event has been handled, i.e. the complete reply
+      // has already been appended to the timeline. `sendChatMessage` keeps
+      // reading until EOF after dispatching `done`, so there is a window in
+      // which the reply is finished but a stop can still abort that pending
+      // read — see the catch below.
+      let completed = false;
 
       // Optimistic append BEFORE any request: the input field is already
       // cleared by the caller (ChatView's submitDraft, via chatState.setDraft
@@ -270,6 +275,22 @@ export function useChat(): UseChatResult {
           throw new Error("session id must be set before sending");
         }
 
+        // Only stoppable from here on, once the message POST is about to be
+        // dispatched (#254, Codex review on PR #287).
+        //
+        // Arming this before `createSession` above meant a stop pressed
+        // during session creation left `controller.signal` already aborted,
+        // so `sendChatMessage`'s `fetch` rejected without ever posting —
+        // the user's message never reached the server. The optimistic entry
+        // kept it on screen, which hid the problem until a reload, and
+        // "ユーザーの発言は履歴に残る" is a completion condition of #254.
+        //
+        // A stop pressed before this point is therefore deliberately not
+        // honored: nothing is being generated yet, and the only way to honor
+        // it there would be to drop the user's message on the floor.
+        // Generation starts moments later and stops normally.
+        abortRef.current = controller;
+
         await sendChatMessage(
           sessionId,
           content,
@@ -287,6 +308,7 @@ export function useChat(): UseChatResult {
             );
           },
           onDone: (message) => {
+            completed = true;
             ifMounted(() => setEntries((prev) => [...prev, messageEntry(message)]));
           },
           onError: (message) => {
@@ -304,7 +326,16 @@ export function useChat(): UseChatResult {
           // A stop is not an error — no error banner (AC-23). What the user
           // did see stays on screen, marked as cut short, matching the
           // partial reply the server persisted for the same send.
-          if (deliveredText !== "") {
+          //
+          // 完了が勝つ (#254 論点5), on the client too: `done` may already
+          // have been dispatched while `sendChatMessage` was still reading
+          // toward EOF, and a stop landing in that window aborts the pending
+          // read. The reply is whole and `onDone` has already appended it —
+          // appending `deliveredText` as well would show the same answer
+          // twice, the second copy falsely marked as cut short. The server
+          // resolves the identical race the same way (`chat-messages-route`
+          // persists `interrupted: 0` once the generation resolved).
+          if (!completed && deliveredText !== "") {
             ifMounted(() =>
               setEntries((prev) => [
                 ...prev,

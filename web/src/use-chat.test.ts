@@ -867,6 +867,108 @@ describe("useChat stop (Issue #254)", () => {
     await waitFor(() => expect(result.current.streamingText).toBe("新しい応答"));
   });
 
+  // PR #287 レビュー（Codex :307 / CodeRabbit :320）。sendChatMessage は
+  // onDone を配信したあとも EOF まで read() を続けるため、「応答は完成した
+  // が read が pending」という窓がある。そこで stop すると abort が pending
+  // な read を reject させ、catch 節が同じ応答を interrupted の 2 通目として
+  // 追加してしまっていた。完了が勝つ（論点5）のはクライアント側も同じ。
+  it("does not append a second, interrupted copy when stop lands after the done event was handled", async () => {
+    const { latestStream, postCount } = stubFetchForStop();
+    const { result } = renderHook(() => useChat());
+    await waitFor(() => expect(result.current.status).toBe("ready"));
+
+    act(() => {
+      void result.current.send("進捗を教えて");
+    });
+    await waitFor(() => expect(postCount()).toBe(1));
+
+    // 応答が完成して done まで届くが、ストリームは閉じない（EOF 未到達）。
+    latestStream().push('event: text\ndata: {"text":"最後まで書いた"}\n\n');
+    latestStream().push(
+      `event: done\ndata: ${JSON.stringify({ ...BOSS_REPLY, content: "最後まで書いた" })}\n\n`,
+    );
+    await waitFor(() =>
+      expect(
+        result.current.entries.filter(
+          (entry) => entry.kind === "message" && entry.role === "boss",
+        ),
+      ).toHaveLength(1),
+    );
+
+    // この窓で停止する。
+    act(() => result.current.stop());
+    await waitFor(() => expect(result.current.sending).toBe(false));
+
+    const bossEntries = result.current.entries.filter(
+      (entry) => entry.kind === "message" && entry.role === "boss",
+    );
+    expect(bossEntries).toHaveLength(1);
+    expect(
+      bossEntries.every(
+        (entry) => entry.kind === "message" && entry.interrupted !== true,
+      ),
+    ).toBe(true);
+  });
+
+  // PR #287 レビュー（Codex :247）。セッション未作成の初回送信では
+  // POST /api/sessions の往復のあいだに stop されうる。そこで signal が
+  // abort 済みになっていると、続く sendChatMessage の fetch が即 reject し
+  // POST がサーバへ届かない ＝ ユーザーの発言が永続化されない
+  // （#254 の完了条件「ユーザーの発言は履歴に残る」に反する）。
+  it("still posts the user message to the server when stop is pressed while the session is being created", async () => {
+    const streams: ReturnType<typeof abortableSseStream>[] = [];
+    let resolveSessionCreate: ((value: unknown) => void) | undefined;
+    const messagePosts: { signal?: AbortSignal }[] = [];
+
+    const fetchMock = vi.fn(
+      (url: string, init?: { method?: string; signal?: AbortSignal }) => {
+        const method = init?.method ?? "GET";
+        if (url === "/api/sessions" && method === "GET") {
+          // セッションがまだ無い状態から始める（初回送信で作られる）。
+          return Promise.resolve(jsonResponse([]));
+        }
+        if (url === "/api/sessions" && method === "POST") {
+          // 作成中の窓をテストが制御できるように保留する。
+          return new Promise((resolve) => {
+            resolveSessionCreate = resolve;
+          });
+        }
+        if (/^\/api\/sessions\/\d+\/messages$/.test(url) && method === "POST") {
+          messagePosts.push({ signal: init?.signal });
+          const stream = abortableSseStream(init?.signal);
+          streams.push(stream);
+          return Promise.resolve(stream.response);
+        }
+        if (/^\/api\/sessions\/\d+\/messages$/.test(url)) {
+          return Promise.resolve(jsonResponse([]));
+        }
+        throw new Error(`unexpected fetch: ${method} ${url}`);
+      },
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    const { result } = renderHook(() => useChat());
+    await waitFor(() => expect(result.current.status).toBe("ready"));
+
+    act(() => {
+      void result.current.send("誤送信したかも");
+    });
+    await waitFor(() => expect(resolveSessionCreate).toBeDefined());
+
+    // セッション作成の最中に停止する。
+    act(() => result.current.stop());
+
+    // 作成が完了する。
+    await act(async () => {
+      resolveSessionCreate!(jsonResponse({ ...SESSION, id: 77 }, 201));
+    });
+
+    // ユーザーの発言はサーバへ届かなければならない（届かないと
+    // リロードで消える）。かつ、その POST の signal は abort 済みでない。
+    await waitFor(() => expect(messagePosts).toHaveLength(1));
+    expect(messagePosts[0].signal?.aborted).toBe(false);
+  });
+
   it("does nothing when called while no reply is being generated", async () => {
     stubFetchForStop();
     const { result } = renderHook(() => useChat());
