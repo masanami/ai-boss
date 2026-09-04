@@ -157,6 +157,20 @@ export function registerChatMessageRoute(
     });
     const messages = toClaudeMessages(listMessagesBySessionId(db, id));
 
+    // The client stopping the generation *is* the client hanging up: there is
+    // no stop endpoint, just an aborted `fetch` (#254 論点2). On Node, an
+    // aborted request reaches us as `c.req.raw.signal` — `@hono/node-server`
+    // aborts it from its response-close handler ("Client connection
+    // prematurely closed."). Handing that same signal to `streamBossMessage`
+    // is what actually stops the LLM call instead of leaving it running to
+    // completion.
+    //
+    // `c.req.raw.signal` rather than `stream.onAbort()` (both fire here) —
+    // it is already an `AbortSignal`, so it needs no adapter, and it is the
+    // same value the catch block below reads to tell a user-initiated stop
+    // apart from a genuine failure.
+    const requestSignal = c.req.raw.signal;
+
     return streamSSE(c, async (stream) => {
       let fullText = "";
       const toolSummaries: string[] = [];
@@ -225,8 +239,14 @@ export function registerChatMessageRoute(
               });
             },
           },
+          { signal: requestSignal },
         );
 
+        // Reaching here means the generation completed, so this reply is
+        // whole — even if the client hung up in the same tick that the last
+        // chunk landed. 完了が勝つ (#254 論点5): marking a fully generated
+        // reply "interrupted" because a stop arrived a moment too late would
+        // state something untrue about the text we are storing.
         const bossMessage = insertMessage(db, {
           session_id: id,
           role: "boss",
@@ -237,23 +257,48 @@ export function registerChatMessageRoute(
           data: JSON.stringify(bossMessage),
         });
       } catch (err) {
-        // Only log the error's class name, never its message: Claude API
-        // errors may embed request details (or, in principle, request
-        // headers) in `message`, and this is a critical path where those
-        // must not reach logs（docs/adr/0002-api-key-and-llm-call-path.md
-        // 決定 4: 失敗時のログに残すのはエラークラス名まで）。
-        console.error(
-          "chat message stream failed:",
-          err instanceof Error ? err.name : typeof err,
-        );
+        // Distinguishing a user-initiated stop from a genuine failure is the
+        // one thing the abort signal is read for here (#254 論点4): the LLM
+        // facade deliberately surfaces an external abort as its existing
+        // timeout error rather than a new error type, so the error alone
+        // cannot tell the two apart — the signal can.
+        const stoppedByUser = requestSignal.aborted;
+
+        if (stoppedByUser) {
+          // Not a failure: the user asked for this. Logged (without any error
+          // detail) so an operator reading the log can still tell why a reply
+          // in the history ends mid-sentence.
+          console.info("chat message stream stopped by the client");
+        } else {
+          // Only log the error's class name, never its message: Claude API
+          // errors may embed request details (or, in principle, request
+          // headers) in `message`, and this is a critical path where those
+          // must not reach logs（docs/adr/0002-api-key-and-llm-call-path.md
+          // 決定 4: 失敗時のログに残すのはエラークラス名まで）。
+          console.error(
+            "chat message stream failed:",
+            err instanceof Error ? err.name : typeof err,
+          );
+        }
         // Text already streamed to the client is part of the conversation
         // the user actually saw — persist it so the history stays consistent
         // after a reload instead of silently dropping the partial reply
         // （配信済みテキストが無ければ永続化せず、途中まで
         // 配信されていればその部分テキストを永続化する）。
+        //
+        // `interrupted: true` on **both** paths (#254 論点1・決定 1-b): the
+        // column says "this reply ended early", not "the user stopped it".
+        // A reply cut short by a failed or timed-out LLM call is just as
+        // incomplete as one the user stopped, and the reader wants the same
+        // thing signalled in both cases — that the text stops mid-thought.
         if (fullText !== "") {
           try {
-            insertMessage(db, { session_id: id, role: "boss", content: fullText });
+            insertMessage(db, {
+              session_id: id,
+              role: "boss",
+              content: fullText,
+              interrupted: true,
+            });
           } catch (persistErr) {
             console.error(
               "failed to persist the partial boss message:",
@@ -261,10 +306,16 @@ export function registerChatMessageRoute(
             );
           }
         }
-        await stream.writeSSE({
-          event: "error",
-          data: JSON.stringify({ error: GENERIC_STREAM_ERROR_MESSAGE }),
-        });
+        if (!stoppedByUser) {
+          // A stop is not an error, so no error event is reported for it.
+          // (The write would be swallowed anyway — the socket is already
+          // gone — but sending one would misrepresent what happened to any
+          // client that did still read it.)
+          await stream.writeSSE({
+            event: "error",
+            data: JSON.stringify({ error: GENERIC_STREAM_ERROR_MESSAGE }),
+          });
+        }
       }
     });
   });
