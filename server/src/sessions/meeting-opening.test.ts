@@ -110,6 +110,19 @@ describe("generateMeetingOpening", () => {
     );
   });
 
+  // Issue #288: 会の開始ひとことは現在日時を「出す」側の経路。
+  it("includes the current date/time section in the system prompt (#288)", async () => {
+    const now = new Date(2026, 7, 20, 8, 0);
+    createBossMessageMock.mockResolvedValue(fakeTextMessage("報告しろ"));
+
+    await generateMeetingOpening(db, env, now, "morning");
+
+    expect(createBossMessageMock).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ system: expect.stringContaining("現在日時:") }),
+    );
+  });
+
   it("sends thinking: { type: 'disabled' } and a small maxTokens budget", async () => {
     const now = new Date(2026, 7, 20, 8, 0);
     createBossMessageMock.mockResolvedValue(fakeTextMessage("報告しろ"));

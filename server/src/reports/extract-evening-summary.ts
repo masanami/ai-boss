@@ -141,6 +141,10 @@ export async function extractEveningSummary(
       recentDecisions: [],
       now,
       purpose: "daily-report",
+      // Issue #288: 出さない。日報の対象暦日は夕会の `started_at` 由来で
+      // `now` に依存しない（ADR 0007 決定 4）。日跨ぎの夕会では「今＝翌日」と
+      // 「対象暦日＝前日」が同じプロンプトに並び、抽出値が誤った日付を引く。
+      includeCurrentDateTime: false,
     });
 
     const requestPromise = requestVerdict(

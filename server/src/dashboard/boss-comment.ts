@@ -98,6 +98,11 @@ async function generateBossComment(
       recentDecisions: [],
       now,
       purpose: "notification",
+      // Issue #288: 出さない。このコメントは1日1回のキャッシュ（暦日＋タスク
+      // fingerprint）で再利用されるため、分粒度の時刻を入れると朝生成した
+      // 「もう10:05だ」が夕方まで表示される。時間帯ヒントは引き続き受け取る
+      // ので時間帯粒度の文脈は保たれる。
+      includeCurrentDateTime: false,
     });
 
     const message = await createBossMessage(client, {

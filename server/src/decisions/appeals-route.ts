@@ -119,6 +119,8 @@ export function registerAppealsRoute(
       tasks,
       recentDecisions,
       now: new Date(),
+      // 異議申し立ての裁定には経過時間の判断が要る（Issue #288）
+      includeCurrentDateTime: true,
     });
     const relatedTask =
       decision.task_id !== null ? findTaskById(db, decision.task_id) : undefined;

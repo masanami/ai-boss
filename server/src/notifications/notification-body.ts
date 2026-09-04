@@ -187,6 +187,10 @@ export async function generateNotificationBody(
       recentDecisions: [],
       now: request.now,
       purpose: "notification",
+      // 催促（締切超過・休憩延伸）はまさに「今」が要る（Issue #288）。
+      // 同じ purpose の boss-comment.ts とは逆の値になる — 出力可否を
+      // purpose から導いていないのはこのため。
+      includeCurrentDateTime: true,
     });
 
     const message = await streamBossMessage(client, {

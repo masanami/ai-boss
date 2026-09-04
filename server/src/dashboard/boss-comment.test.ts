@@ -70,6 +70,21 @@ describe("getOrGenerateBossComment", () => {
     expect(createBossMessageMock).toHaveBeenCalledTimes(1);
   });
 
+  // Issue #288: ボスコメントは現在日時を「出さない」側の経路。1日1回の
+  // キャッシュで再利用されるため、分粒度の時刻を入れると朝生成した文面が
+  // 夕方まで陳腐化したまま表示される。同じ purpose:"notification" を使う
+  // notification-body.ts は「出す」側であり、この対が「出力可否を purpose
+  // から導いていない」ことの検証を兼ねる。
+  it("omits the current date/time section from the system prompt (#288)", async () => {
+    const now = new Date(2026, 6, 6, 8, 0);
+    createBossMessageMock.mockResolvedValue(fakeTextMessage("今日も一日決めた通りにやれ"));
+
+    await getOrGenerateBossComment(db, env, now);
+
+    const request = createBossMessageMock.mock.calls[0][1];
+    expect(request.system).not.toContain("現在日時:");
+  });
+
   // Issue #117 (D4): this route's small maxTokens is sized for the comment
   // text alone — thinking must stay off so it can't starve max_tokens.
   it("sends thinking: { type: 'disabled' } (Issue #117 — small maxTokens must not compete with thinking)", async () => {

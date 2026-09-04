@@ -1,5 +1,6 @@
 import type { Task } from "../tasks/task.js";
 import type { SessionType } from "../sessions/session.js";
+import { toDateKey, toLocalOffset } from "../detection/time-utils.js";
 
 export const TONE_PRESETS = ["reliable", "strict", "logical", "passionate"] as const;
 export type TonePreset = (typeof TONE_PRESETS)[number];
@@ -64,8 +65,21 @@ export interface PersonaPromptContext {
    * （後方互換）。
    */
   recentSessionSummaries?: RecentSessionSummary[];
-  /** 現在時刻（時間帯ヒントの算出に使う。呼び出し側が注入する） */
+  /** 現在時刻（時間帯ヒント・現在日時セクションの算出に使う。呼び出し側が注入する） */
   now: Date;
+  /**
+   * `now` を現在日時セクションとしてプロンプトへ出すか（Issue #288）。
+   *
+   * 用途（`purpose`）から導かないのは意図的である。催促文面
+   * （`notification-body.ts`）とダッシュボードのボスコメント
+   * （`boss-comment.ts`）は同じ `purpose: "notification"` を使うが、後者は
+   * 1日1回のキャッシュを持つため分粒度の時刻を出すと陳腐化がユーザーに
+   * 見える。呼び出し元ごとに指定できる必要がある。
+   *
+   * 未指定時は「出さない」（fail-closed）。新しい呼び出し元が既定で
+   * 現在日時を出してしまわないようにするため。
+   */
+  includeCurrentDateTime?: boolean;
   /** 用途。省略時は "chat"（通知文面は "notification" でより短い文章を要求） */
   purpose?: PromptPurpose;
   /**
@@ -141,6 +155,124 @@ function resolveTimeOfDay(now: Date): TimeOfDay {
   return "夜";
 }
 
+const WEEKDAY_LABELS = ["日", "月", "火", "水", "木", "金", "土"] as const;
+
+function formatLocalTime(date: Date): string {
+  const hours = String(date.getHours()).padStart(2, "0");
+  const minutes = String(date.getMinutes()).padStart(2, "0");
+  return `${hours}:${minutes}`;
+}
+
+/** 例: `2026-09-05（土）14:32` */
+function formatLocalDateTime(date: Date): string {
+  return `${toDateKey(date)}（${WEEKDAY_LABELS[date.getDay()]}）${formatLocalTime(date)}`;
+}
+
+/** 例: `2026-09-05T14:32+09:00` */
+function formatLocalIsoDateTime(date: Date): string {
+  return `${toDateKey(date)}T${formatLocalTime(date)}${toLocalOffset(date)}`;
+}
+
+/** 日付のみの値（`2026-09-05`）。時刻を持たないため整形せずそのまま出す */
+const DATE_ONLY_PATTERN = /^\d{4}-\d{2}-\d{2}$/;
+
+/**
+ * 完全な ISO 8601 日時: `T` 区切り・分まで必須・秒/ミリ秒任意・タイムゾーン
+ * 指定（`Z` または `±HH:MM`）任意。`activity-log-tool.ts` の同種パターンと
+ * 同じ緩さに揃えてある。
+ */
+const ISO_DATE_TIME_PATTERN =
+  /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})(?::(\d{2})(?:\.\d+)?)?(?:Z|[+-](\d{2}):(\d{2}))?$/;
+
+/** `year` 年 `month` 月（1 始まり）の日数。閏年もこれで正しく出る */
+function daysInMonth(year: number, month: number): number {
+  return new Date(Date.UTC(year, month, 0)).getUTCDate();
+}
+
+/**
+ * 文字列が「暦として妥当な ISO 8601 日時」かを、`Date` に解釈させる**前に**
+ * 判定する（PR #292 の Codex 指摘）。
+ *
+ * `new Date()` は存在しない日付を黙ってロールオーバーさせ（`2026-02-30T12:00:00Z`
+ * → 3/2）、`"0"` や `"12/31/2026"` のような非 ISO 文字列も受理する。
+ * `Number.isNaN(getTime())` のガードだけでは、**捏造された締切がプロンプトへ
+ * 出て締切超過の判定・催促の根拠が狂う**（表示だけの問題ではない）。
+ *
+ * 判定は `Date` を介さず文字列の構成要素に対して行う。parse 後のローカル成分と
+ * 突き合わせる方式は、オフセット付きの値だと実行環境の TZ 次第で成分がずれる
+ * ため成立しない。
+ */
+function isValidIsoDateTime(value: string): boolean {
+  const matched = ISO_DATE_TIME_PATTERN.exec(value);
+  if (matched === null) {
+    return false;
+  }
+  const year = Number(matched[1]);
+  const month = Number(matched[2]);
+  const day = Number(matched[3]);
+  const hour = Number(matched[4]);
+  const minute = Number(matched[5]);
+  const second = matched[6] === undefined ? 0 : Number(matched[6]);
+  const offsetHour = matched[7] === undefined ? 0 : Number(matched[7]);
+  const offsetMinute = matched[8] === undefined ? 0 : Number(matched[8]);
+
+  return (
+    month >= 1 &&
+    month <= 12 &&
+    day >= 1 &&
+    day <= daysInMonth(year, month) &&
+    hour <= 23 &&
+    minute <= 59 &&
+    second <= 59 &&
+    offsetHour <= 23 &&
+    offsetMinute <= 59
+  );
+}
+
+/**
+ * 保存されている日時文字列を、プロンプトへ出す用のローカル表記へ整形する
+ * （Issue #289）。プロンプトに「今」だけローカル・他は UTC という混在を
+ * 残さないための共通処理。
+ *
+ * DB の保存形式（`toISOString()` 由来の UTC）は変えない — これは表示だけの
+ * 変換である。次の2つは整形せず元の値をそのまま返す:
+ *
+ * - **日付のみ**（`due_at` は web の日付入力から `YYYY-MM-DD` で入る）。
+ *   時刻を持たない値へ `00:00` を捏造しないため。
+ * - **暦として妥当な ISO 8601 日時でない値**（{@link isValidIsoDateTime}）。
+ *   `due_at` はボスの `create_task` / `update_task` 経由で任意の文字列が
+ *   入りうる（`task-tools.ts` は「ISO 8601 日時文字列」として公開するが
+ *   `tasks-validation.ts` に形式の検証は無い）。`resolveStrictnessDescription`
+ *   と同じ防御的フォールバックの作法で、原文をそのまま出す（"Invalid Date" も
+ *   捏造された日時も出さない。原文のほうが上流のデータ異常を追跡できる）。
+ */
+function formatStoredDateTime(stored: string): string {
+  if (DATE_ONLY_PATTERN.test(stored) || !isValidIsoDateTime(stored)) {
+    return stored;
+  }
+  const parsed = new Date(stored);
+  if (Number.isNaN(parsed.getTime())) {
+    return stored;
+  }
+  return formatLocalDateTime(parsed);
+}
+
+/**
+ * 現在日時セクション（Issue #288）。含める情報は日付・曜日・時分・オフセット
+ * 付き ISO の4点で、秒は入れない（用途は「締切まであと何時間」「着手から
+ * 何分」で、分の分解能で足りる）。
+ *
+ * オフセット付き ISO を併記するのは、ボスが経過時間を計算する相手である
+ * `get_activity_log` の出力が UTC ISO へ正規化されているため
+ * （`activity-log-tool.ts`）。ローカル表記だけではオフセット分ずれた差分
+ * 計算になりうる。
+ *
+ * 行頭のラベルは呼び出し元テストが有無を判定するキーとして固定する。
+ */
+function formatCurrentDateTimeSection(now: Date): string {
+  return `現在日時: ${formatLocalDateTime(now)}（ISO: ${formatLocalIsoDateTime(now)}）`;
+}
+
 // `#<id>` はボスが update_task の対象を特定するための内部識別子（Issue #142）。
 // ツールが有効な chat プロンプトのみに含め、通知・日報などユーザー可視文面の
 // 生成経路（ツール非公開）には渡さない — モデルが内部 id を文面に
@@ -148,7 +280,7 @@ function resolveTimeOfDay(now: Date): TimeOfDay {
 function formatTaskLine(task: Task, includeId: boolean): string {
   const status = TASK_STATUS_LABELS[task.status];
   const priority = task.priority ? TASK_PRIORITY_LABELS[task.priority] : "未設定";
-  const dueAt = task.due_at ?? "未設定";
+  const dueAt = task.due_at === null ? "未設定" : formatStoredDateTime(task.due_at);
   const idPart = includeId ? `#${task.id} ` : "";
   return `- [${status}] ${idPart}${task.title}（優先度: ${priority} / 締切: ${dueAt}）`;
 }
@@ -161,7 +293,7 @@ function formatTaskSection(tasks: Task[], includeId: boolean): string {
 }
 
 function formatDecisionLine(decision: RecentDecision): string {
-  return `- ${decision.decidedAt}: ${decision.content}`;
+  return `- ${formatStoredDateTime(decision.decidedAt)}: ${decision.content}`;
 }
 
 function formatDecisionSection(decisions: RecentDecision[]): string {
@@ -184,11 +316,13 @@ function resolveSessionTypeLabel(type: SessionType): string {
   return SESSION_TYPE_LABELS[type] ?? "セッション";
 }
 
-// 日時は formatDecisionLine と同じく保存されている ISO 文字列をそのまま出す。
-// 先頭10文字へ切り詰めると UTC 基準の日付になり、JST 午前9時より前に行った
-// セッションが前日として提示されてしまう（保存値は toISOString() 由来の UTC）。
+// 日時は formatDecisionLine と同じくローカル整形して出す（Issue #289）。
+// 保存値は toISOString() 由来の UTC なので、そのまま出すとプロンプト内で
+// 「今」だけローカル・他は UTC の混在になり、モデルが後者をローカル時刻と
+// 誤読すればオフセット分ずれた解釈になる。先頭10文字への切り詰めも同じ理由で
+// 不可（UTC 基準の日付になり、JST 午前9時より前のセッションが前日になる）。
 function formatSessionSummaryLine(summary: RecentSessionSummary): string {
-  return `- ${summary.reportedAt} ${resolveSessionTypeLabel(summary.type)}: ${summary.content}`;
+  return `- ${formatStoredDateTime(summary.reportedAt)} ${resolveSessionTypeLabel(summary.type)}: ${summary.content}`;
 }
 
 /**
@@ -269,10 +403,20 @@ export function buildPersonaPrompt(
     "応答の規律: ボスは決定の形で断言する。「〜すべきか迷う」ではなく「〜しろ」「〜で行く」のように言い切る。" +
       "優先順位・ノルマ・締切・持ち越し等の重要な裁定を下したときは record_decision ツールで記録すること。",
     TIME_OF_DAY_HINTS[timeOfDay],
+  ];
+
+  // 時間帯ヒント（何をするタイミングかという行動指示）と併記する。実時刻から
+  // 「夕方は成果を振り返る」といった運用方針は導出されないため、実時刻を
+  // 入れてもヒントは置き換えない。
+  if (context.includeCurrentDateTime ?? false) {
+    sections.push(formatCurrentDateTimeSection(context.now));
+  }
+
+  sections.push(
     `現在のタスク一覧:\n${formatTaskSection(context.tasks, purpose === "chat")}`,
     `直近の決定:\n${formatDecisionSection(context.recentDecisions)}`,
     `直近の報告履歴:\n${formatSessionSummarySection(context.recentSessionSummaries ?? [])}`,
-  ];
+  );
 
   if (settings.customInstructions) {
     sections.push(`追加指示: ${settings.customInstructions}`);

@@ -5,6 +5,7 @@ import {
   type PersonaSettings,
 } from "./persona-prompt.js";
 import type { Task } from "../tasks/task.js";
+import { toDateKey, toLocalOffset } from "../detection/time-utils.js";
 
 const now = new Date("2026-07-05T10:00:00+09:00");
 
@@ -516,6 +517,248 @@ describe("buildPersonaPrompt", () => {
 
       expect(morning).not.toContain("朝会（計画セッション）");
       expect(evening).not.toContain("夕会（報告セッション）");
+    });
+  });
+
+  // Issue #288。固定時刻はローカル日付から導出し、TZ 非依存に組む
+  // （ADR 0007 決定 5）。オフセットの期待値も "+09:00" のような固定値を
+  // 書かず、プロンプトから取り出した ISO を parse し直して照合する。
+  describe("現在日時（includeCurrentDateTime）", () => {
+    const at = new Date(2026, 8, 5, 14, 32);
+
+    function buildWithCurrentDateTime(include?: boolean): string {
+      return buildPersonaPrompt(DEFAULT_PERSONA_SETTINGS, {
+        tasks: [],
+        recentDecisions: [],
+        now: at,
+        ...(include === undefined ? {} : { includeCurrentDateTime: include }),
+      });
+    }
+
+    /** プロンプトから「現在日時:」で始まる行を取り出す */
+    function currentDateTimeLine(prompt: string): string | undefined {
+      return prompt
+        .split("\n")
+        .find((line) => line.startsWith("現在日時:"));
+    }
+
+    it("オプション未指定のときは現在日時を含まない（fail-closed の既定）", () => {
+      expect(buildWithCurrentDateTime()).not.toContain("現在日時:");
+    });
+
+    it("オプションを false にしたときは現在日時を含まない", () => {
+      expect(buildWithCurrentDateTime(false)).not.toContain("現在日時:");
+    });
+
+    it("オプションを true にしたときは「現在日時:」で始まる行を含む", () => {
+      expect(currentDateTimeLine(buildWithCurrentDateTime(true))).toBeDefined();
+    });
+
+    it("現在日時の行はローカル暦日を YYYY-MM-DD 形式で含む", () => {
+      expect(currentDateTimeLine(buildWithCurrentDateTime(true))).toContain(
+        "2026-09-05",
+      );
+    });
+
+    it("現在日時の行はローカル暦日に対応する曜日を含む", () => {
+      // 2026-09-05 は土曜日
+      expect(currentDateTimeLine(buildWithCurrentDateTime(true))).toContain(
+        "（土）",
+      );
+    });
+
+    it("現在日時の行はローカル時刻を HH:mm 形式で含む", () => {
+      expect(currentDateTimeLine(buildWithCurrentDateTime(true))).toContain(
+        "14:32",
+      );
+    });
+
+    it("現在日時の行は now と同じ時点を指すオフセット付き ISO を含む", () => {
+      const line = currentDateTimeLine(buildWithCurrentDateTime(true)) ?? "";
+
+      const iso = /(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}[+-]\d{2}:\d{2})/.exec(line)?.[1];
+
+      expect(iso).toBeDefined();
+      // 分未満を落とした now と同一時点になること（= オフセットが正しい）
+      expect(new Date(iso as string).getTime()).toBe(
+        new Date(2026, 8, 5, 14, 32, 0, 0).getTime(),
+      );
+    });
+
+    it("現在日時の行は秒を含まない", () => {
+      const line = currentDateTimeLine(buildWithCurrentDateTime(true)) ?? "";
+
+      expect(line).not.toMatch(/\d{2}:\d{2}:\d{2}/);
+    });
+
+    it("現在日時を含めても時間帯ヒントは残る", () => {
+      // 14:32 は「日中」
+      expect(buildWithCurrentDateTime(true)).toContain("日中:");
+      expect(buildWithCurrentDateTime(false)).toContain("日中:");
+    });
+  });
+
+  // Issue #289。DB は toISOString() で UTC 保存するため、ローカル日時から
+  // 作った ISO を入力に与え、ローカル整形で元のローカル日時へ戻ることを
+  // 見る（TZ 非依存・ADR 0007 決定 5）。
+  describe("プロンプトへ出す日時のローカル整形", () => {
+    const storedLocal = new Date(2026, 8, 5, 14, 32);
+    const storedIso = storedLocal.toISOString();
+    const expectedLocal = "2026-09-05（土）14:32";
+
+    it("直近の決定の日時をローカル整形で表示する", () => {
+      const prompt = buildPersonaPrompt(DEFAULT_PERSONA_SETTINGS, {
+        tasks: [],
+        recentDecisions: [{ content: "A案件を最優先にする", decidedAt: storedIso }],
+        now,
+      });
+
+      expect(prompt).toContain(`- ${expectedLocal}: A案件を最優先にする`);
+    });
+
+    it("直近の報告履歴の日時をローカル整形で表示する", () => {
+      const prompt = buildPersonaPrompt(DEFAULT_PERSONA_SETTINGS, {
+        tasks: [],
+        recentDecisions: [],
+        recentSessionSummaries: [
+          { type: "morning", content: "資料作成を最優先にする", reportedAt: storedIso },
+        ],
+        now,
+      });
+
+      expect(prompt).toContain(`- ${expectedLocal} 朝会: 資料作成を最優先にする`);
+    });
+
+    it("タスクの締切が時刻を持つ ISO 日時のとき、ローカル整形で表示する", () => {
+      const prompt = buildPersonaPrompt(DEFAULT_PERSONA_SETTINGS, {
+        tasks: [makeTask({ due_at: storedIso })],
+        recentDecisions: [],
+        now,
+      });
+
+      expect(prompt).toContain(`締切: ${expectedLocal}`);
+    });
+
+    it("タスクの締切が日付のみのとき、その値をそのまま表示する", () => {
+      const prompt = buildPersonaPrompt(DEFAULT_PERSONA_SETTINGS, {
+        tasks: [makeTask({ due_at: "2026-09-05" })],
+        recentDecisions: [],
+        now,
+      });
+
+      // 日付のみの値へ 00:00 を捏造しない
+      expect(prompt).toContain("締切: 2026-09-05）");
+    });
+
+    it("直近の決定の日時が解釈できない文字列のとき、その値をそのまま表示する", () => {
+      const prompt = buildPersonaPrompt(DEFAULT_PERSONA_SETTINGS, {
+        tasks: [],
+        recentDecisions: [{ content: "A案件を最優先にする", decidedAt: "いつか" }],
+        now,
+      });
+
+      expect(prompt).toContain("- いつか: A案件を最優先にする");
+      expect(prompt).not.toContain("Invalid Date");
+    });
+
+    it("直近の報告履歴の日時が解釈できない文字列のとき、その値をそのまま表示する", () => {
+      const prompt = buildPersonaPrompt(DEFAULT_PERSONA_SETTINGS, {
+        tasks: [],
+        recentDecisions: [],
+        recentSessionSummaries: [
+          { type: "morning", content: "資料作成を最優先にする", reportedAt: "いつか" },
+        ],
+        now,
+      });
+
+      expect(prompt).toContain("- いつか 朝会: 資料作成を最優先にする");
+      expect(prompt).not.toContain("Invalid Date");
+    });
+
+    it("タスクの締切が解釈できない文字列のとき、その値をそのまま表示する", () => {
+      const prompt = buildPersonaPrompt(DEFAULT_PERSONA_SETTINGS, {
+        tasks: [makeTask({ due_at: "そのうち" })],
+        recentDecisions: [],
+        now,
+      });
+
+      expect(prompt).toContain("締切: そのうち）");
+      expect(prompt).not.toContain("Invalid Date");
+    });
+
+    it("オフセット付きの ISO 日時もローカル整形される", () => {
+      // ローカル 14:32 と同一時点を、実行環境の TZ に関わらずオフセット表記で
+      // 与える（DB は Z 付きで保存するが、整形は表記形式に依存しない）
+      const offsetIso = `${toDateKey(storedLocal)}T${String(storedLocal.getHours()).padStart(2, "0")}:32${toLocalOffset(storedLocal)}`;
+
+      const prompt = buildPersonaPrompt(DEFAULT_PERSONA_SETTINGS, {
+        tasks: [],
+        recentDecisions: [{ content: "A案件を最優先にする", decidedAt: offsetIso }],
+        now,
+      });
+
+      expect(prompt).toContain(`- ${expectedLocal}: A案件を最優先にする`);
+    });
+
+    // PR #292 の Codex 指摘。`new Date()` は不正な日付を黙ってロールオーバー
+    // させ（2026-02-30 → 3/2）、"0" や "12/31/2026" のような非 ISO 文字列も
+    // 受理する。Number.isNaN(getTime()) のガードだけでは、捏造された締切が
+    // プロンプトへ出て締切超過の判定・催促の根拠が狂う。
+    describe.each([
+      ["暦として存在しない日付", "2026-02-30T12:00:00Z"],
+      ["数値のみ", "0"],
+      ["年のみ", "2026"],
+      ["ISO でない日付表記", "12/31/2026"],
+    ])("妥当な ISO 日時でない値（%s: %s）は変換せずそのまま出す", (_label, value) => {
+      it("タスクの締切", () => {
+        const prompt = buildPersonaPrompt(DEFAULT_PERSONA_SETTINGS, {
+          tasks: [makeTask({ due_at: value })],
+          recentDecisions: [],
+          now,
+        });
+
+        expect(prompt).toContain(`締切: ${value}）`);
+      });
+
+      it("直近の決定", () => {
+        const prompt = buildPersonaPrompt(DEFAULT_PERSONA_SETTINGS, {
+          tasks: [],
+          recentDecisions: [{ content: "A案件を最優先にする", decidedAt: value }],
+          now,
+        });
+
+        expect(prompt).toContain(`- ${value}: A案件を最優先にする`);
+      });
+
+      it("直近の報告履歴", () => {
+        const prompt = buildPersonaPrompt(DEFAULT_PERSONA_SETTINGS, {
+          tasks: [],
+          recentDecisions: [],
+          recentSessionSummaries: [
+            { type: "morning", content: "資料作成を最優先にする", reportedAt: value },
+          ],
+          now,
+        });
+
+        expect(prompt).toContain(`- ${value} 朝会: 資料作成を最優先にする`);
+      });
+    });
+
+    // 「今」だけローカルで他は UTC という混在を残さないための担保。
+    // due_at にもボスのツール経由で UTC ISO が入りうる（task-tools.ts が
+    // 「ISO 8601 日時文字列」として公開しており形式検証が無い）。
+    it("有効な UTC ISO 保存値を与えたとき、出力に Z 終端の UTC ISO 日時が残らない", () => {
+      const prompt = buildPersonaPrompt(DEFAULT_PERSONA_SETTINGS, {
+        tasks: [makeTask({ due_at: storedIso })],
+        recentDecisions: [{ content: "A案件を最優先にする", decidedAt: storedIso }],
+        recentSessionSummaries: [
+          { type: "morning", content: "資料作成を最優先にする", reportedAt: storedIso },
+        ],
+        now,
+        includeCurrentDateTime: true,
+      });
+
+      expect(prompt).not.toMatch(/\d{2}:\d{2}(:\d{2}(\.\d+)?)?Z/);
     });
   });
 });

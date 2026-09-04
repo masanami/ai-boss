@@ -5,6 +5,7 @@ import {
   isWithinWorkingHours,
   timeStringToMinutes,
   toDateKey,
+  toLocalOffset,
 } from "./time-utils.js";
 
 describe("clamp", () => {
@@ -110,5 +111,37 @@ describe("toDateKey", () => {
   it("zero-pads single-digit months and days", () => {
     const date = new Date("2026-01-02T00:00:00");
     expect(toDateKey(date)).toBe("2026-01-02");
+  });
+});
+
+// 実行環境のタイムゾーンに依存しない形で検証する（ADR 0007 決定 5 と同じ
+// 精神をオフセットにも及ぼす）。期待値へ "+09:00" のような固定値を書かず、
+// 形式と、`getTimezoneOffset()` との整合だけを見る。
+describe("toLocalOffset", () => {
+  // -0 を +0 へ畳む。UTC ではオフセットが 0 になり、符号の掛け算（および
+  // getTimezoneOffset() の符号反転）から -0 が生じる。`toBe` は Object.is
+  // 比較で -0 と +0 を別物として扱うため、正規化しないと UTC 環境でだけ
+  // 落ちる（分の値としては同一であり、区別に意味は無い）。
+  function normalizeZero(minutes: number): number {
+    return minutes === 0 ? 0 : minutes;
+  }
+
+  it("formats the local UTC offset as ±HH:MM", () => {
+    const date = new Date(2026, 8, 5, 14, 32);
+
+    expect(toLocalOffset(date)).toMatch(/^[+-]\d{2}:\d{2}$/);
+  });
+
+  it("returns an offset whose sign and magnitude match getTimezoneOffset()", () => {
+    const date = new Date(2026, 8, 5, 14, 32);
+    // getTimezoneOffset() は「UTC からの遅れ」を分で返すため符号が逆になる
+    const expectedMinutes = -date.getTimezoneOffset();
+
+    const [, sign, hours, minutes] =
+      /^([+-])(\d{2}):(\d{2})$/.exec(toLocalOffset(date)) ?? [];
+    const actualMinutes =
+      (sign === "-" ? -1 : 1) * (Number(hours) * 60 + Number(minutes));
+
+    expect(normalizeZero(actualMinutes)).toBe(normalizeZero(expectedMinutes));
   });
 });
