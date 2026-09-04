@@ -86,6 +86,62 @@
   color: var(--color-accent);
 }
 
+/* 中断された応答（Issue #254）。ツール通知（下・中央に浮かぶ小さな札）と会の
+   境界（会話を左右いっぱいに断ち切る罫線）に続く第 3 の語彙だが、前の 2 つと
+   違って**独立した行を作らない** — 中断は「この発言がどういう状態か」の注記
+   であり、別行に置くとどの応答が切れたのか対応づかなくなるため、吹き出し自体
+   の見え方を変える。
+
+   途切れ方の表現: 左の縁を斜めに切り落として「破れた紙片」に見せ、枠線を破線
+   に落とす。完結した応答（実線・角丸）との差が、色ではなく形として出るので、
+   スクロール中にも拾える。danger 色は使わない — 中断は失敗ではなくユーザーが
+   選んだ操作であり、赤くすると事故のように見えてしまう。 */
+.chat-message-interrupted {
+  border-style: dashed;
+  border-color: var(--color-text-muted);
+  border-bottom-left-radius: 0;
+  /* 左下を斜めに落とす。角丸(10px)と揃うサイズにして、吹き出しの他の角と
+     喧嘩しないようにしている。 */
+  clip-path: polygon(
+    0 0,
+    100% 0,
+    100% 100%,
+    10px 100%,
+    0 calc(100% - 10px)
+  );
+}
+
+/* 本文が言い切らずに終わっていることを、文章の側でも示す。 */
+.chat-message-interrupted .chat-message-content::after {
+  content: "…";
+  color: var(--color-text-muted);
+}
+
+.chat-message-interrupted-label {
+  display: block;
+  margin-top: 0.35rem;
+  font-size: 0.7rem;
+  letter-spacing: 0.04em;
+  color: var(--color-text-muted);
+}
+
+/* 停止ボタン（Issue #254）。送信ボタンと同じ位置に出るので、押し間違いを
+   誘わないよう色を変える。accent（送信の色）でも danger（失敗の色）でもなく
+   muted 寄りにしているのは、停止が「異常」ではなく通常の操作だから。 */
+.chat-stop-button {
+  background-color: var(--color-bg-elevated);
+  color: var(--color-text);
+  border: 1px solid var(--color-text-muted);
+  border-radius: 8px;
+  padding: 0.4rem 0.85rem;
+  font-size: 0.85rem;
+  cursor: pointer;
+}
+
+.chat-stop-button:hover {
+  background-color: var(--color-bg-hover);
+}
+
 .chat-tool-notice {
   align-self: center;
   font-size: 0.8rem;

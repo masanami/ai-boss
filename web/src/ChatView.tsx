@@ -73,10 +73,25 @@ function ChatEntryItem({ entry }: { entry: ChatEntry }) {
       </li>
     );
   }
+  // 中断された応答（Issue #254）。ツール通知（中央の小さな札）・会の境界
+  // （左右いっぱいの罫線）に続く第 3 の語彙として、**吹き出し自体に手を入れる**
+  // 形にした。前の 2 つが「会話の流れに差し挟まれる独立した要素」なのに対し、
+  // 中断は「この発言がどういう状態か」の注記なので、独立した行として置くと
+  // どの応答が切れたのか対応づかなくなる。左の縁を切り落として途切れた紙片の
+  // ように見せ、本文末尾には省略記号を、下に小さなラベルを添える。
   return (
-    <li className={`chat-message chat-message-${entry.role}`}>
+    <li
+      className={`chat-message chat-message-${entry.role}${
+        entry.interrupted === true ? " chat-message-interrupted" : ""
+      }`}
+    >
       <span className="chat-message-role">{ROLE_LABELS[entry.role]}</span>
       <p className="chat-message-content">{entry.content}</p>
+      {entry.interrupted === true && (
+        <span className="chat-message-interrupted-label">
+          ここで停止しました
+        </span>
+      )}
     </li>
   );
 }
@@ -102,6 +117,7 @@ function ChatView({ chatState }: ChatViewProps) {
     draft,
     setDraft,
     send,
+    stop,
     startSession,
     endSession,
   } = chatState;
@@ -130,6 +146,30 @@ function ChatView({ chatState }: ChatViewProps) {
     input.style.height = "auto";
     input.style.height = `${input.scrollHeight}px`;
   }, [draft]);
+
+  // ESC で生成を止める（Issue #254、Claude Code の中断キーに相当）。
+  //
+  // **textarea の onKeyDown には置けない**: 生成中の textarea は disabled で、
+  // disabled な要素はフォーカスを受けずキーイベントも発火しないため、Enter
+  // 送信と同じ場所へ足しても動かない。生成中だけドキュメントを購読する。
+  useEffect(() => {
+    if (!sending) {
+      return;
+    }
+    const handleEscape = (event: KeyboardEvent) => {
+      if (event.key !== "Escape") {
+        return;
+      }
+      // 変換中の ESC は IME のもの（変換の取り消し）であって、生成の停止では
+      // ない。Enter 送信が同じ配慮をしているのと揃えている。
+      if (event.isComposing || event.keyCode === 229) {
+        return;
+      }
+      stop();
+    };
+    document.addEventListener("keydown", handleEscape);
+    return () => document.removeEventListener("keydown", handleEscape);
+  }, [sending, stop]);
 
   if (status === "loading") {
     return <p className="chat-status">会話履歴を読み込み中…</p>;
@@ -232,9 +272,23 @@ function ChatView({ chatState }: ChatViewProps) {
           aria-label="メッセージ"
           disabled={sending || switching}
         />
-        <button type="submit" disabled={!canSend}>
-          {sending ? "送信中…" : "送信"}
-        </button>
+        {/* 生成中は送信ボタンを停止ボタンへ差し替える（Issue #254）。無効化
+            された送信ボタンを見せて待たせるのではなく、同じ位置がそのまま
+            「止める」手段になる（ChatGPT と同じ）。 */}
+        {sending ? (
+          <button
+            type="button"
+            className="chat-stop-button"
+            onClick={stop}
+            aria-label="生成を停止"
+          >
+            停止
+          </button>
+        ) : (
+          <button type="submit" disabled={!canSend}>
+            送信
+          </button>
+        )}
       </form>
     </div>
   );

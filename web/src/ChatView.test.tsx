@@ -496,7 +496,11 @@ describe("ChatView", () => {
     expect(screen.getByRole("button", { name: "送信" })).toBeEnabled();
   });
 
-  it("disables the input and the send button while a message is in flight", async () => {
+  // Issue #254 で意図的に変えた契約: 生成中のボタンは「送信中…」で disabled
+  // ではなく、押せる停止ボタンに置き換わる（無効なボタンを見せて待たせる
+  // のをやめた）。入力欄が disabled のままなのは本 Issue のスコープ外として
+  // 据え置いた点なので、引き続き固定する。
+  it("swaps the send button for an enabled stop button while a message is in flight, and keeps the input disabled (#254)", async () => {
     vi.stubGlobal(
       "fetch",
       vi
@@ -517,10 +521,9 @@ describe("ChatView", () => {
     fireEvent.click(screen.getByRole("button", { name: "送信" }));
 
     await waitFor(() =>
-      expect(
-        screen.getByRole("button", { name: "送信中…" }),
-      ).toBeDisabled(),
+      expect(screen.getByRole("button", { name: "生成を停止" })).toBeEnabled(),
     );
+    expect(screen.queryByRole("button", { name: "送信" })).toBeNull();
     expect(screen.getByLabelText("メッセージ")).toBeDisabled();
   });
 
@@ -832,6 +835,159 @@ describe("ChatView", () => {
       expect(screen.getByRole("button", { name: "朝会を開始" })).toBeDisabled(),
     );
     expect(screen.getByRole("button", { name: "夕会を開始" })).toBeDisabled();
+  });
+});
+
+// Issue #254: 停止 UI。ここは `makeChatState` で chatState を直接与える形で
+// 書く（この describe が検証するのは「画面が chatState をどう読み・どう
+// stop を呼ぶか」であり、フック側の停止の中身は use-chat.test.ts が持つ）。
+describe("ChatView stop UI (Issue #254)", () => {
+  it("shows the send button, not a stop button, when nothing is being generated", () => {
+    render(<ChatView chatState={makeChatState({ sending: false })} />);
+
+    expect(screen.getByRole("button", { name: "送信" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "生成を停止" })).toBeNull();
+  });
+
+  it("calls stop when the stop button is clicked", () => {
+    const stop = vi.fn();
+    render(<ChatView chatState={makeChatState({ sending: true, stop })} />);
+
+    fireEvent.click(screen.getByRole("button", { name: "生成を停止" }));
+
+    expect(stop).toHaveBeenCalledTimes(1);
+  });
+
+  // ESC のハンドラを textarea に付けると、生成中の textarea は disabled で
+  // キーイベントが発火しないため動かない。document 購読になっていることを
+  // 「フォーカスがどこにも無い状態で押しても効く」形で固定する。
+  it("stops the generation on Escape while generating, without needing focus in the textarea", () => {
+    const stop = vi.fn();
+    render(<ChatView chatState={makeChatState({ sending: true, stop })} />);
+
+    fireEvent.keyDown(document, { key: "Escape" });
+
+    expect(stop).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not stop on an Escape that cancels an IME composition", () => {
+    const stop = vi.fn();
+    render(<ChatView chatState={makeChatState({ sending: true, stop })} />);
+
+    fireEvent.keyDown(document, { key: "Escape", isComposing: true });
+    fireEvent.keyDown(document, { key: "Escape", keyCode: 229 });
+
+    expect(stop).not.toHaveBeenCalled();
+  });
+
+  it("does not stop on Escape when nothing is being generated", () => {
+    const stop = vi.fn();
+    render(<ChatView chatState={makeChatState({ sending: false, stop })} />);
+
+    fireEvent.keyDown(document, { key: "Escape" });
+
+    expect(stop).not.toHaveBeenCalled();
+  });
+
+  it("stops listening for Escape once the generation has finished", () => {
+    const stop = vi.fn();
+    const { rerender } = render(
+      <ChatView chatState={makeChatState({ sending: true, stop })} />,
+    );
+    rerender(<ChatView chatState={makeChatState({ sending: false, stop })} />);
+
+    fireEvent.keyDown(document, { key: "Escape" });
+
+    expect(stop).not.toHaveBeenCalled();
+  });
+
+  it("renders an interrupted boss reply distinguishably from a complete one", () => {
+    const { container } = render(
+      <ChatView
+        chatState={makeChatState({
+          entries: [
+            {
+              kind: "message",
+              key: "message-1",
+              role: "boss",
+              content: "最後まで書いた",
+            },
+            {
+              kind: "message",
+              key: "message-2",
+              role: "boss",
+              content: "まずは見積",
+              interrupted: true,
+            },
+          ],
+        })}
+      />,
+    );
+
+    const interrupted = container.querySelectorAll(".chat-message-interrupted");
+    expect(interrupted).toHaveLength(1);
+    expect(interrupted[0].textContent).toContain("まずは見積");
+    expect(screen.getByText("ここで停止しました")).toBeInTheDocument();
+  });
+
+  // 中断表示が既存の 2 つの語彙（ツール通知・会の境界）と衝突していないこと。
+  // 同じクラス名を使い回すと、片方のスタイル調整がもう片方を壊す。
+  it("uses a class distinct from the tool notice and the meeting boundary", () => {
+    const { container } = render(
+      <ChatView
+        chatState={makeChatState({
+          entries: [
+            {
+              kind: "message",
+              key: "message-1",
+              role: "boss",
+              content: "まずは見積",
+              interrupted: true,
+            },
+          ],
+        })}
+      />,
+    );
+
+    const interrupted = container.querySelector(".chat-message-interrupted");
+    expect(interrupted).not.toBeNull();
+    expect(interrupted!.classList.contains("chat-tool-notice")).toBe(false);
+    expect(interrupted!.classList.contains("chat-boundary")).toBe(false);
+  });
+
+  it("keeps tool notices on screen alongside an interrupted reply, and adds no extra notice about them", () => {
+    render(
+      <ChatView
+        chatState={makeChatState({
+          entries: [
+            {
+              kind: "tool",
+              key: "tool-1",
+              tool: {
+                name: "create_task",
+                input: {},
+                result: JSON.stringify({ title: "資料作成" }),
+                isError: false,
+              },
+            },
+            {
+              kind: "message",
+              key: "message-1",
+              role: "boss",
+              content: "まずは見積",
+              interrupted: true,
+            },
+          ],
+        })}
+      />,
+    );
+
+    // 実行済みツールの通知はそのまま残る（副作用は巻き戻さないため）。
+    expect(
+      screen.getByText("ボスがタスクを作成しました: 資料作成"),
+    ).toBeInTheDocument();
+    // 「取り消されていません」といった追加の通知は出さない（#254 論点6）。
+    expect(screen.getAllByRole("listitem")).toHaveLength(2);
   });
 });
 
