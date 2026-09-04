@@ -173,6 +173,36 @@ function formatLocalIsoDateTime(date: Date): string {
   return `${toDateKey(date)}T${formatLocalTime(date)}${toLocalOffset(date)}`;
 }
 
+/** 日付のみの値（`2026-09-05`）。時刻を持たないため整形せずそのまま出す */
+const DATE_ONLY_PATTERN = /^\d{4}-\d{2}-\d{2}$/;
+
+/**
+ * 保存されている日時文字列を、プロンプトへ出す用のローカル表記へ整形する
+ * （Issue #289）。プロンプトに「今」だけローカル・他は UTC という混在を
+ * 残さないための共通処理。
+ *
+ * DB の保存形式（`toISOString()` 由来の UTC）は変えない — これは表示だけの
+ * 変換である。次の2つは整形せず元の値をそのまま返す:
+ *
+ * - **日付のみ**（`due_at` は web の日付入力から `YYYY-MM-DD` で入る）。
+ *   時刻を持たない値へ `00:00` を捏造しないため。
+ * - **`Date` として解釈できない値**。`due_at` はボスの `create_task` /
+ *   `update_task` 経由で任意の文字列が入りうる（`task-tools.ts` は
+ *   「ISO 8601 日時文字列」として公開するが `tasks-validation.ts` に形式の
+ *   検証は無い）。`resolveStrictnessDescription` と同じ防御的フォールバックの
+ *   作法で、プロンプトへ "Invalid Date" を出さない。
+ */
+function formatStoredDateTime(stored: string): string {
+  if (DATE_ONLY_PATTERN.test(stored)) {
+    return stored;
+  }
+  const parsed = new Date(stored);
+  if (Number.isNaN(parsed.getTime())) {
+    return stored;
+  }
+  return formatLocalDateTime(parsed);
+}
+
 /**
  * 現在日時セクション（Issue #288）。含める情報は日付・曜日・時分・オフセット
  * 付き ISO の4点で、秒は入れない（用途は「締切まであと何時間」「着手から
@@ -196,7 +226,7 @@ function formatCurrentDateTimeSection(now: Date): string {
 function formatTaskLine(task: Task, includeId: boolean): string {
   const status = TASK_STATUS_LABELS[task.status];
   const priority = task.priority ? TASK_PRIORITY_LABELS[task.priority] : "未設定";
-  const dueAt = task.due_at ?? "未設定";
+  const dueAt = task.due_at === null ? "未設定" : formatStoredDateTime(task.due_at);
   const idPart = includeId ? `#${task.id} ` : "";
   return `- [${status}] ${idPart}${task.title}（優先度: ${priority} / 締切: ${dueAt}）`;
 }
@@ -209,7 +239,7 @@ function formatTaskSection(tasks: Task[], includeId: boolean): string {
 }
 
 function formatDecisionLine(decision: RecentDecision): string {
-  return `- ${decision.decidedAt}: ${decision.content}`;
+  return `- ${formatStoredDateTime(decision.decidedAt)}: ${decision.content}`;
 }
 
 function formatDecisionSection(decisions: RecentDecision[]): string {
@@ -232,11 +262,13 @@ function resolveSessionTypeLabel(type: SessionType): string {
   return SESSION_TYPE_LABELS[type] ?? "セッション";
 }
 
-// 日時は formatDecisionLine と同じく保存されている ISO 文字列をそのまま出す。
-// 先頭10文字へ切り詰めると UTC 基準の日付になり、JST 午前9時より前に行った
-// セッションが前日として提示されてしまう（保存値は toISOString() 由来の UTC）。
+// 日時は formatDecisionLine と同じくローカル整形して出す（Issue #289）。
+// 保存値は toISOString() 由来の UTC なので、そのまま出すとプロンプト内で
+// 「今」だけローカル・他は UTC の混在になり、モデルが後者をローカル時刻と
+// 誤読すればオフセット分ずれた解釈になる。先頭10文字への切り詰めも同じ理由で
+// 不可（UTC 基準の日付になり、JST 午前9時より前のセッションが前日になる）。
 function formatSessionSummaryLine(summary: RecentSessionSummary): string {
-  return `- ${summary.reportedAt} ${resolveSessionTypeLabel(summary.type)}: ${summary.content}`;
+  return `- ${formatStoredDateTime(summary.reportedAt)} ${resolveSessionTypeLabel(summary.type)}: ${summary.content}`;
 }
 
 /**
