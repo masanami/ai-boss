@@ -374,6 +374,23 @@ describe("POST /api/sessions/:id/messages", () => {
     expect(streamBossMessageMock.mock.calls[0][1].system).toContain("資料作成");
   });
 
+  // Issue #288: チャットは現在日時を「出す」側の経路。ラベルの有無だけを見る
+  // （表記そのものの検証は persona-prompt.test.ts が持つ）。
+  it("includes the current date/time section in the system prompt (#288)", async () => {
+    const session = await createSession();
+    streamBossMessageMock.mockResolvedValue(fakeTextMessage("了解した"));
+    const app = createApp(db, env);
+
+    const res = await app.request(`/api/sessions/${session.id}/messages`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ content: "いま何時ですか" }),
+    });
+    await res.text();
+
+    expect(streamBossMessageMock.mock.calls[0][1].system).toContain("現在日時:");
+  });
+
   // Issue #117: chat is the one call site that opts into thinking (see
   // chat-messages-route.ts's doc comment on the streamBossMessage call) —
   // pin the exact request shape so a future edit can't silently drop this

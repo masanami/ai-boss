@@ -156,6 +156,20 @@ describe("extractEveningSummary", () => {
     expect(request.system).toContain("submit_evening_summary");
   });
 
+  // Issue #288: 日報の値抽出は現在日時を「出さない」側の経路。対象暦日は
+  // 夕会の started_at 由来で now に依存しない（ADR 0007 決定 4）ため、
+  // 日跨ぎの夕会で「今＝翌日」と「対象暦日＝前日」が混同されうる。
+  it("omits the current date/time section from the system prompt (#288)", async () => {
+    requestVerdictMock.mockResolvedValue(
+      calledWithValid({ reportSummary: "a", bossComment: "b", keyDecisions: "なし", carryOver: "なし" }),
+    );
+
+    await extractEveningSummary(db, env, eveningMessages, noDecisions, now);
+
+    const [, request] = requestVerdictMock.mock.calls[0];
+    expect(request.system).not.toContain("現在日時:");
+  });
+
   describe("抽出への入力（当日の active 決定一覧の注入）", () => {
     it("決定一覧が空でない場合、ユーザーメッセージに各決定の content が含まれる", async () => {
       requestVerdictMock.mockResolvedValue(

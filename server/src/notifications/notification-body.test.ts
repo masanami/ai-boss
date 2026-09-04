@@ -84,6 +84,23 @@ describe("generateNotificationBody", () => {
     expect(request.system).toContain("通知文面");
   });
 
+  // Issue #288: 催促文面は現在日時を「出す」側。同じ purpose:"notification"
+  // を使う boss-comment.ts は「出さない」側であり、この対が「出力可否を
+  // purpose から導いていない」ことの検証を兼ねる。
+  it("includes the current date/time section in the system prompt (#288)", async () => {
+    streamBossMessageMock.mockResolvedValue(fakeTextMessage("手を動かせ"));
+
+    await generateNotificationBody(db, env, {
+      ruleType: "deadline_overdue",
+      escalationLevel: 1,
+      task: makeTask(),
+      now,
+    });
+
+    const request = streamBossMessageMock.mock.calls[0][1];
+    expect(request.system).toContain("現在日時:");
+  });
+
   it("includes the rule type, escalation level, and task title in the user message", async () => {
     streamBossMessageMock.mockResolvedValue(fakeTextMessage("着手しろ"));
 

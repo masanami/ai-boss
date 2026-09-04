@@ -518,4 +518,82 @@ describe("buildPersonaPrompt", () => {
       expect(evening).not.toContain("夕会（報告セッション）");
     });
   });
+
+  // Issue #288。固定時刻はローカル日付から導出し、TZ 非依存に組む
+  // （ADR 0007 決定 5）。オフセットの期待値も "+09:00" のような固定値を
+  // 書かず、プロンプトから取り出した ISO を parse し直して照合する。
+  describe("現在日時（includeCurrentDateTime）", () => {
+    const at = new Date(2026, 8, 5, 14, 32);
+
+    function buildWithCurrentDateTime(include?: boolean): string {
+      return buildPersonaPrompt(DEFAULT_PERSONA_SETTINGS, {
+        tasks: [],
+        recentDecisions: [],
+        now: at,
+        ...(include === undefined ? {} : { includeCurrentDateTime: include }),
+      });
+    }
+
+    /** プロンプトから「現在日時:」で始まる行を取り出す */
+    function currentDateTimeLine(prompt: string): string | undefined {
+      return prompt
+        .split("\n")
+        .find((line) => line.startsWith("現在日時:"));
+    }
+
+    it("オプション未指定のときは現在日時を含まない（fail-closed の既定）", () => {
+      expect(buildWithCurrentDateTime()).not.toContain("現在日時:");
+    });
+
+    it("オプションを false にしたときは現在日時を含まない", () => {
+      expect(buildWithCurrentDateTime(false)).not.toContain("現在日時:");
+    });
+
+    it("オプションを true にしたときは「現在日時:」で始まる行を含む", () => {
+      expect(currentDateTimeLine(buildWithCurrentDateTime(true))).toBeDefined();
+    });
+
+    it("現在日時の行はローカル暦日を YYYY-MM-DD 形式で含む", () => {
+      expect(currentDateTimeLine(buildWithCurrentDateTime(true))).toContain(
+        "2026-09-05",
+      );
+    });
+
+    it("現在日時の行はローカル暦日に対応する曜日を含む", () => {
+      // 2026-09-05 は土曜日
+      expect(currentDateTimeLine(buildWithCurrentDateTime(true))).toContain(
+        "（土）",
+      );
+    });
+
+    it("現在日時の行はローカル時刻を HH:mm 形式で含む", () => {
+      expect(currentDateTimeLine(buildWithCurrentDateTime(true))).toContain(
+        "14:32",
+      );
+    });
+
+    it("現在日時の行は now と同じ時点を指すオフセット付き ISO を含む", () => {
+      const line = currentDateTimeLine(buildWithCurrentDateTime(true)) ?? "";
+
+      const iso = /(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}[+-]\d{2}:\d{2})/.exec(line)?.[1];
+
+      expect(iso).toBeDefined();
+      // 分未満を落とした now と同一時点になること（= オフセットが正しい）
+      expect(new Date(iso as string).getTime()).toBe(
+        new Date(2026, 8, 5, 14, 32, 0, 0).getTime(),
+      );
+    });
+
+    it("現在日時の行は秒を含まない", () => {
+      const line = currentDateTimeLine(buildWithCurrentDateTime(true)) ?? "";
+
+      expect(line).not.toMatch(/\d{2}:\d{2}:\d{2}/);
+    });
+
+    it("現在日時を含めても時間帯ヒントは残る", () => {
+      // 14:32 は「日中」
+      expect(buildWithCurrentDateTime(true)).toContain("日中:");
+      expect(buildWithCurrentDateTime(false)).toContain("日中:");
+    });
+  });
 });

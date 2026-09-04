@@ -1,5 +1,6 @@
 import type { Task } from "../tasks/task.js";
 import type { SessionType } from "../sessions/session.js";
+import { toDateKey, toLocalOffset } from "../detection/time-utils.js";
 
 export const TONE_PRESETS = ["reliable", "strict", "logical", "passionate"] as const;
 export type TonePreset = (typeof TONE_PRESETS)[number];
@@ -64,8 +65,21 @@ export interface PersonaPromptContext {
    * （後方互換）。
    */
   recentSessionSummaries?: RecentSessionSummary[];
-  /** 現在時刻（時間帯ヒントの算出に使う。呼び出し側が注入する） */
+  /** 現在時刻（時間帯ヒント・現在日時セクションの算出に使う。呼び出し側が注入する） */
   now: Date;
+  /**
+   * `now` を現在日時セクションとしてプロンプトへ出すか（Issue #288）。
+   *
+   * 用途（`purpose`）から導かないのは意図的である。催促文面
+   * （`notification-body.ts`）とダッシュボードのボスコメント
+   * （`boss-comment.ts`）は同じ `purpose: "notification"` を使うが、後者は
+   * 1日1回のキャッシュを持つため分粒度の時刻を出すと陳腐化がユーザーに
+   * 見える。呼び出し元ごとに指定できる必要がある。
+   *
+   * 未指定時は「出さない」（fail-closed）。新しい呼び出し元が既定で
+   * 現在日時を出してしまわないようにするため。
+   */
+  includeCurrentDateTime?: boolean;
   /** 用途。省略時は "chat"（通知文面は "notification" でより短い文章を要求） */
   purpose?: PromptPurpose;
   /**
@@ -139,6 +153,40 @@ function resolveTimeOfDay(now: Date): TimeOfDay {
     return "夕方";
   }
   return "夜";
+}
+
+const WEEKDAY_LABELS = ["日", "月", "火", "水", "木", "金", "土"] as const;
+
+function formatLocalTime(date: Date): string {
+  const hours = String(date.getHours()).padStart(2, "0");
+  const minutes = String(date.getMinutes()).padStart(2, "0");
+  return `${hours}:${minutes}`;
+}
+
+/** 例: `2026-09-05（土）14:32` */
+function formatLocalDateTime(date: Date): string {
+  return `${toDateKey(date)}（${WEEKDAY_LABELS[date.getDay()]}）${formatLocalTime(date)}`;
+}
+
+/** 例: `2026-09-05T14:32+09:00` */
+function formatLocalIsoDateTime(date: Date): string {
+  return `${toDateKey(date)}T${formatLocalTime(date)}${toLocalOffset(date)}`;
+}
+
+/**
+ * 現在日時セクション（Issue #288）。含める情報は日付・曜日・時分・オフセット
+ * 付き ISO の4点で、秒は入れない（用途は「締切まであと何時間」「着手から
+ * 何分」で、分の分解能で足りる）。
+ *
+ * オフセット付き ISO を併記するのは、ボスが経過時間を計算する相手である
+ * `get_activity_log` の出力が UTC ISO へ正規化されているため
+ * （`activity-log-tool.ts`）。ローカル表記だけではオフセット分ずれた差分
+ * 計算になりうる。
+ *
+ * 行頭のラベルは呼び出し元テストが有無を判定するキーとして固定する。
+ */
+function formatCurrentDateTimeSection(now: Date): string {
+  return `現在日時: ${formatLocalDateTime(now)}（ISO: ${formatLocalIsoDateTime(now)}）`;
 }
 
 // `#<id>` はボスが update_task の対象を特定するための内部識別子（Issue #142）。
@@ -269,10 +317,20 @@ export function buildPersonaPrompt(
     "応答の規律: ボスは決定の形で断言する。「〜すべきか迷う」ではなく「〜しろ」「〜で行く」のように言い切る。" +
       "優先順位・ノルマ・締切・持ち越し等の重要な裁定を下したときは record_decision ツールで記録すること。",
     TIME_OF_DAY_HINTS[timeOfDay],
+  ];
+
+  // 時間帯ヒント（何をするタイミングかという行動指示）と併記する。実時刻から
+  // 「夕方は成果を振り返る」といった運用方針は導出されないため、実時刻を
+  // 入れてもヒントは置き換えない。
+  if (context.includeCurrentDateTime ?? false) {
+    sections.push(formatCurrentDateTimeSection(context.now));
+  }
+
+  sections.push(
     `現在のタスク一覧:\n${formatTaskSection(context.tasks, purpose === "chat")}`,
     `直近の決定:\n${formatDecisionSection(context.recentDecisions)}`,
     `直近の報告履歴:\n${formatSessionSummarySection(context.recentSessionSummaries ?? [])}`,
-  ];
+  );
 
   if (settings.customInstructions) {
     sections.push(`追加指示: ${settings.customInstructions}`);
