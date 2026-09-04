@@ -133,16 +133,24 @@ function dispatchSseEvent(event: SseEvent, handlers: ChatStreamHandlers): void {
  * POST body, so the stream is read manually from `fetch`'s response body.
  * Resolves once the stream has ended; rejects only when the request itself
  * fails before streaming starts (e.g. 400/404/500 JSON responses).
+ *
+ * `signal` aborts the request (Issue #254). Hanging up is the whole stop
+ * protocol — there is no stop endpoint — so aborting here is also what makes
+ * the server abandon its LLM call. The rejection that follows is a plain
+ * `AbortError` from `fetch`; callers are expected to recognize it as "the
+ * user stopped this" rather than surfacing it as a failure.
  */
 export async function sendChatMessage(
   sessionId: number,
   content: string,
   handlers: ChatStreamHandlers,
+  signal?: AbortSignal,
 ): Promise<void> {
   const response = await fetch(`${SESSIONS_URL}/${sessionId}/messages`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ content }),
+    signal,
   });
   if (!response.ok || !response.body) {
     throw new Error(await toErrorMessage(response));

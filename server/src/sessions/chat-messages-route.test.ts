@@ -326,6 +326,9 @@ describe("POST /api/sessions/:id/messages", () => {
         messages: [{ role: "user", content: "資料作成を進めています" }],
       }),
       expect.anything(),
+      // #254: 4 つ目の引数（停止用 signal）が加わった。既存アサーションは
+      // 引数の個数まで固定するため、意図的な契約変更としてここも更新している。
+      expect.objectContaining({ signal: expect.any(AbortSignal) }),
     );
   });
 
@@ -366,6 +369,7 @@ describe("POST /api/sessions/:id/messages", () => {
         executeTool: expect.any(Function),
         onToolEvent: expect.any(Function),
       }),
+      expect.objectContaining({ signal: expect.any(AbortSignal) }),
     );
     expect(streamBossMessageMock.mock.calls[0][1].system).toContain("資料作成");
   });
@@ -393,6 +397,7 @@ describe("POST /api/sessions/:id/messages", () => {
         outputConfig: { effort: "low" },
       }),
       expect.anything(),
+      expect.objectContaining({ signal: expect.any(AbortSignal) }),
     );
   });
 
@@ -424,6 +429,7 @@ describe("POST /api/sessions/:id/messages", () => {
         executeTool: expect.any(Function),
         onToolEvent: expect.any(Function),
       }),
+      expect.objectContaining({ signal: expect.any(AbortSignal) }),
     );
   });
 
@@ -459,6 +465,7 @@ describe("POST /api/sessions/:id/messages", () => {
         ),
       }),
       expect.anything(),
+      expect.objectContaining({ signal: expect.any(AbortSignal) }),
     );
   });
 
@@ -710,6 +717,108 @@ describe("POST /api/sessions/:id/messages", () => {
       .all(session.id) as Message[];
     expect(messages.map((m) => m.role)).toEqual(["user", "boss"]);
     expect(messages[1].content).toBe("途中までの応答");
+  });
+
+  // #254 決定 1-b: `interrupted` は「ユーザーが止めた」ではなく「この応答は
+  // 途中で終わっている」ことを表す列なので、LLM 失敗で途中打ち切りになった
+  // 応答にも 1 を立てる。この向きが変わると、読み手は「途中で切れた応答」を
+  // 完結した応答と見分けられなくなる。
+  it("marks a partial reply persisted after an LLM failure as interrupted too — the column means \"ended early\", not \"the user stopped it\" (#254)", async () => {
+    const session = await createSession();
+    streamBossMessageMock.mockImplementationOnce(
+      async (_client, _request, callbacks: StreamBossMessageCallbacks) => {
+        callbacks.onTextDelta?.("途中までの応答");
+        throw new Error("connection reset");
+      },
+    );
+    const app = createApp(db, env);
+
+    await app.request(`/api/sessions/${session.id}/messages`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ content: "相談です" }),
+    });
+
+    const messages = db
+      .prepare("SELECT * FROM messages WHERE session_id = ? ORDER BY id")
+      .all(session.id) as Message[];
+    expect(messages[1].interrupted).toBe(1);
+  });
+
+  it("persists a completed boss reply as not interrupted", async () => {
+    const session = await createSession();
+    streamBossMessageMock.mockImplementationOnce(
+      async (_client, _request, callbacks: StreamBossMessageCallbacks) => {
+        callbacks.onTextDelta?.("最後まで書いた応答");
+        return fakeTextMessage("最後まで書いた応答");
+      },
+    );
+    const app = createApp(db, env);
+
+    await app.request(`/api/sessions/${session.id}/messages`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ content: "相談です" }),
+    });
+
+    const messages = db
+      .prepare("SELECT * FROM messages WHERE session_id = ? ORDER BY id")
+      .all(session.id) as Message[];
+    expect(messages[1].interrupted).toBe(0);
+  });
+
+  it("passes the request's abort signal to streamBossMessage so the LLM call can actually be stopped (#254)", async () => {
+    const session = await createSession();
+    let observedSignal: AbortSignal | undefined;
+    streamBossMessageMock.mockImplementationOnce(
+      async (
+        _client,
+        _request,
+        _callbacks: StreamBossMessageCallbacks,
+        options?: { signal?: AbortSignal },
+      ) => {
+        observedSignal = options?.signal;
+        return fakeTextMessage("応答");
+      },
+    );
+    const app = createApp(db, env);
+
+    await app.request(`/api/sessions/${session.id}/messages`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ content: "相談です" }),
+    });
+
+    expect(observedSignal).toBeInstanceOf(AbortSignal);
+  });
+
+  // 完了が勝つ（#254 論点5）: 生成が resolve し終えたあとに切断が観測されても、
+  // その応答は完結しているので interrupted を立てない。
+  it("persists a fully generated reply as not interrupted even when the client hangs up right after it completes (#254)", async () => {
+    const session = await createSession();
+    const caller = new AbortController();
+    streamBossMessageMock.mockImplementationOnce(
+      async (_client, _request, callbacks: StreamBossMessageCallbacks) => {
+        callbacks.onTextDelta?.("全部書けた");
+        // 応答が完成した直後に切断が起きる（レース）。
+        caller.abort();
+        return fakeTextMessage("全部書けた");
+      },
+    );
+    const app = createApp(db, env);
+
+    await app.request(`/api/sessions/${session.id}/messages`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ content: "相談です" }),
+      signal: caller.signal,
+    });
+
+    const messages = db
+      .prepare("SELECT * FROM messages WHERE session_id = ? ORDER BY id")
+      .all(session.id) as Message[];
+    expect(messages.map((m) => m.role)).toEqual(["user", "boss"]);
+    expect(messages[1].interrupted).toBe(0);
   });
 
   it("emits a sanitized SSE error event when the Claude call fails, without persisting a boss message", async () => {

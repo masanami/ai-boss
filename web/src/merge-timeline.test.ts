@@ -25,6 +25,7 @@ function message(
   return {
     role: "user",
     content: `message ${overrides.id}`,
+    interrupted: 0,
     created_at: at(5, 10),
     ...overrides,
   };
@@ -258,6 +259,55 @@ describe("buildTimeline", () => {
 
     expect(entries).toEqual([
       { kind: "message", key: "message-40", role: "boss", content: "やれ。" },
+    ]);
+  });
+
+  // Issue #254: 中断はサーバに永続化されているので、リロードでタイムラインを
+  // 組み直しても「途中で終わった応答」として復元されなければならない
+  // （組み直しで落とすと、リロード後だけ普通の応答に見えてしまう）。
+  it("marks a reply the server stored as interrupted, so a reload still shows it as cut short", () => {
+    const adhoc = session({ id: 1, started_at: at(5, 9) });
+
+    const entries = buildTimeline([
+      {
+        session: adhoc,
+        messages: [
+          message({
+            id: 41,
+            session_id: 1,
+            role: "boss",
+            content: "まずは見積",
+            interrupted: 1,
+          }),
+        ],
+      },
+    ]);
+
+    expect(entries).toEqual([
+      {
+        kind: "message",
+        key: "message-41",
+        role: "boss",
+        content: "まずは見積",
+        interrupted: true,
+      },
+    ]);
+  });
+
+  it("leaves a completed reply without an interrupted marker", () => {
+    const adhoc = session({ id: 1, started_at: at(5, 9) });
+
+    const entries = buildTimeline([
+      {
+        session: adhoc,
+        messages: [
+          message({ id: 42, session_id: 1, role: "boss", content: "やれ。" }),
+        ],
+      },
+    ]);
+
+    expect(entries).toEqual([
+      { kind: "message", key: "message-42", role: "boss", content: "やれ。" },
     ]);
   });
 

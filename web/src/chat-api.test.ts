@@ -22,6 +22,7 @@ const BOSS_MESSAGE: ChatMessage = {
   session_id: 1,
   role: "boss",
   content: "A案件から着手しろ。",
+  interrupted: 0,
   created_at: "2026-07-05T09:00:05.000Z",
 };
 
@@ -346,5 +347,29 @@ describe("sendChatMessage", () => {
       "session 99 not found",
     );
     expect(handlers.onText).not.toHaveBeenCalled();
+  });
+
+  // Issue #254: 停止は専用エンドポイントではなく「接続を切ること」なので、
+  // signal が fetch まで届いていないと停止機能そのものが成立しない。
+  it("forwards the given AbortSignal to fetch, which is the whole stop mechanism", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(sseResponse([]));
+    vi.stubGlobal("fetch", fetchMock);
+    const controller = new AbortController();
+
+    await sendChatMessage(1, "テスト", collectHandlers(), controller.signal);
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      "/api/sessions/1/messages",
+      expect.objectContaining({ signal: controller.signal }),
+    );
+  });
+
+  it("sends no signal when the caller does not supply one", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(sseResponse([]));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await sendChatMessage(1, "テスト", collectHandlers());
+
+    expect(fetchMock.mock.calls[0][1].signal).toBeUndefined();
   });
 });

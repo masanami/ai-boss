@@ -395,7 +395,7 @@ describe("runMigrations", () => {
     expect(tableNames(v2Db)).toContain("daily_reports");
     // runMigrations always advances to the latest known version (v3 adds
     // daily_reports on the way; v4 then rebuilds tasks/activity_events).
-    expect(v2Db.pragma("user_version", { simple: true })).toBe(4);
+    expect(v2Db.pragma("user_version", { simple: true })).toBe(5);
     // existing tables/rows are untouched
     expect(tableNames(v2Db)).toContain("tasks");
 
@@ -422,7 +422,7 @@ describe("runMigrations", () => {
 
     runMigrations(v3Db);
 
-    expect(v3Db.pragma("user_version", { simple: true })).toBe(4);
+    expect(v3Db.pragma("user_version", { simple: true })).toBe(5);
     expect(tableNames(v3Db)).toContain("tasks");
     expect(tableNames(v3Db)).toContain("activity_events");
 
@@ -437,6 +437,106 @@ describe("runMigrations", () => {
     expect(event).toEqual({ type: "task_start", task_id: taskId });
 
     v3Db.close();
+  });
+
+  it("gives messages an interrupted column defaulting to 0 (v5)", () => {
+    expect(columnNames(db, "messages")).toContain("interrupted");
+
+    const sessionId = Number(
+      db
+        .prepare("INSERT INTO sessions (type, started_at) VALUES (?, ?)")
+        .run("adhoc", NOW).lastInsertRowid,
+    );
+    const messageId = Number(
+      db
+        .prepare(
+          "INSERT INTO messages (session_id, role, content, created_at) VALUES (?, ?, ?, ?)",
+        )
+        .run(sessionId, "boss", "決めた。", NOW).lastInsertRowid,
+    );
+
+    const message = db
+      .prepare("SELECT interrupted FROM messages WHERE id = ?")
+      .get(messageId) as { interrupted: number };
+    expect(message.interrupted).toBe(0);
+  });
+
+  // #254 論点1: この列の意味を「ユーザーが停止した」ではなく「その応答は途中で
+  // 終わっており完結していない」と定義したことを、テスト名として固定する。
+  // 定義を読み違えると、LLM 失敗経路が interrupted を立てない実装へ黙って
+  // 変えられてしまうため（migrate.ts の v5 コメントが正本）。
+  it('treats interrupted as "this reply ended early", not "the user stopped it" — the LLM-failure path sets it too (#254)', () => {
+    const sessionId = Number(
+      db
+        .prepare("INSERT INTO sessions (type, started_at) VALUES (?, ?)")
+        .run("adhoc", NOW).lastInsertRowid,
+    );
+
+    // ユーザー起因の停止・LLM 失敗による打ち切りのいずれも、同じ列に同じ値で
+    // 記録できる（列は原因を区別しない）。
+    const stoppedByUser = Number(
+      db
+        .prepare(
+          "INSERT INTO messages (session_id, role, content, interrupted, created_at) VALUES (?, ?, ?, ?, ?)",
+        )
+        .run(sessionId, "boss", "まずは見積", 1, NOW).lastInsertRowid,
+    );
+    const endedByLlmFailure = Number(
+      db
+        .prepare(
+          "INSERT INTO messages (session_id, role, content, interrupted, created_at) VALUES (?, ?, ?, ?, ?)",
+        )
+        .run(sessionId, "boss", "タスクの状況", 1, NOW).lastInsertRowid,
+    );
+
+    const rows = db
+      .prepare("SELECT id, interrupted FROM messages WHERE id IN (?, ?)")
+      .all(stoppedByUser, endedByLlmFailure) as {
+      id: number;
+      interrupted: number;
+    }[];
+    expect(rows).toHaveLength(2);
+    expect(rows.every((row) => row.interrupted === 1)).toBe(true);
+  });
+
+  it("upgrades a v4 database to v5 (adds messages.interrupted) leaving existing messages intact and not interrupted", () => {
+    const v4Db = openDatabase(":memory:");
+    // v4 は `tasks` と `activity_events` を再構築するだけで `messages` には
+    // 触れないため、`messages` の形は v3 と v4 で同一である。よってこのテスト
+    // の関心（既存 messages 行が v5 を跨いで無傷か）については、v1〜v3 のスキーマ
+    // ＋ user_version = 4 で v4 データベースを忠実に代表できる。
+    // 上の V1_AND_V2_SQL と同じ方針で、過去バージョンのスキーマは
+    // migrate.ts から import せず固定スナップショットとして持つ。
+    v4Db.exec(V1_THROUGH_V3_SQL);
+    v4Db.pragma("user_version = 4");
+
+    const sessionId = Number(
+      v4Db
+        .prepare("INSERT INTO sessions (type, started_at) VALUES (?, ?)")
+        .run("adhoc", NOW).lastInsertRowid,
+    );
+    const messageId = Number(
+      v4Db
+        .prepare(
+          "INSERT INTO messages (session_id, role, content, created_at) VALUES (?, ?, ?, ?)",
+        )
+        .run(sessionId, "user", "既存の発言", NOW).lastInsertRowid,
+    );
+    expect(columnNames(v4Db, "messages")).not.toContain("interrupted");
+
+    runMigrations(v4Db);
+
+    expect(v4Db.pragma("user_version", { simple: true })).toBe(5);
+    const message = v4Db
+      .prepare("SELECT role, content, interrupted FROM messages WHERE id = ?")
+      .get(messageId) as { role: string; content: string; interrupted: number };
+    expect(message).toEqual({
+      role: "user",
+      content: "既存の発言",
+      interrupted: 0,
+    });
+
+    v4Db.close();
   });
 
   it("accepts tasks.status = 'paused' after migrating to v4", () => {
