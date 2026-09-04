@@ -5,6 +5,7 @@ import {
   type PersonaSettings,
 } from "./persona-prompt.js";
 import type { Task } from "../tasks/task.js";
+import { toDateKey, toLocalOffset } from "../detection/time-utils.js";
 
 const now = new Date("2026-07-05T10:00:00+09:00");
 
@@ -683,6 +684,64 @@ describe("buildPersonaPrompt", () => {
 
       expect(prompt).toContain("締切: そのうち）");
       expect(prompt).not.toContain("Invalid Date");
+    });
+
+    it("オフセット付きの ISO 日時もローカル整形される", () => {
+      // ローカル 14:32 と同一時点を、実行環境の TZ に関わらずオフセット表記で
+      // 与える（DB は Z 付きで保存するが、整形は表記形式に依存しない）
+      const offsetIso = `${toDateKey(storedLocal)}T${String(storedLocal.getHours()).padStart(2, "0")}:32${toLocalOffset(storedLocal)}`;
+
+      const prompt = buildPersonaPrompt(DEFAULT_PERSONA_SETTINGS, {
+        tasks: [],
+        recentDecisions: [{ content: "A案件を最優先にする", decidedAt: offsetIso }],
+        now,
+      });
+
+      expect(prompt).toContain(`- ${expectedLocal}: A案件を最優先にする`);
+    });
+
+    // PR #292 の Codex 指摘。`new Date()` は不正な日付を黙ってロールオーバー
+    // させ（2026-02-30 → 3/2）、"0" や "12/31/2026" のような非 ISO 文字列も
+    // 受理する。Number.isNaN(getTime()) のガードだけでは、捏造された締切が
+    // プロンプトへ出て締切超過の判定・催促の根拠が狂う。
+    describe.each([
+      ["暦として存在しない日付", "2026-02-30T12:00:00Z"],
+      ["数値のみ", "0"],
+      ["年のみ", "2026"],
+      ["ISO でない日付表記", "12/31/2026"],
+    ])("妥当な ISO 日時でない値（%s: %s）は変換せずそのまま出す", (_label, value) => {
+      it("タスクの締切", () => {
+        const prompt = buildPersonaPrompt(DEFAULT_PERSONA_SETTINGS, {
+          tasks: [makeTask({ due_at: value })],
+          recentDecisions: [],
+          now,
+        });
+
+        expect(prompt).toContain(`締切: ${value}）`);
+      });
+
+      it("直近の決定", () => {
+        const prompt = buildPersonaPrompt(DEFAULT_PERSONA_SETTINGS, {
+          tasks: [],
+          recentDecisions: [{ content: "A案件を最優先にする", decidedAt: value }],
+          now,
+        });
+
+        expect(prompt).toContain(`- ${value}: A案件を最優先にする`);
+      });
+
+      it("直近の報告履歴", () => {
+        const prompt = buildPersonaPrompt(DEFAULT_PERSONA_SETTINGS, {
+          tasks: [],
+          recentDecisions: [],
+          recentSessionSummaries: [
+            { type: "morning", content: "資料作成を最優先にする", reportedAt: value },
+          ],
+          now,
+        });
+
+        expect(prompt).toContain(`- ${value} 朝会: 資料作成を最優先にする`);
+      });
     });
 
     // 「今」だけローカルで他は UTC という混在を残さないための担保。

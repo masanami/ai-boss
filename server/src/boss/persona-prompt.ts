@@ -177,6 +177,59 @@ function formatLocalIsoDateTime(date: Date): string {
 const DATE_ONLY_PATTERN = /^\d{4}-\d{2}-\d{2}$/;
 
 /**
+ * 完全な ISO 8601 日時: `T` 区切り・分まで必須・秒/ミリ秒任意・タイムゾーン
+ * 指定（`Z` または `±HH:MM`）任意。`activity-log-tool.ts` の同種パターンと
+ * 同じ緩さに揃えてある。
+ */
+const ISO_DATE_TIME_PATTERN =
+  /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})(?::(\d{2})(?:\.\d+)?)?(?:Z|[+-](\d{2}):(\d{2}))?$/;
+
+/** `year` 年 `month` 月（1 始まり）の日数。閏年もこれで正しく出る */
+function daysInMonth(year: number, month: number): number {
+  return new Date(Date.UTC(year, month, 0)).getUTCDate();
+}
+
+/**
+ * 文字列が「暦として妥当な ISO 8601 日時」かを、`Date` に解釈させる**前に**
+ * 判定する（PR #292 の Codex 指摘）。
+ *
+ * `new Date()` は存在しない日付を黙ってロールオーバーさせ（`2026-02-30T12:00:00Z`
+ * → 3/2）、`"0"` や `"12/31/2026"` のような非 ISO 文字列も受理する。
+ * `Number.isNaN(getTime())` のガードだけでは、**捏造された締切がプロンプトへ
+ * 出て締切超過の判定・催促の根拠が狂う**（表示だけの問題ではない）。
+ *
+ * 判定は `Date` を介さず文字列の構成要素に対して行う。parse 後のローカル成分と
+ * 突き合わせる方式は、オフセット付きの値だと実行環境の TZ 次第で成分がずれる
+ * ため成立しない。
+ */
+function isValidIsoDateTime(value: string): boolean {
+  const matched = ISO_DATE_TIME_PATTERN.exec(value);
+  if (matched === null) {
+    return false;
+  }
+  const year = Number(matched[1]);
+  const month = Number(matched[2]);
+  const day = Number(matched[3]);
+  const hour = Number(matched[4]);
+  const minute = Number(matched[5]);
+  const second = matched[6] === undefined ? 0 : Number(matched[6]);
+  const offsetHour = matched[7] === undefined ? 0 : Number(matched[7]);
+  const offsetMinute = matched[8] === undefined ? 0 : Number(matched[8]);
+
+  return (
+    month >= 1 &&
+    month <= 12 &&
+    day >= 1 &&
+    day <= daysInMonth(year, month) &&
+    hour <= 23 &&
+    minute <= 59 &&
+    second <= 59 &&
+    offsetHour <= 23 &&
+    offsetMinute <= 59
+  );
+}
+
+/**
  * 保存されている日時文字列を、プロンプトへ出す用のローカル表記へ整形する
  * （Issue #289）。プロンプトに「今」だけローカル・他は UTC という混在を
  * 残さないための共通処理。
@@ -186,14 +239,15 @@ const DATE_ONLY_PATTERN = /^\d{4}-\d{2}-\d{2}$/;
  *
  * - **日付のみ**（`due_at` は web の日付入力から `YYYY-MM-DD` で入る）。
  *   時刻を持たない値へ `00:00` を捏造しないため。
- * - **`Date` として解釈できない値**。`due_at` はボスの `create_task` /
- *   `update_task` 経由で任意の文字列が入りうる（`task-tools.ts` は
- *   「ISO 8601 日時文字列」として公開するが `tasks-validation.ts` に形式の
- *   検証は無い）。`resolveStrictnessDescription` と同じ防御的フォールバックの
- *   作法で、プロンプトへ "Invalid Date" を出さない。
+ * - **暦として妥当な ISO 8601 日時でない値**（{@link isValidIsoDateTime}）。
+ *   `due_at` はボスの `create_task` / `update_task` 経由で任意の文字列が
+ *   入りうる（`task-tools.ts` は「ISO 8601 日時文字列」として公開するが
+ *   `tasks-validation.ts` に形式の検証は無い）。`resolveStrictnessDescription`
+ *   と同じ防御的フォールバックの作法で、原文をそのまま出す（"Invalid Date" も
+ *   捏造された日時も出さない。原文のほうが上流のデータ異常を追跡できる）。
  */
 function formatStoredDateTime(stored: string): string {
-  if (DATE_ONLY_PATTERN.test(stored)) {
+  if (DATE_ONLY_PATTERN.test(stored) || !isValidIsoDateTime(stored)) {
     return stored;
   }
   const parsed = new Date(stored);
