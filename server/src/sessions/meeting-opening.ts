@@ -137,6 +137,8 @@ export async function generateMeetingOpening(
       recentDecisions: [],
       now,
       sessionType,
+      // 会の開始ひとことは「今」が主題（Issue #288）
+      includeCurrentDateTime: true,
     });
 
     const outcome = await withTimeout(

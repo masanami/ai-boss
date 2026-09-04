@@ -63,6 +63,21 @@ export function toDateKey(date: Date): string {
 }
 
 /**
+ * ローカルタイムゾーンの UTC オフセットを `±HH:MM` 形式で返す
+ * （`2026-09-05T14:32+09:00` のようなオフセット付き ISO の組み立てに使う）。
+ * `Date` に該当するメソッドが無いため `getTimezoneOffset()` から導出する。
+ * 同メソッドは「UTC からの遅れ」を分で返すため、符号は反転させる。
+ */
+export function toLocalOffset(date: Date): string {
+  const offsetMinutes = -date.getTimezoneOffset();
+  const sign = offsetMinutes < 0 ? "-" : "+";
+  const absolute = Math.abs(offsetMinutes);
+  const hours = String(Math.floor(absolute / 60)).padStart(2, "0");
+  const minutes = String(absolute % 60).padStart(2, "0");
+  return `${sign}${hours}:${minutes}`;
+}
+
+/**
  * items の中から、getTimestamp が返す ISO8601 文字列が最も新しい要素を返す
  * （入力配列は破壊しない）。escalation / silence / break-overrun の各ルールで
  * 「直近の1件」を求める処理を共通化する。

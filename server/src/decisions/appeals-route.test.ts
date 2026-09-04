@@ -139,6 +139,20 @@ describe("POST /api/decisions/:id/appeals", () => {
     expect(requestVerdictMock).not.toHaveBeenCalled();
   });
 
+  // Issue #288: 裁定は現在日時を「出す」側の経路。ラベルの有無だけを見る
+  // （表記そのものの検証は persona-prompt.test.ts が持つ）。
+  it("includes the current date/time section in the system prompt (#288)", async () => {
+    const decision = createActiveDecision();
+    requestVerdictMock.mockResolvedValue(
+      calledWithValidVerdict({ verdict: "upheld", response: "維持する" }),
+    );
+
+    const res = await postAppeal(decision.id);
+
+    expect(res.status).toBe(200);
+    expect(requestVerdictMock.mock.calls[0][1].system).toContain("現在日時:");
+  });
+
   it("defaults to the claude-code backend (DEFAULT_LLM_BACKEND, Issue #118) when no llmBackend option is passed to createApp", async () => {
     const decision = createActiveDecision();
     requestVerdictMock.mockResolvedValue(

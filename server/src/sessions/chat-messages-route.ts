@@ -154,6 +154,8 @@ export function registerChatMessageRoute(
       recentSessionSummaries,
       now: new Date(),
       sessionType: session.type,
+      // 「今何時か」「締切まであと何時間か」の主経路（Issue #288）
+      includeCurrentDateTime: true,
     });
     const messages = toClaudeMessages(listMessagesBySessionId(db, id));
 

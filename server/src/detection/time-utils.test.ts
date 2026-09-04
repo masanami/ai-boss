@@ -5,6 +5,7 @@ import {
   isWithinWorkingHours,
   timeStringToMinutes,
   toDateKey,
+  toLocalOffset,
 } from "./time-utils.js";
 
 describe("clamp", () => {
@@ -110,5 +111,29 @@ describe("toDateKey", () => {
   it("zero-pads single-digit months and days", () => {
     const date = new Date("2026-01-02T00:00:00");
     expect(toDateKey(date)).toBe("2026-01-02");
+  });
+});
+
+// 実行環境のタイムゾーンに依存しない形で検証する（ADR 0007 決定 5 と同じ
+// 精神をオフセットにも及ぼす）。期待値へ "+09:00" のような固定値を書かず、
+// 形式と、`getTimezoneOffset()` との整合だけを見る。
+describe("toLocalOffset", () => {
+  it("formats the local UTC offset as ±HH:MM", () => {
+    const date = new Date(2026, 8, 5, 14, 32);
+
+    expect(toLocalOffset(date)).toMatch(/^[+-]\d{2}:\d{2}$/);
+  });
+
+  it("returns an offset whose sign and magnitude match getTimezoneOffset()", () => {
+    const date = new Date(2026, 8, 5, 14, 32);
+    // getTimezoneOffset() は「UTC からの遅れ」を分で返すため符号が逆になる
+    const expectedMinutes = -date.getTimezoneOffset();
+
+    const [, sign, hours, minutes] =
+      /^([+-])(\d{2}):(\d{2})$/.exec(toLocalOffset(date)) ?? [];
+    const actualMinutes =
+      (sign === "-" ? -1 : 1) * (Number(hours) * 60 + Number(minutes));
+
+    expect(actualMinutes).toBe(expectedMinutes);
   });
 });
