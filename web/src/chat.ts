@@ -47,7 +47,20 @@ export interface ChatToolEvent {
  * precedent.
  */
 export type ChatEntry =
-  | { kind: "message"; key: string; role: ChatRole; content: string }
+  | {
+      kind: "message";
+      key: string;
+      role: ChatRole;
+      content: string;
+      /**
+       * `true` when this reply ended early and is not a complete answer
+       * (Issue #254) — the user stopped the generation, or the LLM call
+       * failed after some text had already arrived. Omitted (falsy) for
+       * every complete message, and for user messages, which are never
+       * partial. Drives the interrupted rendering in `ChatView`.
+       */
+      interrupted?: boolean;
+    }
   | { kind: "tool"; key: string; tool: ChatToolEvent }
   | {
       kind: "boundary";

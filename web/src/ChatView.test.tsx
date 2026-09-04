@@ -145,6 +145,7 @@ function makeChatState(overrides: Partial<UseChatResult> = {}): UseChatResult {
     draft: "",
     setDraft: vi.fn(),
     send: vi.fn(),
+    stop: vi.fn(),
     startSession: vi.fn(),
     endSession: vi.fn(),
     ...overrides,

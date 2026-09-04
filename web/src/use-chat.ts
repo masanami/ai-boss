@@ -35,6 +35,17 @@ export interface UseChatResult {
   draft: string;
   setDraft: (value: string) => void;
   send: (content: string) => Promise<void>;
+  /**
+   * Cuts the in-flight boss reply short (Issue #254). No-op when nothing is
+   * being generated, so callers (a stop button, an ESC handler) can fire it
+   * without checking first.
+   *
+   * Aborting the request is the entire stop protocol: it hangs up on the
+   * server, which is what makes it abandon its LLM call. Whatever text had
+   * already arrived stays on screen as an interrupted reply — the server
+   * persists the same text on its side, so a reload shows the same thing.
+   */
+  stop: () => void;
   startSession: (type: "morning" | "evening") => Promise<void>;
   endSession: () => Promise<void>;
 }
@@ -156,6 +167,10 @@ export function useChat(): UseChatResult {
   const sendingRef = useRef(false);
   const switchingRef = useRef(false);
   const mountedRef = useRef(true);
+  // Controller for the send currently in flight, or null when nothing is
+  // being generated (Issue #254). `stop` aborts through this; `send` clears
+  // it on the way out so a later `stop` can't abort a finished request.
+  const abortRef = useRef<AbortController | null>(null);
 
   useEffect(() => {
     entriesRef.current = entries;
@@ -228,6 +243,14 @@ export function useChat(): UseChatResult {
       setSending(true);
       setError(null);
 
+      const controller = new AbortController();
+      abortRef.current = controller;
+      // Mirrors `setStreamingText`, but readable synchronously from the
+      // catch below — state read there would be the stale value captured
+      // when this callback was created. Same role the server's `fullText`
+      // plays: "what actually reached the user before this stopped".
+      let deliveredText = "";
+
       // Optimistic append BEFORE any request: the input field is already
       // cleared by the caller (ChatView's submitDraft, via chatState.setDraft
       // below), so even a session-creation failure must not lose what the
@@ -247,8 +270,12 @@ export function useChat(): UseChatResult {
           throw new Error("session id must be set before sending");
         }
 
-        await sendChatMessage(sessionId, content, {
+        await sendChatMessage(
+          sessionId,
+          content,
+          {
           onText: (delta) => {
+            deliveredText += delta;
             ifMounted(() => setStreamingText((prev) => prev + delta));
           },
           onTool: (tool) => {
@@ -265,17 +292,44 @@ export function useChat(): UseChatResult {
           onError: (message) => {
             ifMounted(() => setError(message));
           },
-        });
-      } catch (err) {
-        ifMounted(() =>
-          setError(
-            err instanceof Error
-              ? err.message
-              : "メッセージの送信に失敗しました",
-          ),
+          },
+          controller.signal,
         );
+      } catch (err) {
+        // Keyed on our own controller rather than on the error's name: this
+        // is the one thing that says for certain the rejection came from
+        // `stop` and not from a network failure that happens to look like
+        // one.
+        if (controller.signal.aborted) {
+          // A stop is not an error — no error banner (AC-23). What the user
+          // did see stays on screen, marked as cut short, matching the
+          // partial reply the server persisted for the same send.
+          if (deliveredText !== "") {
+            ifMounted(() =>
+              setEntries((prev) => [
+                ...prev,
+                {
+                  kind: "message",
+                  key: nextLocalKey("boss"),
+                  role: "boss",
+                  content: deliveredText,
+                  interrupted: true,
+                },
+              ]),
+            );
+          }
+        } else {
+          ifMounted(() =>
+            setError(
+              err instanceof Error
+                ? err.message
+                : "メッセージの送信に失敗しました",
+            ),
+          );
+        }
       } finally {
         sendingRef.current = false;
+        abortRef.current = null;
         ifMounted(() => {
           setStreamingText("");
           setSending(false);
@@ -284,6 +338,12 @@ export function useChat(): UseChatResult {
     },
     [ifMounted, nextLocalKey],
   );
+
+  const stop = useCallback(() => {
+    // No-op when nothing is in flight (`abortRef` is null), so a stop button
+    // or an ESC handler can call this unconditionally.
+    abortRef.current?.abort();
+  }, []);
 
   const startSession = useCallback(
     async (type: "morning" | "evening") => {
@@ -391,6 +451,7 @@ export function useChat(): UseChatResult {
     draft,
     setDraft,
     send,
+    stop,
     startSession,
     endSession,
   };
