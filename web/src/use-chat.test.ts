@@ -686,6 +686,201 @@ describe("useChat", () => {
   });
 });
 
+// Issue #254: 停止（生成の打ち切り）。停止は「接続を切ること」そのものなので、
+// ここでの fetch スタブは実 fetch と同じく signal の abort でストリームを
+// 失敗させる。そうしないと「abort したのに何も起きない」スタブに対して
+// テストが通ってしまう。
+describe("useChat stop (Issue #254)", () => {
+  /**
+   * signal の abort で pending な read() を AbortError で失敗させる SSE
+   * レスポンス。実 fetch の振る舞いに合わせている（これを省くと「abort しても
+   * 何も起きない」スタブになり、停止のテストが素通りしてしまう）。
+   *
+   * POST ごとに新しいストリームを作る。使い回すと、1 本目を止めたあとの
+   * 2 本目が「既に error 済みのストリーム」を読むことになり、停止後の再送が
+   * 正常に始まるかを確かめられない。
+   */
+  function abortableSseStream(signal?: AbortSignal) {
+    let streamController: ReadableStreamDefaultController<Uint8Array> | null = null;
+    const encoder = new TextEncoder();
+    const body = new ReadableStream<Uint8Array>({
+      start(controller) {
+        streamController = controller;
+      },
+    });
+    signal?.addEventListener(
+      "abort",
+      () => {
+        const error = new Error("The operation was aborted.");
+        error.name = "AbortError";
+        streamController?.error(error);
+      },
+      { once: true },
+    );
+    return {
+      response: { ok: true, status: 200, body },
+      push(chunk: string) {
+        streamController?.enqueue(encoder.encode(chunk));
+      },
+    };
+  }
+
+  function stubFetchForStop() {
+    const streams: ReturnType<typeof abortableSseStream>[] = [];
+    const signals: (AbortSignal | undefined)[] = [];
+    const fetchMock = vi.fn(
+      (url: string, init?: { method?: string; signal?: AbortSignal }) => {
+        const method = init?.method ?? "GET";
+        if (url === "/api/sessions" && method === "GET") {
+          return Promise.resolve(jsonResponse([SESSION]));
+        }
+        if (/^\/api\/sessions\/\d+\/messages$/.test(url) && method === "POST") {
+          signals.push(init?.signal);
+          const stream = abortableSseStream(init?.signal);
+          streams.push(stream);
+          return Promise.resolve(stream.response);
+        }
+        if (/^\/api\/sessions\/\d+\/messages$/.test(url)) {
+          return Promise.resolve(jsonResponse([]));
+        }
+        throw new Error(`unexpected fetch: ${method} ${url}`);
+      },
+    );
+    vi.stubGlobal("fetch", fetchMock);
+    return {
+      fetchMock,
+      /** 直近の POST が受け取ったストリーム。 */
+      latestStream: () => streams[streams.length - 1],
+      /** 直近の POST が受け取った signal。 */
+      latestSignal: () => signals[signals.length - 1],
+      postCount: () => streams.length,
+    };
+  }
+
+  it("passes an AbortSignal to the send request so the server can be hung up on", async () => {
+    const { latestSignal } = stubFetchForStop();
+    const { result } = renderHook(() => useChat());
+    await waitFor(() => expect(result.current.status).toBe("ready"));
+
+    act(() => {
+      void result.current.send("進捗を教えて");
+    });
+    await waitFor(() => expect(latestSignal()).toBeInstanceOf(AbortSignal));
+    expect(latestSignal()?.aborted).toBe(false);
+
+    act(() => result.current.stop());
+    expect(latestSignal()?.aborted).toBe(true);
+  });
+
+  it("keeps the text delivered so far as an interrupted boss reply and clears the streaming buffer", async () => {
+    const { latestStream, postCount } = stubFetchForStop();
+    const { result } = renderHook(() => useChat());
+    await waitFor(() => expect(result.current.status).toBe("ready"));
+
+    act(() => {
+      void result.current.send("進捗を教えて");
+    });
+    await waitFor(() => expect(postCount()).toBe(1));
+    latestStream().push('event: text\ndata: {"text":"まずは見積"}\n\n');
+    await waitFor(() => expect(result.current.streamingText).toBe("まずは見積"));
+
+    act(() => result.current.stop());
+
+    await waitFor(() =>
+      expect(
+        result.current.entries.some(
+          (entry) =>
+            entry.kind === "message" &&
+            entry.role === "boss" &&
+            entry.content === "まずは見積" &&
+            entry.interrupted === true,
+        ),
+      ).toBe(true),
+    );
+    expect(result.current.streamingText).toBe("");
+  });
+
+  it("does not append a boss reply when nothing had been delivered yet", async () => {
+    stubFetchForStop();
+    const { result } = renderHook(() => useChat());
+    await waitFor(() => expect(result.current.status).toBe("ready"));
+
+    act(() => {
+      void result.current.send("やっぱりやめます");
+    });
+    await waitFor(() => expect(result.current.sending).toBe(true));
+
+    act(() => result.current.stop());
+
+    await waitFor(() => expect(result.current.sending).toBe(false));
+    expect(
+      result.current.entries.some(
+        (entry) => entry.kind === "message" && entry.role === "boss",
+      ),
+    ).toBe(false);
+  });
+
+  it("does not surface an error: stopping is something the user asked for, not a failure", async () => {
+    const { latestStream, postCount } = stubFetchForStop();
+    const { result } = renderHook(() => useChat());
+    await waitFor(() => expect(result.current.status).toBe("ready"));
+
+    act(() => {
+      void result.current.send("進捗を教えて");
+    });
+    await waitFor(() => expect(postCount()).toBe(1));
+    latestStream().push('event: text\ndata: {"text":"考え中"}\n\n');
+    await waitFor(() => expect(result.current.streamingText).toBe("考え中"));
+
+    act(() => result.current.stop());
+
+    await waitFor(() => expect(result.current.sending).toBe(false));
+    expect(result.current.error).toBeNull();
+  });
+
+  it("releases the in-flight guard so the next send goes through normally", async () => {
+    const { latestStream, postCount } = stubFetchForStop();
+    const { result } = renderHook(() => useChat());
+    await waitFor(() => expect(result.current.status).toBe("ready"));
+
+    act(() => {
+      void result.current.send("最初の相談");
+    });
+    await waitFor(() => expect(postCount()).toBe(1));
+    latestStream().push('event: text\ndata: {"text":"途中"}\n\n');
+    await waitFor(() => expect(result.current.streamingText).toBe("途中"));
+
+    act(() => result.current.stop());
+    await waitFor(() => expect(result.current.sending).toBe(false));
+
+    act(() => {
+      void result.current.send("次の相談");
+    });
+
+    // 停止直後の送信がガードに弾かれず、実際にリクエストが飛び、
+    // 送信中の状態に入る。
+    await waitFor(() => expect(postCount()).toBe(2));
+    expect(result.current.sending).toBe(true);
+
+    // 2 本目は 1 本目とは別のストリームなので、独立して配信を受けられる。
+    latestStream().push('event: text\ndata: {"text":"新しい応答"}\n\n');
+    await waitFor(() => expect(result.current.streamingText).toBe("新しい応答"));
+  });
+
+  it("does nothing when called while no reply is being generated", async () => {
+    stubFetchForStop();
+    const { result } = renderHook(() => useChat());
+    await waitFor(() => expect(result.current.status).toBe("ready"));
+
+    const entriesBefore = result.current.entries;
+    act(() => result.current.stop());
+
+    expect(result.current.sending).toBe(false);
+    expect(result.current.error).toBeNull();
+    expect(result.current.entries).toBe(entriesBefore);
+  });
+});
+
 describe("useChat mount restoration (Issue #93: surviving a tab switch/reload)", () => {
   it("restores today's open morning session as active on mount and shows the whole day's timeline", async () => {
     const fetchMock = routedFetch({

@@ -122,6 +122,15 @@ export function buildTimeline(loaded: LoadedSession[]): ChatEntry[] {
           key: `message-${message.id}`,
           role: message.role,
           content: message.content,
+          // Issue #254: carried through from the server so a reply that was
+          // cut short still reads as cut short after a reload, not as a
+          // boss who inexplicably stopped mid-sentence.
+          //
+          // Only set when true, so a complete message keeps exactly the
+          // shape it had before this field existed — `interrupted` marks
+          // the exception, and entries are compared by deep equality in
+          // this module's tests.
+          ...(message.interrupted === 1 ? { interrupted: true } : {}),
         },
       });
     }
