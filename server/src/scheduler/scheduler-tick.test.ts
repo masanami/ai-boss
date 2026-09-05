@@ -545,6 +545,86 @@ describe("createTicker().tick", () => {
     db.close();
   });
 
+  // Issue #221. `sendNotification` is not undoable — once macOS has shown the
+  // notification, the user has seen it. So the DB record (which is what
+  // suppresses duplicates and tracks escalation, via notification-history.ts)
+  // must already be durable at that moment. Recording first turns the failure
+  // mode "delivered but unrecorded -> the user gets the same notification
+  // again next tick" into "unrecorded and unsent -> the next tick retries
+  // naturally", which is the pre-existing Issue #38 contract (a failed send is
+  // not retried; the still-holding condition re-fires on its own schedule).
+  it("records the notification before sending it, so a send is never delivered unrecorded (Issue #221)", async () => {
+    insertTask(db, {
+      title: "資料作成",
+      description: null,
+      category: "work",
+      priority: "high",
+      due_at: null,
+      status: "todo",
+      boss_comment: null,
+      estimated_minutes: 30,
+    });
+    markTodaysMeetingsDone(db);
+    vi.setSystemTime(new Date("2026-07-05T09:31:00.000"));
+
+    // Observed from inside the send itself: the row the duplicate-suppression
+    // logic reads must already be committed by the time the notification can
+    // possibly reach the user.
+    let recordedAtSendTime: number | null = null;
+    const execFile = vi.fn().mockImplementation(() => {
+      recordedAtSendTime = listNotificationsSince(db, "1970-01-01T00:00:00.000Z").length;
+      return ok();
+    });
+    const ticker = createTicker({ db, env, execFile });
+
+    await ticker.tick();
+
+    expect(execFile).toHaveBeenCalledTimes(1);
+    expect(recordedAtSendTime).toBe(1);
+    // Pins the call order directly too, so the intent survives a refactor that
+    // changes what `execFile` can observe.
+    expect(insertNotificationMock.mock.invocationCallOrder[0]).toBeLessThan(
+      execFile.mock.invocationCallOrder[0],
+    );
+    db.close();
+  });
+
+  it("does not send the notification at all when recording it fails (Issue #221)", async () => {
+    insertTask(db, {
+      title: "資料作成",
+      description: null,
+      category: "work",
+      priority: "high",
+      due_at: null,
+      status: "todo",
+      boss_comment: null,
+      estimated_minutes: 30,
+    });
+    markTodaysMeetingsDone(db);
+    vi.setSystemTime(new Date("2026-07-05T09:31:00.000"));
+
+    insertNotificationMock.mockImplementation(() => {
+      throw new Error("insert boom");
+    });
+
+    const consoleErrorSpy = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    const execFile = vi.fn().mockImplementation(ok);
+    const ticker = createTicker({ db, env, execFile });
+
+    // The firing is dropped by `runTick`'s per-firing catch, not by a crash.
+    await expect(ticker.tick()).resolves.toBeUndefined();
+
+    // Nothing was delivered, so nothing is unrecorded: the next tick re-fires
+    // this rule from a clean state rather than duplicating a notification the
+    // user has already seen.
+    expect(execFile).not.toHaveBeenCalled();
+    expect(listNotificationsSince(db, "1970-01-01T00:00:00.000Z")).toHaveLength(0);
+    const loggedArgs = consoleErrorSpy.mock.calls.flat().join(" ");
+    expect(loggedArgs).toContain("scheduler firing failed");
+    consoleErrorSpy.mockRestore();
+    db.close();
+  });
+
   it("skips a tick that starts while the previous one is still running (concurrency guard)", async () => {
     insertTask(db, {
       title: "資料作成",
