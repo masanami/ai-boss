@@ -532,6 +532,153 @@ describe("POST /api/sessions/:id/messages", () => {
     expect(bossMessage.content).toBe("タスクを作成した");
   });
 
+  // GAP-10: the pre-existing SSE tests only ever check event *presence*
+  // (`events.find((e) => e.event === "tool")`), so a regression that
+  // reorders the stream (e.g. buffering text deltas instead of writing them
+  // immediately) would sail through untouched. This test instead treats
+  // `parseSseEvents`' return value as an ordered array and asserts the
+  // relative *positions* of "text" / "tool" / "done" — see the mutation
+  // check in this ticket's report for a production-side reorder this
+  // catches that `.find()` alone would miss.
+  it("AC-1 (GAP-10): orders SSE events as text -> tool -> done, verified by index rather than mere existence", async () => {
+    const session = await createSession();
+    streamBossMessageMock.mockImplementation(
+      async (_client, _request, callbacks: StreamBossMessageCallbacks) => {
+        callbacks.onTextDelta?.("資料作成から");
+        const result = await callbacks.executeTool!("create_task", { title: "資料作成" });
+        await callbacks.onToolEvent?.({
+          name: "create_task",
+          input: { title: "資料作成" },
+          result: result.content,
+          isError: result.isError,
+        });
+        callbacks.onTextDelta?.("始めよう");
+        return fakeTextMessage("資料作成から始めよう");
+      },
+    );
+    const app = createApp(db, env);
+
+    const res = await app.request(`/api/sessions/${session.id}/messages`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ content: "何をすべき？" }),
+    });
+
+    const events = parseSseEvents(await res.text());
+
+    // Index each expected event by its own content (not just its type),
+    // since the mock fires two "text" deltas around the tool call — a
+    // by-type-only `indexOf` would only ever see the *first* "text" event
+    // and could miss a regression that delays the tool event past the
+    // *second* delta (still "before done", but no longer "before the second
+    // text delta").
+    const firstTextIndex = events.findIndex(
+      (e) => e.event === "text" && JSON.parse(e.data).text === "資料作成から",
+    );
+    const toolIndex = events.findIndex((e) => e.event === "tool");
+    const secondTextIndex = events.findIndex(
+      (e) => e.event === "text" && JSON.parse(e.data).text === "始めよう",
+    );
+    const doneIndex = events.findIndex((e) => e.event === "done");
+
+    expect(firstTextIndex).toBeGreaterThanOrEqual(0);
+    expect(toolIndex).toBeGreaterThanOrEqual(0);
+    expect(secondTextIndex).toBeGreaterThanOrEqual(0);
+    expect(doneIndex).toBeGreaterThanOrEqual(0);
+    // Full index chain, not just "all four exist" — a regression that
+    // delays the tool event's write (e.g. buffering it until just before
+    // "done" instead of writing it as soon as the callback fires) fails
+    // here even though "tool" still ends up before "done": it would land
+    // after the second "text" delta too, which this chain also pins down.
+    expect(firstTextIndex).toBeLessThan(toolIndex);
+    expect(toolIndex).toBeLessThan(secondTextIndex);
+    expect(secondTextIndex).toBeLessThan(doneIndex);
+  });
+
+  // GAP-12: `activity_events` is the single input for the slacking-detection
+  // rule engine (ADR 0004), so a turn that calls two tools must record
+  // exactly one `task_update` row per real update — no drops (a silently
+  // lost signal) and no duplicates (an inflated signal). The route itself
+  // always records exactly one `chat_message` event before streaming starts
+  // (L142 of chat-messages-route.ts), so that row is asserted separately
+  // from the tool-driven `task_update` rows to keep the two signal sources
+  // distinguishable.
+  it("AC-3 (GAP-12): records exactly one activity_events row per tool-driven update when a turn calls two or more tools, with no duplicates or drops", async () => {
+    const session = await createSession();
+    const app = createApp(db, env);
+
+    const taskA = await readJson<{ id: number }>(
+      await app.request("/api/tasks", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ title: "資料作成" }),
+      }),
+    );
+    const taskB = await readJson<{ id: number }>(
+      await app.request("/api/tasks", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ title: "レビュー" }),
+      }),
+    );
+
+    streamBossMessageMock.mockImplementation(
+      async (_client, _request, callbacks: StreamBossMessageCallbacks) => {
+        const resultA = await callbacks.executeTool!("update_task", {
+          id: taskA.id,
+          priority: "high",
+        });
+        await callbacks.onToolEvent?.({
+          name: "update_task",
+          input: { id: taskA.id, priority: "high" },
+          result: resultA.content,
+          isError: resultA.isError,
+        });
+        const resultB = await callbacks.executeTool!("update_task", {
+          id: taskB.id,
+          priority: "low",
+        });
+        await callbacks.onToolEvent?.({
+          name: "update_task",
+          input: { id: taskB.id, priority: "low" },
+          result: resultB.content,
+          isError: resultB.isError,
+        });
+        callbacks.onTextDelta?.("両方の優先度を更新した");
+        return fakeTextMessage("両方の優先度を更新した");
+      },
+    );
+
+    const res = await app.request(`/api/sessions/${session.id}/messages`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ content: "両方とも優先度を変えて" }),
+    });
+    await res.text();
+
+    const events = db.prepare("SELECT * FROM activity_events").all() as Array<{
+      type: string;
+      task_id: number | null;
+    }>;
+    const chatMessageEvents = events.filter((e) => e.type === "chat_message");
+    const taskUpdateEvents = events.filter((e) => e.type === "task_update");
+
+    // The route's own `chat_message` record (recorded once, before any tool
+    // runs) is counted separately from the two tool-driven `task_update`
+    // records, so a bug that miscounts either source can't hide behind the
+    // other's count.
+    expect(chatMessageEvents).toHaveLength(1);
+    expect(taskUpdateEvents).toHaveLength(2);
+    expect(taskUpdateEvents.map((e) => e.task_id).sort((a, b) => (a ?? 0) - (b ?? 0))).toEqual(
+      [taskA.id, taskB.id].sort((a, b) => a - b),
+    );
+    // Total row count pins the *combined* absence of drops/duplicates too
+    // (e.g. a bug that recorded task_update under the chat_message count
+    // would still be caught here even if the two filters above were
+    // individually fooled).
+    expect(events).toHaveLength(3);
+  });
+
   it("executes a record_decision tool call via the streamBossMessage callbacks, persists it under the session's id, and emits a tool event", async () => {
     const session = await createSession();
     streamBossMessageMock.mockImplementation(
