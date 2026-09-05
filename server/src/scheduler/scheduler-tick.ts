@@ -6,6 +6,7 @@ import { listEventsSince } from "../activity/activity-events-repository.js";
 import {
   insertNotification,
   listNotificationsSince,
+  recordNotificationDelivery,
 } from "../notifications/notifications-repository.js";
 import {
   generateNotificationBody,
@@ -131,17 +132,54 @@ async function processFiring(
   // *failure* path: a failed record now means nothing was sent either, so
   // the same natural re-send path covers it instead of the user being
   // notified twice.
-  insertNotification(deps.db, {
+  const recorded = insertNotification(deps.db, {
     type: firing.ruleType,
     rule_key: firing.ruleKey,
     escalation_level: firing.escalationLevel,
     body,
   });
 
-  await sendNotification(
+  const result = await sendNotification(
     { title, body, url: deps.notificationUrl },
     { execFile: deps.execFile },
   );
+
+  // Issue #321. `sendNotification` never throws; a total delivery failure
+  // (both terminal-notifier and osascript failed) only shows up in its return
+  // value. Discarding it made "the user never saw this" indistinguishable
+  // from a successful send — in the DB (record-before-send above already
+  // wrote `sent_at`) and to this caller (notifier.ts's own console.error
+  // names no rule). So: log it here with the identifiers needed to
+  // cross-reference the row, then write the outcome back onto that row.
+  //
+  // Deliberately *not* changed: the record stays (#38/#221), the send is not
+  // retried, and the escalation/duplicate-suppression logic that reads the
+  // history back (notification-history.ts) is untouched — reacting to a
+  // failed delivery is a separate decision.
+  if (!result.delivered) {
+    console.error(
+      `scheduler firing: notification was not delivered (rule_key=${firing.ruleKey}, escalation_level=${firing.escalationLevel}, channel=${result.channel}, notification_id=${recorded.id})`,
+    );
+  }
+
+  // The write-back gets its own catch (rather than falling through to
+  // runTick's per-firing catch): by this point the send has already
+  // happened, so runTick's "scheduler firing failed" — which until now could
+  // only mean "nothing reached the user" (the sole throw site was the
+  // pre-send insert) — would misreport a delivered notification. Logging the
+  // outcome here keeps it observable even when it could not be persisted;
+  // the columns then stay NULL = "unknown" rather than misreported, and
+  // nothing is re-sent. `err` cannot originate from the Claude API (fully
+  // wrapped inside generateNotificationBody), so message/stack is safe to
+  // log — same reasoning as the catch above.
+  try {
+    recordNotificationDelivery(deps.db, recorded.id, result);
+  } catch (err) {
+    console.error(
+      `scheduler firing: failed to write back the delivery outcome (rule_key=${firing.ruleKey}, delivered=${result.delivered}, channel=${result.channel}, notification_id=${recorded.id}):`,
+      err instanceof Error ? (err.stack ?? err.message) : err,
+    );
+  }
 }
 
 async function runTick(deps: TickDeps, now: Date): Promise<void> {
