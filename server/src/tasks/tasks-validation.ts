@@ -1,5 +1,6 @@
 import { TASK_PRIORITIES, TASK_STATUSES } from "./task.js";
 import type { NewTaskRecord, TaskPatch } from "./tasks-repository.js";
+import { isValidIsoDateOrDateTime } from "../lib/iso-date.js";
 
 export type ValidationResult<T> =
   | { valid: true; data: T }
@@ -41,6 +42,9 @@ function isNullableNonNegativeInteger(value: unknown): value is number | null {
   );
 }
 
+const DUE_AT_FORMAT_ERROR =
+  'due_at must be an ISO 8601 date ("YYYY-MM-DD") or date-time';
+
 function validateOptionalFieldTypes(
   body: Record<string, unknown>,
 ): string | null {
@@ -48,6 +52,18 @@ function validateOptionalFieldTypes(
     if (field in body && !isNullableString(body[field])) {
       return `${field} must be a string or null`;
     }
+  }
+  // due_at は型が string でも、暦として解釈できない値を保存すると下流で実害に
+  // なる: `detection/deadline-overdue.ts` が `new Date(due_at).getTime()` を
+  // NaN にして期限超過を永久に検知せず、`detection/priority.ts` の `dueAtRank`
+  // も NaN を並び順へ混入させる（#199 / GAP-34・Codex 指摘 CODE-001）。
+  // POST・PATCH の両経路がこの関数を通るため、ここ 1 箇所で両方を塞ぐ。
+  if (
+    "due_at" in body &&
+    typeof body.due_at === "string" &&
+    !isValidIsoDateOrDateTime(body.due_at)
+  ) {
+    return DUE_AT_FORMAT_ERROR;
   }
   if ("category" in body && typeof body.category !== "string") {
     return "category must be a string";

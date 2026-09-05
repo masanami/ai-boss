@@ -6,6 +6,20 @@ import { createApp } from "../app.js";
 import { resolveBossSettings } from "../boss/boss-settings.js";
 import { loadDetectionSettings } from "../scheduler/detection-settings.js";
 import { DEFAULT_MODEL } from "../llm/claude-client.js";
+import { MIN_STRICTNESS, MAX_STRICTNESS } from "../boss/persona-prompt.js";
+
+// The `*_minutes` keys all share the same `validatePositiveIntegerMinutes`
+// validator (settings-validation.ts), so their HTTP-level boundary behavior
+// is exercised once per key here rather than duplicating the same
+// assertions by hand.
+const MINUTE_KEYS = [
+  "detection_unstarted_fallback_minutes",
+  "detection_silence_fallback_minutes",
+  "detection_break_fallback_minutes",
+  "escalation_l2_after_minutes",
+  "escalation_l3_after_minutes",
+  "escalation_repeat_minutes",
+] as const;
 
 interface ErrorBody {
   error: string;
@@ -292,6 +306,107 @@ describe("settings routes", () => {
       });
 
       expect(res.status).toBe(400);
+    });
+
+    // GAP-13: settings-validation.test.ts already covers these boundaries at
+    // the function level; the checks below repeat them through the real
+    // HTTP route (readJsonBody -> validatePutSettingsInput -> setSettingValue)
+    // so a broken route/validator wiring would be caught even if the
+    // validator itself stays correct. Both sides of each boundary are
+    // asserted (inside accepted, outside rejected) so neither an
+    // always-400 nor an always-200 handler could pass.
+    describe("boss_strictness boundary", () => {
+      it(`returns 400 for ${MIN_STRICTNESS - 1} (one below the minimum)`, async () => {
+        const app = createApp(db);
+
+        const res = await app.request("/api/settings", {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ boss_strictness: MIN_STRICTNESS - 1 }),
+        });
+
+        expect(res.status).toBe(400);
+      });
+
+      it(`returns 200 and saves ${MIN_STRICTNESS} (the minimum)`, async () => {
+        const app = createApp(db);
+
+        const res = await app.request("/api/settings", {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ boss_strictness: MIN_STRICTNESS }),
+        });
+
+        expect(res.status).toBe(200);
+        const body = await readJson<SettingsBody>(res);
+        expect(body.boss_strictness).toBe(MIN_STRICTNESS);
+      });
+
+      it(`returns 200 and saves ${MAX_STRICTNESS} (the maximum)`, async () => {
+        const app = createApp(db);
+
+        const res = await app.request("/api/settings", {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ boss_strictness: MAX_STRICTNESS }),
+        });
+
+        expect(res.status).toBe(200);
+        const body = await readJson<SettingsBody>(res);
+        expect(body.boss_strictness).toBe(MAX_STRICTNESS);
+      });
+
+      it(`returns 400 for ${MAX_STRICTNESS + 1} (one above the maximum)`, async () => {
+        const app = createApp(db);
+
+        const res = await app.request("/api/settings", {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ boss_strictness: MAX_STRICTNESS + 1 }),
+        });
+
+        expect(res.status).toBe(400);
+      });
+    });
+
+    describe.each(MINUTE_KEYS)("%s boundary", (key) => {
+      it("returns 400 for 0", async () => {
+        const app = createApp(db);
+
+        const res = await app.request("/api/settings", {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ [key]: 0 }),
+        });
+
+        expect(res.status).toBe(400);
+      });
+
+      it("returns 200 and saves 1", async () => {
+        const app = createApp(db);
+
+        const res = await app.request("/api/settings", {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ [key]: 1 }),
+        });
+
+        expect(res.status).toBe(200);
+        const body = await readJson<Record<string, unknown>>(res);
+        expect(body[key]).toBe(1);
+      });
+
+      it("returns 400 for a non-integer (1.5)", async () => {
+        const app = createApp(db);
+
+        const res = await app.request("/api/settings", {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ [key]: 1.5 }),
+        });
+
+        expect(res.status).toBe(400);
+      });
     });
   });
 });
