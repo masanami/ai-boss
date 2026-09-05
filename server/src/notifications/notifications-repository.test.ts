@@ -5,6 +5,7 @@ import { runMigrations } from "../db/migrate.js";
 import {
   findLatestNotificationByRuleKey,
   insertNotification,
+  listNotificationsBetween,
   listNotificationsSince,
   recordNotificationDelivery,
 } from "./notifications-repository.js";
@@ -214,5 +215,44 @@ describe("listNotificationsSince", () => {
 
     expect(results.map((n) => n.body)).not.toContain("対象外（cutoff より前）");
     expect(results.map((n) => n.id)).toEqual([atCutoffId, afterCutoffId]);
+  });
+});
+
+describe("listNotificationsBetween", () => {
+  let db: Database.Database;
+
+  beforeEach(() => {
+    db = openDatabase(":memory:");
+    runMigrations(db);
+  });
+
+  afterEach(() => {
+    db.close();
+  });
+
+  function insertAt(body: string, sentAt: string): number {
+    const result = db
+      .prepare(
+        "INSERT INTO notifications (type, rule_key, escalation_level, body, sent_at) VALUES (?, ?, ?, ?, ?)",
+      )
+      .run("escalation", "silence", 1, body, sentAt);
+    return Number(result.lastInsertRowid);
+  }
+
+  it("returns notifications in the half-open window [since, until): includes the lower bound exactly, excludes the upper bound exactly, oldest first (ADR 0007 決定3, #236)", () => {
+    // 経過時間のみを扱うため UTC リテラルでよい（ADR 0007 決定5）。
+    const since = "2026-07-05T09:00:00.000Z";
+    const until = "2026-07-05T12:00:00.000Z";
+
+    insertAt("対象外（since より前）", "2026-07-05T08:59:59.999Z");
+    const atSinceId = insertAt("対象内（ちょうど since）", since);
+    const insideId = insertAt("対象内（中間）", "2026-07-05T10:00:00.000Z");
+    const justBeforeUntilId = insertAt("対象内（until の直前）", "2026-07-05T11:59:59.999Z");
+    insertAt("対象外（ちょうど until）", until);
+    insertAt("対象外（until より後）", "2026-07-05T12:00:00.001Z");
+
+    const results = listNotificationsBetween(db, since, until);
+
+    expect(results.map((n) => n.id)).toEqual([atSinceId, insideId, justBeforeUntilId]);
   });
 });

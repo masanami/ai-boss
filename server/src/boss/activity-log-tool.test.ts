@@ -175,10 +175,11 @@ describe("executeGetActivityLogTool", () => {
     expect(events[0].task_id).toBe(taskA.id);
   });
 
-  it("narrows results with since and until (inclusive on both ends)", () => {
-    insertEvent({ type: "checkin", createdAt: new Date(2026, 6, 5, 8, 0, 0), note: "before" });
+  it("narrows results with since (inclusive) and until (exclusive): an event exactly at until is excluded, one 1ms before it is included (half-open, ADR 0007 決定3, #236)", () => {
+    insertEvent({ type: "checkin", createdAt: new Date(2026, 6, 5, 8, 59, 59, 999), note: "before" });
     insertEvent({ type: "checkin", createdAt: new Date(2026, 6, 5, 9, 0, 0), note: "in-range-start" });
-    insertEvent({ type: "checkin", createdAt: new Date(2026, 6, 5, 10, 0, 0), note: "in-range-end" });
+    insertEvent({ type: "checkin", createdAt: new Date(2026, 6, 5, 9, 59, 59, 999), note: "in-range-end" });
+    insertEvent({ type: "checkin", createdAt: new Date(2026, 6, 5, 10, 0, 0), note: "at-until" });
     insertEvent({ type: "checkin", createdAt: new Date(2026, 6, 5, 11, 0, 0), note: "after" });
 
     const result = executeGetActivityLogTool(db, {
@@ -188,6 +189,19 @@ describe("executeGetActivityLogTool", () => {
 
     const { events } = parseResult(result);
     expect(events.map((e) => e.note)).toEqual(["in-range-start", "in-range-end"]);
+  });
+
+  it("does not cap the upper bound when until is omitted: a future-dated event (e.g. after a clock rollback) is still returned (#236 decision: look-up tool, not an aggregate)", () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date(2026, 6, 5, 15, 30, 0));
+
+    insertEvent({ type: "checkin", createdAt: new Date(2026, 6, 5, 10, 0, 0), note: "today" });
+    insertEvent({ type: "checkin", createdAt: new Date(2026, 6, 6, 0, 0, 0, 0), note: "tomorrow-midnight" });
+
+    const result = executeGetActivityLogTool(db, {});
+
+    const { events } = parseResult(result);
+    expect(events.map((e) => e.note)).toEqual(["today", "tomorrow-midnight"]);
   });
 
   it("returns up to 100 events, newest-first-truncated but ascending-order in the response, with truncated=true", () => {
@@ -305,18 +319,51 @@ describe("executeGetActivityLogTool", () => {
     expect(result.content).toContain("9999");
   });
 
-  it("treats a date-only since/until (e.g. \"2026-07-05\") as local midnight, consistent with the tool's own local-day default (self-review: avoid a silent UTC/local mismatch)", () => {
-    // Local midnight of 2026-07-05 up to (but not including) local midnight
-    // of 2026-07-06.
+  it("treats a date-only since/until (e.g. \"2026-07-05\") as the local day [00:00:00.000, next local day 00:00:00.000): an event exactly at the next day's midnight is excluded, 23:59:59.999 is included (ADR 0007 決定3, #236)", () => {
     insertEvent({ type: "checkin", createdAt: new Date(2026, 6, 4, 23, 59, 59, 999), note: "before" });
     insertEvent({ type: "checkin", createdAt: new Date(2026, 6, 5, 0, 0, 0, 0), note: "in-range-start" });
     insertEvent({ type: "checkin", createdAt: new Date(2026, 6, 5, 23, 59, 59, 999), note: "in-range-end" });
+    insertEvent({ type: "checkin", createdAt: new Date(2026, 6, 6, 0, 0, 0, 0), note: "next-day-midnight" });
     insertEvent({ type: "checkin", createdAt: new Date(2026, 6, 6, 0, 0, 0, 1), note: "after" });
 
     const result = executeGetActivityLogTool(db, { since: "2026-07-05", until: "2026-07-05" });
 
     const { events } = parseResult(result);
     expect(events.map((e) => e.note)).toEqual(["in-range-start", "in-range-end"]);
+  });
+
+  it("resolves a date-only until at a month end to the next month's local 00:00 (exclusive): \"2026-07-31\" excludes 2026-08-01 00:00:00.000", () => {
+    insertEvent({ type: "checkin", createdAt: new Date(2026, 6, 31, 23, 59, 59, 999), note: "in-range-end" });
+    insertEvent({ type: "checkin", createdAt: new Date(2026, 7, 1, 0, 0, 0, 0), note: "next-month-midnight" });
+
+    const result = executeGetActivityLogTool(db, { since: "2026-07-31", until: "2026-07-31" });
+
+    const { events } = parseResult(result);
+    expect(events.map((e) => e.note)).toEqual(["in-range-end"]);
+  });
+
+  it("resolves a date-only until on a DST transition day by advancing the calendar date, not by adding a fixed 24h (only discriminating under a DST timezone, e.g. npm run test:tz)", () => {
+    // 2026-03-08 is a 23-hour day in America/New_York (spring forward) and
+    // 2026-11-01 a 25-hour day (fall back). A `+86400000ms` implementation
+    // would land at 03-09 01:00 / 11-01 23:00 local instead of the next
+    // local midnight. In non-DST zones both approaches agree, so the test
+    // still passes there — the discriminating run is the TZ=America/New_York
+    // one (ADR 0007 決定6).
+    for (const [y, m, d] of [
+      [2026, 2, 8],
+      [2026, 10, 1],
+    ] as const) {
+      db.prepare("DELETE FROM activity_events").run();
+      insertEvent({ type: "checkin", createdAt: new Date(y, m, d, 23, 59, 59, 999), note: "in-range-end" });
+      insertEvent({ type: "checkin", createdAt: new Date(y, m, d + 1, 0, 0, 0, 0), note: "next-day-midnight" });
+      insertEvent({ type: "checkin", createdAt: new Date(y, m, d + 1, 0, 30, 0, 0), note: "next-day-00-30" });
+      const dateOnly = `${y}-${String(m + 1).padStart(2, "0")}-${String(d).padStart(2, "0")}`;
+
+      const result = executeGetActivityLogTool(db, { since: dateOnly, until: dateOnly });
+
+      const { events } = parseResult(result);
+      expect(events.map((e) => e.note), dateOnly).toEqual(["in-range-end"]);
+    }
   });
 
   it("rejects a date-only since/until that is not a real calendar date", () => {
