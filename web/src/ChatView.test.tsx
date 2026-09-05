@@ -25,10 +25,23 @@ function ChatViewHarness() {
   return <ChatView chatState={chatState} />;
 }
 
+// Local-time anchors (ADR 0007 決定5). `select-restore-session.ts` decides
+// whether a session is still "today's" via `isSameLocalDay`, which compares
+// *local* calendar dates. Fixing these timestamps as UTC literals made the
+// fixtures straddle two local days in negative-offset zones — under
+// `TZ=America/New_York`, `started_at` 09:00Z landed on 07-05 while a faked
+// "now" of 03:00Z landed on 07-04, so the session was treated as stale and
+// the history never restored (Issue #177). Deriving every calendar-relevant
+// timestamp from local-date constructors keeps the whole fixture set on one
+// local day in *any* timezone. Same pattern as `use-chat.test.ts`.
+const LOCAL_NOW = new Date(2026, 6, 5, 12, 0, 0); // 2026-07-05 12:00 local
+const localIso = (day: number, hour: number, minute = 0, second = 0) =>
+  new Date(2026, 6, day, hour, minute, second).toISOString();
+
 const SESSION: ChatSession = {
   id: 1,
   type: "adhoc",
-  started_at: "2026-07-05T09:00:00.000Z",
+  started_at: localIso(5, 9),
   ended_at: null,
   summary: null,
 };
@@ -40,7 +53,7 @@ const HISTORY: ChatMessage[] = [
     role: "user",
     content: "おはようございます",
     interrupted: 0,
-    created_at: "2026-07-05T09:00:00.000Z",
+    created_at: localIso(5, 9),
   },
   {
     id: 2,
@@ -48,7 +61,7 @@ const HISTORY: ChatMessage[] = [
     role: "boss",
     content: "今日は A 案件からだ。",
     interrupted: 0,
-    created_at: "2026-07-05T09:00:05.000Z",
+    created_at: localIso(5, 9, 0, 5),
   },
 ];
 
@@ -58,13 +71,13 @@ const BOSS_REPLY: ChatMessage = {
   role: "boss",
   content: "B 案件は後回しにしろ。",
   interrupted: 0,
-  created_at: "2026-07-05T10:00:00.000Z",
+  created_at: localIso(5, 10),
 };
 
 const MORNING_SESSION: ChatSession = {
   id: 20,
   type: "morning",
-  started_at: "2026-07-05T00:00:00.000Z",
+  started_at: localIso(5, 8),
   ended_at: null,
   summary: null,
 };
@@ -122,10 +135,10 @@ function controllableSseStream() {
 beforeEach(() => {
   // Only `Date` is faked so React Testing Library's `waitFor` (real
   // `setTimeout` polling) keeps working. `SESSION.started_at` above is on
-  // 2026-07-05, so "now" is fixed to the same local day (adhoc daily
-  // cutoff).
+  // 2026-07-05 *local*, and `LOCAL_NOW` is midday on that same local date,
+  // so the adhoc daily cutoff sees them as the same day in any timezone.
   vi.useFakeTimers({ toFake: ["Date"] });
-  vi.setSystemTime(new Date("2026-07-05T03:00:00.000Z"));
+  vi.setSystemTime(LOCAL_NOW);
 });
 
 afterEach(() => {
@@ -205,14 +218,15 @@ describe("ChatView", () => {
     expect(screen.getByText("ボス")).toBeInTheDocument();
   });
 
-  // AC-11 (Issue #272). `started_at` is pinned to the faked "now" itself so
-  // the session is unambiguously on today's local day in any timezone
-  // (ADR 0007 決定5), without this test having to model a day boundary.
+  // AC-11 (Issue #272). Every timestamp is derived from `localIso` on the
+  // same local date as `LOCAL_NOW`, so the session is unambiguously on
+  // today's local day in any timezone (ADR 0007 決定5) without this test
+  // having to model a day boundary.
   it("renders the meeting start and end boundaries around the meeting's messages", async () => {
     const endedMorning: ChatSession = {
       ...MORNING_SESSION,
-      started_at: "2026-07-05T03:00:00.000Z",
-      ended_at: "2026-07-05T04:00:00.000Z",
+      started_at: localIso(5, 9),
+      ended_at: localIso(5, 10),
     };
     const morningHistory: ChatMessage[] = [
       {
@@ -221,7 +235,7 @@ describe("ChatView", () => {
         role: "user",
         content: "今日の予定です",
         interrupted: 0,
-        created_at: "2026-07-05T03:30:00.000Z",
+        created_at: localIso(5, 9, 30),
       },
     ];
     vi.stubGlobal(
@@ -728,7 +742,7 @@ describe("ChatView", () => {
         .mockResolvedValueOnce(jsonResponse(MORNING_SESSION, 201))
         .mockResolvedValueOnce(jsonResponse([])) // Issue #271: opening-line re-fetch (none generated)
         .mockResolvedValueOnce(
-          jsonResponse({ ...MORNING_SESSION, ended_at: "2026-07-05T01:00:00.000Z" }),
+          jsonResponse({ ...MORNING_SESSION, ended_at: localIso(5, 9) }),
         )
         // Issue #272: ending rebuilds the whole timeline, so `endSession`
         // re-lists the sessions (and then their messages) instead of
