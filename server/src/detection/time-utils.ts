@@ -62,6 +62,29 @@ export function toDateKey(date: Date): string {
   return `${year}-${month}-${day}`;
 }
 
+const DATE_KEY_PATTERN = /^(\d{4})-(\d{2})-(\d{2})$/;
+
+/**
+ * `YYYY-MM-DD`（{@link toDateKey} と同じキー形式）の文字列をローカル日付
+ * として解釈する。形式不正、または実在しない暦日（例: 2026-02-30 は
+ * 3月2日へ繰り上がる）は null を返す。`toDateKey` で往復させて繰り上がりを
+ * 検知することで、月ごとの日数上限を手書きしない。
+ *
+ * `server/src/reports/work-logs-routes.ts`（`GET /api/work-logs/:date`）と
+ * `server/src/reports/reports-routes.ts`（`POST /api/reports/generate` の
+ * 任意 `date` パラメータ、Issue #297）が共通で使う。
+ */
+export function parseDateKey(dateKey: string): Date | null {
+  const match = DATE_KEY_PATTERN.exec(dateKey);
+  if (!match) return null;
+
+  const [, yearStr, monthStr, dayStr] = match;
+  const date = new Date(Number(yearStr), Number(monthStr) - 1, Number(dayStr), 0, 0, 0, 0);
+  if (toDateKey(date) !== dateKey) return null;
+
+  return date;
+}
+
 /**
  * ローカルタイムゾーンの UTC オフセットを `±HH:MM` 形式で返す
  * （`2026-09-05T14:32+09:00` のようなオフセット付き ISO の組み立てに使う）。
