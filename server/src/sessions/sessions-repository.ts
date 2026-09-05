@@ -77,6 +77,32 @@ export type CreateSessionResult =
   | { ok: false; code: "evening_session_already_exists" };
 
 /**
+ * Finds the evening session (`type = "evening"`) whose `started_at` falls on
+ * the given local calendar date key (`dateKey`, {@link toDateKey}'s
+ * `YYYY-MM-DD` format), regardless of whether it has ended. `listSessions`
+ * orders by `started_at DESC, id DESC`, so if more than one matches (should
+ * not normally happen — see `createSession`'s daily-limit enforcement below),
+ * the most recent one wins (attribution basis:
+ * docs/adr/0007-local-calendar-day-basis.md 決定 4).
+ *
+ * Shared by three callers that all need "the evening session that started on
+ * local calendar day X", so the query lives in one place rather than being
+ * duplicated per caller: `hasTodaysEveningSession` (below, the
+ * one-evening-session-per-day constraint check), `generate-daily-report.ts`'s
+ * default (no-parameter) target-session resolution (`toDateKey(now)`), and
+ * `reports-routes.ts`'s `POST /generate` `date`-parameter resolution (manual
+ * regeneration for a specific day, Issue #297).
+ */
+export function findEveningSessionByDateKey(
+  db: Database.Database,
+  dateKey: string,
+): Session | undefined {
+  return listSessions(db, { type: "evening" }).find(
+    (session) => toDateKey(new Date(session.started_at)) === dateKey,
+  );
+}
+
+/**
  * Whether an evening session whose `started_at` falls on `today`'s local
  * calendar date already exists, regardless of whether it has ended
  * (`ended_at`). A finished evening session still counts: the product rule is
@@ -85,9 +111,7 @@ export type CreateSessionResult =
  * session while one is open".
  */
 function hasTodaysEveningSession(db: Database.Database, today: string): boolean {
-  return listSessions(db, { type: "evening" }).some(
-    (session) => toDateKey(new Date(session.started_at)) === today,
-  );
+  return findEveningSessionByDateKey(db, today) !== undefined;
 }
 
 /**
