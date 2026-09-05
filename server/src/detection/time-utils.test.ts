@@ -104,13 +104,63 @@ describe("isWithinWorkingHours", () => {
 
 describe("toDateKey", () => {
   it("formats a local date as YYYY-MM-DD", () => {
-    const date = new Date("2026-07-05T23:30:00");
+    const date = new Date(2026, 6, 5, 23, 30);
     expect(toDateKey(date)).toBe("2026-07-05");
   });
 
   it("zero-pads single-digit months and days", () => {
-    const date = new Date("2026-01-02T00:00:00");
+    const date = new Date(2026, 0, 2, 0, 0);
     expect(toDateKey(date)).toBe("2026-01-02");
+  });
+
+  // 以下は timeZone 引数（ADR 0007 決定6・#177）の契約を検証する。
+  //
+  // 最初の3ケースでは Date を `Date.UTC(...)` で組み立てた「絶対時刻
+  // （instant）」にしており、toDateKey に渡す timeZone 引数が実行環境
+  // （process の TZ）に関係なくその暦日を決めることを確認する。時刻成分を
+  // 23:30・00:30 に取ることで、実装を `toISOString().slice(0, 10)`（＝常に
+  // UTC 暦日を返す）へ差し替えると実行環境の TZ を問わず必ず期待値とズレる
+  // （UTC のケースを除く）ようにしている。
+  // 最後のケースのみ趣旨が異なり、instant ではなくローカル日時から Date を
+  // 組み、timeZone 省略時の経路と明示時の経路が一致することを固定する
+  // （後述のコメント参照）。
+  describe("with an explicit timeZone", () => {
+    it("uses the given IANA time zone's calendar day, not the process TZ", () => {
+      // 2026-07-05T23:30:00Z は Asia/Tokyo（UTC+9, DST無し）では既に
+      // 2026-07-06 08:30 ＝ 翌暦日
+      const instant = new Date(Date.UTC(2026, 6, 5, 23, 30));
+
+      expect(toDateKey(instant, "Asia/Tokyo")).toBe("2026-07-06");
+      expect(toDateKey(instant, "UTC")).toBe("2026-07-05");
+    });
+
+    it("rolls back to the previous calendar day west of UTC", () => {
+      // 2026-07-06T00:30:00Z は America/New_York（夏時間で UTC-4）では
+      // まだ 2026-07-05 20:30 ＝ 前暦日
+      const instant = new Date(Date.UTC(2026, 6, 6, 0, 30));
+
+      expect(toDateKey(instant, "America/New_York")).toBe("2026-07-05");
+      expect(toDateKey(instant, "UTC")).toBe("2026-07-06");
+    });
+
+    it("zero-pads single-digit months and days for a non-UTC time zone", () => {
+      // 2026-01-01T20:30:00Z は Asia/Tokyo では 2026-01-02 05:30
+      const instant = new Date(Date.UTC(2026, 0, 1, 20, 30));
+
+      expect(toDateKey(instant, "Asia/Tokyo")).toBe("2026-01-02");
+    });
+
+    // timeZone 省略時（getFullYear 等ベース）と、timeZone に実行環境自身の
+    // タイムゾーンを明示した場合（Intl.DateTimeFormat ベース）は、実装が
+    // 完全に別経路であっても常に一致すべき契約を固定する。既存の呼び出し
+    // 箇所は全て省略時の経路しか通らないため、この一致が無いと Intl 側の
+    // 経路（timeZone 指定時）は本番のどこからも同値性を検証されない。
+    it("agrees with the no-argument result when given the process's own resolved time zone", () => {
+      const date = new Date(2026, 6, 5, 23, 30);
+      const systemTimeZone = Intl.DateTimeFormat().resolvedOptions().timeZone;
+
+      expect(toDateKey(date, systemTimeZone)).toBe(toDateKey(date));
+    });
   });
 });
 
