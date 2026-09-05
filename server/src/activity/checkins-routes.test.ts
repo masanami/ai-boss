@@ -863,6 +863,52 @@ describe("POST /api/checkins", () => {
     });
 
     describe("task_start/task_pause transition eligibility (判断4)", () => {
+      it("records the event but leaves status unchanged when occurred_at equals the latest task_start exactly (AC-10, 判断4 strict comparison)", async () => {
+        const app = createApp(db);
+        const task = insertWorkTask(db, { status: "in_progress" });
+        const startedAt = new Date(2026, 6, 5, 9, 0, 0, 0).toISOString();
+        insertEvent(db, "task_start", startedAt, task.id);
+
+        const res = await app.request("/api/checkins", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ type: "task_pause", task_id: task.id, occurred_at: startedAt }),
+        });
+
+        expect(res.status).toBe(201);
+        const updated = db
+          .prepare("SELECT status FROM tasks WHERE id = ?")
+          .get(task.id) as { status: string };
+        expect(updated.status).toBe("in_progress");
+        const events = db
+          .prepare("SELECT type FROM activity_events WHERE task_id = ? AND type = 'task_pause'")
+          .all(task.id);
+        expect(events).toHaveLength(1);
+      });
+
+      it("records the event but leaves status unchanged when occurred_at equals the latest task_pause exactly (AC-12, 判断4 strict comparison)", async () => {
+        const app = createApp(db);
+        const task = insertWorkTask(db, { status: "paused" });
+        const pausedAt = new Date(2026, 6, 5, 9, 0, 0, 0).toISOString();
+        insertEvent(db, "task_pause", pausedAt, task.id);
+
+        const res = await app.request("/api/checkins", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ type: "task_start", task_id: task.id, occurred_at: pausedAt }),
+        });
+
+        expect(res.status).toBe(201);
+        const updated = db
+          .prepare("SELECT status FROM tasks WHERE id = ?")
+          .get(task.id) as { status: string };
+        expect(updated.status).toBe("paused");
+        const events = db
+          .prepare("SELECT type FROM activity_events WHERE task_id = ? AND type = 'task_start'")
+          .all(task.id);
+        expect(events).toHaveLength(1);
+      });
+
       it("transitions in_progress to paused when occurred_at is newer than the latest task_start/task_pause (AC-9)", async () => {
         const app = createApp(db);
         const task = insertWorkTask(db, { status: "in_progress" });

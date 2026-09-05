@@ -1453,6 +1453,165 @@ describe("CheckinPanel", () => {
       expect(screen.queryByText(/休憩開始は記録済みです/)).not.toBeInTheDocument();
     });
 
+    it("resends only break_end with the retained return time after collapsing the time controls while pending (Codex P2 on PR #356/#357, off-break)", async () => {
+      // 後続の閉じた休憩があるため isOnBreak は false のまま。保留中に展開欄を
+      // 折りたたんでから「休憩」を押しても、新しい break_start を二重記録せず
+      // 保留時の戻り時刻で break_end だけを再送することを固定する。
+      const laterBreak: ActivityEvent[] = [
+        makeEvent({ id: 10, type: "break_start", created_at: localTimeIso(10, 0) }),
+        makeEvent({ id: 11, type: "break_end", created_at: localTimeIso(10, 15) }),
+      ];
+      let breakEndAttempts = 0;
+      const fetchMock = vi.fn((url: string, init?: RequestInit) => {
+        if (url === "/api/activity/today") {
+          return Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve(laterBreak) });
+        }
+        if (url === "/api/checkins" && init?.method === "POST") {
+          const parsedBody = JSON.parse(init.body as string) as { type: string };
+          if (parsedBody.type === "break_end") {
+            breakEndAttempts += 1;
+            if (breakEndAttempts === 1) {
+              return Promise.resolve({
+                ok: false,
+                status: 500,
+                json: () => Promise.resolve({ error: "temporary failure" }),
+              });
+            }
+          }
+          return Promise.resolve({ ok: true, status: 201, json: () => Promise.resolve({ id: 1, ...parsedBody }) });
+        }
+        return Promise.reject(new Error(`unexpected fetch call: ${url}`));
+      });
+      vi.stubGlobal("fetch", fetchMock);
+
+      render(<CheckinPanel tasksState={makeTasksState([])} />);
+      await waitFor(() => expect(screen.getByRole("button", { name: "休憩" })).toBeEnabled());
+      expandTimeInput();
+      fireEvent.change(screen.getByLabelText("記録する時刻"), { target: { value: "08:00" } });
+      fireEvent.change(screen.getByLabelText("戻り時刻（任意）"), { target: { value: "08:30" } });
+      fireEvent.click(screen.getByRole("button", { name: "休憩" }));
+      await waitFor(() => expect(screen.getByRole("alert")).toHaveTextContent("temporary failure"));
+
+      // 展開欄を折りたたむ。保留バナーは折りたたんでも見える。
+      fireEvent.click(screen.getByRole("button", { name: "時刻を指定して記録" }));
+      expect(screen.queryByLabelText("記録する時刻")).not.toBeInTheDocument();
+      expect(screen.getByText(/08:00の休憩開始は記録済みです/)).toHaveTextContent("08:30");
+
+      fireEvent.click(screen.getByRole("button", { name: "休憩" }));
+      await waitFor(() => expect(screen.getByText(/08:00〜08:30の休憩を記録しました/)).toBeInTheDocument());
+
+      const bodies = fetchMock.mock.calls
+        .filter(([url]) => url === "/api/checkins")
+        .map(([, init]) => JSON.parse(init?.body as string) as { type: string; occurred_at?: string });
+      expect(bodies.map((b) => b.type)).toEqual(["break_start", "break_end", "break_end"]);
+      expect(bodies[2].occurred_at).toBe(localTimeIso(8, 30));
+      expect(screen.queryByText(/休憩開始は記録済みです/)).not.toBeInTheDocument();
+    });
+
+    it("sends break_end with the retained return time (not now) from 戻りました after collapsing the time controls while pending (Codex P2 on PR #356/#357, on-break)", async () => {
+      let recordedEvents: ActivityEvent[] = [];
+      let breakEndAttempts = 0;
+      const fetchMock = vi.fn((url: string, init?: RequestInit) => {
+        if (url === "/api/activity/today") {
+          return Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve(recordedEvents) });
+        }
+        if (url === "/api/checkins" && init?.method === "POST") {
+          const parsedBody = JSON.parse(init.body as string) as {
+            type: ActivityEvent["type"];
+            occurred_at?: string;
+          };
+          if (parsedBody.type === "break_end") {
+            breakEndAttempts += 1;
+            if (breakEndAttempts === 1) {
+              return Promise.resolve({
+                ok: false,
+                status: 500,
+                json: () => Promise.resolve({ error: "temporary failure" }),
+              });
+            }
+          }
+          const created = makeEvent({
+            id: recordedEvents.length + 1,
+            type: parsedBody.type,
+            created_at: parsedBody.occurred_at ?? localTimeIso(12, 0),
+          });
+          recordedEvents = [...recordedEvents, created];
+          return Promise.resolve({ ok: true, status: 201, json: () => Promise.resolve(created) });
+        }
+        return Promise.reject(new Error(`unexpected fetch call: ${url}`));
+      });
+      vi.stubGlobal("fetch", fetchMock);
+
+      render(<CheckinPanel tasksState={makeTasksState([])} />);
+      await waitFor(() => expect(screen.getByRole("button", { name: "休憩" })).toBeEnabled());
+      expandTimeInput();
+      fireEvent.change(screen.getByLabelText("記録する時刻"), { target: { value: "08:00" } });
+      fireEvent.change(screen.getByLabelText("戻り時刻（任意）"), { target: { value: "08:30" } });
+      fireEvent.click(screen.getByRole("button", { name: "休憩" }));
+      await waitFor(() => expect(screen.getByRole("button", { name: "戻りました" })).toBeInTheDocument());
+
+      fireEvent.click(screen.getByRole("button", { name: "時刻を指定して記録" }));
+      expect(screen.queryByLabelText("戻り時刻（任意）")).not.toBeInTheDocument();
+
+      fireEvent.click(screen.getByRole("button", { name: "戻りました" }));
+      await waitFor(() => expect(screen.getByText(/08:30に戻りました/)).toBeInTheDocument());
+
+      const bodies = fetchMock.mock.calls
+        .filter(([url]) => url === "/api/checkins")
+        .map(([, init]) => JSON.parse(init?.body as string) as { type: string; occurred_at?: string });
+      expect(bodies.map((b) => b.type)).toEqual(["break_start", "break_end", "break_end"]);
+      // 現在時刻ではなく保留時の戻り時刻で閉じる。
+      expect(bodies[2].occurred_at).toBe(localTimeIso(8, 30));
+      expect(screen.queryByText(/休憩開始は記録済みです/)).not.toBeInTheDocument();
+    });
+
+    it("treats a lost break_end response as completed when the refreshed activity already contains that break_end (Codex P2 on PR #356/#357)", async () => {
+      // サーバは break_end をコミットしたが応答の解釈に失敗するケース。
+      // 再取得した一覧に同時刻の break_end があれば完了扱いにし、保留にしない
+      // （保留にすると再送が同時刻重複の 400 で永久に弾かれる）。
+      let recordedEvents: ActivityEvent[] = [];
+      const fetchMock = vi.fn((url: string, init?: RequestInit) => {
+        if (url === "/api/activity/today") {
+          return Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve(recordedEvents) });
+        }
+        if (url === "/api/checkins" && init?.method === "POST") {
+          const parsedBody = JSON.parse(init.body as string) as {
+            type: ActivityEvent["type"];
+            occurred_at?: string;
+          };
+          const created = makeEvent({
+            id: recordedEvents.length + 1,
+            type: parsedBody.type,
+            created_at: parsedBody.occurred_at ?? localTimeIso(12, 0),
+          });
+          recordedEvents = [...recordedEvents, created];
+          if (parsedBody.type === "break_end") {
+            return Promise.resolve({
+              ok: true,
+              status: 201,
+              json: () => Promise.reject(new Error("response body lost")),
+            });
+          }
+          return Promise.resolve({ ok: true, status: 201, json: () => Promise.resolve(created) });
+        }
+        return Promise.reject(new Error(`unexpected fetch call: ${url}`));
+      });
+      vi.stubGlobal("fetch", fetchMock);
+
+      render(<CheckinPanel tasksState={makeTasksState([])} />);
+      await waitFor(() => expect(screen.getByRole("button", { name: "休憩" })).toBeEnabled());
+      expandTimeInput();
+      fireEvent.change(screen.getByLabelText("記録する時刻"), { target: { value: "08:00" } });
+      fireEvent.change(screen.getByLabelText("戻り時刻（任意）"), { target: { value: "08:30" } });
+      fireEvent.click(screen.getByRole("button", { name: "休憩" }));
+
+      await waitFor(() => expect(screen.getByText(/08:00〜08:30の休憩を記録しました/)).toBeInTheDocument());
+      expect(screen.queryByText(/休憩開始は記録済みです/)).not.toBeInTheDocument();
+      expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+      const checkinCalls = fetchMock.mock.calls.filter(([url]) => url === "/api/checkins");
+      expect(checkinCalls).toHaveLength(2);
+    });
+
     it("disables the checkin buttons and shows a reason when the recorded time is in the future (AC-27)", async () => {
       const tasks = [
         makeTask({ id: 3, title: "着手中タスク", status: "in_progress" }),

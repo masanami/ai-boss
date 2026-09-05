@@ -73,7 +73,7 @@ describe("useCheckinPanel", () => {
         ]);
       });
 
-      expect(outcome).toEqual({ posted: 1, ok: false });
+      expect(outcome).toEqual({ posted: 1, ok: false, events: [] });
       expect(result.current.submitError).toBe("bad break_end");
       const posted = fetchMock.mock.calls
         .filter(([url]) => url === "/api/checkins")
@@ -106,7 +106,7 @@ describe("useCheckinPanel", () => {
         ]);
       });
 
-      expect(outcome).toEqual({ posted: 2, ok: true });
+      expect(outcome).toEqual({ posted: 2, ok: true, events: null });
       expect(result.current.submitError).toBeNull();
       expect(refreshTasks).toHaveBeenCalledTimes(1);
       expect(result.current.status).toBe("error");

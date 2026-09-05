@@ -53,6 +53,7 @@ function CheckinPanel({ tasksState }: CheckinPanelProps) {
     isSubmitting,
     submitCheckin,
     submitCheckins,
+    clearSubmitError,
     completeTask,
   } = useCheckinPanel(refresh);
 
@@ -89,7 +90,14 @@ function CheckinPanel({ tasksState }: CheckinPanelProps) {
   // 独立に保持する: 後追いする休憩より後に閉じた休憩が既にあると isOnBreak
   // は false のままで「戻りました」が出ず、「休憩」を押し直すと break_start が
   // 二重に記録されてしまう。pending の間は「休憩」が break_end だけを再送する。
-  const [pendingBreakEnd, setPendingBreakEnd] = useState(false);
+  // 保留中の休憩の時刻（HH:mm）は展開欄の入力とは独立に保持する（Codex 指摘
+  // PR #356/#357: 展開欄を折りたたむと recordIso / returnIso が null になり、
+  // 保留フラグだけが残ると「休憩」が新しい break_start を二重記録し、
+  // 「戻りました」が現在時刻で break_end を記録してしまう）。
+  const [pendingBreak, setPendingBreak] = useState<{
+    startTime: string;
+    returnTime: string;
+  } | null>(null);
 
   useEffect(() => {
     // 未選択のときはデフォルトタスクを設定する。選択中タスクが完了などで
@@ -181,9 +189,29 @@ function CheckinPanel({ tasksState }: CheckinPanelProps) {
   // だけが失敗した際の再送はこの経路を通る）、無ければ「記録する時刻」を
   // フォールバックとして使う（AC-25: 戻り時刻を使わず記録する時刻だけで
   // 戻りましたを送るケースをそのまま維持する）。
-  const breakEndIso = returnIso ?? recordIso;
+  // 保留中の再送に使う戻り時刻: 展開欄に戻り時刻が入っていれば（ユーザーが
+  // 直した値を優先して）それ、無ければ保留時に控えた戻り時刻。
+  const pendingReturnTime =
+    pendingBreak === null
+      ? null
+      : timeExpanded && returnTime !== ""
+        ? returnTime
+        : pendingBreak.returnTime;
+  const pendingReturnIso =
+    pendingReturnTime === null ? null : buildOccurredAtIso(pendingReturnTime);
+  const breakEndIso = returnIso ?? recordIso ?? pendingReturnIso;
   const breakEndTimeIsFuture =
     breakEndIso !== null && isFutureIso(breakEndIso);
+
+  /** 再取得した活動一覧に、指定時刻の break_end が既に記録されているか
+   * （応答が失われた break_end の突き合わせ。Codex 指摘 PR #356/#357）。 */
+  const hasBreakEndAt = (
+    refreshed: ActivityEvent[] | null,
+    iso: string,
+  ): boolean =>
+    refreshed?.some(
+      (event) => event.type === "break_end" && event.created_at === iso,
+    ) ?? false;
 
   /** occurred_at 付き送信の成功メッセージを組み立てる（#243 判断3・仮定4）。 */
   const withTimeNote = (verb: string, timeLabel: string): string =>
@@ -248,6 +276,31 @@ function CheckinPanel({ tasksState }: CheckinPanelProps) {
     if (!isBreakMinutesValid || recordTimeIsFuture || breakDisabledByTimeInput) {
       return;
     }
+    // 保留中（break_start は記録済みで break_end だけが未記録）の再送は、
+    // 展開欄の状態（折りたたみ・空値）に関わらず returnIso の判定より前に
+    // 処理し、break_end だけを送る（break_start を二重記録しない）。
+    if (pendingBreak !== null && pendingReturnIso !== null) {
+      if (isFutureIso(pendingReturnIso)) {
+        return;
+      }
+      const retryReturnIso = pendingReturnIso;
+      const retryStartTime = pendingBreak.startTime;
+      const retryReturnTime = pendingReturnTime ?? pendingBreak.returnTime;
+      setFeedback(null);
+      void submitCheckins([
+        { type: "break_end", note: noteOrNull(), occurred_at: retryReturnIso },
+      ]).then(({ ok, events: refreshed }) => {
+        if (ok || hasBreakEndAt(refreshed, retryReturnIso)) {
+          clearSubmitError();
+          setPendingBreak(null);
+          setNote("");
+          setFeedback(
+            `${retryStartTime}〜${retryReturnTime}の休憩を記録しました${REPORT_REGENERATION_NOTE}`,
+          );
+        }
+      });
+      return;
+    }
     if (returnIso === null) {
       // 戻り時刻が空: 従来どおり break_start を 1 回だけ送信する（AC-20）。
       runSubmit(
@@ -272,34 +325,34 @@ function CheckinPanel({ tasksState }: CheckinPanelProps) {
     // recordIso は必ず非 null（戻り時刻だけ入れて開始時刻が無い状態は
     // 事前チェックで弾かれている）。
     const startIso = recordIso as string;
+    const endIso = returnIso;
+    const startTime = recordTime;
+    const endTime = returnTime;
     setFeedback(null);
-    // pending（break_start は記録済みで break_end だけが失敗している）なら
-    // break_end だけを再送し、break_start を二重に記録しない。
-    const inputs: CheckinInput[] = pendingBreakEnd
-      ? []
-      : [
-          {
-            type: "break_start",
-            expected_minutes: resolvedBreakMinutes,
-            note: noteOrNull(),
-            occurred_at: startIso,
-          },
-        ];
-    inputs.push({ type: "break_end", note: noteOrNull(), occurred_at: returnIso });
-    void submitCheckins(inputs).then(({ posted, ok }) => {
-      if (ok) {
-        setPendingBreakEnd(false);
+    void submitCheckins([
+      {
+        type: "break_start",
+        expected_minutes: resolvedBreakMinutes,
+        note: noteOrNull(),
+        occurred_at: startIso,
+      },
+      { type: "break_end", note: noteOrNull(), occurred_at: endIso },
+    ]).then(({ posted, ok, events: refreshed }) => {
+      // 2 件目の応答が失われた／解釈できなかった場合でも、再取得した一覧に
+      // その時刻の break_end があれば記録は完了している（Codex 指摘）。
+      if (ok || (posted === 1 && hasBreakEndAt(refreshed, endIso))) {
+        clearSubmitError();
+        setPendingBreak(null);
         setNote("");
         setFeedback(
-          `${recordTime}〜${returnTime}の休憩を記録しました${REPORT_REGENERATION_NOTE}`,
+          `${startTime}〜${endTime}の休憩を記録しました${REPORT_REGENERATION_NOTE}`,
         );
         return;
       }
-      // break_start（1 件目）だけが 201 を受けて break_end が失敗した場合。
-      // 既に pending だった（inputs が break_end のみ）なら posted は 0 で
-      // pending のまま据え置く。
-      if (posted === 1 && !pendingBreakEnd) {
-        setPendingBreakEnd(true);
+      // break_start（1 件目）だけが 201 を受けて break_end が失敗した場合:
+      // 時刻を控えて保留にする（展開欄を折りたたんでも再送に使える）。
+      if (posted === 1) {
+        setPendingBreak({ startTime, returnTime: endTime });
       }
     });
   };
@@ -312,7 +365,12 @@ function CheckinPanel({ tasksState }: CheckinPanelProps) {
     // だけが失敗したときの再送は、isOnBreak へ切り替わった後のこの経路を
     // 通り、保持された戻り時刻で break_end を送り直せる）。
     const occurredAtIso = breakEndIso;
-    const timeLabel = returnIso !== null ? returnTime : recordTime;
+    const timeLabel =
+      returnIso !== null
+        ? returnTime
+        : recordIso !== null
+          ? recordTime
+          : (pendingReturnTime ?? "");
     runSubmit(
       {
         type: "break_end",
@@ -322,7 +380,7 @@ function CheckinPanel({ tasksState }: CheckinPanelProps) {
       occurredAtIso !== null
         ? `${timeLabel}に戻りました${REPORT_REGENERATION_NOTE}`
         : "おかえりなさい",
-      () => setPendingBreakEnd(false),
+      () => setPendingBreak(null),
     );
   };
 
@@ -350,7 +408,7 @@ function CheckinPanel({ tasksState }: CheckinPanelProps) {
                 setRecordTime(event.target.value);
                 // 開始時刻を変えたら「記録済みの break_start」との対応が
                 // 切れるため、pending は解除して次回は通常の 2 件送信に戻す。
-                setPendingBreakEnd(false);
+                setPendingBreak(null);
               }}
             />
           </label>
@@ -366,12 +424,13 @@ function CheckinPanel({ tasksState }: CheckinPanelProps) {
           {timeInputError !== null && (
             <p className="checkin-time-input-error">{timeInputError}</p>
           )}
-          {pendingBreakEnd && (
-            <p className="checkin-time-input-error">
-              {recordTime}の休憩開始は記録済みです。「休憩」または「戻りました」で戻り時刻だけを再送します
-            </p>
-          )}
         </div>
+      )}
+      {pendingBreak !== null && (
+        // 展開欄の外に置き、折りたたんでも保留中であることが見えるようにする。
+        <p className="checkin-time-input-error">
+          {pendingBreak.startTime}の休憩開始は記録済みです。「休憩」または「戻りました」で戻り時刻（{pendingReturnTime}）だけを再送します
+        </p>
       )}
       {isOnBreak ? (
         <div className="checkin-panel-group">

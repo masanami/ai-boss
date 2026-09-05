@@ -238,6 +238,17 @@ describe("backdated checkins: effect on notifications / escalation / break detec
       const before = await readJson<{ date: string; content: string }>(
         await app.request("/api/reports/2026-07-05"),
       );
+      // Codex 指摘（PR #355）: 内容の等値比較だけでは、チェックイン中に
+      // generateDailyReport を呼んで upsert する実装でも同じ行になって pass
+      // してしまう（checkin は日報に描画されるフィールドを変えず、LLM モック
+      // は定数を返し、時計は固定）。再生成の副作用そのもの＝日報生成が呼ぶ
+      // LLM 抽出（requestVerdict）の呼び出し回数と daily_reports の行数が
+      // チェックイン前後で増えないことを観測する。
+      const verdictCallsAfterGenerate = requestVerdictMock.mock.calls.length;
+      expect(verdictCallsAfterGenerate).toBeGreaterThan(0);
+      const reportRowsBefore = db
+        .prepare("SELECT COUNT(*) AS n FROM daily_reports")
+        .get() as { n: number };
 
       const checkinRes = await postCheckin(app, {
         type: "checkin",
@@ -250,6 +261,11 @@ describe("backdated checkins: effect on notifications / escalation / break detec
       );
 
       expect(after).toEqual(before);
+      expect(requestVerdictMock.mock.calls.length).toBe(verdictCallsAfterGenerate);
+      const reportRowsAfter = db
+        .prepare("SELECT COUNT(*) AS n FROM daily_reports")
+        .get() as { n: number };
+      expect(reportRowsAfter.n).toBe(reportRowsBefore.n);
     });
   });
 
