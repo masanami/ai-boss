@@ -73,6 +73,26 @@ describe("selectRestoreSessions", () => {
     });
   });
 
+  // Issue #220 asks whether the mount-time restore path can pick up an
+  // already-ended meeting. It cannot: the `ended_at === null` filter lives
+  // here, on the meeting branch, and this is the case where nothing else
+  // could mask a regression — an ended evening session is today's *only*
+  // session, so dropping the filter would surface it as `active` rather than
+  // falling through to `null`.
+  it("never restores an ended evening session as active, even when it is today's only session (Issue #220)", () => {
+    const endedEvening = makeSession({
+      id: 1,
+      type: "evening",
+      started_at: localIso(5, 18),
+      ended_at: localIso(5, 19),
+    });
+
+    expect(selectRestoreSessions([endedEvening], NOW)).toEqual({
+      active: null,
+      adhoc: null,
+    });
+  });
+
   it("ignores an open morning session from a previous day", () => {
     const yesterdayMorning = makeSession({
       id: 1,
