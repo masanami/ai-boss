@@ -36,4 +36,9 @@ export interface CheckinInput {
   task_id?: number | null;
   note?: string | null;
   expected_minutes?: number | null;
+  /**
+   * ISO 8601 日時（`toISOString()` 形式）で送る後追い記録の時刻。省略時は
+   * 現行どおりサーバ時刻で記録される（#243 判断0・仮定1）。
+   */
+  occurred_at?: string | null;
 }
