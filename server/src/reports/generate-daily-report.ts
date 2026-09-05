@@ -8,7 +8,7 @@
 // のルート）は、この単一の関数を共通して呼ぶ。
 import type Database from "better-sqlite3";
 import { toDateKey } from "../detection/time-utils.js";
-import { findSessionById, listSessions } from "../sessions/sessions-repository.js";
+import { findEveningSessionByDateKey, findSessionById } from "../sessions/sessions-repository.js";
 import { listMessagesBySessionId } from "../sessions/messages-repository.js";
 import type { Session } from "../sessions/session.js";
 import { collectDailyReportData } from "./collect-daily-report-data.js";
@@ -39,8 +39,11 @@ export interface GenerateDailyReportOptions {
    * 終了させたセッション」を直接渡すことを想定する。
    *
    * 未指定時は従来どおり `toDateKey(now)` に一致する `started_at` を持つ
-   * 夕会（`type = evening`）を検索する（手動再生成 `POST
-   * /api/reports/generate` の経路 — 「今日」の夕会を探す）。
+   * 夕会（`type = evening`）を検索する。手動再生成 `POST
+   * /api/reports/generate` はこれが既定（パラメータ省略時）の経路 —
+   * 「今日」の夕会を探す。同エンドポイントが `date`／`eveningSessionId`
+   * パラメータを指定された場合（Issue #297）は、ルート側が対象夕会 id を
+   * 解決してからこの `eveningSessionId` 経由で渡すため、この経路は通らない。
    *
    * 指定した id が存在しない、または `type` が `evening` でない場合は
    * 「有効な対象夕会が無い」として扱い、`{ ok: false, code:
@@ -51,20 +54,16 @@ export interface GenerateDailyReportOptions {
 }
 
 /**
- * `now` のローカル日付に属する夕会セッション（`type = evening` かつ
- * `started_at` のローカル日付が一致するもの）を探す。`listSessions` は
- * `started_at DESC, id DESC` で返すため、複数あればその順で先頭（最新）が
- * 選ばれる（帰属の基準は
- * docs/adr/0007-local-calendar-day-basis.md 決定 4）。
+ * `now` のローカル日付に属する夕会セッションを探す（`sessions-repository.ts`
+ * の {@link findEveningSessionByDateKey} に `toDateKey(now)` を渡すだけの薄い
+ * ラッパー。クエリ本体はセッション層に1箇所だけ持つ — `hasTodaysEveningSession`
+ * と同じクエリの重複を避ける）。
  */
 function findTodaysEveningSession(
   db: Database.Database,
   now: Date,
 ): Session | undefined {
-  const todayKey = toDateKey(now);
-  return listSessions(db, { type: "evening" }).find(
-    (session) => toDateKey(new Date(session.started_at)) === todayKey,
-  );
+  return findEveningSessionByDateKey(db, toDateKey(now));
 }
 
 /**
