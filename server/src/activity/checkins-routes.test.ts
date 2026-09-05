@@ -802,6 +802,25 @@ describe("POST /api/checkins", () => {
         expect(typeof body.error).toBe("string");
       });
 
+      it("returns 400 when a break_end already exists at exactly occurred_at (AC-7, duplicate retry)", async () => {
+        const app = createApp(db);
+        const breakEndAt = new Date(2026, 6, 5, 9, 30, 0, 0).toISOString();
+        insertEvent(db, "break_start", new Date(2026, 6, 5, 9, 0, 0, 0).toISOString());
+        insertEvent(db, "break_end", breakEndAt);
+
+        const res = await app.request("/api/checkins", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ type: "break_end", occurred_at: breakEndAt }),
+        });
+
+        expect(res.status).toBe(400);
+        const rows = db
+          .prepare("SELECT id FROM activity_events WHERE type = 'break_end'")
+          .all();
+        expect(rows).toHaveLength(1);
+      });
+
       it("records a 201 when the prior break_start has no break_end before occurred_at yet, even if a later break is already recorded (AC-8)", async () => {
         const app = createApp(db);
         insertEvent(db, "break_start", new Date(2026, 6, 5, 9, 0, 0, 0).toISOString());

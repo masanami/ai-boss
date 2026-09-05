@@ -52,6 +52,7 @@ function CheckinPanel({ tasksState }: CheckinPanelProps) {
     submitError,
     isSubmitting,
     submitCheckin,
+    submitCheckins,
     completeTask,
   } = useCheckinPanel(refresh);
 
@@ -83,6 +84,12 @@ function CheckinPanel({ tasksState }: CheckinPanelProps) {
   const [timeExpanded, setTimeExpanded] = useState(false);
   const [recordTime, setRecordTime] = useState("");
   const [returnTime, setReturnTime] = useState("");
+  // 判断6 の直列送信で break_start だけが記録され break_end が失敗した状態
+  // （Codex 指摘 PR #354）。この状態を isOnBreak（活動一覧からの導出）とは
+  // 独立に保持する: 後追いする休憩より後に閉じた休憩が既にあると isOnBreak
+  // は false のままで「戻りました」が出ず、「休憩」を押し直すと break_start が
+  // 二重に記録されてしまう。pending の間は「休憩」が break_end だけを再送する。
+  const [pendingBreakEnd, setPendingBreakEnd] = useState(false);
 
   useEffect(() => {
     // 未選択のときはデフォルトタスクを設定する。選択中タスクが完了などで
@@ -105,12 +112,17 @@ function CheckinPanel({ tasksState }: CheckinPanelProps) {
   const noteOrNull = (): string | null =>
     note.trim() === "" ? null : note.trim();
 
-  const runSubmit = (input: CheckinInput, successMessage: string) => {
+  const runSubmit = (
+    input: CheckinInput,
+    successMessage: string,
+    onSuccess?: () => void,
+  ) => {
     setFeedback(null);
     void submitCheckin(input).then((ok) => {
       if (ok) {
         setNote("");
         setFeedback(successMessage);
+        onSuccess?.();
       }
     });
   };
@@ -261,29 +273,35 @@ function CheckinPanel({ tasksState }: CheckinPanelProps) {
     // 事前チェックで弾かれている）。
     const startIso = recordIso as string;
     setFeedback(null);
-    void (async () => {
-      const startOk = await submitCheckin({
-        type: "break_start",
-        expected_minutes: resolvedBreakMinutes,
-        note: noteOrNull(),
-        occurred_at: startIso,
-      });
-      if (!startOk) {
+    // pending（break_start は記録済みで break_end だけが失敗している）なら
+    // break_end だけを再送し、break_start を二重に記録しない。
+    const inputs: CheckinInput[] = pendingBreakEnd
+      ? []
+      : [
+          {
+            type: "break_start",
+            expected_minutes: resolvedBreakMinutes,
+            note: noteOrNull(),
+            occurred_at: startIso,
+          },
+        ];
+    inputs.push({ type: "break_end", note: noteOrNull(), occurred_at: returnIso });
+    void submitCheckins(inputs).then(({ posted, ok }) => {
+      if (ok) {
+        setPendingBreakEnd(false);
+        setNote("");
+        setFeedback(
+          `${recordTime}〜${returnTime}の休憩を記録しました${REPORT_REGENERATION_NOTE}`,
+        );
         return;
       }
-      const endOk = await submitCheckin({
-        type: "break_end",
-        note: noteOrNull(),
-        occurred_at: returnIso,
-      });
-      if (!endOk) {
-        return;
+      // break_start（1 件目）だけが 201 を受けて break_end が失敗した場合。
+      // 既に pending だった（inputs が break_end のみ）なら posted は 0 で
+      // pending のまま据え置く。
+      if (posted === 1 && !pendingBreakEnd) {
+        setPendingBreakEnd(true);
       }
-      setNote("");
-      setFeedback(
-        `${recordTime}〜${returnTime}の休憩を記録しました${REPORT_REGENERATION_NOTE}`,
-      );
-    })();
+    });
   };
 
   const handleBreakEnd = () => {
@@ -304,6 +322,7 @@ function CheckinPanel({ tasksState }: CheckinPanelProps) {
       occurredAtIso !== null
         ? `${timeLabel}に戻りました${REPORT_REGENERATION_NOTE}`
         : "おかえりなさい",
+      () => setPendingBreakEnd(false),
     );
   };
 
@@ -327,7 +346,12 @@ function CheckinPanel({ tasksState }: CheckinPanelProps) {
               type="time"
               aria-label="記録する時刻"
               value={recordTime}
-              onChange={(event) => setRecordTime(event.target.value)}
+              onChange={(event) => {
+                setRecordTime(event.target.value);
+                // 開始時刻を変えたら「記録済みの break_start」との対応が
+                // 切れるため、pending は解除して次回は通常の 2 件送信に戻す。
+                setPendingBreakEnd(false);
+              }}
             />
           </label>
           <label>
@@ -341,6 +365,11 @@ function CheckinPanel({ tasksState }: CheckinPanelProps) {
           </label>
           {timeInputError !== null && (
             <p className="checkin-time-input-error">{timeInputError}</p>
+          )}
+          {pendingBreakEnd && (
+            <p className="checkin-time-input-error">
+              {recordTime}の休憩開始は記録済みです。「休憩」または「戻りました」で戻り時刻だけを再送します
+            </p>
           )}
         </div>
       )}

@@ -1319,6 +1319,140 @@ describe("CheckinPanel", () => {
       });
     });
 
+    it("still sends break_end when break_start succeeded but the activity reload failed (Codex P1 on PR #354)", async () => {
+      // /api/activity/today: 初回読み込みは成功、break_start 直後の再取得だけ
+      // 失敗させる。再取得の一時的な失敗を 1 件目の失敗と区別できないと、
+      // 2 件目の break_end が送られず休憩が開いたままになる。
+      let activityCalls = 0;
+      const fetchMock = vi.fn((url: string, init?: RequestInit) => {
+        if (url === "/api/activity/today") {
+          activityCalls += 1;
+          if (activityCalls === 1) {
+            return Promise.resolve({
+              ok: true,
+              status: 200,
+              json: () => Promise.resolve([]),
+            });
+          }
+          return Promise.reject(new Error("network error"));
+        }
+        if (url === "/api/checkins" && init?.method === "POST") {
+          const parsedBody = JSON.parse(init.body as string) as Record<string, unknown>;
+          return Promise.resolve({
+            ok: true,
+            status: 201,
+            json: () =>
+              Promise.resolve({
+                id: 1,
+                ...parsedBody,
+                created_at: "2026-09-05T08:00:00.000Z",
+              }),
+          });
+        }
+        return Promise.reject(new Error(`unexpected fetch call: ${url}`));
+      });
+      vi.stubGlobal("fetch", fetchMock);
+
+      render(<CheckinPanel tasksState={makeTasksState([])} />);
+      await waitFor(() =>
+        expect(screen.getByRole("button", { name: "休憩" })).toBeEnabled(),
+      );
+      expandTimeInput();
+      fireEvent.change(screen.getByLabelText("記録する時刻"), {
+        target: { value: "08:00" },
+      });
+      fireEvent.change(screen.getByLabelText("戻り時刻（任意）"), {
+        target: { value: "08:30" },
+      });
+
+      fireEvent.click(screen.getByRole("button", { name: "休憩" }));
+
+      await waitFor(() =>
+        expect(screen.getByText(/休憩を記録しました/)).toBeInTheDocument(),
+      );
+      const checkinCalls = fetchMock.mock.calls.filter(
+        ([url]) => url === "/api/checkins",
+      );
+      expect(checkinCalls.map(([, init]) => JSON.parse(init?.body as string).type)).toEqual([
+        "break_start",
+        "break_end",
+      ]);
+      // 再取得の失敗は送信エラーとしては出ない（活動一覧側の表示に委ねる）。
+      expect(screen.queryByRole("alert")).toHaveTextContent("活動の取得に失敗しました");
+    });
+
+    it("resends only break_end from the 休憩 button after break_end failed while a later closed break keeps the panel off-break (Codex P2 on PR #354)", async () => {
+      // 後追いする休憩（08:00〜08:30）より後に閉じた休憩（10:00〜10:15）が
+      // 既にあるため、break_start を記録しても isOnBreak は false のままで
+      // 「戻りました」は出ない。「休憩」を押し直したときに break_start を
+      // 二重に記録せず break_end だけを再送することを固定する。
+      const laterBreak: ActivityEvent[] = [
+        makeEvent({ id: 10, type: "break_start", created_at: localTimeIso(10, 0) }),
+        makeEvent({ id: 11, type: "break_end", created_at: localTimeIso(10, 15) }),
+      ];
+      let breakEndAttempts = 0;
+      const fetchMock = vi.fn((url: string, init?: RequestInit) => {
+        if (url === "/api/activity/today") {
+          return Promise.resolve({
+            ok: true,
+            status: 200,
+            json: () => Promise.resolve(laterBreak),
+          });
+        }
+        if (url === "/api/checkins" && init?.method === "POST") {
+          const parsedBody = JSON.parse(init.body as string) as { type: string };
+          if (parsedBody.type === "break_end") {
+            breakEndAttempts += 1;
+            if (breakEndAttempts === 1) {
+              return Promise.resolve({
+                ok: false,
+                status: 500,
+                json: () => Promise.resolve({ error: "temporary failure" }),
+              });
+            }
+          }
+          return Promise.resolve({
+            ok: true,
+            status: 201,
+            json: () => Promise.resolve({ id: 1, ...parsedBody }),
+          });
+        }
+        return Promise.reject(new Error(`unexpected fetch call: ${url}`));
+      });
+      vi.stubGlobal("fetch", fetchMock);
+
+      render(<CheckinPanel tasksState={makeTasksState([])} />);
+      await waitFor(() =>
+        expect(screen.getByRole("button", { name: "休憩" })).toBeEnabled(),
+      );
+      expandTimeInput();
+      fireEvent.change(screen.getByLabelText("記録する時刻"), {
+        target: { value: "08:00" },
+      });
+      fireEvent.change(screen.getByLabelText("戻り時刻（任意）"), {
+        target: { value: "08:30" },
+      });
+      fireEvent.click(screen.getByRole("button", { name: "休憩" }));
+
+      await waitFor(() =>
+        expect(screen.getByRole("alert")).toHaveTextContent("temporary failure"),
+      );
+      // 後続の閉じた休憩があるため「戻りました」には切り替わらない。
+      expect(screen.queryByRole("button", { name: "戻りました" })).not.toBeInTheDocument();
+      expect(screen.getByText(/08:00の休憩開始は記録済みです/)).toBeInTheDocument();
+
+      fireEvent.click(screen.getByRole("button", { name: "休憩" }));
+
+      await waitFor(() =>
+        expect(screen.getByText(/休憩を記録しました/)).toBeInTheDocument(),
+      );
+      const types = fetchMock.mock.calls
+        .filter(([url]) => url === "/api/checkins")
+        .map(([, init]) => JSON.parse(init?.body as string).type);
+      expect(types).toEqual(["break_start", "break_end", "break_end"]);
+      expect(screen.queryByText(/休憩開始は記録済みです/)).not.toBeInTheDocument();
+    });
+
     it("disables the checkin buttons and shows a reason when the recorded time is in the future (AC-27)", async () => {
       const tasks = [
         makeTask({ id: 3, title: "着手中タスク", status: "in_progress" }),

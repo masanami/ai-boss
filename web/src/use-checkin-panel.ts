@@ -14,6 +14,17 @@ export interface UseCheckinPanelResult {
   /** 送信中フラグ。UI 側でボタンを無効化するために公開する */
   isSubmitting: boolean;
   submitCheckin: (input: CheckinInput) => Promise<boolean>;
+  /** 複数のチェックインを**直列**に送信する（#243 判断 6 の
+   * `break_start` → `break_end`）。POST は順に送り、最初に失敗した時点で
+   * 打ち切る。全件送れたら tasks 再取得 → 活動再取得を 1 回だけ行う。
+   * 戻り値の `posted` は 201 を受けた件数、`ok` は全件送れたか。
+   * `submitCheckin` と違い、**送信後の再取得の失敗は `ok` に含めない**
+   * （Codex 指摘 PR #354: 再取得の一時的な失敗を 1 件目の失敗と
+   * 区別できないと、2 件目の `break_end` が送られず休憩が開いたままになる）。
+   * 再取得の失敗は活動一覧側の status で表示される。 */
+  submitCheckins: (
+    inputs: CheckinInput[],
+  ) => Promise<{ posted: number; ok: boolean }>;
   /** 今日の活動を再取得する。マウント時読み込み・submitCheckin・
    * completeTask（Issue #138）が共有する内部処理だが、既存の
    * use-checkin-panel.test.ts のテストパターン（フックの各アクションを
@@ -132,6 +143,55 @@ export function useCheckinPanel(
     }
   }, [refreshTasks, reloadEvents]);
 
+  const submitCheckins = useCallback(
+    async (inputs: CheckinInput[]) => {
+      if (submittingRef.current) {
+        return { posted: 0, ok: false };
+      }
+      submittingRef.current = true;
+      setIsSubmitting(true);
+      let posted = 0;
+      // 1 件でも POST が確定したら、成否にかかわらず再取得する（submitCheckin
+      // と同じ順: tasks → 活動）。途中で失敗した場合も、記録済みのイベントを
+      // 活動一覧へ反映して isOnBreak 等の導出を実状態に合わせるため。
+      // いずれの再取得の失敗も送信結果（ok）には含めない。
+      const refreshAfterPosts = async () => {
+        if (posted === 0) return;
+        try {
+          await refreshTasks();
+        } catch {
+          // no-op: tasks 再取得の失敗はチェックインの成否に影響させない
+        }
+        try {
+          await reloadEvents();
+        } catch {
+          // no-op: 活動一覧側の status が "error" になり、そちらで表示される
+        }
+      };
+      try {
+        for (const input of inputs) {
+          try {
+            await postCheckin(input);
+          } catch (error) {
+            setSubmitError(
+              error instanceof Error ? error.message : "送信に失敗しました",
+            );
+            await refreshAfterPosts();
+            return { posted, ok: false };
+          }
+          posted += 1;
+        }
+        setSubmitError(null);
+        await refreshAfterPosts();
+        return { posted, ok: true };
+      } finally {
+        submittingRef.current = false;
+        setIsSubmitting(false);
+      }
+    },
+    [refreshTasks, reloadEvents],
+  );
+
   const completeTask = useCallback(
     async (
       taskId: number,
@@ -176,6 +236,7 @@ export function useCheckinPanel(
     submitError,
     isSubmitting,
     submitCheckin,
+    submitCheckins,
     reloadEvents,
     completeTask,
   };
