@@ -105,11 +105,25 @@ function withSession(sessions: ChatSession[], session: ChatSession): ChatSession
 }
 
 /**
- * Finds today's session of the given type, or `null` when none exists yet
- * (the caller decides whether to create one immediately or lazily on first
- * send). Only the session is returned — its messages arrive through
+ * Finds today's *unfinished* session of the given type, or `null` when none
+ * exists yet (the caller decides whether to create one immediately or lazily
+ * on first send). Only the session is returned — its messages arrive through
  * `loadTimeline`, which rebuilds the whole timeline rather than just this
  * session's slice.
+ *
+ * The `ended_at === null` filter mirrors `selectRestoreSessions`'s meeting
+ * branch, and closing it here is Issue #220: a meeting the user already
+ * ended must not be re-adopted as the active session. Without it, every
+ * later message is stored in that closed session — and since the server has
+ * no guard of its own against posting to an ended session, the merged
+ * timeline would render those messages *after* the meeting's own closing
+ * boundary (`merge-timeline.ts`'s PHASE_END ordering).
+ *
+ * For `evening` this means `startSession` falls through to `createSession`,
+ * where the server's existing one-evening-per-day rule answers 409
+ * (`evening_session_already_exists`) and the caller surfaces that message.
+ * Showing the day's evening meeting as already over is the honest outcome;
+ * silently writing into the closed session is not.
  */
 function findTodaysSession(
   sessions: ChatSession[],
@@ -118,7 +132,7 @@ function findTodaysSession(
 ): ChatSession | null {
   return (
     selectTimelineSessions(sessions, now, []).find(
-      (session) => session.type === type,
+      (session) => session.type === type && session.ended_at === null,
     ) ?? null
   );
 }

@@ -68,6 +68,33 @@ const MORNING_SESSION_TODAY: ChatSession = {
   summary: null,
 };
 
+// Issue #220: today's morning meeting the user already finished. Reusing it
+// as the active session would append later messages to an ended session —
+// past its own closing boundary in the merged timeline.
+const ENDED_MORNING_SESSION_TODAY: ChatSession = {
+  id: 20,
+  type: "morning",
+  started_at: localIso(5, 8),
+  ended_at: localIso(5, 9),
+  summary: null,
+};
+
+const SECOND_MORNING_SESSION_TODAY: ChatSession = {
+  id: 21,
+  type: "morning",
+  started_at: localIso(5, 10),
+  ended_at: null,
+  summary: null,
+};
+
+const ENDED_EVENING_SESSION_TODAY: ChatSession = {
+  id: 22,
+  type: "evening",
+  started_at: localIso(5, 11),
+  ended_at: localIso(5, 11, 30),
+  summary: null,
+};
+
 const MORNING_SESSION_YESTERDAY: ChatSession = {
   id: 19,
   type: "morning",
@@ -115,6 +142,11 @@ interface RoutedFetchState {
   messages?: Record<number, ChatMessage[]>;
   /** Session returned by `POST /api/sessions` (and appended to `sessions`). */
   created?: ChatSession;
+  /** Error response for `POST /api/sessions`, for the cases where the server
+   * refuses to create one (Issue #220: the evening session is capped at one
+   * per day — `sessions-repository.ts`'s `evening_session_already_exists`).
+   * Takes precedence over `created`. */
+  createError?: { status: number; error: string };
   /** SSE response for `POST /api/sessions/:id/messages`. */
   stream?: unknown;
 }
@@ -138,6 +170,14 @@ function routedFetch(state: RoutedFetchState) {
     const method = init?.method ?? "GET";
 
     if (url === "/api/sessions" && method === "POST") {
+      const createError = state.createError;
+      if (createError !== undefined) {
+        return Promise.resolve({
+          ok: false,
+          status: createError.status,
+          json: () => Promise.resolve({ error: createError.error }),
+        });
+      }
       const created = state.created;
       if (created === undefined) {
         throw new Error(`unexpected POST /api/sessions (no "created" configured)`);
@@ -1252,6 +1292,94 @@ describe("useChat session switching", () => {
       },
       { kind: "message", key: "message-30", role: "user", content: "今日の予定です" },
     ]);
+  });
+
+  // Issue #220. `findTodaysSession` is what Issue #220 calls
+  // `loadTodaysSession` (renamed in eb4e331 / PR #275, same role): it decides
+  // which of today's sessions `startSession` attaches to. Without an
+  // `ended_at === null` filter it hands back a meeting the user already
+  // closed, and every later message is stored in that ended session — the
+  // merged timeline then shows those messages *after* the meeting's own
+  // closing boundary (`merge-timeline.ts`'s PHASE_END ordering), and the
+  // server has no guard of its own against posting to an ended session.
+  it("does not resume an ended morning session and starts a new one instead (Issue #220)", async () => {
+    const fetchMock = routedFetch({
+      sessions: [ENDED_MORNING_SESSION_TODAY],
+      created: SECOND_MORNING_SESSION_TODAY,
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const { result } = renderHook(() => useChat());
+    await waitFor(() => expect(result.current.status).toBe("ready"));
+
+    await act(async () => {
+      await result.current.startSession("morning");
+    });
+
+    expect(fetchMock).toHaveBeenCalledWith("/api/sessions", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ type: "morning" }),
+    });
+    expect(result.current.sessionType).toBe("morning");
+    expect(result.current.error).toBeNull();
+    // The finished meeting keeps both of its boundaries and the new one opens
+    // after them, instead of the new conversation being folded back into the
+    // closed session.
+    expect(result.current.entries).toEqual([
+      {
+        kind: "boundary",
+        key: "boundary-20-start",
+        sessionType: "morning",
+        event: "start",
+      },
+      {
+        kind: "boundary",
+        key: "boundary-20-end",
+        sessionType: "morning",
+        event: "end",
+      },
+      {
+        kind: "boundary",
+        key: "boundary-21-start",
+        sessionType: "morning",
+        event: "start",
+      },
+    ]);
+  });
+
+  // Issue #220, evening side. `createSession` caps the evening session at one
+  // per day (`sessions-repository.ts`, 409 `evening_session_already_exists`),
+  // so refusing to resume an ended one surfaces that existing server contract
+  // as an error rather than silently writing into the closed session. The
+  // error is the honest outcome: the day's evening meeting is over.
+  it("does not resume an ended evening session and surfaces the server's once-per-day error (Issue #220)", async () => {
+    const fetchMock = routedFetch({
+      sessions: [ENDED_EVENING_SESSION_TODAY],
+      createError: {
+        status: 409,
+        error: "本日の夕会セッションは既に作成されています",
+      },
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const { result } = renderHook(() => useChat());
+    await waitFor(() => expect(result.current.status).toBe("ready"));
+
+    await act(async () => {
+      await result.current.startSession("evening");
+    });
+
+    expect(fetchMock).toHaveBeenCalledWith("/api/sessions", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ type: "evening" }),
+    });
+    expect(result.current.error).toBe("本日の夕会セッションは既に作成されています");
+    // Sends stay on the adhoc conversation: the ended evening session was
+    // never adopted as active.
+    expect(result.current.sessionType).toBe("adhoc");
+    expect(result.current.switching).toBe(false);
   });
 
   it("ignores a morning session from a previous day and creates a new one", async () => {
