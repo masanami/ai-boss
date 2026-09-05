@@ -1264,7 +1264,14 @@ describe("useChat session switching", () => {
     expect(result.current.error).toBeNull();
   });
 
-  it("resumes today's existing morning session instead of creating a new one", async () => {
+  // Note on what this does *not* cover: the session already exists at mount,
+  // so `selectRestoreSessions` restores it as active and `startSession`
+  // early-returns on `sessionTypeRef.current !== "adhoc"` without ever
+  // reaching `findTodaysSession`. What is pinned here is that pressing the
+  // start button in that state is a harmless no-op. The `findTodaysSession`
+  // lookup itself is covered by the "adopts today's unfinished morning
+  // session" test below (Issue #220).
+  it("leaves a mount-restored morning session alone instead of creating a new one", async () => {
     const fetchMock = routedFetch({
       sessions: [MORNING_SESSION_TODAY],
       messages: { 20: MORNING_HISTORY },
@@ -1292,6 +1299,70 @@ describe("useChat session switching", () => {
       },
       { kind: "message", key: "message-30", role: "user", content: "今日の予定です" },
     ]);
+  });
+
+  // Issue #220, positive side. The `ended_at === null` filter added for this
+  // issue must not over-narrow: today's *unfinished* meeting still has to be
+  // adopted as the active session instead of a second one being created.
+  //
+  // Reaching `findTodaysSession` at all requires the meeting to appear
+  // *after* mount. A session that already exists at mount is restored as
+  // active by `selectRestoreSessions`, and `startSession` then early-returns
+  // (`sessionTypeRef.current !== "adhoc"`) before the lookup — which is why
+  // the mount-restored case above cannot pin this. Pressing 朝会を開始 while
+  // an unfinished morning session exists server-side (opened in another tab,
+  // or created between this hook's mount and the click) is the path that
+  // actually exercises the lookup.
+  it("adopts today's unfinished morning session and sends into it, instead of creating a second one (Issue #220)", async () => {
+    const bossReply: ChatMessage = {
+      id: 32,
+      session_id: 20,
+      role: "boss",
+      content: "了解した。",
+      interrupted: 0,
+      created_at: localIso(5, 8, 10),
+    };
+    const state: RoutedFetchState = {
+      sessions: [],
+      messages: { 20: MORNING_HISTORY },
+      // Only ever reachable if the lookup fails to adopt session 20.
+      created: SECOND_MORNING_SESSION_TODAY,
+      stream: sseResponse([`event: done\ndata: ${JSON.stringify(bossReply)}\n\n`]),
+    };
+    const fetchMock = routedFetch(state);
+    vi.stubGlobal("fetch", fetchMock);
+
+    const { result } = renderHook(() => useChat());
+    await waitFor(() => expect(result.current.status).toBe("ready"));
+    // Mounted with no sessions at all, so the start button's path is live.
+    expect(result.current.sessionType).toBe("adhoc");
+
+    state.sessions = [MORNING_SESSION_TODAY];
+
+    await act(async () => {
+      await result.current.startSession("morning");
+    });
+
+    expect(fetchMock).not.toHaveBeenCalledWith(
+      "/api/sessions",
+      expect.objectContaining({ method: "POST" }),
+    );
+    expect(result.current.error).toBeNull();
+
+    await act(async () => {
+      await result.current.send("進捗です");
+    });
+
+    // The discriminating assertion: the send lands in the *adopted* session.
+    // "Adopted session 20" and "found nothing" are indistinguishable from the
+    // rendered timeline alone (both end up showing session 20's history, since
+    // `loadTimeline` merges every one of today's sessions either way) — only
+    // where the message is posted reveals which session is active.
+    expect(fetchMock).toHaveBeenCalledWith(
+      "/api/sessions/20/messages",
+      expect.objectContaining({ method: "POST" }),
+    );
+    expect(requestedUrls(fetchMock)).not.toContain("/api/sessions/21/messages");
   });
 
   // Issue #220. `findTodaysSession` is what Issue #220 calls
