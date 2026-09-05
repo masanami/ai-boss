@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   fireEvent,
   render,
@@ -860,5 +860,528 @@ describe("CheckinPanel", () => {
     await waitFor(() =>
       expect(screen.getByText("活動の取得に失敗しました")).toBeInTheDocument(),
     );
+  });
+
+  // #351: 展開式の時刻指定欄（occurred_at 送信・休憩の開始＋戻り時刻の同時
+  // 記録）。「いま」は 2026-09-05 09:00（ローカル）に固定し、時刻入力
+  // ("HH:mm") から期待される occurred_at をこの日付基準で組み立てる。
+  describe("time-specified recording (#351)", () => {
+    const NOW = new Date(2026, 8, 5, 9, 0, 0, 0);
+
+    function localTimeIso(hours: number, minutes: number): string {
+      return new Date(2026, 8, 5, hours, minutes, 0, 0).toISOString();
+    }
+
+    function expandTimeInput() {
+      fireEvent.click(
+        screen.getByRole("button", { name: "時刻を指定して記録" }),
+      );
+    }
+
+    beforeEach(() => {
+      vi.useFakeTimers({ toFake: ["Date"] });
+      vi.setSystemTime(NOW);
+    });
+
+    afterEach(() => {
+      vi.useRealTimers();
+    });
+
+    it("keeps the collapsed layout unchanged and hides the time inputs (AC-30)", async () => {
+      const tasks = [makeTask({ id: 1, title: "資料作成", priority: "high" })];
+      vi.stubGlobal("fetch", createFetchMock());
+
+      render(<CheckinPanel tasksState={makeTasksState(tasks)} />);
+      await waitFor(() =>
+        expect(
+          screen.getByRole("combobox", { name: "着手するタスク" }),
+        ).toHaveValue("1"),
+      );
+
+      expect(
+        screen.getByRole("button", { name: "時刻を指定して記録" }),
+      ).toHaveAttribute("aria-expanded", "false");
+      expect(screen.queryByLabelText("記録する時刻")).not.toBeInTheDocument();
+      expect(
+        screen.queryByLabelText("戻り時刻（任意）"),
+      ).not.toBeInTheDocument();
+    });
+
+    it("does not attach occurred_at when expanded but the time is left empty (AC-26)", async () => {
+      const tasks = [makeTask({ id: 1, title: "資料作成", priority: "high" })];
+      const fetchMock = createFetchMock();
+      vi.stubGlobal("fetch", fetchMock);
+
+      render(<CheckinPanel tasksState={makeTasksState(tasks)} />);
+      await waitFor(() =>
+        expect(
+          screen.getByRole("combobox", { name: "着手するタスク" }),
+        ).toHaveValue("1"),
+      );
+      expandTimeInput();
+
+      fireEvent.click(screen.getByRole("button", { name: "着手" }));
+
+      await waitFor(() =>
+        expect(fetchMock).toHaveBeenCalledWith(
+          "/api/checkins",
+          expect.objectContaining({
+            method: "POST",
+            body: JSON.stringify({
+              type: "task_start",
+              task_id: 1,
+              note: null,
+            }),
+          }),
+        ),
+      );
+    });
+
+    it("attaches occurred_at to task_start when a time is recorded (AC-18)", async () => {
+      const tasks = [makeTask({ id: 1, title: "資料作成", priority: "high" })];
+      const fetchMock = createFetchMock();
+      vi.stubGlobal("fetch", fetchMock);
+
+      render(<CheckinPanel tasksState={makeTasksState(tasks)} />);
+      await waitFor(() =>
+        expect(
+          screen.getByRole("combobox", { name: "着手するタスク" }),
+        ).toHaveValue("1"),
+      );
+      expandTimeInput();
+      fireEvent.change(screen.getByLabelText("記録する時刻"), {
+        target: { value: "08:00" },
+      });
+
+      fireEvent.click(screen.getByRole("button", { name: "着手" }));
+
+      await waitFor(() =>
+        expect(fetchMock).toHaveBeenCalledWith(
+          "/api/checkins",
+          expect.objectContaining({
+            method: "POST",
+            body: JSON.stringify({
+              type: "task_start",
+              task_id: 1,
+              note: null,
+              occurred_at: localTimeIso(8, 0),
+            }),
+          }),
+        ),
+      );
+    });
+
+    it("attaches occurred_at to task_pause when a time is recorded (AC-31)", async () => {
+      const tasks = [
+        makeTask({ id: 2, title: "着手中タスク", status: "in_progress" }),
+      ];
+      const fetchMock = createFetchMock();
+      vi.stubGlobal("fetch", fetchMock);
+
+      render(<CheckinPanel tasksState={makeTasksState(tasks)} />);
+      await waitFor(() =>
+        expect(screen.getByRole("button", { name: "一時停止" })).toBeEnabled(),
+      );
+      expandTimeInput();
+      fireEvent.change(screen.getByLabelText("記録する時刻"), {
+        target: { value: "08:15" },
+      });
+
+      fireEvent.click(screen.getByRole("button", { name: "一時停止" }));
+
+      await waitFor(() =>
+        expect(fetchMock).toHaveBeenCalledWith(
+          "/api/checkins",
+          expect.objectContaining({
+            method: "POST",
+            body: JSON.stringify({
+              type: "task_pause",
+              task_id: 2,
+              note: null,
+              occurred_at: localTimeIso(8, 15),
+            }),
+          }),
+        ),
+      );
+    });
+
+    it("attaches occurred_at to break_start when a time is recorded and the return time is empty (AC-20, AC-32)", async () => {
+      const fetchMock = createFetchMock();
+      vi.stubGlobal("fetch", fetchMock);
+
+      render(<CheckinPanel tasksState={makeTasksState([])} />);
+      await waitFor(() =>
+        expect(screen.getByRole("button", { name: "休憩" })).toBeEnabled(),
+      );
+      expandTimeInput();
+      fireEvent.change(screen.getByLabelText("記録する時刻"), {
+        target: { value: "08:00" },
+      });
+
+      fireEvent.click(screen.getByRole("button", { name: "休憩" }));
+
+      await waitFor(() =>
+        expect(fetchMock).toHaveBeenCalledWith(
+          "/api/checkins",
+          expect.objectContaining({
+            method: "POST",
+            body: JSON.stringify({
+              type: "break_start",
+              expected_minutes: 15,
+              note: null,
+              occurred_at: localTimeIso(8, 0),
+            }),
+          }),
+        ),
+      );
+      const checkinCalls = fetchMock.mock.calls.filter(
+        ([url]) => url === "/api/checkins",
+      );
+      expect(checkinCalls).toHaveLength(1);
+    });
+
+    it("attaches occurred_at to break_end when 戻りました is recorded while on break (AC-25)", async () => {
+      const events = [
+        makeEvent({ id: 1, type: "break_start", expected_minutes: 15 }),
+      ];
+      const fetchMock = createFetchMock({ events });
+      vi.stubGlobal("fetch", fetchMock);
+
+      render(<CheckinPanel tasksState={makeTasksState([])} />);
+      await waitFor(() =>
+        expect(
+          screen.getByRole("button", { name: "戻りました" }),
+        ).toBeInTheDocument(),
+      );
+      expandTimeInput();
+      fireEvent.change(screen.getByLabelText("記録する時刻"), {
+        target: { value: "08:30" },
+      });
+      // 戻り時刻を入力していないので「記録する時刻」がフォールバックとして
+      // 使われる（判断6の再送経路で戻り時刻を優先するのとは別ケース）。
+
+      fireEvent.click(screen.getByRole("button", { name: "戻りました" }));
+
+      await waitFor(() =>
+        expect(fetchMock).toHaveBeenCalledWith(
+          "/api/checkins",
+          expect.objectContaining({
+            method: "POST",
+            body: JSON.stringify({
+              type: "break_end",
+              note: null,
+              occurred_at: localTimeIso(8, 30),
+            }),
+          }),
+        ),
+      );
+    });
+
+    it("sends break_start then break_end with the recorded start and return times (AC-19)", async () => {
+      const fetchMock = createFetchMock();
+      vi.stubGlobal("fetch", fetchMock);
+
+      render(<CheckinPanel tasksState={makeTasksState([])} />);
+      await waitFor(() =>
+        expect(screen.getByRole("button", { name: "休憩" })).toBeEnabled(),
+      );
+      expandTimeInput();
+      fireEvent.change(screen.getByLabelText("記録する時刻"), {
+        target: { value: "08:00" },
+      });
+      fireEvent.change(screen.getByLabelText("戻り時刻（任意）"), {
+        target: { value: "08:30" },
+      });
+
+      fireEvent.click(screen.getByRole("button", { name: "休憩" }));
+
+      await waitFor(() => {
+        const checkinCalls = fetchMock.mock.calls.filter(
+          ([url]) => url === "/api/checkins",
+        );
+        expect(checkinCalls).toHaveLength(2);
+      });
+
+      const checkinCalls = fetchMock.mock.calls.filter(
+        ([url]) => url === "/api/checkins",
+      );
+      expect(JSON.parse(checkinCalls[0][1]?.body as string)).toEqual({
+        type: "break_start",
+        expected_minutes: 15,
+        note: null,
+        occurred_at: localTimeIso(8, 0),
+      });
+      expect(JSON.parse(checkinCalls[1][1]?.body as string)).toEqual({
+        type: "break_end",
+        note: null,
+        occurred_at: localTimeIso(8, 30),
+      });
+
+      await waitFor(() =>
+        expect(screen.getByText(/休憩を記録しました/)).toBeInTheDocument(),
+      );
+    });
+
+    it("disables the break button and sends nothing when the return time is not after the start time (AC-21)", async () => {
+      const fetchMock = createFetchMock();
+      vi.stubGlobal("fetch", fetchMock);
+
+      render(<CheckinPanel tasksState={makeTasksState([])} />);
+      await waitFor(() =>
+        expect(screen.getByRole("button", { name: "休憩" })).toBeEnabled(),
+      );
+      expandTimeInput();
+      fireEvent.change(screen.getByLabelText("記録する時刻"), {
+        target: { value: "08:30" },
+      });
+      fireEvent.change(screen.getByLabelText("戻り時刻（任意）"), {
+        target: { value: "08:00" },
+      });
+
+      expect(screen.getByRole("button", { name: "休憩" })).toBeDisabled();
+      expect(
+        screen.getByText("戻り時刻は記録する時刻より後にしてください"),
+      ).toBeInTheDocument();
+
+      const checkinCalls = fetchMock.mock.calls.filter(
+        ([url]) => url === "/api/checkins",
+      );
+      expect(checkinCalls).toHaveLength(0);
+    });
+
+    it("disables the break button and sends nothing when the return time is in the future (AC-22)", async () => {
+      const fetchMock = createFetchMock();
+      vi.stubGlobal("fetch", fetchMock);
+
+      render(<CheckinPanel tasksState={makeTasksState([])} />);
+      await waitFor(() =>
+        expect(screen.getByRole("button", { name: "休憩" })).toBeEnabled(),
+      );
+      expandTimeInput();
+      fireEvent.change(screen.getByLabelText("記録する時刻"), {
+        target: { value: "08:00" },
+      });
+      fireEvent.change(screen.getByLabelText("戻り時刻（任意）"), {
+        target: { value: "10:00" },
+      });
+
+      expect(screen.getByRole("button", { name: "休憩" })).toBeDisabled();
+
+      const checkinCalls = fetchMock.mock.calls.filter(
+        ([url]) => url === "/api/checkins",
+      );
+      expect(checkinCalls).toHaveLength(0);
+    });
+
+    it("disables 戻りました and shows a reason when the return time is in the future while on break (AC-22, AC-27 regression)", async () => {
+      // セルフレビュー2周目の指摘: 戻り時刻を on-break でも保持・表示する
+      // ようにした修正で、戻り時刻が未来のとき理由の表示なしに「戻りました」
+      // だけが無効化される行き止まりが新たに生まれていた。ここで固定する。
+      const events = [
+        makeEvent({ id: 1, type: "break_start", expected_minutes: 15 }),
+      ];
+      vi.stubGlobal("fetch", createFetchMock({ events }));
+
+      render(<CheckinPanel tasksState={makeTasksState([])} />);
+      await waitFor(() =>
+        expect(
+          screen.getByRole("button", { name: "戻りました" }),
+        ).toBeInTheDocument(),
+      );
+      expandTimeInput();
+      fireEvent.change(screen.getByLabelText("戻り時刻（任意）"), {
+        target: { value: "10:00" },
+      });
+
+      expect(screen.getByRole("button", { name: "戻りました" })).toBeDisabled();
+      expect(
+        screen.getByText("戻り時刻を未来にはできません"),
+      ).toBeInTheDocument();
+    });
+
+    it("keeps break_start recorded, switches to the on-break display, and preserves the time inputs when break_end fails, and lets 戻りました retry with the preserved return time (AC-23, AC-24)", async () => {
+      // createFetchMock の /api/activity/today は固定の events しか返せない
+      // ため、break_start 成功後に isOnBreak が true へ切り替わる実際の
+      // 挙動（セルフレビュー指摘: レビュー時点のテストは isOnBreak=false の
+      // ままだったため、判断6の再送経路が全く検証されていなかった）を
+      // 固定するには、記録済みイベントを反映する専用のモックを使う。
+      let recordedEvents: ActivityEvent[] = [];
+      let breakEndAttempts = 0;
+      const fetchMock = vi.fn((url: string, init?: RequestInit) => {
+        if (url === "/api/activity/today") {
+          return Promise.resolve({
+            ok: true,
+            status: 200,
+            json: () => Promise.resolve(recordedEvents),
+          });
+        }
+        if (url === "/api/checkins" && init?.method === "POST") {
+          const parsedBody = JSON.parse(init.body as string) as {
+            type: ActivityEvent["type"];
+            task_id?: number | null;
+            note?: string | null;
+            expected_minutes?: number | null;
+          };
+          if (parsedBody.type === "break_end") {
+            breakEndAttempts += 1;
+            if (breakEndAttempts === 1) {
+              return Promise.resolve({
+                ok: false,
+                status: 400,
+                json: () =>
+                  Promise.resolve({
+                    error: "break_end must be after break_start",
+                  }),
+              });
+            }
+          }
+          const created: ActivityEvent = {
+            id: recordedEvents.length + 1,
+            type: parsedBody.type,
+            task_id: parsedBody.task_id ?? null,
+            note: parsedBody.note ?? null,
+            expected_minutes: parsedBody.expected_minutes ?? null,
+            created_at: "2026-09-05T08:00:00.000Z",
+          };
+          recordedEvents = [...recordedEvents, created];
+          return Promise.resolve({
+            ok: true,
+            status: 201,
+            json: () => Promise.resolve(created),
+          });
+        }
+        return Promise.reject(new Error(`unexpected fetch call: ${url}`));
+      });
+      vi.stubGlobal("fetch", fetchMock);
+
+      render(<CheckinPanel tasksState={makeTasksState([])} />);
+      await waitFor(() =>
+        expect(screen.getByRole("button", { name: "休憩" })).toBeEnabled(),
+      );
+      expandTimeInput();
+      fireEvent.change(screen.getByLabelText("記録する時刻"), {
+        target: { value: "08:00" },
+      });
+      fireEvent.change(screen.getByLabelText("戻り時刻（任意）"), {
+        target: { value: "08:30" },
+      });
+
+      fireEvent.click(screen.getByRole("button", { name: "休憩" }));
+
+      await waitFor(() =>
+        expect(screen.getByRole("alert")).toHaveTextContent(
+          "break_end must be after break_start",
+        ),
+      );
+
+      // break_start は取り消されず、活動一覧に反映されて表示が
+      // 「戻りました」（on-break）に切り替わる（AC-23）。
+      await waitFor(() =>
+        expect(
+          screen.getByRole("button", { name: "戻りました" }),
+        ).toBeInTheDocument(),
+      );
+      expect(
+        screen.queryByRole("button", { name: "休憩" }),
+      ).not.toBeInTheDocument();
+
+      // 時刻指定欄は展開されたまま、開始時刻・戻り時刻の入力値が保持される
+      // （AC-24）。
+      expect(screen.getByLabelText("記録する時刻")).toHaveValue("08:00");
+      expect(screen.getByLabelText("戻り時刻（任意）")).toHaveValue("08:30");
+
+      const checkinCallsAfterFailure = fetchMock.mock.calls.filter(
+        ([url]) => url === "/api/checkins",
+      );
+      expect(checkinCallsAfterFailure).toHaveLength(2);
+      expect(
+        JSON.parse(checkinCallsAfterFailure[0][1]?.body as string).type,
+      ).toBe("break_start");
+
+      // 保持された戻り時刻のまま「戻りました」で break_end だけを再送できる
+      // （機能仕様 判断6「2 回目失敗後の再送もこの経路」）。
+      fireEvent.click(screen.getByRole("button", { name: "戻りました" }));
+
+      await waitFor(() =>
+        expect(screen.getByText(/08:30に戻りました/)).toBeInTheDocument(),
+      );
+
+      const checkinCallsAfterRetry = fetchMock.mock.calls.filter(
+        ([url]) => url === "/api/checkins",
+      );
+      expect(checkinCallsAfterRetry).toHaveLength(3);
+      expect(
+        JSON.parse(checkinCallsAfterRetry[2][1]?.body as string),
+      ).toEqual({
+        type: "break_end",
+        note: null,
+        occurred_at: localTimeIso(8, 30),
+      });
+    });
+
+    it("disables the checkin buttons and shows a reason when the recorded time is in the future (AC-27)", async () => {
+      const tasks = [
+        makeTask({ id: 3, title: "着手中タスク", status: "in_progress" }),
+      ];
+      vi.stubGlobal("fetch", createFetchMock());
+
+      render(<CheckinPanel tasksState={makeTasksState(tasks)} />);
+      await waitFor(() =>
+        expect(screen.getByRole("button", { name: "一時停止" })).toBeEnabled(),
+      );
+      expandTimeInput();
+      fireEvent.change(screen.getByLabelText("記録する時刻"), {
+        target: { value: "10:00" },
+      });
+
+      expect(screen.getByRole("button", { name: "着手" })).toBeDisabled();
+      expect(screen.getByRole("button", { name: "一時停止" })).toBeDisabled();
+      expect(
+        screen.getByText("記録する時刻を未来にはできません"),
+      ).toBeInTheDocument();
+    });
+
+    it("includes a report re-generation note in the success feedback when a time is recorded (AC-28)", async () => {
+      const tasks = [makeTask({ id: 1, title: "資料作成", priority: "high" })];
+      vi.stubGlobal("fetch", createFetchMock());
+
+      render(<CheckinPanel tasksState={makeTasksState(tasks)} />);
+      await waitFor(() =>
+        expect(
+          screen.getByRole("combobox", { name: "着手するタスク" }),
+        ).toHaveValue("1"),
+      );
+      expandTimeInput();
+      fireEvent.change(screen.getByLabelText("記録する時刻"), {
+        target: { value: "08:00" },
+      });
+
+      fireEvent.click(screen.getByRole("button", { name: "着手" }));
+
+      await waitFor(() =>
+        expect(screen.getByText(/日報を生成済みなら再生成が必要です/)).toBeInTheDocument(),
+      );
+    });
+
+    it("keeps 着手/一時停止/戻りました enablement the same as collapsed when expanded without a time (AC-34)", async () => {
+      const tasks = [
+        makeTask({ id: 4, title: "着手中タスク", status: "in_progress" }),
+      ];
+      vi.stubGlobal("fetch", createFetchMock());
+
+      render(<CheckinPanel tasksState={makeTasksState(tasks)} />);
+      await waitFor(() =>
+        expect(screen.getByRole("button", { name: "一時停止" })).toBeEnabled(),
+      );
+      // 折りたたみ時の活性状態（ベースライン）
+      expect(screen.getByRole("button", { name: "着手" })).toBeDisabled();
+      expect(screen.getByRole("button", { name: "一時停止" })).toBeEnabled();
+
+      expandTimeInput();
+
+      // 時刻未入力のまま展開しても活性条件は変わらない
+      expect(screen.getByRole("button", { name: "着手" })).toBeDisabled();
+      expect(screen.getByRole("button", { name: "一時停止" })).toBeEnabled();
+    });
   });
 });

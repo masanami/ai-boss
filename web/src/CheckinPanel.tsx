@@ -1,9 +1,15 @@
 import { useEffect, useMemo, useState } from "react";
 import { selectDefaultTask } from "./select-default-task";
 import { useCheckinPanel } from "./use-checkin-panel";
+import { buildOccurredAtIso, isFutureIso } from "./build-occurred-at-iso";
 import type { ActivityEvent, CheckinInput } from "./activity-event";
 import type { UseTasksResult } from "./use-tasks";
 import "./CheckinPanel.css";
+
+/**
+ * 一言添える再生成注記（#243 判断3・仮定4）。時刻指定の記録では常時表示する。
+ */
+const REPORT_REGENERATION_NOTE = "（日報を生成済みなら再生成が必要です）";
 
 const BREAK_PRESET_MINUTES = [5, 15, 30] as const;
 const DEFAULT_BREAK_MINUTES = 15;
@@ -72,6 +78,12 @@ function CheckinPanel({ tasksState }: CheckinPanelProps) {
   const [customMinutes, setCustomMinutes] = useState("");
   const [feedback, setFeedback] = useState<string | null>(null);
 
+  // 「時刻を指定して記録」の展開式トグル（#243 判断0・画面設計）。折りたたみ時
+  // (timeExpanded === false) は既存の操作・見た目を一切変えない（AC-30）。
+  const [timeExpanded, setTimeExpanded] = useState(false);
+  const [recordTime, setRecordTime] = useState("");
+  const [returnTime, setReturnTime] = useState("");
+
   useEffect(() => {
     // 未選択のときはデフォルトタスクを設定する。選択中タスクが完了などで
     // selectableTasks から外れた場合も、<select> の表示と state の食い違い
@@ -112,6 +124,59 @@ function CheckinPanel({ tasksState }: CheckinPanelProps) {
     [selectableTasks],
   );
 
+  // 時刻指定欄が展開され、かつ値が入っているときだけ occurred_at を組み立てる
+  // （AC-26: 折りたたみ時・空値のときは常に null → 送信に occurred_at が
+  // 付かない）。戻り時刻は isOnBreak の状態に関わらず算出する（セルフレビュー
+  // 指摘: break_start 成功 → break_end 失敗 → isOnBreak=true へ切り替わった
+  // 後も、機能仕様 判断6「保持された戻り時刻のまま『戻りました』で break_end
+  // だけを再送できる」を成立させるには、戻り時刻の値と入力欄自体を isOnBreak
+  // 遷移後も保持・表示し続ける必要があるため）。
+  const recordIso =
+    timeExpanded && recordTime !== "" ? buildOccurredAtIso(recordTime) : null;
+  const returnIso =
+    timeExpanded && returnTime !== "" ? buildOccurredAtIso(returnTime) : null;
+
+  const recordTimeIsFuture = recordIso !== null && isFutureIso(recordIso);
+
+  // 休憩ボタン専用の事前チェック（#243 判断6）。戻り時刻を入れているのに
+  // 開始時刻が無い／戻り時刻が開始時刻以前、のいずれかなら 1 回も POST
+  // せず休憩ボタンを無効化する（AC-21）。「戻り時刻が空でない場合の順序
+  // チェック」は !isOnBreak（休憩ボタン）のときだけ意味を持つため
+  // isOnBreak でガードする。
+  let breakTimeInputError: string | null = null;
+  if (!isOnBreak && returnIso !== null) {
+    if (recordIso === null) {
+      breakTimeInputError = "戻り時刻を記録するには記録する時刻も入力してください";
+    } else if (returnIso <= recordIso) {
+      breakTimeInputError = "戻り時刻は記録する時刻より後にしてください";
+    }
+  }
+  // 戻り時刻の未来判定（AC-22）は isOnBreak の状態に関わらず表示する。
+  // 戻り時刻は on-break でも「戻りました」の再送に使われる（判断6）ため、
+  // isOnBreak でガードすると、そこでの無効化には理由が一切表示されない
+  // 行き止まりになってしまう（セルフレビュー2周目の指摘）。
+  if (returnIso !== null && isFutureIso(returnIso)) {
+    breakTimeInputError = "戻り時刻を未来にはできません";
+  }
+  const breakDisabledByTimeInput = breakTimeInputError !== null;
+  const recordTimeError = recordTimeIsFuture
+    ? "記録する時刻を未来にはできません"
+    : null;
+  const timeInputError = recordTimeError ?? breakTimeInputError;
+
+  // 「戻りました」（isOnBreak 時の break_end）の occurred_at は、戻り時刻が
+  // 入っていればそれを優先し（休憩の開始＋戻りを直列送信した後、2 回目
+  // だけが失敗した際の再送はこの経路を通る）、無ければ「記録する時刻」を
+  // フォールバックとして使う（AC-25: 戻り時刻を使わず記録する時刻だけで
+  // 戻りましたを送るケースをそのまま維持する）。
+  const breakEndIso = returnIso ?? recordIso;
+  const breakEndTimeIsFuture =
+    breakEndIso !== null && isFutureIso(breakEndIso);
+
+  /** occurred_at 付き送信の成功メッセージを組み立てる（#243 判断3・仮定4）。 */
+  const withTimeNote = (verb: string, timeLabel: string): string =>
+    `${timeLabel}に${verb}しました${REPORT_REGENERATION_NOTE}`;
+
   // 「ひとこと」欄は着手/休憩/戻りと異なり完了操作では送信・クリアしない
   // （決定済みの仕様: PATCH /api/tasks/:id は note を受け付けないため）。
   const handleComplete = () => {
@@ -128,24 +193,37 @@ function CheckinPanel({ tasksState }: CheckinPanelProps) {
   };
 
   const handleStart = () => {
-    if (selectedTaskId === "") {
+    if (selectedTaskId === "" || recordTimeIsFuture) {
       return;
     }
     // 選択中タスクが paused でもラベルが「再開」に変わるだけで、送信内容は
     // task_start のまま変えない（親要件 #179 判断3）。
+    const label = selectedTask?.status === "paused" ? "再開" : "着手";
     runSubmit(
-      { type: "task_start", task_id: selectedTaskId, note: noteOrNull() },
-      selectedTask?.status === "paused" ? "再開しました" : "着手しました",
+      {
+        type: "task_start",
+        task_id: selectedTaskId,
+        note: noteOrNull(),
+        occurred_at: recordIso ?? undefined,
+      },
+      recordIso !== null
+        ? withTimeNote(label, recordTime)
+        : `${label}しました`,
     );
   };
 
   const handlePause = () => {
-    if (selectedTaskId === "") {
+    if (selectedTaskId === "" || recordTimeIsFuture) {
       return;
     }
     runSubmit(
-      { type: "task_pause", task_id: selectedTaskId, note: noteOrNull() },
-      "一時停止しました",
+      {
+        type: "task_pause",
+        task_id: selectedTaskId,
+        note: noteOrNull(),
+        occurred_at: recordIso ?? undefined,
+      },
+      recordIso !== null ? withTimeNote("一時停止", recordTime) : "一時停止しました",
     );
   };
 
@@ -155,33 +233,124 @@ function CheckinPanel({ tasksState }: CheckinPanelProps) {
     Number.isInteger(resolvedBreakMinutes) && resolvedBreakMinutes > 0;
 
   const handleBreakStart = () => {
-    if (!isBreakMinutesValid) {
+    if (!isBreakMinutesValid || recordTimeIsFuture || breakDisabledByTimeInput) {
       return;
     }
-    runSubmit(
-      {
+    if (returnIso === null) {
+      // 戻り時刻が空: 従来どおり break_start を 1 回だけ送信する（AC-20）。
+      runSubmit(
+        {
+          type: "break_start",
+          expected_minutes: resolvedBreakMinutes,
+          note: noteOrNull(),
+          occurred_at: recordIso ?? undefined,
+        },
+        recordIso !== null
+          ? withTimeNote("休憩を開始", recordTime)
+          : "休憩を開始しました",
+      );
+      return;
+    }
+    // 戻り時刻あり（#243 判断6）: break_start → break_end を直列で 2 回送信
+    // する。1 回目が失敗したら 2 回目は送らず、2 回目が失敗しても 1 回目
+    // （break_start）は取り消さない（AC-23）。展開欄の入力値は成功・失敗の
+    // いずれでもここではクリアしない（AC-24: 少なくとも失敗時は保持必須。
+    // 成功時も破壊的変更を避けるため保持のまま据え置く＝軽微な判断）。
+    // breakDisabledByTimeInput のガードにより、ここに到達する時点で
+    // recordIso は必ず非 null（戻り時刻だけ入れて開始時刻が無い状態は
+    // 事前チェックで弾かれている）。
+    const startIso = recordIso as string;
+    setFeedback(null);
+    void (async () => {
+      const startOk = await submitCheckin({
         type: "break_start",
         expected_minutes: resolvedBreakMinutes,
         note: noteOrNull(),
-      },
-      "休憩を開始しました",
-    );
+        occurred_at: startIso,
+      });
+      if (!startOk) {
+        return;
+      }
+      const endOk = await submitCheckin({
+        type: "break_end",
+        note: noteOrNull(),
+        occurred_at: returnIso,
+      });
+      if (!endOk) {
+        return;
+      }
+      setNote("");
+      setFeedback(
+        `${recordTime}〜${returnTime}の休憩を記録しました${REPORT_REGENERATION_NOTE}`,
+      );
+    })();
   };
 
   const handleBreakEnd = () => {
-    runSubmit({ type: "break_end", note: noteOrNull() }, "おかえりなさい");
+    if (breakEndTimeIsFuture) {
+      return;
+    }
+    // 戻り時刻があればそれを優先する（判断6の直列送信で 2 回目〔break_end〕
+    // だけが失敗したときの再送は、isOnBreak へ切り替わった後のこの経路を
+    // 通り、保持された戻り時刻で break_end を送り直せる）。
+    const occurredAtIso = breakEndIso;
+    const timeLabel = returnIso !== null ? returnTime : recordTime;
+    runSubmit(
+      {
+        type: "break_end",
+        note: noteOrNull(),
+        occurred_at: occurredAtIso ?? undefined,
+      },
+      occurredAtIso !== null
+        ? `${timeLabel}に戻りました${REPORT_REGENERATION_NOTE}`
+        : "おかえりなさい",
+    );
   };
 
   return (
     <section className="checkin-panel" aria-label="チェックイン">
       <h2>チェックイン</h2>
+      <div className="checkin-time-input-toggle">
+        <button
+          type="button"
+          aria-expanded={timeExpanded}
+          onClick={() => setTimeExpanded((expanded) => !expanded)}
+        >
+          時刻を指定して記録
+        </button>
+      </div>
+      {timeExpanded && (
+        <div className="checkin-panel-group checkin-time-input-group">
+          <label>
+            記録する時刻
+            <input
+              type="time"
+              aria-label="記録する時刻"
+              value={recordTime}
+              onChange={(event) => setRecordTime(event.target.value)}
+            />
+          </label>
+          <label>
+            戻り時刻（任意）
+            <input
+              type="time"
+              aria-label="戻り時刻（任意）"
+              value={returnTime}
+              onChange={(event) => setReturnTime(event.target.value)}
+            />
+          </label>
+          {timeInputError !== null && (
+            <p className="checkin-time-input-error">{timeInputError}</p>
+          )}
+        </div>
+      )}
       {isOnBreak ? (
         <div className="checkin-panel-group">
           <button
             type="button"
             className="checkin-primary-button"
             onClick={handleBreakEnd}
-            disabled={isSubmitting}
+            disabled={isSubmitting || breakEndTimeIsFuture}
           >
             戻りました
           </button>
@@ -216,7 +385,8 @@ function CheckinPanel({ tasksState }: CheckinPanelProps) {
               disabled={
                 selectedTaskId === "" ||
                 isSubmitting ||
-                selectedTask?.status === "in_progress"
+                selectedTask?.status === "in_progress" ||
+                recordTimeIsFuture
               }
             >
               {selectedTask?.status === "paused" ? "再開" : "着手"}
@@ -235,7 +405,11 @@ function CheckinPanel({ tasksState }: CheckinPanelProps) {
               </button>
             )}
             {selectedTask?.status === "in_progress" && (
-              <button type="button" onClick={handlePause} disabled={isSubmitting}>
+              <button
+                type="button"
+                onClick={handlePause}
+                disabled={isSubmitting || recordTimeIsFuture}
+              >
                 一時停止
               </button>
             )}
@@ -267,7 +441,12 @@ function CheckinPanel({ tasksState }: CheckinPanelProps) {
             <button
               type="button"
               onClick={handleBreakStart}
-              disabled={!isBreakMinutesValid || isSubmitting}
+              disabled={
+                !isBreakMinutesValid ||
+                isSubmitting ||
+                recordTimeIsFuture ||
+                breakDisabledByTimeInput
+              }
             >
               休憩
             </button>
