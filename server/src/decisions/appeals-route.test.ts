@@ -187,7 +187,14 @@ describe("POST /api/decisions/:id/appeals", () => {
     expect(createClaudeClientMock).toHaveBeenCalledWith(env, "claude-code");
   });
 
-  it("returns 500 without leaking the api key when the Claude client cannot be created", async () => {
+  // クライアント初期化失敗は、他の 500 経路（GENERIC_VERDICT_ERROR_MESSAGE）と
+  // 違い `err.message` をそのまま返す**別経路**（appeals-route.ts L107-112）。
+  // 唯一の throw 元は `MissingApiKeyError` で、鍵を含まない固定文言のため
+  // 設定ミスの原因を利用者へ伝える意図でそのまま返している。GAP-14 が求める
+  // 「500 応答の文言契約」はこの経路にも及ぶので、非露出だけでなく文言そのものを
+  // 固定する（Codex 指摘 code-1）。文言はリテラルで書く — 定数を import すると
+  // 「定数と定数の比較」で恒真になり契約を固定できない（同ファイルの他ケースと同じ作法）。
+  it("returns 500 with the initialization error message, without leaking the api key, when the Claude client cannot be created", async () => {
     const decision = createActiveDecision();
     createClaudeClientMock.mockImplementationOnce(() => {
       throw new MissingApiKeyError();
@@ -197,7 +204,23 @@ describe("POST /api/decisions/:id/appeals", () => {
 
     expect(res.status).toBe(500);
     const body = await readJson<ErrorBody>(res);
+    expect(body.error).toBe(
+      "ANTHROPIC_API_KEY is not set. Configure it in server/.env before using the Claude client.",
+    );
     expect(body.error).not.toContain(env.ANTHROPIC_API_KEY);
+  });
+
+  it("returns 500 with a generic fallback message when the Claude client throws a non-Error value", async () => {
+    const decision = createActiveDecision();
+    createClaudeClientMock.mockImplementationOnce(() => {
+      throw "not an Error instance";
+    });
+
+    const res = await postAppeal(decision.id);
+
+    expect(res.status).toBe(500);
+    const body = await readJson<ErrorBody>(res);
+    expect(body.error).toBe("failed to initialize the Claude client");
   });
 
   it("returns 500 and makes no DB changes when the Claude call fails", async () => {
