@@ -1612,6 +1612,177 @@ describe("CheckinPanel", () => {
       expect(checkinCalls).toHaveLength(2);
     });
 
+    // 突き合わせ規律（機能仕様 判断6）: 応答が失われた時刻指定付き POST は、
+    // 再取得一覧に同 type・同時刻があれば送信済み扱い。経路ごとに 1 本。
+    // 「応答喪失」= サーバは記録済みだが json() が reject する fixture。
+    function createLostResponseFetchMock(options: {
+      initialEvents?: ActivityEvent[];
+      lostFor: (body: { type: string }, attempt: number) => boolean;
+      failFor?: (body: { type: string }, attempt: number) => boolean;
+    }) {
+      let recordedEvents: ActivityEvent[] = options.initialEvents ?? [];
+      const attempts = new Map<string, number>();
+      return vi.fn((url: string, init?: RequestInit) => {
+        if (url === "/api/activity/today") {
+          return Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve(recordedEvents) });
+        }
+        if (url === "/api/checkins" && init?.method === "POST") {
+          const parsedBody = JSON.parse(init.body as string) as {
+            type: ActivityEvent["type"];
+            occurred_at?: string;
+          };
+          const attempt = (attempts.get(parsedBody.type) ?? 0) + 1;
+          attempts.set(parsedBody.type, attempt);
+          if (options.failFor?.(parsedBody, attempt)) {
+            return Promise.resolve({
+              ok: false,
+              status: 500,
+              json: () => Promise.resolve({ error: "temporary failure" }),
+            });
+          }
+          const created = makeEvent({
+            id: recordedEvents.length + 1,
+            type: parsedBody.type,
+            created_at: parsedBody.occurred_at ?? localTimeIso(12, 0),
+          });
+          // GET /api/activity/today と同じく created_at 昇順で返す（後追い
+          // イベントは指定時刻の位置に並ぶ）。
+          recordedEvents = [...recordedEvents, created].sort((a, b) =>
+            a.created_at.localeCompare(b.created_at),
+          );
+          if (options.lostFor(parsedBody, attempt)) {
+            return Promise.resolve({
+              ok: true,
+              status: 201,
+              json: () => Promise.reject(new Error("response body lost")),
+            });
+          }
+          return Promise.resolve({ ok: true, status: 201, json: () => Promise.resolve(created) });
+        }
+        return Promise.reject(new Error(`unexpected fetch call: ${url}`));
+      });
+    }
+    const checkinTypes = (fetchMock: ReturnType<typeof vi.fn>) =>
+      fetchMock.mock.calls
+        .filter(([url]) => url === "/api/checkins")
+        .map(([, init]) => (JSON.parse((init as RequestInit).body as string) as { type: string }).type);
+
+    it("経路1: treats a lost break_start response as sent and still posts break_end in the two-step break (Codex P2 on PR #357)", async () => {
+      const fetchMock = createLostResponseFetchMock({
+        lostFor: (body) => body.type === "break_start",
+      });
+      vi.stubGlobal("fetch", fetchMock);
+
+      render(<CheckinPanel tasksState={makeTasksState([])} />);
+      await waitFor(() => expect(screen.getByRole("button", { name: "休憩" })).toBeEnabled());
+      expandTimeInput();
+      fireEvent.change(screen.getByLabelText("記録する時刻"), { target: { value: "08:00" } });
+      fireEvent.change(screen.getByLabelText("戻り時刻（任意）"), { target: { value: "08:30" } });
+      fireEvent.click(screen.getByRole("button", { name: "休憩" }));
+
+      await waitFor(() => expect(screen.getByText(/08:00〜08:30の休憩を記録しました/)).toBeInTheDocument());
+      expect(checkinTypes(fetchMock)).toEqual(["break_start", "break_end"]);
+      expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+      expect(screen.queryByText(/休憩開始は記録済みです/)).not.toBeInTheDocument();
+    });
+
+    it("経路3: treats a lost break_end response on the pending 休憩 retry as completed (Codex P2 on PR #357)", async () => {
+      const laterBreak: ActivityEvent[] = [
+        makeEvent({ id: 10, type: "break_start", created_at: localTimeIso(10, 0) }),
+        makeEvent({ id: 11, type: "break_end", created_at: localTimeIso(10, 15) }),
+      ];
+      const fetchMock = createLostResponseFetchMock({
+        initialEvents: laterBreak,
+        failFor: (body, attempt) => body.type === "break_end" && attempt === 1,
+        lostFor: (body, attempt) => body.type === "break_end" && attempt === 2,
+      });
+      vi.stubGlobal("fetch", fetchMock);
+
+      render(<CheckinPanel tasksState={makeTasksState([])} />);
+      await waitFor(() => expect(screen.getByRole("button", { name: "休憩" })).toBeEnabled());
+      expandTimeInput();
+      fireEvent.change(screen.getByLabelText("記録する時刻"), { target: { value: "08:00" } });
+      fireEvent.change(screen.getByLabelText("戻り時刻（任意）"), { target: { value: "08:30" } });
+      fireEvent.click(screen.getByRole("button", { name: "休憩" }));
+      await waitFor(() => expect(screen.getByText(/08:00の休憩開始は記録済みです/)).toBeInTheDocument());
+
+      fireEvent.click(screen.getByRole("button", { name: "休憩" }));
+
+      await waitFor(() => expect(screen.getByText(/08:00〜08:30の休憩を記録しました/)).toBeInTheDocument());
+      expect(checkinTypes(fetchMock)).toEqual(["break_start", "break_end", "break_end"]);
+      expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+      expect(screen.queryByText(/休憩開始は記録済みです/)).not.toBeInTheDocument();
+    });
+
+    it("経路4: treats a lost break_end response on the pending 戻りました retry as completed (Codex P2 on PR #357)", async () => {
+      const fetchMock = createLostResponseFetchMock({
+        failFor: (body, attempt) => body.type === "break_end" && attempt === 1,
+        lostFor: (body, attempt) => body.type === "break_end" && attempt === 2,
+      });
+      vi.stubGlobal("fetch", fetchMock);
+
+      render(<CheckinPanel tasksState={makeTasksState([])} />);
+      await waitFor(() => expect(screen.getByRole("button", { name: "休憩" })).toBeEnabled());
+      expandTimeInput();
+      fireEvent.change(screen.getByLabelText("記録する時刻"), { target: { value: "08:00" } });
+      fireEvent.change(screen.getByLabelText("戻り時刻（任意）"), { target: { value: "08:30" } });
+      fireEvent.click(screen.getByRole("button", { name: "休憩" }));
+      await waitFor(() => expect(screen.getByRole("button", { name: "戻りました" })).toBeInTheDocument());
+
+      fireEvent.click(screen.getByRole("button", { name: "戻りました" }));
+
+      await waitFor(() => expect(screen.getByText(/08:30に戻りました/)).toBeInTheDocument());
+      expect(checkinTypes(fetchMock)).toEqual(["break_start", "break_end", "break_end"]);
+      expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+      expect(screen.queryByText(/休憩開始は記録済みです/)).not.toBeInTheDocument();
+    });
+
+    it("経路5: treats a lost response of a single time-specified task_start as recorded (Codex P2 on PR #357)", async () => {
+      const tasks = [makeTask({ id: 3, title: "資料作成", priority: "high" })];
+      const fetchMock = createLostResponseFetchMock({
+        lostFor: (body) => body.type === "task_start",
+      });
+      vi.stubGlobal("fetch", fetchMock);
+
+      render(<CheckinPanel tasksState={makeTasksState(tasks)} />);
+      await waitFor(() => expect(screen.getByRole("button", { name: "着手" })).toBeEnabled());
+      expandTimeInput();
+      fireEvent.change(screen.getByLabelText("記録する時刻"), { target: { value: "08:00" } });
+      fireEvent.click(screen.getByRole("button", { name: "着手" }));
+
+      await waitFor(() => expect(screen.getByText(/08:00に着手しました/)).toBeInTheDocument());
+      expect(checkinTypes(fetchMock)).toEqual(["task_start"]);
+      expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+    });
+
+    it("blocks sending and shows a reason when the recorded time does not exist today (DST gap, Codex P2 on PR #357)", async () => {
+      const originalTz = process.env.TZ;
+      process.env.TZ = "America/New_York";
+      try {
+        vi.setSystemTime(new Date(2026, 2, 8, 12, 0, 0, 0));
+        const tasks = [makeTask({ id: 3, title: "資料作成", priority: "high" })];
+        const fetchMock = createFetchMock();
+        vi.stubGlobal("fetch", fetchMock);
+
+        render(<CheckinPanel tasksState={makeTasksState(tasks)} />);
+        await waitFor(() => expect(screen.getByRole("button", { name: "着手" })).toBeEnabled());
+        expandTimeInput();
+        fireEvent.change(screen.getByLabelText("記録する時刻"), { target: { value: "02:30" } });
+
+        expect(screen.getByText(/記録する時刻は今日には存在しない時刻です/)).toBeInTheDocument();
+        expect(screen.getByRole("button", { name: "着手" })).toBeDisabled();
+        expect(screen.getByRole("button", { name: "休憩" })).toBeDisabled();
+        fireEvent.click(screen.getByRole("button", { name: "着手" }));
+        expect(fetchMock.mock.calls.filter(([url]) => url === "/api/checkins")).toHaveLength(0);
+      } finally {
+        if (originalTz === undefined) {
+          delete process.env.TZ;
+        } else {
+          process.env.TZ = originalTz;
+        }
+      }
+    });
+
     it("disables the checkin buttons and shows a reason when the recorded time is in the future (AC-27)", async () => {
       const tasks = [
         makeTask({ id: 3, title: "着手中タスク", status: "in_progress" }),

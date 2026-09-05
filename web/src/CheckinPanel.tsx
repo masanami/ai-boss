@@ -53,7 +53,6 @@ function CheckinPanel({ tasksState }: CheckinPanelProps) {
     isSubmitting,
     submitCheckin,
     submitCheckins,
-    clearSubmitError,
     completeTask,
   } = useCheckinPanel(refresh);
 
@@ -157,6 +156,14 @@ function CheckinPanel({ tasksState }: CheckinPanelProps) {
     timeExpanded && returnTime !== "" ? buildOccurredAtIso(returnTime) : null;
 
   const recordTimeIsFuture = recordIso !== null && isFutureIso(recordIso);
+  // 入力はあるが当日に存在しない時刻（夏時間の切り替えで飛ぶ時刻。
+  // buildOccurredAtIso が往復検証で null を返す）。fail-open で「時刻無し」
+  // として現在時刻を記録してはならないため、送信を止めて理由を表示する
+  // （Codex 指摘 PR #357）。
+  const recordTimeInvalid =
+    timeExpanded && recordTime !== "" && recordIso === null;
+  const returnTimeInvalid =
+    timeExpanded && returnTime !== "" && returnIso === null;
 
   // 休憩ボタン専用の事前チェック（#243 判断6）。戻り時刻を入れているのに
   // 開始時刻が無い／戻り時刻が開始時刻以前、のいずれかなら 1 回も POST
@@ -178,10 +185,17 @@ function CheckinPanel({ tasksState }: CheckinPanelProps) {
   if (returnIso !== null && isFutureIso(returnIso)) {
     breakTimeInputError = "戻り時刻を未来にはできません";
   }
+  if (returnTimeInvalid) {
+    breakTimeInputError = "戻り時刻は今日には存在しない時刻です（夏時間の切り替え）";
+  }
   const breakDisabledByTimeInput = breakTimeInputError !== null;
   const recordTimeError = recordTimeIsFuture
     ? "記録する時刻を未来にはできません"
-    : null;
+    : recordTimeInvalid
+      ? "記録する時刻は今日には存在しない時刻です（夏時間の切り替え）"
+      : null;
+  // 記録する時刻が未来・存在しない時刻のときは全送信ボタンを止める。
+  const recordTimeBlocked = recordTimeError !== null;
   const timeInputError = recordTimeError ?? breakTimeInputError;
 
   // 「戻りました」（isOnBreak 時の break_end）の occurred_at は、戻り時刻が
@@ -203,16 +217,6 @@ function CheckinPanel({ tasksState }: CheckinPanelProps) {
   const breakEndTimeIsFuture =
     breakEndIso !== null && isFutureIso(breakEndIso);
 
-  /** 再取得した活動一覧に、指定時刻の break_end が既に記録されているか
-   * （応答が失われた break_end の突き合わせ。Codex 指摘 PR #356/#357）。 */
-  const hasBreakEndAt = (
-    refreshed: ActivityEvent[] | null,
-    iso: string,
-  ): boolean =>
-    refreshed?.some(
-      (event) => event.type === "break_end" && event.created_at === iso,
-    ) ?? false;
-
   /** occurred_at 付き送信の成功メッセージを組み立てる（#243 判断3・仮定4）。 */
   const withTimeNote = (verb: string, timeLabel: string): string =>
     `${timeLabel}に${verb}しました${REPORT_REGENERATION_NOTE}`;
@@ -233,7 +237,7 @@ function CheckinPanel({ tasksState }: CheckinPanelProps) {
   };
 
   const handleStart = () => {
-    if (selectedTaskId === "" || recordTimeIsFuture) {
+    if (selectedTaskId === "" || recordTimeBlocked) {
       return;
     }
     // 選択中タスクが paused でもラベルが「再開」に変わるだけで、送信内容は
@@ -253,7 +257,7 @@ function CheckinPanel({ tasksState }: CheckinPanelProps) {
   };
 
   const handlePause = () => {
-    if (selectedTaskId === "" || recordTimeIsFuture) {
+    if (selectedTaskId === "" || recordTimeBlocked) {
       return;
     }
     runSubmit(
@@ -273,7 +277,7 @@ function CheckinPanel({ tasksState }: CheckinPanelProps) {
     Number.isInteger(resolvedBreakMinutes) && resolvedBreakMinutes > 0;
 
   const handleBreakStart = () => {
-    if (!isBreakMinutesValid || recordTimeIsFuture || breakDisabledByTimeInput) {
+    if (!isBreakMinutesValid || recordTimeBlocked || breakDisabledByTimeInput) {
       return;
     }
     // 保留中（break_start は記録済みで break_end だけが未記録）の再送は、
@@ -287,11 +291,12 @@ function CheckinPanel({ tasksState }: CheckinPanelProps) {
       const retryStartTime = pendingBreak.startTime;
       const retryReturnTime = pendingReturnTime ?? pendingBreak.returnTime;
       setFeedback(null);
+      // 応答が失われた break_end の突き合わせはフック（postWithReconcile）が
+      // 行うため、ここでは ok だけを見ればよい。
       void submitCheckins([
         { type: "break_end", note: noteOrNull(), occurred_at: retryReturnIso },
-      ]).then(({ ok, events: refreshed }) => {
-        if (ok || hasBreakEndAt(refreshed, retryReturnIso)) {
-          clearSubmitError();
+      ]).then(({ ok }) => {
+        if (ok) {
           setPendingBreak(null);
           setNote("");
           setFeedback(
@@ -337,11 +342,10 @@ function CheckinPanel({ tasksState }: CheckinPanelProps) {
         occurred_at: startIso,
       },
       { type: "break_end", note: noteOrNull(), occurred_at: endIso },
-    ]).then(({ posted, ok, events: refreshed }) => {
-      // 2 件目の応答が失われた／解釈できなかった場合でも、再取得した一覧に
-      // その時刻の break_end があれば記録は完了している（Codex 指摘）。
-      if (ok || (posted === 1 && hasBreakEndAt(refreshed, endIso))) {
-        clearSubmitError();
+    ]).then(({ posted, ok }) => {
+      // 応答が失われた break_start / break_end の突き合わせはフック
+      // （postWithReconcile）が行い、posted / ok に反映済み。
+      if (ok) {
         setPendingBreak(null);
         setNote("");
         setFeedback(
@@ -474,7 +478,7 @@ function CheckinPanel({ tasksState }: CheckinPanelProps) {
                 selectedTaskId === "" ||
                 isSubmitting ||
                 selectedTask?.status === "in_progress" ||
-                recordTimeIsFuture
+                recordTimeBlocked
               }
             >
               {selectedTask?.status === "paused" ? "再開" : "着手"}
@@ -496,7 +500,7 @@ function CheckinPanel({ tasksState }: CheckinPanelProps) {
               <button
                 type="button"
                 onClick={handlePause}
-                disabled={isSubmitting || recordTimeIsFuture}
+                disabled={isSubmitting || recordTimeBlocked}
               >
                 一時停止
               </button>
@@ -532,7 +536,7 @@ function CheckinPanel({ tasksState }: CheckinPanelProps) {
               disabled={
                 !isBreakMinutesValid ||
                 isSubmitting ||
-                recordTimeIsFuture ||
+                recordTimeBlocked ||
                 breakDisabledByTimeInput
               }
             >

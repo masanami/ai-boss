@@ -16,24 +16,22 @@ export interface UseCheckinPanelResult {
   submitCheckin: (input: CheckinInput) => Promise<boolean>;
   /** 複数のチェックインを**直列**に送信する（#243 判断 6 の
    * `break_start` → `break_end`）。POST は順に送り、最初に失敗した時点で
-   * 打ち切る。全件送れたら tasks 再取得 → 活動再取得を 1 回だけ行う。
-   * 戻り値の `posted` は 201 を受けた件数、`ok` は全件送れたか。
-   * `submitCheckin` と違い、**送信後の再取得の失敗は `ok` に含めない**
-   * （Codex 指摘 PR #354: 再取得の一時的な失敗を 1 件目の失敗と
-   * 区別できないと、2 件目の `break_end` が送られず休憩が開いたままになる）。
-   * 再取得の失敗は活動一覧側の status で表示される。 */
+   * 打ち切る。送信を試みたら成否にかかわらず tasks 再取得 → 活動再取得を
+   * 1 回行う。戻り値の `posted` は送信済みと確定した件数（201 を受けた
+   * もの＋応答は失われたが再取得一覧で記録済みと突き合わせたもの）、`ok`
+   * は全件送れたか。`submitCheckin` と違い、**送信後の再取得の失敗は `ok`
+   * に含めない**（Codex 指摘 PR #354: 再取得の一時的な失敗を 1 件目の
+   * 失敗と区別できないと、2 件目の `break_end` が送られず休憩が開いたままに
+   * なる）。再取得の失敗は活動一覧側の status で表示される。 */
   submitCheckins: (
     inputs: CheckinInput[],
-  ) => Promise<{ posted: number; ok: boolean; events: ActivityEvent[] | null }>;
+  ) => Promise<{ posted: number; ok: boolean }>;
   /** 今日の活動を再取得する。マウント時読み込み・submitCheckin・
    * completeTask（Issue #138）が共有する内部処理だが、既存の
    * use-checkin-panel.test.ts のテストパターン（フックの各アクションを
    * 直接呼んで検証する）に合わせてテスト容易性のために公開している。
    * CheckinPanel からは直接呼ばれない（completeTask 経由で間接的に使う）。 */
   reloadEvents: () => Promise<ActivityEvent[]>;
-  /** 送信エラー表示を消す。`submitCheckins` の呼び出し側が「応答は失われたが
-   * 再取得した一覧で記録済みと確認できた」と判断したときに使う。 */
-  clearSubmitError: () => void;
   /** 選択中タスクを完了（status: "done"）にする。「完了」ボタン（Issue #138）
    * 用のアクション。submitCheckin と同じ送信中フラグ・エラー state・
    * 再入ガードを共有し、着手/休憩と完了が同時に走らないようにする。
@@ -111,6 +109,57 @@ export function useCheckinPanel(
   const submittingRef = useRef(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
 
+  // 送信を試みたあとの再取得（submitCheckin と同じ順: tasks → 活動）。
+  // 途中で失敗した場合も記録済みのイベントを活動一覧へ反映して isOnBreak 等の
+  // 導出を実状態に合わせる。いずれの再取得の失敗も送信結果には含めない
+  // （活動一覧側の status が "error" になり、そちらで表示される）。取得に
+  // 失敗したら null を返す。
+  const refreshAfterAttempt = useCallback(async (): Promise<ActivityEvent[] | null> => {
+    try {
+      await refreshTasks();
+    } catch {
+      // no-op: tasks 再取得の失敗はチェックインの成否に影響させない
+    }
+    try {
+      return await reloadEvents();
+    } catch {
+      return null;
+    }
+  }, [refreshTasks, reloadEvents]);
+
+  // 応答が失われた時刻指定付き POST の突き合わせ規律（#243 判断6・Codex 指摘
+  // PR #356/#357）。サーバが記録したのに fetch が reject した／JSON を解釈
+  // できなかった場合、`occurred_at` を持つ入力に限り、再取得した活動一覧に
+  // 同じ `type` と `created_at`（= `occurred_at`）のイベントがあれば「送信
+  // 済み」として扱う。submitCheckin / submitCheckins の両方がこの 1 箇所を
+  // 通るため、break_start / break_end・通常経路／保留経路のすべてに同じ規律が
+  // 及ぶ。`occurred_at` の無い入力（サーバ時刻で記録される）は突き合わせ
+  // できないため従来どおり失敗として扱う。
+  const postWithReconcile = useCallback(
+    async (
+      input: CheckinInput,
+    ): Promise<{ ok: boolean; refreshed: ActivityEvent[] | null; error?: unknown }> => {
+      try {
+        await postCheckin(input);
+        return { ok: true, refreshed: null };
+      } catch (error) {
+        const occurredAt = input.occurred_at ?? null;
+        if (occurredAt === null) {
+          return { ok: false, refreshed: null, error };
+        }
+        const refreshed = await refreshAfterAttempt();
+        const recorded =
+          refreshed?.some(
+            (event) => event.type === input.type && event.created_at === occurredAt,
+          ) ?? false;
+        return recorded
+          ? { ok: true, refreshed }
+          : { ok: false, refreshed, error };
+      }
+    },
+    [refreshAfterAttempt],
+  );
+
   const submitCheckin = useCallback(async (input: CheckinInput) => {
     if (submittingRef.current) {
       return false;
@@ -118,8 +167,15 @@ export function useCheckinPanel(
     submittingRef.current = true;
     setIsSubmitting(true);
     try {
-      await postCheckin(input);
+      const result = await postWithReconcile(input);
+      if (!result.ok) {
+        throw result.error;
+      }
       setSubmitError(null);
+      if (result.refreshed !== null) {
+        // 突き合わせで送信済みと確認した経路: 再取得は済んでいる
+        return true;
+      }
       // チェックイン成功の時点でサーバ側のタスク status 遷移は確定している
       // ため、tasks 再取得は活動履歴の再取得より先に必ず実行する（後続の
       // reloadEvents が reject するとここに到達しなくなり、ボードが
@@ -145,57 +201,41 @@ export function useCheckinPanel(
       submittingRef.current = false;
       setIsSubmitting(false);
     }
-  }, [refreshTasks, reloadEvents]);
+  }, [postWithReconcile, refreshTasks, reloadEvents]);
 
   const submitCheckins = useCallback(
     async (inputs: CheckinInput[]) => {
       if (submittingRef.current) {
-        return { posted: 0, ok: false, events: null };
+        return { posted: 0, ok: false };
       }
       submittingRef.current = true;
       setIsSubmitting(true);
       let posted = 0;
-      // 送信を試みたら成否にかかわらず再取得する（submitCheckin と同じ順:
-      // tasks → 活動）。途中で失敗した場合も記録済みのイベントを活動一覧へ
-      // 反映して isOnBreak 等の導出を実状態に合わせるため。加えて、サーバが
-      // 記録したのに応答だけが失われた POST（Codex 指摘 PR #356）を呼び出し側が
-      // 再取得結果から突き合わせられるよう、取得した一覧を返す（取得失敗は
-      // null。いずれの再取得の失敗も送信結果 ok には含めない）。
-      const refreshAfterAttempt = async (): Promise<ActivityEvent[] | null> => {
-        try {
-          await refreshTasks();
-        } catch {
-          // no-op: tasks 再取得の失敗はチェックインの成否に影響させない
-        }
-        try {
-          return await reloadEvents();
-        } catch {
-          // 活動一覧側の status が "error" になり、そちらで表示される
-          return null;
-        }
-      };
       try {
         for (const input of inputs) {
-          try {
-            await postCheckin(input);
-          } catch (error) {
+          const result = await postWithReconcile(input);
+          if (!result.ok) {
             setSubmitError(
-              error instanceof Error ? error.message : "送信に失敗しました",
+              result.error instanceof Error
+                ? result.error.message
+                : "送信に失敗しました",
             );
-            const events = await refreshAfterAttempt();
-            return { posted, ok: false, events };
+            if (result.refreshed === null) {
+              await refreshAfterAttempt();
+            }
+            return { posted, ok: false };
           }
           posted += 1;
         }
         setSubmitError(null);
-        const events = await refreshAfterAttempt();
-        return { posted, ok: true, events };
+        await refreshAfterAttempt();
+        return { posted, ok: true };
       } finally {
         submittingRef.current = false;
         setIsSubmitting(false);
       }
     },
-    [refreshTasks, reloadEvents],
+    [postWithReconcile, refreshAfterAttempt],
   );
 
   const completeTask = useCallback(
@@ -244,7 +284,6 @@ export function useCheckinPanel(
     submitCheckin,
     submitCheckins,
     reloadEvents,
-    clearSubmitError: () => setSubmitError(null),
     completeTask,
   };
 }
