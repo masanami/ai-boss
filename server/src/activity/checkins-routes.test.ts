@@ -44,6 +44,21 @@ function insertWorkTask(db: Database.Database, overrides: Partial<NewTaskRecord>
   });
 }
 
+/** Directly inserts an activity_events row, bypassing the route, to seed
+ * "existing history" fixtures for the occurred_at integrity-check tests
+ * below (backdated task_start/task_pause comparisons, break_start/break_end
+ * ordering). */
+function insertEvent(
+  db: Database.Database,
+  type: string,
+  createdAt: string,
+  taskId: number | null = null,
+) {
+  db.prepare(
+    "INSERT INTO activity_events (type, task_id, created_at) VALUES (?, ?, ?)",
+  ).run(type, taskId, createdAt);
+}
+
 async function readJson<T>(res: Response): Promise<T> {
   return (await res.json()) as T;
 }
@@ -585,6 +600,368 @@ describe("POST /api/checkins", () => {
         .prepare("SELECT status FROM tasks WHERE id = ?")
         .get(task.id) as { status: string };
       expect(updated.status).toBe("in_progress");
+    });
+  });
+
+  describe("occurred_at", () => {
+    // Local (not UTC) constructor per ADR 0007 決定5 — pins today at
+    // 2026-07-05 14:00 local time so "now" and the local-day boundary
+    // checks below stay TZ-independent (npm run test:tz).
+    const NOW = new Date(2026, 6, 5, 14, 0, 0, 0);
+    const START_OF_TODAY = new Date(2026, 6, 5, 0, 0, 0, 0).toISOString();
+    const YESTERDAY_JUST_BEFORE_MIDNIGHT = new Date(
+      2026,
+      6,
+      4,
+      23,
+      59,
+      59,
+      999,
+    ).toISOString();
+    const EARLIER_TODAY = new Date(2026, 6, 5, 9, 0, 0, 0).toISOString();
+
+    beforeEach(() => {
+      vi.useFakeTimers();
+      vi.setSystemTime(NOW);
+    });
+
+    afterEach(() => {
+      vi.useRealTimers();
+    });
+
+    it("stores and returns the normalized created_at for a past occurred_at (AC-1)", async () => {
+      const app = createApp(db);
+
+      const res = await app.request("/api/checkins", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ type: "checkin", occurred_at: EARLIER_TODAY }),
+      });
+
+      expect(res.status).toBe(201);
+      const body = await readJson<ActivityEvent>(res);
+      expect(body.created_at).toBe(EARLIER_TODAY);
+
+      const row = db
+        .prepare("SELECT created_at FROM activity_events WHERE id = ?")
+        .get(body.id) as { created_at: string };
+      expect(row.created_at).toBe(EARLIER_TODAY);
+    });
+
+    it("normalizes an offset-bearing occurred_at to Z form (AC-1)", async () => {
+      const app = createApp(db);
+
+      const res = await app.request("/api/checkins", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          type: "checkin",
+          occurred_at: "2026-07-05T14:00:00+09:00",
+        }),
+      });
+
+      expect(res.status).toBe(201);
+      const body = await readJson<ActivityEvent>(res);
+      expect(body.created_at).toBe(new Date("2026-07-05T14:00:00+09:00").toISOString());
+    });
+
+    it("records with the server's current time when occurred_at is omitted (AC-2)", async () => {
+      const app = createApp(db);
+
+      const res = await app.request("/api/checkins", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ type: "checkin" }),
+      });
+
+      expect(res.status).toBe(201);
+      const body = await readJson<ActivityEvent>(res);
+      expect(body.created_at).toBe(NOW.toISOString());
+    });
+
+    it("records with the server's current time when occurred_at is explicitly null (AC-2)", async () => {
+      const app = createApp(db);
+
+      const res = await app.request("/api/checkins", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ type: "checkin", occurred_at: null }),
+      });
+
+      expect(res.status).toBe(201);
+      const body = await readJson<ActivityEvent>(res);
+      expect(body.created_at).toBe(NOW.toISOString());
+    });
+
+    it("returns 400 when occurred_at is not a valid ISO 8601 date-time (AC-3)", async () => {
+      const app = createApp(db);
+
+      const res = await app.request("/api/checkins", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ type: "checkin", occurred_at: "2026-07-05" }),
+      });
+
+      expect(res.status).toBe(400);
+      const body = await readJson<ErrorBody>(res);
+      expect(body.error).toContain("occurred_at");
+    });
+
+    it("returns 400 when occurred_at is after the current time (AC-4)", async () => {
+      const app = createApp(db);
+      const future = new Date(NOW.getTime() + 1).toISOString();
+
+      const res = await app.request("/api/checkins", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ type: "checkin", occurred_at: future }),
+      });
+
+      expect(res.status).toBe(400);
+      const body = await readJson<ErrorBody>(res);
+      expect(body.error).toContain("future");
+    });
+
+    it("accepts occurred_at exactly equal to the current time (AC-4 boundary)", async () => {
+      const app = createApp(db);
+
+      const res = await app.request("/api/checkins", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ type: "checkin", occurred_at: NOW.toISOString() }),
+      });
+
+      expect(res.status).toBe(201);
+    });
+
+    it("returns 400 when occurred_at is before the start of today (AC-5)", async () => {
+      const app = createApp(db);
+
+      const res = await app.request("/api/checkins", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          type: "checkin",
+          occurred_at: YESTERDAY_JUST_BEFORE_MIDNIGHT,
+        }),
+      });
+
+      expect(res.status).toBe(400);
+      const body = await readJson<ErrorBody>(res);
+      expect(body.error).toContain("today");
+    });
+
+    it("accepts occurred_at exactly at the start of today (AC-5 boundary)", async () => {
+      const app = createApp(db);
+
+      const res = await app.request("/api/checkins", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ type: "checkin", occurred_at: START_OF_TODAY }),
+      });
+
+      expect(res.status).toBe(201);
+      const body = await readJson<ActivityEvent>(res);
+      expect(body.created_at).toBe(START_OF_TODAY);
+    });
+
+    describe("break_end ordering (判断5)", () => {
+      it("returns 400 when there is no break_start before occurred_at (AC-6)", async () => {
+        const app = createApp(db);
+
+        const res = await app.request("/api/checkins", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            type: "break_end",
+            occurred_at: new Date(2026, 6, 5, 10, 0, 0, 0).toISOString(),
+          }),
+        });
+
+        expect(res.status).toBe(400);
+        const body = await readJson<ErrorBody>(res);
+        expect(body.error).toContain("break_start");
+      });
+
+      it("returns 400 when the prior break_start already has a break_end before occurred_at (AC-7)", async () => {
+        const app = createApp(db);
+        insertEvent(db, "break_start", new Date(2026, 6, 5, 9, 0, 0, 0).toISOString());
+        insertEvent(db, "break_end", new Date(2026, 6, 5, 9, 30, 0, 0).toISOString());
+
+        const res = await app.request("/api/checkins", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            type: "break_end",
+            occurred_at: new Date(2026, 6, 5, 10, 0, 0, 0).toISOString(),
+          }),
+        });
+
+        expect(res.status).toBe(400);
+        const body = await readJson<ErrorBody>(res);
+        expect(typeof body.error).toBe("string");
+      });
+
+      it("records a 201 when the prior break_start has no break_end before occurred_at yet, even if a later break is already recorded (AC-8)", async () => {
+        const app = createApp(db);
+        insertEvent(db, "break_start", new Date(2026, 6, 5, 9, 0, 0, 0).toISOString());
+        // A later, already-completed break recorded after occurred_at — must
+        // not affect the check (see checkBreakEndOrder's AC-8 comment: the
+        // rejected "latest break_start" alternative would wrongly reject
+        // this case).
+        insertEvent(db, "break_start", new Date(2026, 6, 5, 10, 0, 0, 0).toISOString());
+        insertEvent(db, "break_end", new Date(2026, 6, 5, 10, 30, 0, 0).toISOString());
+
+        const res = await app.request("/api/checkins", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            type: "break_end",
+            occurred_at: new Date(2026, 6, 5, 9, 30, 0, 0).toISOString(),
+          }),
+        });
+
+        expect(res.status).toBe(201);
+        const body = await readJson<ActivityEvent>(res);
+        expect(body.created_at).toBe(new Date(2026, 6, 5, 9, 30, 0, 0).toISOString());
+      });
+
+      it("returns 400 when occurred_at is exactly equal to the most recent break_start (AC-33)", async () => {
+        const app = createApp(db);
+        const breakStartAt = new Date(2026, 6, 5, 9, 0, 0, 0).toISOString();
+        insertEvent(db, "break_start", breakStartAt);
+
+        const res = await app.request("/api/checkins", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ type: "break_end", occurred_at: breakStartAt }),
+        });
+
+        expect(res.status).toBe(400);
+        const body = await readJson<ErrorBody>(res);
+        expect(body.error).toContain("break_start");
+      });
+    });
+
+    describe("task_start/task_pause transition eligibility (判断4)", () => {
+      it("transitions in_progress to paused when occurred_at is newer than the latest task_start/task_pause (AC-9)", async () => {
+        const app = createApp(db);
+        const task = insertWorkTask(db, { status: "in_progress" });
+        insertEvent(db, "task_start", new Date(2026, 6, 5, 9, 0, 0, 0).toISOString(), task.id);
+
+        const res = await app.request("/api/checkins", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            type: "task_pause",
+            task_id: task.id,
+            occurred_at: new Date(2026, 6, 5, 10, 0, 0, 0).toISOString(),
+          }),
+        });
+
+        expect(res.status).toBe(201);
+        const updated = db
+          .prepare("SELECT status FROM tasks WHERE id = ?")
+          .get(task.id) as { status: string };
+        expect(updated.status).toBe("paused");
+      });
+
+      it("records the event but leaves status unchanged when occurred_at is older than the latest task_start/task_pause (AC-10)", async () => {
+        const app = createApp(db);
+        const task = insertWorkTask(db, { status: "in_progress" });
+        insertEvent(db, "task_start", new Date(2026, 6, 5, 9, 0, 0, 0).toISOString(), task.id);
+
+        const res = await app.request("/api/checkins", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            type: "task_pause",
+            task_id: task.id,
+            occurred_at: new Date(2026, 6, 5, 8, 0, 0, 0).toISOString(),
+          }),
+        });
+
+        expect(res.status).toBe(201);
+        const updated = db
+          .prepare("SELECT status FROM tasks WHERE id = ?")
+          .get(task.id) as { status: string };
+        expect(updated.status).toBe("in_progress");
+
+        const events = db
+          .prepare("SELECT type FROM activity_events WHERE task_id = ? AND type = 'task_pause'")
+          .all(task.id);
+        expect(events).toHaveLength(1);
+      });
+
+      it("transitions paused to in_progress when occurred_at is newer than the latest task_start/task_pause (AC-11)", async () => {
+        const app = createApp(db);
+        const task = insertWorkTask(db, { status: "paused" });
+        insertEvent(db, "task_pause", new Date(2026, 6, 5, 9, 0, 0, 0).toISOString(), task.id);
+
+        const res = await app.request("/api/checkins", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            type: "task_start",
+            task_id: task.id,
+            occurred_at: new Date(2026, 6, 5, 10, 0, 0, 0).toISOString(),
+          }),
+        });
+
+        expect(res.status).toBe(201);
+        const updated = db
+          .prepare("SELECT status FROM tasks WHERE id = ?")
+          .get(task.id) as { status: string };
+        expect(updated.status).toBe("in_progress");
+      });
+
+      it("records the event but leaves status unchanged when occurred_at is older than the latest task_start/task_pause (AC-12)", async () => {
+        const app = createApp(db);
+        const task = insertWorkTask(db, { status: "paused" });
+        insertEvent(db, "task_pause", new Date(2026, 6, 5, 9, 0, 0, 0).toISOString(), task.id);
+
+        const res = await app.request("/api/checkins", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            type: "task_start",
+            task_id: task.id,
+            occurred_at: new Date(2026, 6, 5, 8, 0, 0, 0).toISOString(),
+          }),
+        });
+
+        expect(res.status).toBe(201);
+        const updated = db
+          .prepare("SELECT status FROM tasks WHERE id = ?")
+          .get(task.id) as { status: string };
+        expect(updated.status).toBe("paused");
+
+        const events = db
+          .prepare("SELECT type FROM activity_events WHERE task_id = ? AND type = 'task_start'")
+          .all(task.id);
+        expect(events).toHaveLength(1);
+      });
+
+      it("transitions when occurred_at is given but the task has no prior task_start/task_pause event", async () => {
+        const app = createApp(db);
+        const task = insertWorkTask(db, { status: "todo" });
+
+        const res = await app.request("/api/checkins", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            type: "task_start",
+            task_id: task.id,
+            occurred_at: EARLIER_TODAY,
+          }),
+        });
+
+        expect(res.status).toBe(201);
+        const updated = db
+          .prepare("SELECT status FROM tasks WHERE id = ?")
+          .get(task.id) as { status: string };
+        expect(updated.status).toBe("in_progress");
+      });
     });
   });
 });

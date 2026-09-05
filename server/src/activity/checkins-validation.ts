@@ -1,5 +1,6 @@
 import { CHECKIN_TYPES } from "./activity-event.js";
 import type { CheckinType } from "./activity-event.js";
+import { isValidIsoDateTime } from "../lib/iso-date.js";
 
 export type ValidationResult<T> =
   | { valid: true; data: T }
@@ -10,6 +11,7 @@ export interface CheckinInput {
   task_id: number | null;
   note: string | null;
   expected_minutes: number | null;
+  occurred_at: string | null;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -83,6 +85,19 @@ export function validateCheckinInput(
     return { valid: false, error: "note must be a string or null" };
   }
 
+  if (
+    "occurred_at" in body &&
+    body.occurred_at !== undefined &&
+    body.occurred_at !== null &&
+    (typeof body.occurred_at !== "string" ||
+      !isValidIsoDateTime(body.occurred_at))
+  ) {
+    return {
+      valid: false,
+      error: "occurred_at must be a valid ISO 8601 date-time",
+    };
+  }
+
   return {
     valid: true,
     data: {
@@ -91,6 +106,7 @@ export function validateCheckinInput(
       note: (body.note as string | null | undefined) ?? null,
       expected_minutes:
         (body.expected_minutes as number | null | undefined) ?? null,
+      occurred_at: (body.occurred_at as string | null | undefined) ?? null,
     },
   };
 }
