@@ -10,17 +10,20 @@ import { listNotificationsSince } from "../notifications/notifications-repositor
 import { DETECTION_RULE_TYPES, type DetectionRuleType } from "../detection/detection-types.js";
 import { ACTIVITY_EVENT_TYPES, type ActivityEventType } from "../activity/activity-event.js";
 import { loadDetectionSettings } from "./detection-settings.js";
+import { toNotificationHistory } from "./notification-history.js";
 
 const {
   createClaudeClientMock,
   streamBossMessageMock,
   generateNotificationBodyMock,
   insertNotificationMock,
+  recordNotificationDeliveryMock,
 } = vi.hoisted(() => ({
   createClaudeClientMock: vi.fn(),
   streamBossMessageMock: vi.fn(),
   generateNotificationBodyMock: vi.fn(),
   insertNotificationMock: vi.fn(),
+  recordNotificationDeliveryMock: vi.fn(),
 }));
 
 vi.mock("../llm/claude-client.js", async (importOriginal) => {
@@ -52,6 +55,7 @@ vi.mock("../notifications/notifications-repository.js", async (importOriginal) =
   return {
     ...actual,
     insertNotification: insertNotificationMock,
+    recordNotificationDelivery: recordNotificationDeliveryMock,
   };
 });
 
@@ -61,10 +65,12 @@ const { generateNotificationBody: actualGenerateNotificationBody } =
   await vi.importActual<typeof import("../notifications/notification-body.js")>(
     "../notifications/notification-body.js",
   );
-const { insertNotification: actualInsertNotification } =
-  await vi.importActual<typeof import("../notifications/notifications-repository.js")>(
-    "../notifications/notifications-repository.js",
-  );
+const {
+  insertNotification: actualInsertNotification,
+  recordNotificationDelivery: actualRecordNotificationDelivery,
+} = await vi.importActual<typeof import("../notifications/notifications-repository.js")>(
+  "../notifications/notifications-repository.js",
+);
 
 function ok(): Promise<{ stdout: string; stderr: string }> {
   return Promise.resolve({ stdout: "", stderr: "" });
@@ -407,11 +413,13 @@ describe("createTicker().tick", () => {
     streamBossMessageMock.mockReset();
     generateNotificationBodyMock.mockReset();
     insertNotificationMock.mockReset();
+    recordNotificationDeliveryMock.mockReset();
     createClaudeClientMock.mockImplementation(() => {
       throw new MissingApiKeyError();
     });
     generateNotificationBodyMock.mockImplementation(actualGenerateNotificationBody);
     insertNotificationMock.mockImplementation(actualInsertNotification);
+    recordNotificationDeliveryMock.mockImplementation(actualRecordNotificationDelivery);
 
     vi.useFakeTimers({ toFake: ["Date"] });
     vi.setSystemTime(new Date("2026-07-05T09:00:00.000"));
@@ -623,6 +631,156 @@ describe("createTicker().tick", () => {
     expect(loggedArgs).toContain("scheduler firing failed");
     consoleErrorSpy.mockRestore();
     db.close();
+  });
+
+  // Issue #321. `sendNotification` reports delivery failure via its return
+  // value (never throws — Issue #38), but `processFiring` used to discard it.
+  // Combined with record-before-send (Issue #221), a notification that never
+  // reached the user was indistinguishable in the DB from one that did. These
+  // tests pin that the outcome is (a) written back onto the already-recorded
+  // row after the send and (b) surfaced by the *caller* as an error log
+  // carrying rule_key and channel — while every pre-existing contract (record
+  // regardless of outcome, no retry, never throw) stays untouched.
+  describe("delivery outcome is recorded and a failed delivery is logged by the caller (Issue #321)", () => {
+    const BASE_TIME = new Date(2026, 6, 5, 9, 0, 0);
+    const unstartedScenario = RULE_GATE_SCENARIOS.find((s) => s.ruleType === "unstarted");
+    if (!unstartedScenario) {
+      throw new Error("expected an 'unstarted' scenario in RULE_GATE_SCENARIOS");
+    }
+    const seedUnstartedFiring = unstartedScenario.setup;
+
+    /** Rejects `terminal-notifier` only, so `sendNotification` falls back to `osascript`. */
+    function failTerminalNotifierOnly(file: string): Promise<{ stdout: string; stderr: string }> {
+      return file === "terminal-notifier" ? Promise.reject(new Error("no terminal-notifier")) : ok();
+    }
+
+    it("records delivered=1 / channel=terminal-notifier when terminal-notifier succeeds, without logging a delivery error", async () => {
+      const expectedRuleKey = seedUnstartedFiring(db, BASE_TIME);
+      const consoleErrorSpy = vi.spyOn(console, "error").mockImplementation(() => undefined);
+      const execFile = vi.fn().mockImplementation(ok);
+
+      await createTicker({ db, env, execFile }).tick();
+
+      const recorded = listNotificationsSince(db, "1970-01-01T00:00:00.000Z");
+      expect(recorded).toHaveLength(1);
+      expect(recorded[0]).toMatchObject({
+        rule_key: expectedRuleKey,
+        delivered: 1,
+        channel: "terminal-notifier",
+      });
+      // (notification-body.ts logs its own MissingApiKeyError fallback notice
+      // in every test here; what must be absent is a *delivery* error.)
+      const loggedArgs = consoleErrorSpy.mock.calls.flat().join(" ");
+      expect(loggedArgs).not.toContain("not delivered");
+      consoleErrorSpy.mockRestore();
+      db.close();
+    });
+
+    it("records delivered=1 / channel=osascript when only the osascript fallback succeeds", async () => {
+      const expectedRuleKey = seedUnstartedFiring(db, BASE_TIME);
+      const consoleErrorSpy = vi.spyOn(console, "error").mockImplementation(() => undefined);
+      const execFile = vi.fn().mockImplementation(failTerminalNotifierOnly);
+
+      await createTicker({ db, env, execFile }).tick();
+
+      const recorded = listNotificationsSince(db, "1970-01-01T00:00:00.000Z");
+      expect(recorded).toHaveLength(1);
+      expect(recorded[0]).toMatchObject({
+        rule_key: expectedRuleKey,
+        delivered: 1,
+        channel: "osascript",
+      });
+      // notifier.ts logs its own fallback notice; the *caller* must not report
+      // a delivery failure for a send that did reach the user via osascript.
+      const loggedArgs = consoleErrorSpy.mock.calls.flat().join(" ");
+      expect(loggedArgs).not.toContain("not delivered");
+      consoleErrorSpy.mockRestore();
+      db.close();
+    });
+
+    it("records delivered=0 / channel=none and logs an error naming rule_key and channel when both channels fail, keeping the record and not retrying", async () => {
+      const expectedRuleKey = seedUnstartedFiring(db, BASE_TIME);
+      const consoleErrorSpy = vi.spyOn(console, "error").mockImplementation(() => undefined);
+      const execFile = vi.fn().mockRejectedValue(new Error("boom"));
+
+      await expect(createTicker({ db, env, execFile }).tick()).resolves.toBeUndefined();
+
+      // Pre-existing contracts (Issue #38 / #221): the record stays, and the
+      // failed send is not retried — exactly one attempt per channel.
+      const recorded = listNotificationsSince(db, "1970-01-01T00:00:00.000Z");
+      expect(recorded).toHaveLength(1);
+      expect(execFile).toHaveBeenCalledTimes(2);
+      expect(execFile.mock.calls.map(([file]) => file)).toEqual(["terminal-notifier", "osascript"]);
+
+      // New (#321): the failure is now distinguishable on the row itself ...
+      expect(recorded[0]).toMatchObject({
+        rule_key: expectedRuleKey,
+        escalation_level: 1,
+        delivered: 0,
+        channel: "none",
+      });
+      // ... and the detection engine still reads the row back unchanged (the
+      // added columns do not alter what the history conversion sees).
+      expect(toNotificationHistory(recorded)).toEqual([
+        { ruleKey: expectedRuleKey, escalationLevel: 1, sentAt: recorded[0].sent_at },
+      ]);
+
+      // ... and the caller logs it with enough context to cross-reference the
+      // DB row (rule_key) and the channel outcome.
+      const schedulerLog = consoleErrorSpy.mock.calls
+        .map((call) => call.join(" "))
+        .find((line) => line.includes("not delivered") && line.includes("scheduler firing"));
+      expect(schedulerLog).toBeDefined();
+      expect(schedulerLog).toContain(`rule_key=${expectedRuleKey}`);
+      expect(schedulerLog).toContain("channel=none");
+      consoleErrorSpy.mockRestore();
+      db.close();
+    });
+
+    // Both outcomes are covered: after a *successful* send, a write-back
+    // failure must not be reported as "scheduler firing failed" (which, before
+    // #321, could only ever mean nothing reached the user).
+    it.each([
+      ["delivered", () => ok(), { delivered: "true", channel: "terminal-notifier", sends: 1 }],
+      ["not delivered", () => Promise.reject(new Error("boom")), { delivered: "false", channel: "none", sends: 2 }],
+    ] as const)(
+      "keeps the record, does not resend, and logs the %s outcome distinctly when writing the outcome itself fails",
+      async (_label, execFileImpl, expected) => {
+        const expectedRuleKey = seedUnstartedFiring(db, BASE_TIME);
+        recordNotificationDeliveryMock.mockImplementation(() => {
+          throw new Error("update boom");
+        });
+        const consoleErrorSpy = vi.spyOn(console, "error").mockImplementation(() => undefined);
+        const execFile = vi.fn().mockImplementation(execFileImpl);
+
+        await expect(createTicker({ db, env, execFile }).tick()).resolves.toBeUndefined();
+
+        // The outcome column stays "unknown" (NULL) rather than being
+        // misreported either way; the record and the no-retry contract hold.
+        const recorded = listNotificationsSince(db, "1970-01-01T00:00:00.000Z");
+        expect(recorded).toHaveLength(1);
+        expect(recorded[0]).toMatchObject({ rule_key: expectedRuleKey, delivered: null, channel: null });
+        expect(execFile).toHaveBeenCalledTimes(expected.sends);
+
+        const loggedLines = consoleErrorSpy.mock.calls.map((call) => call.join(" "));
+        // The delivery-failure log (if any) is emitted *before* the write-back,
+        // so it survives the write-back failing.
+        expect(
+          loggedLines.some((line) => line.includes("not delivered") && line.includes(`rule_key=${expectedRuleKey}`)),
+        ).toBe(expected.delivered === "false");
+        // The write-back failure is reported on its own, carrying the outcome
+        // it could not persist — and *not* as a whole-firing failure.
+        const writeBackLog = loggedLines.find((line) => line.includes("failed to write back the delivery outcome"));
+        expect(writeBackLog).toBeDefined();
+        expect(writeBackLog).toContain(`rule_key=${expectedRuleKey}`);
+        expect(writeBackLog).toContain(`delivered=${expected.delivered}`);
+        expect(writeBackLog).toContain(`channel=${expected.channel}`);
+        expect(writeBackLog).toContain("update boom");
+        expect(loggedLines.some((line) => line.includes("scheduler firing failed"))).toBe(false);
+        consoleErrorSpy.mockRestore();
+        db.close();
+      },
+    );
   });
 
   it("skips a tick that starts while the previous one is still running (concurrency guard)", async () => {

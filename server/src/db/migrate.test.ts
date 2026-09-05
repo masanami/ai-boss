@@ -395,7 +395,7 @@ describe("runMigrations", () => {
     expect(tableNames(v2Db)).toContain("daily_reports");
     // runMigrations always advances to the latest known version (v3 adds
     // daily_reports on the way; v4 then rebuilds tasks/activity_events).
-    expect(v2Db.pragma("user_version", { simple: true })).toBe(5);
+    expect(v2Db.pragma("user_version", { simple: true })).toBe(6);
     // existing tables/rows are untouched
     expect(tableNames(v2Db)).toContain("tasks");
 
@@ -422,7 +422,7 @@ describe("runMigrations", () => {
 
     runMigrations(v3Db);
 
-    expect(v3Db.pragma("user_version", { simple: true })).toBe(5);
+    expect(v3Db.pragma("user_version", { simple: true })).toBe(6);
     expect(tableNames(v3Db)).toContain("tasks");
     expect(tableNames(v3Db)).toContain("activity_events");
 
@@ -526,7 +526,7 @@ describe("runMigrations", () => {
 
     runMigrations(v4Db);
 
-    expect(v4Db.pragma("user_version", { simple: true })).toBe(5);
+    expect(v4Db.pragma("user_version", { simple: true })).toBe(6);
     const message = v4Db
       .prepare("SELECT role, content, interrupted FROM messages WHERE id = ?")
       .get(messageId) as { role: string; content: string; interrupted: number };
@@ -537,6 +537,69 @@ describe("runMigrations", () => {
     });
 
     v4Db.close();
+  });
+
+  // #321: 配信結果の列は「未知」を表せる必要がある（マイグレーション以前の行、
+  // および INSERT 済みで送信結果がまだ書かれていない行）。DEFAULT 0 にすると
+  // 既存行がすべて「配信失敗」に見えてしまうため、NULL 許容・DEFAULT なし。
+  it("gives notifications nullable delivered and channel columns with no default (v6)", () => {
+    expect(columnNames(db, "notifications")).toEqual(
+      expect.arrayContaining(["delivered", "channel"]),
+    );
+
+    const notificationId = Number(
+      db
+        .prepare(
+          "INSERT INTO notifications (type, rule_key, escalation_level, body, sent_at) VALUES (?, ?, ?, ?, ?)",
+        )
+        .run("unstarted", "unstarted:1", 1, "着手しろ", NOW).lastInsertRowid,
+    );
+
+    const notification = db
+      .prepare("SELECT delivered, channel FROM notifications WHERE id = ?")
+      .get(notificationId) as { delivered: number | null; channel: string | null };
+    expect(notification).toEqual({ delivered: null, channel: null });
+  });
+
+  it("upgrades a v5 database to v6 (adds notifications.delivered/channel) leaving existing notifications intact with unknown delivery", () => {
+    const v5Db = openDatabase(":memory:");
+    // v4 は `tasks`/`activity_events` の再構築、v5 は `messages.interrupted` の
+    // 追加のみで、どちらも `notifications` には触れないため、`notifications` の
+    // 形は v1〜v5 で同一である。よってこのテストの関心（既存 notifications 行が
+    // v6 を跨いで無傷か）については、v1〜v3 のスキーマ＋ user_version = 5 で
+    // v5 データベースを忠実に代表できる（上の v4→v5 テストと同じ方針）。
+    v5Db.exec(V1_THROUGH_V3_SQL);
+    v5Db.pragma("user_version = 5");
+
+    const notificationId = Number(
+      v5Db
+        .prepare(
+          "INSERT INTO notifications (type, rule_key, escalation_level, body, sent_at) VALUES (?, ?, ?, ?, ?)",
+        )
+        .run("silence", "silence", 2, "既存の通知", NOW).lastInsertRowid,
+    );
+    expect(columnNames(v5Db, "notifications")).not.toContain("delivered");
+    expect(columnNames(v5Db, "notifications")).not.toContain("channel");
+
+    runMigrations(v5Db);
+
+    expect(v5Db.pragma("user_version", { simple: true })).toBe(6);
+    const notification = v5Db
+      .prepare(
+        "SELECT type, rule_key, escalation_level, body, sent_at, delivered, channel FROM notifications WHERE id = ?",
+      )
+      .get(notificationId);
+    expect(notification).toEqual({
+      type: "silence",
+      rule_key: "silence",
+      escalation_level: 2,
+      body: "既存の通知",
+      sent_at: NOW,
+      delivered: null,
+      channel: null,
+    });
+
+    v5Db.close();
   });
 
   it("accepts tasks.status = 'paused' after migrating to v4", () => {
