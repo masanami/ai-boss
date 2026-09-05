@@ -177,10 +177,14 @@ export function checkBreakEndOrder(
     return { valid: false, reason: "no_prior_break_start" };
   }
 
+  // Inclusive upper bound (`<=`): a break_end already sitting at exactly
+  // `occurredAt` (e.g. a retried request whose first response was lost) has
+  // already closed this break, so recording another one would be a duplicate
+  // (Codex review on PR #353).
   const alreadyClosed = db
     .prepare(
       `SELECT 1 FROM activity_events
-       WHERE type = 'break_end' AND created_at > ? AND created_at < ? LIMIT 1`,
+       WHERE type = 'break_end' AND created_at > ? AND created_at <= ? LIMIT 1`,
     )
     .get(priorBreakStart.created_at, occurredAt);
   if (alreadyClosed !== undefined) {
