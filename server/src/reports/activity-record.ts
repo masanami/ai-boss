@@ -12,14 +12,22 @@ export interface ActivityRecordEvent {
 export interface ActivityRecordInput {
   /** 対象ローカル暦日の範囲でフィルタ済みの task_start イベント */
   taskStarts: ActivityRecordEvent[];
-  /** 対象ローカル暦日の範囲でフィルタ済みの break_start イベント */
-  breakStarts: ActivityRecordEvent[];
   /**
    * `[対象ローカル暦日 00:00, max(翌ローカル暦日 00:00, 夕会 ended_at))` で
-   * フィルタ済みの break_end イベント。上限は**排他**（ADR 0007 決定3 の半開
-   * 区間）で、日跨ぎ夕会のときだけ翌暦日 00:00 より先へ伸びる——日跨ぎ休憩を
-   * 実測で対応付けるための拡張範囲（collect-daily-report-data.ts の
-   * `breakEndSearchEndIso`）。
+   * フィルタ済みの break_start イベント。**`breakEnds` と同じ窓**で取ること
+   * （collect-daily-report-data.ts の `breakSearchEndIso`。Issue #237: 窓が
+   * 非対称だと、翌暦日に始まった休憩の break_end が対象暦日の未終了 break_start
+   * と誤って結ばれる）。
+   *
+   * 対象暦日の外（`nextDayStartIso` 以降）に始まる休憩は対応付けにだけ参加し、
+   * `breakCount` / `breakTotalMinutes` には数えない（翌暦日の日報が生成されれば
+   * そちらが計上する。同じ休憩を 2 日分の日報で二重計上しない）。
+   */
+  breakStarts: ActivityRecordEvent[];
+  /**
+   * `breakStarts` と同じ窓でフィルタ済みの break_end イベント。上限は**排他**
+   * （ADR 0007 決定3 の半開区間）で、日跨ぎ夕会のときだけ翌暦日 00:00 より先へ
+   * 伸びる——日跨ぎ休憩を実測で対応付けるための拡張範囲。
    *
    * 日跨ぎ夕会（`ended_at` > 翌暦日 00:00）の場合に限り、上限が `sessionEndedAt`
    * そのものになるため、`created_at` が `sessionEndedAt` と完全一致する break_end
@@ -30,6 +38,12 @@ export interface ActivityRecordInput {
    * break_end は普通に含まれ、通常どおり対応付けられる。
    */
   breakEnds: ActivityRecordEvent[];
+  /**
+   * 翌ローカル暦日 00:00（ISO文字列・排他上限）。対象暦日に属する休憩
+   * （`created_at` がこれより前の break_start）だけを回数・合計に数えるための
+   * 境界。collect-daily-report-data.ts の `nextDayStartIso` と同じ値を渡す。
+   */
+  nextDayStartIso: string;
   /** 夕会セッションの ended_at（ISO文字列）。未対応の break_start の打ち切りに使う */
   sessionEndedAt: string;
 }
@@ -37,9 +51,9 @@ export interface ActivityRecordInput {
 export interface ActivityRecord {
   /** 当日最初の task_start の時刻（ISO文字列）。無ければ null */
   firstTaskStartAt: string | null;
-  /** 当日の break_start の件数（未対応の break_end は数えない） */
+  /** 対象暦日内に始まった break_start の件数（未対応の break_end は数えない） */
   breakCount: number;
-  /** 各休憩の対応付け結果の合計時間（分・切り捨て） */
+  /** 対象暦日内に始まった各休憩の対応付け結果の合計時間（分・切り捨て） */
   breakTotalMinutes: number;
 }
 
@@ -51,15 +65,31 @@ function byCreatedAtThenId(a: ActivityRecordEvent, b: ActivityRecordEvent): numb
 
 interface BreakPair {
   start: ActivityRecordEvent;
-  /** 対応する break_end。未対応（夕会 ended_at まで計上）の場合は null */
-  end: ActivityRecordEvent | null;
+  /**
+   * 休憩の終了時刻（ISO文字列）。対応する break_end の created_at、または
+   * 後続の break_start による暗黙の閉じ。未対応（夕会 ended_at まで計上）の
+   * 場合は null
+   */
+  endedAt: string | null;
 }
 
 /**
- * 休憩イベントの対応付け（FIFO）。走査順は created_at ASC, id ASC。
- * break_start はその後に現れる最初の未対応 break_end と対応付け、対応する
- * break_start の無い break_end（孤立）は無視する。対応が見つからない
- * break_start は end: null（呼び出し側が sessionEndedAt までを計上する）。
+ * 休憩イベントの対応付け。走査順は created_at ASC, id ASC。
+ *
+ * 規則（Issue #237 で明示化。ADR 0007 帰結）: **休憩は同時に 1 つしか開かない**
+ * （検知エンジンの detection/break-overrun.ts `getActiveBreak`・web の
+ * deriveIsOnBreak と同じ単一状態）。API（POST /api/checkins）は `break_start` の
+ * 連続を拒否せず、暦日をまたぐと GET /api/activity/today から前日の break_start
+ * が消えて web が「休憩開始」ボタンを再表示するため、通常操作でも開いている
+ * 休憩の上に break_start が来る（直接投入・後追い記録に限らない）。
+ *
+ * - break_start: 開いている休憩があれば、それを**この break_start の時刻で閉じ**、
+ *   新しい休憩を開く（同じ人が同時に 2 つの休憩を取ることはできないため、
+ *   重なりを二重計上しない）
+ * - break_end: 開いている休憩を閉じる。開いている休憩が無い break_end（孤立）は
+ *   無視する
+ * - 走査後も開いている休憩は endedAt: null（呼び出し側が sessionEndedAt までを
+ *   計上する）
  */
 function pairBreaks(
   breakStarts: ActivityRecordEvent[],
@@ -71,25 +101,28 @@ function pairBreaks(
     ...breakEnds.map((e): Tagged => ({ ...e, kind: "end" })),
   ].sort(byCreatedAtThenId);
 
-  const pendingStarts: ActivityRecordEvent[] = [];
+  let openStart: ActivityRecordEvent | null = null;
   const pairs: BreakPair[] = [];
 
   for (const ev of events) {
     if (ev.kind === "start") {
-      pendingStarts.push(ev);
+      if (openStart) {
+        pairs.push({ start: openStart, endedAt: ev.created_at });
+      }
+      openStart = ev;
       continue;
     }
     // ev.kind === "end"
-    const matchedStart = pendingStarts.shift();
-    if (matchedStart) {
-      pairs.push({ start: matchedStart, end: ev });
+    if (openStart) {
+      pairs.push({ start: openStart, endedAt: ev.created_at });
+      openStart = null;
     }
-    // 対応する break_start が無い break_end（孤立）は無視する
+    // 開いている休憩が無い break_end（孤立）は無視する
   }
 
-  // 夕会終了まで対応する break_end が見つからなかった break_start
-  for (const start of pendingStarts) {
-    pairs.push({ start, end: null });
+  // 夕会終了まで閉じられなかった休憩
+  if (openStart) {
+    pairs.push({ start: openStart, endedAt: null });
   }
 
   return pairs;
@@ -99,13 +132,19 @@ export function computeActivityRecord(input: ActivityRecordInput): ActivityRecor
   const sortedTaskStarts = [...input.taskStarts].sort(byCreatedAtThenId);
   const firstTaskStartAt = sortedTaskStarts.length > 0 ? sortedTaskStarts[0].created_at : null;
 
-  const breakCount = input.breakStarts.length;
+  // 対応付けは窓全体（翌暦日に始まった休憩を含む）で行い、集計は対象暦日に
+  // 始まった休憩だけに絞る（翌暦日の休憩は翌暦日の日報が計上する）。
+  const nextDayStartMs = new Date(input.nextDayStartIso).getTime();
+  const targetDayPairs = pairBreaks(input.breakStarts, input.breakEnds).filter(
+    (pair) => new Date(pair.start.created_at).getTime() < nextDayStartMs,
+  );
 
-  const pairs = pairBreaks(input.breakStarts, input.breakEnds);
-  const totalMs = pairs.reduce((sum, pair) => {
-    const endIso = pair.end ? pair.end.created_at : input.sessionEndedAt;
+  const breakCount = targetDayPairs.length;
+
+  const totalMs = targetDayPairs.reduce((sum, pair) => {
+    const endIso = pair.endedAt ?? input.sessionEndedAt;
     const durationMs = new Date(endIso).getTime() - new Date(pair.start.created_at).getTime();
-    // 未対応（end: null）の場合、打ち切り時刻は夕会 sessionEndedAt。もし
+    // 未対応（endedAt: null）の場合、打ち切り時刻は夕会 sessionEndedAt。もし
     // break_start がそれより後（例: 夕会終了後の深夜に休憩を開始し、まだ
     // 戻っていない状態で日報を再生成した場合）だと durationMs が負になる。
     // 「打ち切り時刻までを計上する」という仕様の素直な帰結として、打ち切り
