@@ -8,8 +8,7 @@ import { computeActivityRecord } from "./activity-record.js";
 import type { ActivityRecordEvent } from "./activity-record.js";
 
 // 集計範囲の境界は activity/local-day.ts へ集約する（ADR 0007 帰結。収集段ごとに
-// 自前の境界計算を持たない）。dashboard/today-escalation.ts に 4 個目の重複が
-// 残っており、その取り込みは #236。
+// 自前の境界計算を持たない）。
 import { startOfLocalDayIso, startOfNextLocalDayIso } from "../activity/local-day.js";
 
 export interface CollectedDailyReportData {

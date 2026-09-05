@@ -6,10 +6,13 @@
 // collectors (reports/collect-*-data.ts, Issue #172). It lives under
 // activity/ for historical reasons (`startOfLocalDayIso` started out in
 // activity-routes.ts and moved here when the boss tool layer needed it), not
-// because the policy is activity-specific.
-//
-// Not yet the *only* implementation: `dashboard/today-escalation.ts` still
-// has its own `startOfLocalDay`. Folding it in is tracked by #236.
+// because the policy is activity-specific. It is a feature-independent leaf
+// module that every feature imports (activity-routes, boss, reports,
+// dashboard). Since #236 it is the only server-side implementation of the
+// half-open local-day *range* boundaries (the last duplicate, in
+// dashboard/today-escalation.ts, was folded in); date-key parsing/formatting
+// (`YYYY-MM-DD`) is a separate concern in detection/time-utils.ts (ADR 0007
+// 決定2).
 
 /**
  * Start of the local day containing `date` as an ISO string. `date` defaults

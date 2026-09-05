@@ -1,7 +1,7 @@
 import type Anthropic from "@anthropic-ai/sdk";
 import type Database from "better-sqlite3";
 import { listEventsSince } from "../activity/activity-events-repository.js";
-import { startOfLocalDayIso } from "../activity/local-day.js";
+import { startOfLocalDayIso, startOfNextLocalDayIso } from "../activity/local-day.js";
 import { findTaskById } from "../tasks/tasks-repository.js";
 import type { Task } from "../tasks/task.js";
 import type { ToolExecutionResult } from "./task-tools.js";
@@ -55,7 +55,7 @@ export const GET_ACTIVITY_LOG_TOOL: Anthropic.Tool = {
       until: {
         type: "string",
         description:
-          "この日時（ISO 8601 文字列。YYYY-MM-DD のみの指定はローカル日の23:59:59として扱う）以前のイベントに絞り込む",
+          "この日時（ISO 8601 文字列）より前のイベントに絞り込む（この日時ちょうどは含まない）。YYYY-MM-DD のみの指定はその日全体を含める（翌ローカル日の0時より前として扱う）。省略時は上限なし。過去を遡るときは since も指定すること（since 省略時の下限は当日ローカル0時のまま）。",
       },
     },
     required: [],
@@ -104,14 +104,19 @@ function isRealCalendarDate(year: number, month: number, day: number): boolean {
  * convention would silently shift the window by the timezone offset
  * (self-review: caught as a JST +9h drift). `dateOnlyBoundary` picks which
  * edge of that local day a bare date resolves to: `"start-of-day"` for
- * `since` (00:00:00.000 local), `"end-of-day"` for `until` (23:59:59.999
- * local) — so `{since: "2026-07-05", until: "2026-07-05"}` covers the whole
- * local day rather than being an always-empty window. Anything with a time
- * component still goes through `Date.parse` unchanged. */
+ * `since` (00:00:00.000 local), `"start-of-next-day"` for `until` (the next
+ * local calendar day's 00:00:00.000, used as an *exclusive* upper bound per
+ * ADR 0007 決定3 — not 23:59:59.999, which would drop same-day rows if the
+ * stored precision ever exceeds milliseconds; #236) — so `{since:
+ * "2026-07-05", until: "2026-07-05"}` covers the whole local day rather than
+ * being an always-empty window. Both edges come from `activity/local-day.ts`
+ * (the single definition of the local-day range; it advances the calendar
+ * date rather than adding a fixed 24h, see its DST note). Anything with a
+ * time component still goes through `Date.parse` unchanged. */
 function parseIsoInput(
   value: unknown,
   fieldName: string,
-  dateOnlyBoundary: "start-of-day" | "end-of-day",
+  dateOnlyBoundary: "start-of-day" | "start-of-next-day",
 ): IsoParseResult {
   if (typeof value !== "string") {
     return { ok: false, error: `${fieldName} must be an ISO 8601 date string` };
@@ -125,11 +130,12 @@ function parseIsoInput(
         error: `${fieldName} must be a valid ISO 8601 date string (got "${value}")`,
       };
     }
-    const resolved =
-      dateOnlyBoundary === "end-of-day"
-        ? new Date(year, month - 1, day, 23, 59, 59, 999)
-        : new Date(year, month - 1, day);
-    return { ok: true, iso: resolved.toISOString() };
+    const localDay = new Date(year, month - 1, day);
+    const iso =
+      dateOnlyBoundary === "start-of-next-day"
+        ? startOfNextLocalDayIso(localDay)
+        : startOfLocalDayIso(localDay);
+    return { ok: true, iso };
   }
 
   const match = DATETIME_PATTERN.exec(value);
@@ -158,9 +164,10 @@ function parseIsoInput(
 /**
  * Executes a `get_activity_log` tool_use block. Pure DB read: no session id
  * is needed (unlike `record_decision`), so `executeBossTool` dispatches to
- * this directly. Reuses `listEventsSince()` and filters `task_id`/`until`
- * in memory rather than adding a new repository query (explicit ticket
- * constraint).
+ * this directly. Reuses `listEventsSince()` for the time window (both
+ * bounds; its upper bound is exclusive, matching this tool's `until` since
+ * #236) and filters `task_id` in memory rather than adding a new repository
+ * query.
  */
 export function executeGetActivityLogTool(
   db: Database.Database,
@@ -198,26 +205,32 @@ export function executeGetActivityLogTool(
     sinceIso = parsed.iso;
   }
 
-  let untilMs: number | undefined;
+  let untilIso: string | undefined;
   if (input.until !== undefined && input.until !== null) {
-    const parsed = parseIsoInput(input.until, "until", "end-of-day");
+    const parsed = parseIsoInput(input.until, "until", "start-of-next-day");
     if (!parsed.ok) {
       return { content: parsed.error, isError: true };
     }
-    untilMs = Date.parse(parsed.iso);
+    untilIso = parsed.iso;
   }
 
+  // `until` omitted → no upper bound (#236 decision). This is a look-up
+  // tool, not an aggregate: a future-dated row after a clock rollback shows
+  // up as one more event the boss can see and question, rather than
+  // silently inflating a number (the #230/#236 aggregate symptom). Adding a
+  // "today" cap here would also break the task_id "full history" default,
+  // which is deliberately unbounded on both ends.
   const effectiveSince =
     sinceIso ?? (taskId !== undefined ? EPOCH_ISO : startOfLocalDayIso());
 
-  let events = listEventsSince(db, effectiveSince);
+  // `untilIso` is canonical `toISOString()` output (parseIsoInput), so the
+  // repository's TEXT comparison is exact. Its upper bound is exclusive —
+  // one half-open semantics for both date-only and explicit datetimes
+  // (ADR 0007 決定3; #236).
+  let events = listEventsSince(db, effectiveSince, untilIso);
 
   if (taskId !== undefined) {
     events = events.filter((event) => event.task_id === taskId);
-  }
-  if (untilMs !== undefined) {
-    const untilBoundary = untilMs;
-    events = events.filter((event) => Date.parse(event.created_at) <= untilBoundary);
   }
 
   const truncated = events.length > MAX_EVENTS;
