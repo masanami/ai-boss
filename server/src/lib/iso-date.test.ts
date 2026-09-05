@@ -72,7 +72,15 @@ describe("isValidIsoDateOrDateTime", () => {
   // 行うと実行環境の TZ に依存する。`Pacific/Apia` は 2011-12-30 を丸ごと
   // スキップしたため、その TZ では実在する日付が弾かれる。判定は UTC で行う。
   it("judges calendar dates independently of the host timezone", () => {
-    for (const valid of ["2011-12-30", "0001-01-01", "0099-12-31"]) {
+    // `0000-02-29` は西暦 0 年（proleptic Gregorian の閏年）の実在日。
+    // `Date.UTC` は年 0〜99 を 1900 年代へ写すため、素朴な実装だと 1900 年 2 月
+    // （28 日）を見て誤って弾く（Codex 指摘 code-1）。
+    for (const valid of [
+      "2011-12-30",
+      "0001-01-01",
+      "0099-12-31",
+      "0000-02-29",
+    ]) {
       expect(isValidIsoDateOrDateTime(valid), valid).toBe(true);
     }
   });

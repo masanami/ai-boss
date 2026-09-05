@@ -192,7 +192,14 @@ describe("POST /api/decisions/:id/appeals", () => {
   // 唯一の throw 元は `MissingApiKeyError` で、鍵を含まない固定文言のため
   // 設定ミスの原因を利用者へ伝える意図でそのまま返している。GAP-14 が求める
   // 「500 応答の文言契約」はこの経路にも及ぶので、非露出だけでなく文言そのものを
-  // 固定する（Codex 指摘 code-1）。文言はリテラルで書く — 定数を import すると
+  // 固定する（Codex 指摘 code-1）。
+  //
+  // **これは「現在の挙動の固定」であり、この経路が素の `err.message` を透過し
+  // 続けてよいかは未決**（他の 500 経路は固定文言へ丸めており非対称。将来
+  // `createClaudeClient` が別の例外を投げるようになるとバックエンドの内部情報が
+  // 外へ出る）。契約そのものの是非は #339 で決める。
+  //
+  // 文言はリテラルで書く — 定数を import すると
   // 「定数と定数の比較」で恒真になり契約を固定できない（同ファイルの他ケースと同じ作法）。
   it("returns 500 with the initialization error message, without leaking the api key, when the Claude client cannot be created", async () => {
     const decision = createActiveDecision();

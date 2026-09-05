@@ -34,9 +34,18 @@ const DATE_ONLY_PATTERN = /^\d{4}-\d{2}-\d{2}$/;
 const ISO_DATE_TIME_PATTERN =
   /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})(?::(\d{2})(?:\.\d+)?)?(?:Z|[+-](\d{2}):(\d{2}))?$/;
 
-/** `year` 年 `month` 月（1 始まり）の日数。閏年もこれで正しく出る */
+/**
+ * `year` 年 `month` 月（1 始まり）の日数。閏年もこれで正しく出る。
+ *
+ * `Date.UTC(year, ...)` を直接使わないのは、年 0〜99 を 1900 年代へ写す仕様が
+ * あるため（`Date.UTC(0, 2, 0)` は 1900 年 2 月末＝28 日を返し、閏年である
+ * 西暦 0 年の `0000-02-29` を誤って弾く。Codex 指摘 code-1）。いったん安全な年で
+ * 構築してから `setUTCFullYear` で年を入れ直すと、この写像を回避できる。
+ */
 function daysInMonth(year: number, month: number): number {
-  return new Date(Date.UTC(year, month, 0)).getUTCDate();
+  const probe = new Date(Date.UTC(2000, month, 0));
+  probe.setUTCFullYear(year, month, 0);
+  return probe.getUTCDate();
 }
 
 /** 年月日が暦として実在するか（TZ 非依存） */
