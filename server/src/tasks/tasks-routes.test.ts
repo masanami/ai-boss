@@ -220,13 +220,7 @@ describe("tasks routes", () => {
       }
     });
 
-    // due_at は `validateOptionalFieldTypes`（tasks-validation.ts L47）で
-    // description / boss_comment と同じ `isNullableString` にかけられるだけで、
-    // **日付として解釈可能かの形式チェックは存在しない**（`due_at:
-    // "not-a-date-at-all"` は現状 201 で通る）。したがってここで担保できるのは
-    // 「型」の不正までであり、「形式」の不正は未実装の機能に属する（親 Issue
-    // #199 の GAP-34 のうち due_at 形式の分は保留・#334 参照）。
-    it("returns 400 when due_at is not a string or null (type, not format)", async () => {
+    it("returns 400 when due_at is not a string or null", async () => {
       const app = createApp(db);
 
       for (const invalid of [123, true, [], {}]) {
@@ -239,6 +233,55 @@ describe("tasks routes", () => {
         expect(res.status).toBe(400);
         const body = await readJson<ErrorBody>(res);
         expect(typeof body.error).toBe("string");
+      }
+    });
+
+    // due_at の**形式**不正（#199 / GAP-34）。型が string でも暦として解釈
+    // できない値を通すと、`detection/deadline-overdue.ts` が
+    // `new Date(due_at).getTime()` を NaN にして期限超過を永久に検知せず、
+    // `detection/priority.ts` の並び順にも NaN が混入する。
+    it("returns 400 when due_at is a string that is not a valid ISO 8601 date or date-time", async () => {
+      const app = createApp(db);
+
+      for (const invalid of [
+        "not-a-date-at-all",
+        "0",
+        "2026",
+        "12/31/2026",
+        "2026-02-30",
+        "2026-13-01",
+        "2026-09-05T24:00",
+      ]) {
+        const res = await app.request("/api/tasks", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ title: "タスク", due_at: invalid }),
+        });
+
+        expect(res.status, invalid).toBe(400);
+        const body = await readJson<ErrorBody>(res);
+        expect(typeof body.error).toBe("string");
+      }
+    });
+
+    it("accepts the due_at shapes the web date input and the boss tool actually produce", async () => {
+      const app = createApp(db);
+
+      for (const valid of [
+        "2026-09-05",
+        "2026-09-05T09:30",
+        "2026-09-05T09:30:00.000Z",
+        "2026-09-05T09:30:00+09:00",
+      ]) {
+        const res = await app.request("/api/tasks", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ title: "タスク", due_at: valid }),
+        });
+
+        expect(res.status, valid).toBe(201);
+        const body = await readJson<{ due_at: string | null }>(res);
+        expect(body.due_at).toBe(valid);
       }
     });
 
@@ -297,6 +340,39 @@ describe("tasks routes", () => {
       });
 
       expect(res.status).toBe(404);
+    });
+
+    // POST 側と同じ形式検証が PATCH 経路にも効くこと（両経路とも
+    // `validateOptionalFieldTypes` を通るが、片方だけ結線される回帰を防ぐ）。
+    it("returns 400 when due_at is patched to a string that is not a valid ISO 8601 date or date-time", async () => {
+      const app = createApp(db);
+
+      const createRes = await app.request("/api/tasks", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ title: "元のタスク" }),
+      });
+      const created = await readJson<Task>(createRes);
+
+      for (const invalid of ["not-a-date-at-all", "2026-02-30", "2026"]) {
+        const res = await app.request(`/api/tasks/${created.id}`, {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ due_at: invalid }),
+        });
+
+        expect(res.status, invalid).toBe(400);
+        const body = await readJson<ErrorBody>(res);
+        expect(typeof body.error).toBe("string");
+      }
+
+      const after = await app.request(`/api/tasks/${created.id}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ due_at: "2026-09-05" }),
+      });
+      expect(after.status).toBe(200);
+      expect((await readJson<Task>(after)).due_at).toBe("2026-09-05");
     });
 
     it("partially updates only the specified fields, keeping the rest", async () => {
