@@ -10,6 +10,10 @@ function makeNotification(overrides: Partial<Notification> = {}): Notification {
     escalation_level: 1,
     body: "着手しろ",
     sent_at: "2026-07-05T10:00:00.000Z",
+    // Delivery outcome (#321) is irrelevant to the history conversion; "unknown"
+    // is the value every pre-#321 row carries.
+    delivered: null,
+    channel: null,
     ...overrides,
   };
 }

@@ -237,6 +237,24 @@ const MIGRATIONS: Record<number, MigrationEntry> = {
   5: `
     ALTER TABLE messages ADD COLUMN interrupted INTEGER NOT NULL DEFAULT 0;
   `,
+  // 通知の配信結果（#321）: `sendNotification` の戻り値（配信できたか・どの
+  // チャネルか）を、送信前に書かれた行（record-before-send, #221）へ送信後に
+  // UPDATE で追記するための 2 列。
+  //
+  // - `delivered`: NULL ＝ 未知（この version 以前の行、または INSERT 済みで
+  //   送信結果がまだ書かれていない行）／ 0 ＝ 配信失敗（両チャネル失敗）／
+  //   1 ＝ 配信成功。**DEFAULT を付けない**: `messages.interrupted` と違い、
+  //   既存行を DEFAULT 0 で「配信失敗」に見せてはならない（未知と失敗を区別
+  //   するのがこの列の目的）。真偽型は無いため既存慣習どおり INTEGER。
+  // - `channel`: NULL ＝ 未知。それ以外は `NotificationChannel`（notifier.ts）
+  //   の値をそのまま保存する（"terminal-notifier" / "osascript" / "none"）。
+  //
+  // 既存 version は書き換えず新しい version として追加する
+  // （docs/adr/0005-sqlite-schema-policy.md 決定 4）。
+  6: `
+    ALTER TABLE notifications ADD COLUMN delivered INTEGER;
+    ALTER TABLE notifications ADD COLUMN channel TEXT;
+  `,
 };
 
 /**

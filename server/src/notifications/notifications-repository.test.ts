@@ -6,6 +6,7 @@ import {
   findLatestNotificationByRuleKey,
   insertNotification,
   listNotificationsSince,
+  recordNotificationDelivery,
 } from "./notifications-repository.js";
 
 describe("insertNotification", () => {
@@ -62,6 +63,78 @@ describe("insertNotification", () => {
       .prepare("SELECT * FROM notifications WHERE id = ?")
       .get(notification.id);
     expect(row).toMatchObject({ type: "escalation", escalation_level: 2 });
+  });
+
+  // #321: the record is written *before* the send (Issue #221), so at insert
+  // time the delivery outcome is genuinely unknown — not "failed".
+  it("leaves the delivery outcome unknown (delivered/channel null) at insert time (#321)", () => {
+    const notification = insertNotification(db, {
+      type: "escalation",
+      rule_key: "silence",
+      escalation_level: 1,
+      body: "今何をやっている？",
+    });
+
+    expect(notification).toMatchObject({ delivered: null, channel: null });
+  });
+});
+
+describe("recordNotificationDelivery", () => {
+  let db: Database.Database;
+
+  beforeEach(() => {
+    db = openDatabase(":memory:");
+    runMigrations(db);
+  });
+
+  afterEach(() => {
+    db.close();
+  });
+
+  it.each([
+    [{ delivered: true, channel: "terminal-notifier" }, { delivered: 1, channel: "terminal-notifier" }],
+    [{ delivered: true, channel: "osascript" }, { delivered: 1, channel: "osascript" }],
+    [{ delivered: false, channel: "none" }, { delivered: 0, channel: "none" }],
+  ] as const)(
+    "records the send result %j on the notification row as %j (#321)",
+    (result, expected) => {
+      const notification = insertNotification(db, {
+        type: "escalation",
+        rule_key: "silence",
+        escalation_level: 1,
+        body: "L1",
+      });
+
+      recordNotificationDelivery(db, notification.id, result);
+
+      const row = db
+        .prepare("SELECT delivered, channel FROM notifications WHERE id = ?")
+        .get(notification.id);
+      expect(row).toEqual(expected);
+    },
+  );
+
+  it("only updates the targeted row", () => {
+    const first = insertNotification(db, { type: "escalation", rule_key: "silence", escalation_level: 1, body: "L1" });
+    const second = insertNotification(db, { type: "escalation", rule_key: "silence", escalation_level: 2, body: "L2" });
+
+    recordNotificationDelivery(db, second.id, { delivered: false, channel: "none" });
+
+    expect(findLatestNotificationByRuleKey(db, "silence")).toMatchObject({
+      id: second.id,
+      delivered: 0,
+      channel: "none",
+    });
+    const untouched = db
+      .prepare("SELECT delivered, channel FROM notifications WHERE id = ?")
+      .get(first.id);
+    expect(untouched).toEqual({ delivered: null, channel: null });
+  });
+
+  it("throws when no notification has the given id, instead of silently updating nothing", () => {
+    expect(() =>
+      recordNotificationDelivery(db, 9999, { delivered: true, channel: "terminal-notifier" }),
+    ).toThrow(/9999/);
   });
 });
 
