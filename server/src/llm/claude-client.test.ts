@@ -1454,16 +1454,18 @@ describe("createBossMessage / requestVerdict (claude-code backend wiring)", () =
   });
 
   // Issue #294 (GAP-16): the equivalent env-exclusion assertion for
-  // streamBossMessage (":1197" above) builds its client from a *keyed* env
-  // (`{ ANTHROPIC_API_KEY: "sk-ant-should-be-excluded", ... }`) so that
+  // streamBossMessage ("forwards the client's built env (FR-09/AC-06) to the
+  // backend, not just callbacks", in the `streamBossMessage (claude-code
+  // backend wiring)` describe block above) builds its client from a *keyed*
+  // env (`{ ANTHROPIC_API_KEY: "sk-ant-should-be-excluded", ... }`) so that
   // removing `claude-code-backend.ts`'s `delete env.ANTHROPIC_API_KEY` would
   // actually turn the assertion red. `claudeCodeClient()` (used by the
-  // existing `createBossMessage forwards model/system/messages/tools ...`
-  // test above, ":1365") is built from `createClaudeClient({}, "claude-code")`
-  // — an env with no key to begin with — so that test stays green even if
-  // the exclusion is removed; it only verifies env *forwarding*, not
-  // exclusion. This test closes that gap for the non-stream (`dispatchCreate`)
-  // path.
+  // existing "createBossMessage forwards model/system/messages/tools to the
+  // backend and resolves with its content" test above) is built from
+  // `createClaudeClient({}, "claude-code")` — an env with no key to begin
+  // with — so that test stays green even if the exclusion is removed; it
+  // only verifies env *forwarding*, not exclusion. This test closes that gap
+  // for the non-stream (`dispatchCreate`) path.
   it("forwards the client's built env (FR-09/AC-06) to the backend without ANTHROPIC_API_KEY, even when the source env has one", async () => {
     createClaudeCodeMessageMock.mockResolvedValue({ content: [{ type: "text", text: "了解" }] });
     const client = createClaudeClient(
@@ -1489,12 +1491,13 @@ describe("createBossMessage / requestVerdict (claude-code backend wiring)", () =
   // maxRetries-exhaustion test above ("createBossMessage also logs the
   // CLAUDE_CODE_UNAVAILABLE_HINT ...") only asserts `rejects.toBe(...)` and
   // the warnSpy call — it never asserts the attempt count, so it would stay
-  // green even if `dispatchCreate`'s wiring dropped `maxRetries` down to 0 or
-  // up to some other value (as long as it retries at least once and
-  // eventually fails). This test pins both the attempt count (default
-  // `maxRetries: 2` → 3 total calls to `createClaudeCodeMessage`) and the
-  // rejected error's type/identity, mirroring `runWithTimeoutAndRetry`'s own
-  // "rejects with the last error after exhausting maxRetries" test (":750").
+  // green even if `dispatchCreate`'s wiring dropped `maxRetries` *down*
+  // (fewer attempts before giving up on the same error). This test pins the
+  // attempt count itself (default `maxRetries: 2` → 3 total calls to
+  // `createClaudeCodeMessage`) and the rejected error's identity, mirroring
+  // `runWithTimeoutAndRetry`'s own "rejects with the last error after
+  // exhausting maxRetries" test in the `runWithTimeoutAndRetry` describe
+  // block above.
   it("rejects with the original error and calls the backend 3 times after exhausting maxRetries (default 2 → 3 attempts)", async () => {
     vi.useFakeTimers();
     try {
@@ -1509,7 +1512,6 @@ describe("createBossMessage / requestVerdict (claude-code backend wiring)", () =
       await vi.advanceTimersByTimeAsync(1_000 + 2_000 + 1);
 
       await expect(promise).rejects.toBe(persistentError);
-      await expect(promise).rejects.toBeInstanceOf(Error);
       expect(createClaudeCodeMessageMock).toHaveBeenCalledTimes(3);
     } finally {
       vi.useRealTimers();
