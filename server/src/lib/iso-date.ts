@@ -1,6 +1,6 @@
 /**
- * 日付文字列が「暦として妥当な ISO 8601 の日付または日時」かを、`Date` に
- * 解釈させる**前に**判定する共有述語。
+ * 日付文字列が「暦として妥当な ISO 8601 の日付／日時」かを、`Date` に解釈させる
+ * **前に**判定する共有述語。
  *
  * `new Date()` は存在しない日付を黙ってロールオーバーさせ（`2026-02-30` →
  * 3/2）、`"0"` や `"12/31/2026"` のような非 ISO 文字列も受理する。
@@ -11,9 +11,14 @@
  *
  * 判定は `Date` を介さず文字列の構成要素に対して行う。parse 後のローカル成分と
  * 突き合わせる方式は、オフセット付きの値だと実行環境の TZ 次第で成分がずれる
- * ため成立しない（`boss/persona-prompt.ts` の `isValidIsoDateTime` と同じ理由・
- * 同じ作法。あちらは表示整形のための private ヘルパで、本モジュールは入力
- * バリデーション用の共有版）。
+ * ため成立しない。暦日の判定も**ローカル時刻の `Date` 往復では TZ 依存になる**
+ * （`Pacific/Apia` は 2011-12-30 を丸ごとスキップしたため、その TZ では実在する
+ * 日付が弾かれる。年 0〜99 も `Date` コンストラクタが 1900 年代へ写す）。そこで
+ * 月の日数を `Date.UTC` から導き、成分の範囲比較だけで判定する。
+ *
+ * 本モジュールは `boss/persona-prompt.ts` の private ヘルパだった実装を、
+ * 入力バリデーションからも使えるよう共有化したもの（同ファイルは本モジュールを
+ * import する）。重複した 3 つ目の写しを作らないための集約である。
  */
 
 /** 日付のみの値（`2026-09-05`）。web の日付入力から入る形 */
@@ -21,35 +26,31 @@ const DATE_ONLY_PATTERN = /^\d{4}-\d{2}-\d{2}$/;
 
 /**
  * 完全な ISO 8601 日時: `T` 区切り・分まで必須・秒/ミリ秒任意・タイムゾーン
- * 指定（`Z` または `±HH:MM`）任意。`boss/activity-log-tool.ts` /
- * `boss/persona-prompt.ts` の同種パターンと同じ緩さに揃えてある。
+ * 指定（`Z` または `±HH:MM`）任意。オフセットは**範囲を検査するために捕獲する**
+ * — `+24:00` / `+09:60` は形だけ整っていて `new Date()` が `NaN` を返すため、
+ * 捕獲せず素通しすると本述語が塞ごうとした穴がそのまま残る（Codex 指摘
+ * design-1 / code-1）。
  */
 const ISO_DATE_TIME_PATTERN =
-  /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})(?::(\d{2})(?:\.\d+)?)?(?:Z|[+-]\d{2}:\d{2})?$/;
+  /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})(?::(\d{2})(?:\.\d+)?)?(?:Z|[+-](\d{2}):(\d{2}))?$/;
 
-/**
- * `2026-02-30` のような存在しない暦日を弾く。`Date` の月繰り上げ正規化を
- * 逆手に取り、構成要素が往復して一致するかで判定する。
- */
+/** `year` 年 `month` 月（1 始まり）の日数。閏年もこれで正しく出る */
+function daysInMonth(year: number, month: number): number {
+  return new Date(Date.UTC(year, month, 0)).getUTCDate();
+}
+
+/** 年月日が暦として実在するか（TZ 非依存） */
 function isRealCalendarDate(year: number, month: number, day: number): boolean {
-  const probe = new Date(year, month - 1, day);
   return (
-    probe.getFullYear() === year &&
-    probe.getMonth() === month - 1 &&
-    probe.getDate() === day
+    month >= 1 && month <= 12 && day >= 1 && day <= daysInMonth(year, month)
   );
 }
 
 /**
- * `YYYY-MM-DD`（日付のみ）または完全な ISO 8601 日時で、かつ暦として実在する
- * 日付・範囲内の時刻であれば `true`。
+ * 文字列が「暦として妥当な ISO 8601 **日時**」か（日付のみは受理しない）。
+ * 表示整形など、時刻を持つ値だけを対象にしたい呼び出し側が使う。
  */
-export function isValidIsoDateOrDateTime(value: string): boolean {
-  if (DATE_ONLY_PATTERN.test(value)) {
-    const [year, month, day] = value.split("-").map(Number);
-    return isRealCalendarDate(year, month, day);
-  }
-
+export function isValidIsoDateTime(value: string): boolean {
   const matched = ISO_DATE_TIME_PATTERN.exec(value);
   if (matched === null) {
     return false;
@@ -61,10 +62,30 @@ export function isValidIsoDateOrDateTime(value: string): boolean {
   const hour = Number(matched[4]);
   const minute = Number(matched[5]);
   const second = matched[6] === undefined ? 0 : Number(matched[6]);
+  const offsetHour = matched[7] === undefined ? 0 : Number(matched[7]);
+  const offsetMinute = matched[8] === undefined ? 0 : Number(matched[8]);
 
-  if (!isRealCalendarDate(year, month, day)) {
-    return false;
+  return (
+    isRealCalendarDate(year, month, day) &&
+    hour <= 23 &&
+    minute <= 59 &&
+    second <= 59 &&
+    offsetHour <= 23 &&
+    offsetMinute <= 59
+  );
+}
+
+/**
+ * `YYYY-MM-DD`（日付のみ）または完全な ISO 8601 日時で、かつ暦として実在する
+ * 日付・範囲内の時刻／オフセットであれば `true`。`due_at` は web の日付入力が
+ * `YYYY-MM-DD` を、ボスの `create_task` / `update_task` が ISO 8601 日時を
+ * 送るため、両方を受理する必要がある。
+ */
+export function isValidIsoDateOrDateTime(value: string): boolean {
+  if (DATE_ONLY_PATTERN.test(value)) {
+    const [year, month, day] = value.split("-").map(Number);
+    return isRealCalendarDate(year, month, day);
   }
 
-  return hour <= 23 && minute <= 59 && second <= 59;
+  return isValidIsoDateTime(value);
 }

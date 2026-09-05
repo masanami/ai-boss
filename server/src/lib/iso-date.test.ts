@@ -52,6 +52,31 @@ describe("isValidIsoDateOrDateTime", () => {
     }
   });
 
+  // Codex レビュー指摘（design-1 / code-1）: オフセットの範囲を縛らないと
+  // `+24:00` / `+09:60` が述語を通り、`new Date()` が NaN を返す値が保存され、
+  // 本バリデーションが塞ごうとした検知漏れ（deadline-overdue / priority）が
+  // そのまま残る。実測で `new Date("2026-09-05T09:30:00+24:00").getTime()` は NaN。
+  it("rejects out-of-range UTC offsets that Date cannot parse", () => {
+    for (const invalid of [
+      "2026-09-05T09:30:00+24:00",
+      "2026-09-05T09:30:00-24:00",
+      "2026-09-05T09:30+09:60",
+      "2026-09-05T09:30:00+99:99",
+    ]) {
+      expect(isValidIsoDateOrDateTime(invalid), invalid).toBe(false);
+      expect(Number.isNaN(new Date(invalid).getTime()), invalid).toBe(true);
+    }
+  });
+
+  // Codex レビュー指摘（code-2）: 暦日の判定をローカル時刻の `Date` 往復で
+  // 行うと実行環境の TZ に依存する。`Pacific/Apia` は 2011-12-30 を丸ごと
+  // スキップしたため、その TZ では実在する日付が弾かれる。判定は UTC で行う。
+  it("judges calendar dates independently of the host timezone", () => {
+    for (const valid of ["2011-12-30", "0001-01-01", "0099-12-31"]) {
+      expect(isValidIsoDateOrDateTime(valid), valid).toBe(true);
+    }
+  });
+
   it("rejects out-of-range time components", () => {
     for (const invalid of [
       "2026-09-05T24:00",
