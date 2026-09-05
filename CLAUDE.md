@@ -84,6 +84,7 @@ AI が「上司（ボス）」を演じるセルフマネジメント支援ア�
 - サボり検知ルールエンジンは純粋関数としてユニットテスト必須（時刻・閾値・エスカレーション段階を網羅）
 - Mock対象: Claude API（`@anthropic-ai/sdk`）、現在時刻、macOS 通知コマンド
 - Mockしない: SQLite（一時ファイル or `:memory:` で実 DB を使う）
+- **日付境界に触る変更では `npm run test:tz`（非 UTC タイムゾーンでの追加実行）も通す**。既定の `npm test` の TZ は固定しない——ローカル暦日の契約は単一タイムゾーンでの実行では検証できないため、既定実行に非 UTC の実行を 1 本足して守る（[ADR 0007](docs/adr/0007-local-calendar-day-basis.md) 決定 6）
 
 ## ドキュメントマップ
 
@@ -118,6 +119,9 @@ npm run start
 npm run lint
 npm run typecheck
 npm test
+
+# 非 UTC タイムゾーンでの追加実行（日付境界に触る変更ではこれも通す）
+npm run test:tz
 
 # ビルド
 npm run build

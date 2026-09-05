@@ -8,6 +8,7 @@
     "lint": "cd .. && eslint web",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
+    "test:tz": "TZ=America/New_York vitest run",
     "build": "tsc --noEmit && vite build"
   },
   "dependencies": {
