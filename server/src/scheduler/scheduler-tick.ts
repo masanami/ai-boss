@@ -114,22 +114,34 @@ async function processFiring(
     body = buildFallbackBody(bodyRequest);
   }
 
-  // `sendNotification` never throws (it reports delivery failure via its
-  // return value instead — see notifier.ts). The notification is recorded
-  // regardless of delivery success: Issue #38's explicit assumption is that
-  // a failed send is not retried; if the underlying condition still holds,
-  // the next tick's escalation interval will naturally trigger a re-send.
-  await sendNotification(
-    { title, body, url: deps.notificationUrl },
-    { execFile: deps.execFile },
-  );
-
+  // Record *before* sending (Issue #221). A macOS notification cannot be
+  // un-delivered, so the record that suppresses duplicates and tracks
+  // escalation state (read back via notification-history.ts) must already be
+  // durable at the moment the user can see it. Recording afterwards left a
+  // window where a failed `insertNotification` produced "delivered but
+  // unrecorded" — and the next tick, seeing no history, would send the very
+  // same notification again.
+  //
+  // This ordering does not change the success path, and it keeps Issue #38's
+  // existing contract: the notification is recorded regardless of delivery
+  // success (`sendNotification` never throws — it reports delivery failure
+  // via its return value instead, see notifier.ts), a failed send is not
+  // retried, and if the underlying condition still holds the next tick's
+  // escalation interval naturally triggers a re-send. What it changes is the
+  // *failure* path: a failed record now means nothing was sent either, so
+  // the same natural re-send path covers it instead of the user being
+  // notified twice.
   insertNotification(deps.db, {
     type: firing.ruleType,
     rule_key: firing.ruleKey,
     escalation_level: firing.escalationLevel,
     body,
   });
+
+  await sendNotification(
+    { title, body, url: deps.notificationUrl },
+    { execFile: deps.execFile },
+  );
 }
 
 async function runTick(deps: TickDeps, now: Date): Promise<void> {
