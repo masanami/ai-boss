@@ -1452,6 +1452,71 @@ describe("createBossMessage / requestVerdict (claude-code backend wiring)", () =
       vi.useRealTimers();
     }
   });
+
+  // Issue #294 (GAP-16): the equivalent env-exclusion assertion for
+  // streamBossMessage ("forwards the client's built env (FR-09/AC-06) to the
+  // backend, not just callbacks", in the `streamBossMessage (claude-code
+  // backend wiring)` describe block above) builds its client from a *keyed*
+  // env (`{ ANTHROPIC_API_KEY: "sk-ant-should-be-excluded", ... }`) so that
+  // removing `claude-code-backend.ts`'s `delete env.ANTHROPIC_API_KEY` would
+  // actually turn the assertion red. `claudeCodeClient()` (used by the
+  // existing "createBossMessage forwards model/system/messages/tools to the
+  // backend and resolves with its content" test above) is built from
+  // `createClaudeClient({}, "claude-code")` — an env with no key to begin
+  // with — so that test stays green even if the exclusion is removed; it
+  // only verifies env *forwarding*, not exclusion. This test closes that gap
+  // for the non-stream (`dispatchCreate`) path.
+  it("forwards the client's built env (FR-09/AC-06) to the backend without ANTHROPIC_API_KEY, even when the source env has one", async () => {
+    createClaudeCodeMessageMock.mockResolvedValue({ content: [{ type: "text", text: "了解" }] });
+    const client = createClaudeClient(
+      { ANTHROPIC_API_KEY: "sk-ant-should-be-excluded", PATH: "/usr/bin" },
+      "claude-code",
+    );
+
+    await createBossMessage(client, { messages: [{ role: "user", content: "進言内容" }] });
+
+    expect(createClaudeCodeMessageMock).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        env: {
+          PATH: "/usr/bin",
+          DISABLE_TELEMETRY: "1",
+          CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: "1",
+        },
+      }),
+    );
+  });
+
+  // Issue #294 (GAP-17): the claude-code non-stream path's other
+  // maxRetries-exhaustion test above ("createBossMessage also logs the
+  // CLAUDE_CODE_UNAVAILABLE_HINT ...") only asserts `rejects.toBe(...)` and
+  // the warnSpy call — it never asserts the attempt count, so it would stay
+  // green even if `dispatchCreate`'s wiring dropped `maxRetries` *down*
+  // (fewer attempts before giving up on the same error). This test pins the
+  // attempt count itself (default `maxRetries: 2` → 3 total calls to
+  // `createClaudeCodeMessage`) and the rejected error's identity, mirroring
+  // `runWithTimeoutAndRetry`'s own "rejects with the last error after
+  // exhausting maxRetries" test in the `runWithTimeoutAndRetry` describe
+  // block above.
+  it("rejects with the original error and calls the backend 3 times after exhausting maxRetries (default 2 → 3 attempts)", async () => {
+    vi.useFakeTimers();
+    try {
+      const persistentError = new Error("claude-code backend keeps failing");
+      createClaudeCodeMessageMock.mockRejectedValue(persistentError);
+
+      const promise = createBossMessage(claudeCodeClient(), {
+        messages: [{ role: "user", content: "進言内容" }],
+      });
+      // silence unhandled-rejection noise until we assert below
+      promise.catch(() => {});
+      await vi.advanceTimersByTimeAsync(1_000 + 2_000 + 1);
+
+      await expect(promise).rejects.toBe(persistentError);
+      expect(createClaudeCodeMessageMock).toHaveBeenCalledTimes(3);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
 });
 
 // Issue #176: the `api` backend now shares the same AC-11 timeout/retry
