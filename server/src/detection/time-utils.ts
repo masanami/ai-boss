@@ -54,12 +54,33 @@ export function isWithinWorkingHours(
   return nowMinutes >= startMinutes && nowMinutes < endMinutes;
 }
 
-/** ローカル日付を YYYY-MM-DD 形式で返す（朝会・夕会の日次 rule_key に使う） */
-export function toDateKey(date: Date): string {
-  const year = date.getFullYear();
-  const month = String(date.getMonth() + 1).padStart(2, "0");
-  const day = String(date.getDate()).padStart(2, "0");
-  return `${year}-${month}-${day}`;
+/**
+ * 日付を YYYY-MM-DD 形式で返す（朝会・夕会の日次 rule_key に使う）。
+ *
+ * `timeZone` を省略した場合は実行環境のローカル暦日（従来の挙動）。
+ * IANA タイムゾーン名（例 "Asia/Tokyo"）を渡すと、そのタイムゾーンでの
+ * 暦日を返す（案B: ADR 0007 #177）。
+ *
+ * `Intl.DateTimeFormat.formatToParts` で年月日を個別に取り出して組み立てる
+ * （`format()` 1発の文字列をロケール依存の区切り文字ごと信用しない、
+ * `toISOString()` は使わない＝UTC 固定になり本関数の目的そのものに反するため）。
+ */
+export function toDateKey(date: Date, timeZone?: string): string {
+  if (timeZone === undefined) {
+    const year = date.getFullYear();
+    const month = String(date.getMonth() + 1).padStart(2, "0");
+    const day = String(date.getDate()).padStart(2, "0");
+    return `${year}-${month}-${day}`;
+  }
+  const parts = new Intl.DateTimeFormat("en-US", {
+    timeZone,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).formatToParts(date);
+  const part = (type: "year" | "month" | "day"): string =>
+    parts.find((p) => p.type === type)?.value ?? "";
+  return `${part("year")}-${part("month")}-${part("day")}`;
 }
 
 /**
