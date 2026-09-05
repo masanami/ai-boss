@@ -106,3 +106,25 @@ export function listNotificationsSince(
     )
     .all(sinceIso) as Notification[];
 }
+
+/**
+ * Returns notifications with `sinceIso <= sent_at < untilIsoExclusive`,
+ * oldest first — the half-open window of ADR 0007 決定3. Used by the
+ * dashboard's today-escalation aggregate (#236) so the query itself bounds
+ * "today" instead of relying on no future-dated row ever existing (a clock
+ * rollback leaves such rows behind, since `sent_at` is the server's absolute
+ * time). Kept as a separate function rather than an optional argument on
+ * `listNotificationsSince` so that function's unbounded contract for the
+ * detection engine's history read-back stays visibly unchanged (#236).
+ */
+export function listNotificationsBetween(
+  db: Database.Database,
+  sinceIso: string,
+  untilIsoExclusive: string,
+): Notification[] {
+  return db
+    .prepare(
+      "SELECT * FROM notifications WHERE sent_at >= ? AND sent_at < ? ORDER BY sent_at ASC, id ASC",
+    )
+    .all(sinceIso, untilIsoExclusive) as Notification[];
+}
