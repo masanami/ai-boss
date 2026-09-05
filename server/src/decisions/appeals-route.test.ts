@@ -211,6 +211,9 @@ describe("POST /api/decisions/:id/appeals", () => {
 
     expect(res.status).toBe(500);
     expect(rawBody).not.toContain("abc123");
+    expect(JSON.parse(rawBody) as ErrorBody).toEqual({
+      error: "ボスの再裁定中にエラーが発生しました",
+    });
     expect(listAppealsByDecisionId(db, decision.id)).toEqual([]);
     expect(findDecisionById(db, decision.id)).toMatchObject({ status: "active" });
   });
@@ -220,8 +223,10 @@ describe("POST /api/decisions/:id/appeals", () => {
     requestVerdictMock.mockResolvedValue(notCalled());
 
     const res = await postAppeal(decision.id);
+    const body = await readJson<ErrorBody>(res);
 
     expect(res.status).toBe(500);
+    expect(body.error).toBe("ボスの再裁定中にエラーが発生しました");
     expect(listAppealsByDecisionId(db, decision.id)).toEqual([]);
     expect(findDecisionById(db, decision.id)).toMatchObject({ status: "active" });
   });
@@ -233,8 +238,10 @@ describe("POST /api/decisions/:id/appeals", () => {
     );
 
     const res = await postAppeal(decision.id);
+    const body = await readJson<ErrorBody>(res);
 
     expect(res.status).toBe(500);
+    expect(body.error).toBe("ボスの再裁定中にエラーが発生しました");
     expect(listAppealsByDecisionId(db, decision.id)).toEqual([]);
     expect(findDecisionById(db, decision.id)).toMatchObject({ status: "active" });
   });
@@ -246,8 +253,10 @@ describe("POST /api/decisions/:id/appeals", () => {
     );
 
     const res = await postAppeal(decision.id);
+    const body = await readJson<ErrorBody>(res);
 
     expect(res.status).toBe(500);
+    expect(body.error).toBe("ボスの再裁定中にエラーが発生しました");
     expect(listAppealsByDecisionId(db, decision.id)).toEqual([]);
     expect(findDecisionById(db, decision.id)).toMatchObject({ status: "active" });
   });
