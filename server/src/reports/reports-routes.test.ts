@@ -6,6 +6,7 @@ import { runMigrations } from "../db/migrate.js";
 import { createApp } from "../app.js";
 import type { DailyReport, DailyReportSummary } from "./daily-report.js";
 import type { SessionType } from "../sessions/session.js";
+import { FALLBACK_EVENING_SUMMARY_NOTE } from "./render-daily-report.js";
 
 interface ErrorBodyWithCode {
   error: string;
@@ -44,6 +45,41 @@ function insertRawMessage(
   db.prepare(
     "INSERT INTO messages (session_id, role, content, created_at) VALUES (?, ?, ?, ?)",
   ).run(sessionId, role, content, createdAt);
+}
+
+// AC-2 (Issue #322) 用: collect-daily-report-data.test.ts の同名ヘルパと
+// 同じ最小限の直接 INSERT パターンを踏襲する（新しいテストハーネスを発明
+// しない）。
+function insertRawTask(
+  db: Database.Database,
+  opts: {
+    title: string;
+    status: "todo" | "in_progress" | "done" | "dropped";
+    createdAt: string;
+    completedAt?: string | null;
+  },
+): number {
+  const result = db
+    .prepare(
+      `INSERT INTO tasks (title, status, created_at, updated_at, completed_at)
+       VALUES (?, ?, ?, ?, ?)`,
+    )
+    .run(opts.title, opts.status, opts.createdAt, opts.createdAt, opts.completedAt ?? null);
+  return Number(result.lastInsertRowid);
+}
+
+function insertRawActivityEvent(
+  db: Database.Database,
+  opts: {
+    type: "task_start" | "task_update" | "break_start" | "break_end";
+    taskId?: number | null;
+    createdAt: string;
+  },
+): number {
+  const result = db
+    .prepare("INSERT INTO activity_events (type, task_id, created_at) VALUES (?, ?, ?)")
+    .run(opts.type, opts.taskId ?? null, opts.createdAt);
+  return Number(result.lastInsertRowid);
 }
 
 function insertRawDailyReport(
@@ -258,6 +294,84 @@ describe("reports routes", () => {
       expect(typeof body.content).toBe("string");
       expect(typeof body.created_at).toBe("string");
       expect(typeof body.updated_at).toBe("string");
+    });
+
+    // Issue #322 (AC-1, AC-2): 収集段・抽出段・レンダリング段の純粋関数テストは
+    // 充実しているが、その結線が HTTP レスポンス `content` へ実際に載ることは
+    // これまで境界で検証されていなかった（`typeof body.content === "string"`
+    // 程度）。ここでは固定フォーマットの中身そのものを assert する。
+    describe("response content reflects the render-daily-report.ts fixed format (AC-1, AC-2)", () => {
+      it("falls back to FALLBACK_EVENING_SUMMARY_NOTE in content when LLM extraction fails (AC-1)", async () => {
+        const app = createApp(db, env);
+        // extract-evening-summary.ts: requestVerdict の `called: false` は
+        // 「ツール未呼び出し」（抽出失敗の一種）として null を返す経路。
+        requestVerdictMock.mockResolvedValue({ called: false });
+        vi.useFakeTimers();
+        vi.setSystemTime(new Date(2026, 7, 14, 19, 0));
+        const session = await readJson<{ id: number }>(
+          await app.request("/api/sessions", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ type: "evening" }),
+          }),
+        );
+        insertRawMessage(db, session.id, "user", "報告です", iso(2026, 8, 14, 19, 1));
+        await app.request(`/api/sessions/${session.id}/end`, { method: "POST" });
+
+        const res = await app.request("/api/reports/generate", { method: "POST" });
+
+        expect(res.status).toBe(200);
+        const body = await readJson<DailyReport>(res);
+        expect(body.content).toContain(FALLBACK_EVENING_SUMMARY_NOTE);
+      });
+
+      it("reflects completed tasks, in-progress tasks, and the activity record (first start time, break count/total) in content (AC-2)", async () => {
+        const app = createApp(db, env);
+        vi.useFakeTimers();
+        vi.setSystemTime(new Date(2026, 7, 14, 19, 0));
+        const session = await readJson<{ id: number }>(
+          await app.request("/api/sessions", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ type: "evening" }),
+          }),
+        );
+        insertRawMessage(db, session.id, "user", "報告です", iso(2026, 8, 14, 19, 1));
+
+        // 完了タスクと進行中タスクの両方を含める（片方だけだと恒真テストになる —
+        // Issue #322 の制約）。
+        insertRawTask(db, {
+          title: "完了タスクA",
+          status: "done",
+          createdAt: iso(2026, 8, 14, 9, 0),
+          completedAt: iso(2026, 8, 14, 18, 0),
+        });
+        const inProgressTaskId = insertRawTask(db, {
+          title: "進行中タスクB",
+          status: "in_progress",
+          createdAt: iso(2026, 8, 14, 9, 15),
+        });
+        // 当日最初の task_start（= 活動記録「着手」の時刻）を、進行中タスク検出
+        // に必要な task_start イベントと兼ねる。
+        insertRawActivityEvent(db, {
+          type: "task_start",
+          taskId: inProgressTaskId,
+          createdAt: iso(2026, 8, 14, 9, 15),
+        });
+        insertRawActivityEvent(db, { type: "break_start", createdAt: iso(2026, 8, 14, 12, 0) });
+        insertRawActivityEvent(db, { type: "break_end", createdAt: iso(2026, 8, 14, 12, 25) });
+
+        await app.request(`/api/sessions/${session.id}/end`, { method: "POST" });
+
+        const res = await app.request("/api/reports/generate", { method: "POST" });
+
+        expect(res.status).toBe(200);
+        const body = await readJson<DailyReport>(res);
+        expect(body.content).toContain("- [x] 完了タスクA");
+        expect(body.content).toContain("- [ ] 進行中タスクB（進行中）");
+        expect(body.content).toContain("- 着手: 09:15");
+        expect(body.content).toContain("- 休憩: 1回（合計 25分）");
+      });
     });
 
     it("returns 409 with code evening_session_required when the prerequisite is not met", async () => {
