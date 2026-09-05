@@ -190,6 +190,33 @@ describe("sessions routes", () => {
         expect(body.code).toBe("evening_session_already_exists");
       });
 
+      it("AC-2/GAP-11: only one succeeds when two evening session creations are issued concurrently via Promise.all, leaving exactly one row", async () => {
+        const app = createApp(db);
+        vi.useFakeTimers();
+        vi.setSystemTime(new Date(2026, 7, 14, 18, 0));
+
+        const [first, second] = await Promise.all([
+          postSession(app, "evening"),
+          postSession(app, "evening"),
+        ]);
+
+        const responses = [first, second];
+        const successes = responses.filter((res) => res.status === 201);
+        const conflicts = responses.filter((res) => res.status === 409);
+
+        expect(successes).toHaveLength(1);
+        expect(conflicts).toHaveLength(1);
+
+        const conflictBody = await readJson<ErrorBodyWithCode>(conflicts[0]);
+        expect(conflictBody.code).toBe("evening_session_already_exists");
+        expect(typeof conflictBody.error).toBe("string");
+
+        const rows = db
+          .prepare("SELECT * FROM sessions WHERE type = 'evening'")
+          .all();
+        expect(rows).toHaveLength(1);
+      });
+
       it("does not limit morning or adhoc sessions created on the same day", async () => {
         const app = createApp(db);
         vi.useFakeTimers();
