@@ -30,10 +30,12 @@ export interface CollectedDailyReportData {
  * （`toDateKey` と同じ基準で日付を切り出す。日付キー自体の文字列化はレンダラー
  * 側の責務のためここでは行わない）。タスク・決定の集計範囲はこの暦日の
  * `[00:00:00.000, 翌ローカル暦日 00:00:00.000)`（半開区間。翌日境界は暦日を
- * 1 日進めて求め、固定秒数の加算はしない。ADR 0007 決定3）。休憩の break_end
- * 探索のみ、日跨ぎ夕会に対応するため夕会セッションの ended_at まで拡張する
- * （日報の「活動記録」の休憩回数・合計時間を成立させるための対応付け
- * 規則。暦日の基準は docs/adr/0007-local-calendar-day-basis.md）。
+ * 1 日進めて求め、固定秒数の加算はしない。ADR 0007 決定3）。休憩イベント
+ * （break_start / break_end）の探索のみ、日跨ぎ夕会に対応するため夕会セッションの
+ * ended_at まで両方とも同じ窓で拡張し、翌暦日に始まった休憩は対応付け後に
+ * 集計から除外する（日報の「活動記録」の休憩回数・合計時間を成立させるための
+ * 対応付け規則は activity-record.ts。暦日の基準は
+ * docs/adr/0007-local-calendar-day-basis.md）。
  *
  * `eveningSession.ended_at` が null（未終了）の場合は呼び出し側の前提条件違反
  * として例外を投げる（前提条件チェック自体は依頼側チケット #107/#108 の生成
@@ -53,13 +55,18 @@ export function collectDailyReportData(
   const targetDate = new Date(eveningSession.started_at);
   const dayStartIso = startOfLocalDayIso(targetDate);
   const nextDayStartIso = startOfNextLocalDayIso(targetDate);
-  // break_end の探索範囲だけ、日跨ぎ夕会に対応するため夕会終了時刻まで拡張する。
+  // 休憩（break_start / break_end）の探索範囲だけ、日跨ぎ夕会に対応するため夕会
+  // 終了時刻まで拡張する。**両イベントを同じ窓で取る**（Issue #237: break_start
+  // だけ翌暦日 00:00 で切ると、翌暦日に始まった休憩の break_end が対象暦日の
+  // 未終了 break_start と誤って結ばれる）。翌暦日に始まった休憩は
+  // computeActivityRecord が nextDayStartIso で集計から除外する。
   // 上限は排他（ADR 0007 決定3）で、日跨ぎ夕会のときだけ翌暦日 00:00 より先へ
-  // 伸びる。その場合に限り break_end が ended_at と完全一致すると検索から外れる
-  // が、computeActivityRecord が対応する break_start を sessionEndedAt で打ち切る
-  // ため breakCount/breakTotalMinutes は等価になる（activity-record.ts の
-  // ActivityRecordInput.breakEnds の doc と対で読むこと）。
-  const breakEndSearchEndIso = sessionEndedAtIso > nextDayStartIso ? sessionEndedAtIso : nextDayStartIso;
+  // 伸びる。その場合に限り ended_at と完全一致する break_end / break_start は
+  // 検索から外れるが、対象暦日の開いている休憩を computeActivityRecord が
+  // sessionEndedAt で打ち切る（ended_at ちょうどの break_start は翌暦日の休憩
+  // なので元々集計対象外）ため breakCount/breakTotalMinutes は等価になる
+  // （activity-record.ts の ActivityRecordInput.breakEnds の doc と対で読むこと）。
+  const breakSearchEndIso = sessionEndedAtIso > nextDayStartIso ? sessionEndedAtIso : nextDayStartIso;
 
   const completedTasks = (
     db
@@ -98,7 +105,7 @@ export function collectDailyReportData(
        WHERE type = 'break_start' AND created_at >= ? AND created_at < ?
        ORDER BY created_at ASC, id ASC`,
     )
-    .all(dayStartIso, nextDayStartIso) as ActivityRecordEvent[];
+    .all(dayStartIso, breakSearchEndIso) as ActivityRecordEvent[];
 
   const breakEnds = db
     .prepare(
@@ -106,12 +113,13 @@ export function collectDailyReportData(
        WHERE type = 'break_end' AND created_at >= ? AND created_at < ?
        ORDER BY created_at ASC, id ASC`,
     )
-    .all(dayStartIso, breakEndSearchEndIso) as ActivityRecordEvent[];
+    .all(dayStartIso, breakSearchEndIso) as ActivityRecordEvent[];
 
   const activityRecord = computeActivityRecord({
     taskStarts,
     breakStarts,
     breakEnds,
+    nextDayStartIso,
     sessionEndedAt: sessionEndedAtIso,
   });
 

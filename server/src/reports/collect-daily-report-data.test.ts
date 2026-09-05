@@ -426,6 +426,30 @@ describe("collectDailyReportData", () => {
       expect(resultB.breakTotalMinutes).toBe(35);
     });
 
+    it("does not pair a target-day break_start with a next-day break_end that belongs to a break started after local midnight (#237 reproduction: 23:00 start, 00:30 start, 01:00 end, session ends 01:30 → 90 min, count 1)", () => {
+      // 夕会 23:50 → 翌 01:30（日跨ぎ）。break_end の探索窓が ended_at まで伸びる一方で
+      // break_start の窓が翌暦日 00:00 で切れると、00:30 の start が見えないまま
+      // 01:00 の end が 23:00 の start と結ばれ 120 分になる（Issue #237 のシナリオ）。
+      const session = insertRawSession(
+        db,
+        "evening",
+        iso(2026, 8, 14, 23, 50),
+        iso(2026, 8, 15, 1, 30),
+      );
+      insertRawActivityEvent(db, { type: "break_start", createdAt: iso(2026, 8, 14, 23, 0) });
+      insertRawActivityEvent(db, { type: "break_start", createdAt: iso(2026, 8, 15, 0, 30) });
+      insertRawActivityEvent(db, { type: "break_end", createdAt: iso(2026, 8, 15, 1, 0) });
+
+      const result = collectDailyReportData(db, session);
+
+      // 対応付け規則（activity-record.ts）: 休憩は同時に 1 つしか開かず、開いている
+      // 休憩の上に来た break_start は先行休憩をその時刻で閉じる。よって 23:00 の休憩は
+      // 00:30 で閉じて 90 分。00:30 に始まる休憩は対象暦日外なので回数にも合計にも
+      // 入らない（翌暦日の日報側で 00:30→01:00 として計上される＝二重計上しない）。
+      expect(result.breakCount).toBe(1);
+      expect(result.breakTotalMinutes).toBe(90);
+    });
+
     it("excludes a task_start/break_start event exactly at the next local day's 00:00:00.000 from firstTaskStartAt/breakCount while keeping the in-range ones (half-open interval upper bound, ADR 0007 決定3)", () => {
       const session = insertRawSession(db, "evening", iso(2026, 8, 14, 19, 0), iso(2026, 8, 14, 19, 30));
       // break_start だけ上限直前の対照を置く（breakCount は件数なので 1→2 で
