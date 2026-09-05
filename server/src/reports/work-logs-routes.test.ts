@@ -45,9 +45,23 @@ function insertRawDecision(
 
 function insertRawActivityEvent(
   db: Database.Database,
-  opts: { type: string; createdAt: string },
+  opts: {
+    type: string;
+    createdAt: string;
+    expectedMinutes?: number;
+    note?: string;
+    taskId?: number;
+  },
 ): void {
-  db.prepare(`INSERT INTO activity_events (type, created_at) VALUES (?, ?)`).run(opts.type, opts.createdAt);
+  db.prepare(
+    `INSERT INTO activity_events (type, created_at, expected_minutes, note, task_id) VALUES (?, ?, ?, ?, ?)`,
+  ).run(
+    opts.type,
+    opts.createdAt,
+    opts.expectedMinutes ?? null,
+    opts.note ?? null,
+    opts.taskId ?? null,
+  );
 }
 
 const env = {};
@@ -124,6 +138,89 @@ describe("GET /api/work-logs/:date", () => {
     expect(idx.decision).toBeLessThan(idx.revised);
     expect(idx.revised).toBeLessThan(idx.withdrawn);
     expect(idx.withdrawn).toBeLessThan(idx.checkin);
+  });
+
+  it("appends '（予定 N分）' only for task_start/break_start events in the response content", async () => {
+    const app = createApp(db, env);
+    insertRawActivityEvent(db, {
+      type: "task_start",
+      createdAt: iso(2026, 8, 14, 9, 0, 0),
+      expectedMinutes: 60,
+    });
+    insertRawActivityEvent(db, {
+      type: "break_start",
+      createdAt: iso(2026, 8, 14, 10, 0, 0),
+      expectedMinutes: 15,
+    });
+    insertRawActivityEvent(db, {
+      type: "task_update",
+      createdAt: iso(2026, 8, 14, 11, 0, 0),
+      expectedMinutes: 30,
+    });
+    insertRawActivityEvent(db, {
+      type: "break_end",
+      createdAt: iso(2026, 8, 14, 12, 0, 0),
+      expectedMinutes: 45,
+    });
+    insertRawActivityEvent(db, {
+      type: "checkin",
+      createdAt: iso(2026, 8, 14, 13, 0, 0),
+      expectedMinutes: 20,
+    });
+    insertRawActivityEvent(db, {
+      type: "task_pause",
+      createdAt: iso(2026, 8, 14, 14, 0, 0),
+      expectedMinutes: 5,
+    });
+
+    const res = await app.request("/api/work-logs/2026-08-14");
+    const body = await readJson<WorkLogBody>(res);
+    const lines = body.content.split("\n");
+
+    const taskStartLine = lines.find((l) => l.startsWith("- 09:00"));
+    const breakStartLine = lines.find((l) => l.startsWith("- 10:00"));
+    const taskUpdateLine = lines.find((l) => l.startsWith("- 11:00"));
+    const breakEndLine = lines.find((l) => l.startsWith("- 12:00"));
+    const checkinLine = lines.find((l) => l.startsWith("- 13:00"));
+    const taskPauseLine = lines.find((l) => l.startsWith("- 14:00"));
+
+    expect(taskStartLine).toContain("（予定 60分）");
+    expect(breakStartLine).toContain("（予定 15分）");
+    expect(taskUpdateLine).not.toContain("予定");
+    expect(breakEndLine).not.toContain("予定");
+    expect(checkinLine).not.toContain("予定");
+    expect(taskPauseLine).not.toContain("予定");
+  });
+
+  it("appends note as ' — {note}' and orders '（予定 N分） — {note}' when both are present, in the response content", async () => {
+    const app = createApp(db, env);
+    insertRawActivityEvent(db, {
+      type: "task_start",
+      createdAt: iso(2026, 8, 14, 9, 0, 0),
+      expectedMinutes: 60,
+      note: "集中したい",
+    });
+    insertRawActivityEvent(db, {
+      type: "checkin",
+      createdAt: iso(2026, 8, 14, 10, 0, 0),
+      note: "順調",
+    });
+    insertRawActivityEvent(db, {
+      type: "task_update",
+      createdAt: iso(2026, 8, 14, 11, 0, 0),
+    });
+
+    const res = await app.request("/api/work-logs/2026-08-14");
+    const body = await readJson<WorkLogBody>(res);
+    const lines = body.content.split("\n");
+
+    const taskStartLine = lines.find((l) => l.startsWith("- 09:00"));
+    const checkinLine = lines.find((l) => l.startsWith("- 10:00"));
+    const taskUpdateLine = lines.find((l) => l.startsWith("- 11:00"));
+
+    expect(taskStartLine).toContain("（予定 60分） — 集中したい");
+    expect(checkinLine).toContain("チェックイン — 順調");
+    expect(taskUpdateLine).not.toContain("—");
   });
 
   it("excludes chat_message events from the response", async () => {
