@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type Database from "better-sqlite3";
 import { openDatabase } from "../db/connection.js";
 import { runMigrations } from "../db/migrate.js";
@@ -23,6 +23,7 @@ describe("tasks routes", () => {
 
   afterEach(() => {
     db.close();
+    vi.useRealTimers();
   });
 
   describe("GET /api/tasks", () => {
@@ -203,6 +204,44 @@ describe("tasks routes", () => {
       expect(typeof body.error).toBe("string");
     });
 
+    it("returns 400 when boss_comment is not a string or null", async () => {
+      const app = createApp(db);
+
+      for (const invalid of [123, true, [], {}]) {
+        const res = await app.request("/api/tasks", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ title: "タスク", boss_comment: invalid }),
+        });
+
+        expect(res.status).toBe(400);
+        const body = await readJson<ErrorBody>(res);
+        expect(typeof body.error).toBe("string");
+      }
+    });
+
+    // due_at は `validateOptionalFieldTypes`（tasks-validation.ts L47）で
+    // description / boss_comment と同じ `isNullableString` にかけられるだけで、
+    // **日付として解釈可能かの形式チェックは存在しない**（`due_at:
+    // "not-a-date-at-all"` は現状 201 で通る）。したがってここで担保できるのは
+    // 「型」の不正までであり、「形式」の不正は未実装の機能に属する（親 Issue
+    // #199 の GAP-34 のうち due_at 形式の分は保留・#334 参照）。
+    it("returns 400 when due_at is not a string or null (type, not format)", async () => {
+      const app = createApp(db);
+
+      for (const invalid of [123, true, [], {}]) {
+        const res = await app.request("/api/tasks", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ title: "タスク", due_at: invalid }),
+        });
+
+        expect(res.status).toBe(400);
+        const body = await readJson<ErrorBody>(res);
+        expect(typeof body.error).toBe("string");
+      }
+    });
+
     it("sets completed_at when a task is created directly with status done", async () => {
       const app = createApp(db);
 
@@ -288,6 +327,11 @@ describe("tasks routes", () => {
 
     it("updates updated_at when a task is patched", async () => {
       const app = createApp(db);
+      // created_at と updated_at が同一ミリ秒だと「値が進む」が成立せず
+      // 環境依存でフレークするため、作成時刻と PATCH 時刻を明示的にずらす
+      // (ローカル日付基準・TZ非依存。UTC文字列リテラルの直書きは禁止)
+      vi.useFakeTimers();
+      vi.setSystemTime(new Date(2026, 5, 1, 9, 0));
 
       const createRes = await app.request("/api/tasks", {
         method: "POST",
@@ -295,6 +339,8 @@ describe("tasks routes", () => {
         body: JSON.stringify({ title: "元のタスク" }),
       });
       const created = await readJson<Task>(createRes);
+
+      vi.setSystemTime(new Date(2026, 5, 1, 9, 5));
 
       const res = await app.request(`/api/tasks/${created.id}`, {
         method: "PATCH",
@@ -305,6 +351,9 @@ describe("tasks routes", () => {
       const body = await readJson<Task>(res);
       expect(typeof body.updated_at).toBe("string");
       expect(body.updated_at).not.toBe("");
+      expect(new Date(body.updated_at).getTime()).toBeGreaterThan(
+        new Date(created.updated_at).getTime(),
+      );
       expect(created.created_at).toBe(body.created_at);
     });
 
@@ -348,6 +397,50 @@ describe("tasks routes", () => {
       expect(res.status).toBe(400);
       const body = await readJson<ErrorBody>(res);
       expect(typeof body.error).toBe("string");
+    });
+
+    it("returns 400 when boss_comment is patched to a non-string, non-null value", async () => {
+      const app = createApp(db);
+
+      const createRes = await app.request("/api/tasks", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ title: "元のタスク" }),
+      });
+      const created = await readJson<Task>(createRes);
+
+      for (const invalid of [123, true, [], {}]) {
+        const res = await app.request(`/api/tasks/${created.id}`, {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ boss_comment: invalid }),
+        });
+
+        expect(res.status).toBe(400);
+        const body = await readJson<ErrorBody>(res);
+        expect(typeof body.error).toBe("string");
+      }
+    });
+
+    it("updates boss_comment when patched with a valid string (guards against an always-400 implementation)", async () => {
+      const app = createApp(db);
+
+      const createRes = await app.request("/api/tasks", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ title: "元のタスク" }),
+      });
+      const created = await readJson<Task>(createRes);
+
+      const res = await app.request(`/api/tasks/${created.id}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ boss_comment: "先にこれをやれ" }),
+      });
+
+      expect(res.status).toBe(200);
+      const body = await readJson<Task>(res);
+      expect(body.boss_comment).toBe("先にこれをやれ");
     });
 
     it("returns 400 when title is patched to an empty string", async () => {
