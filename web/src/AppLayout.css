@@ -22,7 +22,11 @@
 
 .app-body {
   display: grid;
-  grid-template-columns: var(--nav-width) 1fr var(--side-panel-width);
+  grid-template-columns:
+    var(--nav-width)
+    minmax(0, 1fr)
+    var(--splitter-width)
+    var(--side-panel-width);
   flex: 1;
   min-height: 0;
 }
@@ -61,6 +65,29 @@
 .app-main {
   padding: 1.5rem;
   overflow-y: auto;
+}
+
+.app-splitter {
+  cursor: col-resize;
+  background-color: var(--color-border);
+  touch-action: none;
+}
+
+.app-splitter:hover {
+  background-color: var(--color-accent);
+}
+
+.app-splitter:focus-visible {
+  background-color: var(--color-accent);
+  outline: 2px solid var(--color-accent-warm);
+  outline-offset: -2px;
+}
+
+.app-body--dragging {
+  /* Suppresses the native text-selection drag that would otherwise start
+     under the pointer while resizing the side panel (code review finding,
+     Issue #362). */
+  user-select: none;
 }
 
 .app-side-panel {

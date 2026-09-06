@@ -8,6 +8,7 @@ import {
 } from "@testing-library/react";
 import AppLayout from "./AppLayout";
 import type { ChatMessage, ChatSession } from "./chat";
+import { SIDE_PANEL_WIDTH_STORAGE_KEY } from "./side-panel-width";
 import type { Task } from "./task";
 
 function makeTask(overrides: Partial<Task> & { id: number }): Task {
@@ -579,5 +580,402 @@ describe("AppLayout", () => {
     expect(
       screen.queryByRole("main", { name: "ボスとの対話" }),
     ).not.toBeInTheDocument();
+  });
+});
+
+// jsdom's default window.innerWidth is 1024, giving an effective max of
+// 1024 - NAV_WIDTH(200) - SPLITTER_WIDTH(6) - MAIN_MIN_WIDTH(480) = 338
+// (below SIDE_PANEL_MAX_WIDTH's 420). Verified directly against
+// window.innerWidth in this suite (see below) rather than assumed.
+const DEFAULT_JSDOM_EFFECTIVE_MAX = 338;
+
+function setWindowInnerWidth(width: number) {
+  Object.defineProperty(window, "innerWidth", {
+    configurable: true,
+    writable: true,
+    value: width,
+  });
+}
+
+describe("AppLayout side panel splitter (Issue #362)", () => {
+  afterEach(() => {
+    // vi.restoreAllMocks() here (rather than only at the end of the two
+    // tests that spy on Storage.prototype) so a thrown/failed assertion
+    // inside those tests can't skip the restore and leak the mock into
+    // later tests in this describe block.
+    vi.restoreAllMocks();
+    localStorage.clear();
+    setWindowInnerWidth(1024);
+  });
+
+  it("the test environment's default window width is 1024 (basis for DEFAULT_JSDOM_EFFECTIVE_MAX above)", () => {
+    expect(window.innerWidth).toBe(1024);
+  });
+
+  it("renders exactly one separator, placed for the side panel (no nav-width control exists)", () => {
+    render(<AppLayout />);
+
+    expect(screen.getAllByRole("separator")).toHaveLength(1);
+  });
+
+  it("renders the splitter with the ARIA attributes the window splitter pattern requires", () => {
+    render(<AppLayout />);
+
+    const splitter = screen.getByRole("separator", { name: "サイドパネルの幅" });
+    expect(splitter).toHaveAttribute("aria-orientation", "vertical");
+    expect(splitter).toHaveAttribute("aria-valuenow", "280");
+    expect(splitter).toHaveAttribute("aria-valuemin", "280");
+    expect(splitter).toHaveAttribute(
+      "aria-valuemax",
+      String(DEFAULT_JSDOM_EFFECTIVE_MAX),
+    );
+    expect(splitter).toHaveAttribute("tabindex", "0");
+  });
+
+  it("reflects the current width as the --side-panel-width custom property on .app-body", () => {
+    const { container } = render(<AppLayout />);
+
+    const appBody = container.querySelector(".app-body") as HTMLElement;
+    expect(appBody.style.getPropertyValue("--side-panel-width")).toBe(
+      "280px",
+    );
+  });
+
+  it("widens the side panel by 16px when ArrowLeft is pressed on the focused splitter", () => {
+    render(<AppLayout />);
+
+    const splitter = screen.getByRole("separator", { name: "サイドパネルの幅" });
+    fireEvent.keyDown(splitter, { key: "ArrowLeft" });
+
+    expect(splitter).toHaveAttribute("aria-valuenow", "296");
+  });
+
+  it("narrows the side panel by 16px when ArrowRight is pressed on the focused splitter", () => {
+    render(<AppLayout />);
+
+    const splitter = screen.getByRole("separator", { name: "サイドパネルの幅" });
+    // Widen first so the subsequent narrowing isn't masked by the floor clamp.
+    fireEvent.keyDown(splitter, { key: "ArrowLeft" });
+    fireEvent.keyDown(splitter, { key: "ArrowRight" });
+
+    expect(splitter).toHaveAttribute("aria-valuenow", "280");
+  });
+
+  it("does not narrow past the floor (280) when ArrowRight is pressed while already at the floor", () => {
+    render(<AppLayout />);
+
+    const splitter = screen.getByRole("separator", { name: "サイドパネルの幅" });
+    fireEvent.keyDown(splitter, { key: "ArrowRight" });
+
+    expect(splitter).toHaveAttribute("aria-valuenow", "280");
+  });
+
+  it("jumps to the floor (280) when Home is pressed", () => {
+    render(<AppLayout />);
+
+    const splitter = screen.getByRole("separator", { name: "サイドパネルの幅" });
+    fireEvent.keyDown(splitter, { key: "ArrowLeft" });
+    fireEvent.keyDown(splitter, { key: "Home" });
+
+    expect(splitter).toHaveAttribute("aria-valuenow", "280");
+  });
+
+  it("jumps to the effective max when End is pressed", () => {
+    render(<AppLayout />);
+
+    const splitter = screen.getByRole("separator", { name: "サイドパネルの幅" });
+    fireEvent.keyDown(splitter, { key: "End" });
+
+    expect(splitter).toHaveAttribute(
+      "aria-valuenow",
+      String(DEFAULT_JSDOM_EFFECTIVE_MAX),
+    );
+  });
+
+  it("does not widen past the effective max when ArrowLeft is pressed while already at the max", () => {
+    render(<AppLayout />);
+
+    const splitter = screen.getByRole("separator", { name: "サイドパネルの幅" });
+    fireEvent.keyDown(splitter, { key: "End" });
+    fireEvent.keyDown(splitter, { key: "ArrowLeft" });
+
+    expect(splitter).toHaveAttribute(
+      "aria-valuenow",
+      String(DEFAULT_JSDOM_EFFECTIVE_MAX),
+    );
+  });
+
+  it("persists a keyboard-driven width change to localStorage", () => {
+    render(<AppLayout />);
+
+    const splitter = screen.getByRole("separator", { name: "サイドパネルの幅" });
+    fireEvent.keyDown(splitter, { key: "ArrowLeft" });
+
+    expect(localStorage.getItem(SIDE_PANEL_WIDTH_STORAGE_KEY)).toBe("296");
+  });
+
+  it("restores a previously saved width on mount", () => {
+    // 300 is within [280, 338] (338 = DEFAULT_JSDOM_EFFECTIVE_MAX), so no
+    // clamping should kick in and mask whether the stored value was read.
+    localStorage.setItem(SIDE_PANEL_WIDTH_STORAGE_KEY, "300");
+
+    render(<AppLayout />);
+
+    expect(
+      screen.getByRole("separator", { name: "サイドパネルの幅" }),
+    ).toHaveAttribute("aria-valuenow", "300");
+  });
+
+  it("falls back to the default width (280) when no value is stored", () => {
+    render(<AppLayout />);
+
+    expect(
+      screen.getByRole("separator", { name: "サイドパネルの幅" }),
+    ).toHaveAttribute("aria-valuenow", "280");
+  });
+
+  it("falls back to the default width (280) when the stored value is not numeric", () => {
+    localStorage.setItem(SIDE_PANEL_WIDTH_STORAGE_KEY, "not-a-number");
+
+    render(<AppLayout />);
+
+    expect(
+      screen.getByRole("separator", { name: "サイドパネルの幅" }),
+    ).toHaveAttribute("aria-valuenow", "280");
+  });
+
+  it("clamps an out-of-range stored value instead of discarding it", () => {
+    localStorage.setItem(SIDE_PANEL_WIDTH_STORAGE_KEY, "9999");
+
+    render(<AppLayout />);
+
+    expect(
+      screen.getByRole("separator", { name: "サイドパネルの幅" }),
+    ).toHaveAttribute("aria-valuenow", String(DEFAULT_JSDOM_EFFECTIVE_MAX));
+  });
+
+  it("falls back to the default width (280) without crashing when reading localStorage throws", () => {
+    vi.spyOn(Storage.prototype, "getItem").mockImplementation(() => {
+      throw new Error("storage disabled");
+    });
+
+    render(<AppLayout />);
+
+    expect(
+      screen.getByRole("separator", { name: "サイドパネルの幅" }),
+    ).toHaveAttribute("aria-valuenow", "280");
+  });
+
+  it("still applies a requested width change even when writing to localStorage throws", () => {
+    vi.spyOn(Storage.prototype, "setItem").mockImplementation(() => {
+      throw new Error("quota exceeded");
+    });
+
+    render(<AppLayout />);
+    const splitter = screen.getByRole("separator", { name: "サイドパネルの幅" });
+    fireEvent.keyDown(splitter, { key: "ArrowLeft" });
+
+    expect(splitter).toHaveAttribute("aria-valuenow", "296");
+  });
+
+  it("re-clamps the displayed width (without persisting) when the window shrinks below the current width's effective max", () => {
+    // W=1200: effective max = 1200 - 200 - 6 - 480 = 514 -> capped at 420, so
+    // the stored 420 mounts unclamped.
+    setWindowInnerWidth(1200);
+    localStorage.setItem(SIDE_PANEL_WIDTH_STORAGE_KEY, "420");
+    render(<AppLayout />);
+    const splitter = screen.getByRole("separator", { name: "サイドパネルの幅" });
+    expect(splitter).toHaveAttribute("aria-valuenow", "420");
+
+    // W=1000: effective max = 1000 - 200 - 6 - 480 = 314.
+    setWindowInnerWidth(1000);
+    fireEvent(window, new Event("resize"));
+
+    expect(splitter).toHaveAttribute("aria-valuenow", "314");
+    expect(localStorage.getItem(SIDE_PANEL_WIDTH_STORAGE_KEY)).toBe("420");
+  });
+
+  it("recovers the saved preferred width once the window widens back out (resize does not overwrite the preference)", () => {
+    setWindowInnerWidth(1200);
+    localStorage.setItem(SIDE_PANEL_WIDTH_STORAGE_KEY, "420");
+    render(<AppLayout />);
+    const splitter = screen.getByRole("separator", { name: "サイドパネルの幅" });
+
+    setWindowInnerWidth(1000);
+    fireEvent(window, new Event("resize"));
+    expect(splitter).toHaveAttribute("aria-valuenow", "314");
+
+    setWindowInnerWidth(1200);
+    fireEvent(window, new Event("resize"));
+    expect(splitter).toHaveAttribute("aria-valuenow", "420");
+  });
+
+  it("does not corrupt the saved preference when a keypress has no visible effect because the window is temporarily too narrow (code review regression test)", () => {
+    // This is the scenario a code review caught before merge: pressing
+    // ArrowLeft while already pinned at the window's effective max is a
+    // no-op for the *display* (still clamped to the same ceiling), but an
+    // earlier implementation persisted that clamped value anyway --
+    // silently overwriting the saved 420 preference with the narrower 314,
+    // so widening back out afterwards no longer recovered 420.
+    setWindowInnerWidth(1200);
+    localStorage.setItem(SIDE_PANEL_WIDTH_STORAGE_KEY, "420");
+    render(<AppLayout />);
+    const splitter = screen.getByRole("separator", { name: "サイドパネルの幅" });
+
+    // W=1000: effective max = 1000 - 200 - 6 - 480 = 314. Displayed width is
+    // already pinned there by the resize; ArrowLeft (+16) has no visible
+    // effect since 314+16=330 still clamps to 314.
+    setWindowInnerWidth(1000);
+    fireEvent(window, new Event("resize"));
+    expect(splitter).toHaveAttribute("aria-valuenow", "314");
+
+    fireEvent.keyDown(splitter, { key: "ArrowLeft" });
+    expect(splitter).toHaveAttribute("aria-valuenow", "314");
+    // The no-op keypress must not have touched the saved preference.
+    expect(localStorage.getItem(SIDE_PANEL_WIDTH_STORAGE_KEY)).toBe("420");
+
+    setWindowInnerWidth(1200);
+    fireEvent(window, new Event("resize"));
+    expect(splitter).toHaveAttribute("aria-valuenow", "420");
+  });
+
+  it("persists the width the user asked for, not the window-clamped display value, when a widening keypress overshoots the window's ceiling", () => {
+    // Complements the two "no visible effect" regression tests above, which
+    // only pin the case where the display does NOT move. Here the display
+    // *does* move (300 -> 314), so the persist guard lets the write through
+    // -- and what gets written must be the requested 316, not the 314 the
+    // window could actually show. Persisting the clamped display value
+    // instead silently lowers the preference by the overshoot every time the
+    // user widens against a temporary ceiling, and that loss only becomes
+    // visible later, once the window is widened back out.
+    //
+    // Without this test, replacing clampToConfiguredBounds(requestedWidth)
+    // with the already-clamped nextWidth in use-side-panel-width.ts's
+    // setWidth passes the entire suite -- i.e. nothing else pins the reason
+    // clampToConfiguredBounds exists as a separate function.
+    setWindowInnerWidth(1000);
+    localStorage.setItem(SIDE_PANEL_WIDTH_STORAGE_KEY, "300");
+    render(<AppLayout />);
+    const splitter = screen.getByRole("separator", { name: "サイドパネルの幅" });
+
+    // W=1000: effective max = 1000 - 200 - 6 - 480 = 314, so the stored 300
+    // displays as-is and ArrowLeft (+16) requests 316 -- past the ceiling.
+    expect(splitter).toHaveAttribute("aria-valuenow", "300");
+
+    fireEvent.keyDown(splitter, { key: "ArrowLeft" });
+    expect(splitter).toHaveAttribute("aria-valuenow", "314");
+    expect(localStorage.getItem(SIDE_PANEL_WIDTH_STORAGE_KEY)).toBe("316");
+
+    setWindowInnerWidth(1200);
+    fireEvent(window, new Event("resize"));
+    expect(splitter).toHaveAttribute("aria-valuenow", "316");
+  });
+
+  it("does not corrupt the saved preference when End is pressed while already at the effective max (second review round regression test)", () => {
+    // Same class of bug as the ArrowLeft test above, caught in a second
+    // review round: End requests the *window-derived* effective max, which
+    // is itself a no-op when the display is already pinned there -- an
+    // implementation that persisted it anyway would silently overwrite a
+    // higher saved preference with the narrower ceiling.
+    setWindowInnerWidth(1200);
+    localStorage.setItem(SIDE_PANEL_WIDTH_STORAGE_KEY, "420");
+    render(<AppLayout />);
+    const splitter = screen.getByRole("separator", { name: "サイドパネルの幅" });
+
+    setWindowInnerWidth(1000);
+    fireEvent(window, new Event("resize"));
+    expect(splitter).toHaveAttribute("aria-valuenow", "314");
+
+    fireEvent.keyDown(splitter, { key: "End" });
+    expect(splitter).toHaveAttribute("aria-valuenow", "314");
+    expect(localStorage.getItem(SIDE_PANEL_WIDTH_STORAGE_KEY)).toBe("420");
+
+    setWindowInnerWidth(1200);
+    fireEvent(window, new Event("resize"));
+    expect(splitter).toHaveAttribute("aria-valuenow", "420");
+  });
+
+  it("narrows immediately on every ArrowRight press with no dead zone, even when the preference exceeds the window's effective max (second review round regression test)", () => {
+    // A naive fix for the two regression tests above (basing the keyboard
+    // delta on the *preference* instead of the displayed width) breaks this
+    // case: at W=1000 (effective max 314) with a 420 preference, several
+    // ArrowRight presses would have no visible effect until the in-memory
+    // preference itself dropped below 314 -- violating "-> narrows by
+    // 16px" and the keyboard-operability requirement.
+    setWindowInnerWidth(1200);
+    localStorage.setItem(SIDE_PANEL_WIDTH_STORAGE_KEY, "420");
+    render(<AppLayout />);
+    const splitter = screen.getByRole("separator", { name: "サイドパネルの幅" });
+
+    setWindowInnerWidth(1000);
+    fireEvent(window, new Event("resize"));
+    expect(splitter).toHaveAttribute("aria-valuenow", "314");
+
+    fireEvent.keyDown(splitter, { key: "ArrowRight" });
+    expect(splitter).toHaveAttribute("aria-valuenow", "298");
+  });
+
+  it("applies a pointer move's computed width while dragging (wiring, not real drag-follow -- jsdom has no PointerEvent/setPointerCapture)", () => {
+    // jsdom can't simulate a real drag (no PointerEvent/setPointerCapture,
+    // per the ticket's constraints), but the *wiring* from a pointermove
+    // event to widthFromPointerX -> setWidth is plain React event handling
+    // and is worth pinning down independently of that gap. The pointermove
+    // handler gates on the isDraggingSplitter state (set by pointerdown),
+    // not on hasPointerCapture, specifically so this is testable here.
+    render(<AppLayout />);
+    const splitter = screen.getByRole("separator", { name: "サイドパネルの幅" });
+
+    fireEvent.pointerDown(splitter, { pointerId: 1 });
+    // jsdom has no PointerEvent constructor at all (only pointerdown/up,
+    // which this suite doesn't depend on clientX for, happen to still reach
+    // the handler via fireEvent's fallback). A MouseEvent with type
+    // "pointermove" still triggers the onPointerMove listener (DOM dispatch
+    // matches by event *type* string, not constructor) and, unlike
+    // fireEvent.pointerMove here, actually carries clientX.
+    fireEvent(
+      splitter,
+      new MouseEvent("pointermove", { clientX: 724, bubbles: true }),
+    );
+    // windowWidth=1024 (jsdom default), clientX=724 -> requested 300px,
+    // within [280, 338] (338 = DEFAULT_JSDOM_EFFECTIVE_MAX) so untouched by
+    // clamping -- isolates the wiring from the clamp math already covered
+    // elsewhere.
+    expect(splitter).toHaveAttribute("aria-valuenow", "300");
+  });
+
+  it("ignores a pointer move that arrives without a preceding pointerdown on this splitter", () => {
+    render(<AppLayout />);
+    const splitter = screen.getByRole("separator", { name: "サイドパネルの幅" });
+
+    fireEvent(
+      splitter,
+      new MouseEvent("pointermove", { clientX: 724, bubbles: true }),
+    );
+
+    expect(splitter).toHaveAttribute("aria-valuenow", "280");
+  });
+
+  it("wires aria-controls to the side panel's id (WAI-ARIA window splitter pattern)", () => {
+    render(<AppLayout />);
+
+    const splitter = screen.getByRole("separator", { name: "サイドパネルの幅" });
+    const sidePanel = screen.getByRole("complementary", {
+      name: "サイドパネル",
+    });
+    expect(splitter).toHaveAttribute("aria-controls", sidePanel.id);
+    expect(sidePanel.id).toBeTruthy();
+  });
+
+  it("suppresses text selection on .app-body only while the splitter is being dragged", () => {
+    const { container } = render(<AppLayout />);
+    const splitter = screen.getByRole("separator", { name: "サイドパネルの幅" });
+    const appBody = container.querySelector(".app-body") as HTMLElement;
+    expect(appBody).not.toHaveClass("app-body--dragging");
+
+    fireEvent.pointerDown(splitter, { pointerId: 1 });
+    expect(appBody).toHaveClass("app-body--dragging");
+
+    fireEvent.pointerUp(splitter, { pointerId: 1 });
+    expect(appBody).not.toHaveClass("app-body--dragging");
   });
 });
