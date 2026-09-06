@@ -162,8 +162,8 @@ export async function extractEveningSummary(
           ? { toolChoice: { type: "tool" as const, name: "submit_evening_summary" } }
           : {}),
         // `thinking` は指定せずファサード既定（`{ type: "disabled" }`）に
-        // 依存する（Issue #117・appeals-route.ts と同じ理由）。構造化抽出な
-        // ので思考は不要で、`toolChoice` によるツール強制との併用も避ける。
+        // 依存する（Issue #117 と同じ理由）。構造化抽出なので思考は不要で、
+        // `toolChoice` によるツール強制との併用も避ける。
       },
       "submit_evening_summary",
       parseEveningSummaryToolInput,

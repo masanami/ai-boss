@@ -2,7 +2,6 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { z } from "zod";
 import type Anthropic from "@anthropic-ai/sdk";
 import { BOSS_TOOLS } from "../../boss/boss-tools.js";
-import { SUBMIT_VERDICT_TOOL } from "../../decisions/verdict-tool.js";
 import { SUBMIT_EVENING_SUMMARY_TOOL } from "../../reports/evening-summary-tool.js";
 
 const { queryMock, toolMock, createSdkMcpServerMock } = vi.hoisted(() => {
@@ -181,7 +180,6 @@ describe("buildClaudeCodeEnv", () => {
 describe("TOOL_ZOD_SHAPES alignment with the JSON Schema tool definitions", () => {
   const jsonSchemaTools: Anthropic.Tool[] = [
     ...BOSS_TOOLS,
-    SUBMIT_VERDICT_TOOL,
     SUBMIT_EVENING_SUMMARY_TOOL,
   ];
 
@@ -344,8 +342,8 @@ describe("streamClaudeCodeMessage", () => {
       // `BOSS_TOOLS` からツールが誤って抜け落ちた場合に生成側・期待値側が
       // 揃って縮小し、このテストが検知できなくなるため）。
       // `MCP_SERVER_NAME`/`mcpToolName` は非公開なのでプレフィックスを直書き
-      // する（他テスト "strips the MCP-qualified prefix ... (submit_verdict)"
-      // と同じ書き方）。
+      // する（他テスト "strips the MCP-qualified prefix from executed-tool
+      // tool_use blocks too (create_task)" と同じ書き方）。
       const expectedAllowed = [
         "mcp__ai-boss__create_task",
         "mcp__ai-boss__update_task",
@@ -599,63 +597,6 @@ describe("streamClaudeCodeMessage", () => {
     });
   });
 
-  it("surfaces the submit_verdict tool_use block without executing anything (no executeTool call) — AC-04", async () => {
-    const executeTool = vi.fn();
-
-    queryMock.mockImplementationOnce(() =>
-      toAsyncIterable([
-        assistantToolUseMessage("toolu_v1", "submit_verdict", {
-          verdict: "upheld",
-          response: "維持する",
-        }),
-        resultMessage(),
-      ]),
-    );
-
-    const result = await streamClaudeCodeMessage(
-      {
-        model: "claude-sonnet-5",
-        messages: [{ role: "user", content: "進言内容" }],
-        tools: [SUBMIT_VERDICT_TOOL],
-      },
-      { executeTool },
-    );
-
-    expect(executeTool).not.toHaveBeenCalled();
-    expect(result.content).toEqual([
-      { type: "tool_use", id: "toolu_v1", name: "submit_verdict", input: { verdict: "upheld", response: "維持する" } },
-    ]);
-  });
-
-  it("strips the MCP-qualified prefix (mcp__ai-boss__submit_verdict) from the tool_use name it surfaces, so requestVerdict's bare-name match still works (self-review regression guard for AC-04)", async () => {
-    // The model calls in-process MCP tools by their fully-qualified name
-    // (see `mcpToolName`/`permittedMcpToolNames`), so a real Agent SDK run would
-    // yield an assistant `tool_use` block named `mcp__ai-boss__submit_verdict`
-    // — not the bare `submit_verdict` the other tests above assert against
-    // for simplicity. Without stripping this prefix back off, `requestVerdict`
-    // (`claude-client.ts`) would never match `toolName === "submit_verdict"`
-    // and re-adjudication would always resolve to `{called: false}` (HTTP 500).
-    queryMock.mockImplementationOnce(() =>
-      toAsyncIterable([
-        assistantToolUseMessage("toolu_v1", "mcp__ai-boss__submit_verdict", {
-          verdict: "upheld",
-          response: "維持する",
-        }),
-        resultMessage(),
-      ]),
-    );
-
-    const result = await streamClaudeCodeMessage({
-      model: "claude-sonnet-5",
-      messages: [{ role: "user", content: "進言内容" }],
-      tools: [SUBMIT_VERDICT_TOOL],
-    });
-
-    expect(result.content).toEqual([
-      { type: "tool_use", id: "toolu_v1", name: "submit_verdict", input: { verdict: "upheld", response: "維持する" } },
-    ]);
-  });
-
   it("strips the MCP-qualified prefix from executed-tool tool_use blocks too (create_task)", async () => {
     const executeTool = vi.fn().mockResolvedValue({ content: "{}", isError: false });
 
@@ -674,24 +615,6 @@ describe("streamClaudeCodeMessage", () => {
     expect(result.content).toEqual([
       { type: "tool_use", id: "toolu_1", name: "create_task", input: { title: "資料作成" } },
     ]);
-  });
-
-  it("the submit_verdict MCP handler itself never calls executeTool and returns an ack without side effects", async () => {
-    const executeTool = vi.fn();
-    queryMock.mockImplementationOnce(() => toAsyncIterable([resultMessage()]));
-
-    await streamClaudeCodeMessage(
-      { model: "claude-sonnet-5", messages: [{ role: "user", content: "進言内容" }], tools: [SUBMIT_VERDICT_TOOL] },
-      { executeTool },
-    );
-
-    const handler = findHandler("submit_verdict");
-    const callToolResult = (await handler({ verdict: "upheld", response: "維持する" })) as {
-      content: Array<{ type: string; text: string }>;
-    };
-
-    expect(executeTool).not.toHaveBeenCalled();
-    expect(callToolResult.content[0]?.type).toBe("text");
   });
 
   it("surfaces the submit_evening_summary tool_use block without executing anything (no executeTool call) — Issue #108", async () => {
@@ -728,7 +651,45 @@ describe("streamClaudeCodeMessage", () => {
     ]);
   });
 
-  it("does not throw ClaudeCodeBackendError for submit_evening_summary (regression guard: it must be registered like submit_verdict, not treated as an unknown/executed tool)", async () => {
+  it("strips the MCP-qualified prefix (mcp__ai-boss__submit_evening_summary) from the tool_use name it surfaces, so requestVerdict's bare-name match still works (self-review regression guard, #397 — replaces the removed submit_verdict coverage for this non-executing-tool contract)", async () => {
+    // The model calls in-process MCP tools by their fully-qualified name
+    // (see `mcpToolName`/`permittedMcpToolNames`), so a real Agent SDK run
+    // would yield an assistant `tool_use` block named
+    // `mcp__ai-boss__submit_evening_summary` — not the bare
+    // `submit_evening_summary` the other tests above assert against for
+    // simplicity. Without stripping this prefix back off, `requestVerdict`
+    // (`claude-client.ts`) would never match
+    // `toolName === "submit_evening_summary"` and the daily-report
+    // evening-summary extraction step would always resolve to
+    // `{called: false}`.
+    queryMock.mockImplementationOnce(() =>
+      toAsyncIterable([
+        assistantToolUseMessage("toolu_es2", "mcp__ai-boss__submit_evening_summary", {
+          report_summary: "タスクAを完了した",
+          boss_comment: "よくやった",
+          carry_over: "なし",
+        }),
+        resultMessage(),
+      ]),
+    );
+
+    const result = await streamClaudeCodeMessage({
+      model: "claude-sonnet-5",
+      messages: [{ role: "user", content: "夕会の会話ログ" }],
+      tools: [SUBMIT_EVENING_SUMMARY_TOOL],
+    });
+
+    expect(result.content).toEqual([
+      {
+        type: "tool_use",
+        id: "toolu_es2",
+        name: "submit_evening_summary",
+        input: { report_summary: "タスクAを完了した", boss_comment: "よくやった", carry_over: "なし" },
+      },
+    ]);
+  });
+
+  it("does not throw ClaudeCodeBackendError for submit_evening_summary (regression guard: it must be registered with its own non-executing handler, not treated as an unknown/executed tool)", async () => {
     queryMock.mockImplementationOnce(() => toAsyncIterable([resultMessage()]));
 
     await expect(

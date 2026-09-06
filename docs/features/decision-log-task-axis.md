@@ -59,7 +59,7 @@
 - 使用技術: 既存スタックのまま（Hono + better-sqlite3 / Vite + React + TypeScript）
 - 変更対象:
   - 削除: `server/src/decisions/appeals-route.ts` / `appeals-repository.ts` / `appeals-validation.ts` / `appeal.ts` / `verdict-tool.ts` と各テスト
-  - `server/src/db/migrate.ts`（マイグレーション v7 の追加）・`server/src/db/migrate.test.ts`
+  - `server/src/db/migrate.ts`（マイグレーション v8 の追加）・`server/src/db/migrate.test.ts`
   - `server/src/decisions/decisions-routes.ts`・`decision.ts` と各テスト
   - `server/src/decisions/decisions-repository.ts`（`updateDecisionStatus` の削除・`listDecisions` への JOIN 追加・`insertDecision` の docstring から進言フローへの言及を除去）と `decisions-repository.test.ts`
   - `server/src/llm/backends/claude-code-backend.ts`（`submit_verdict` の Zod シェイプと専用ハンドラ）と `claude-code-backend.test.ts`
@@ -150,7 +150,7 @@
 
 ### 判断 3: `decisions.kind` 列を本 Issue のマイグレーションに含める（論点 3・#276 との境界）
 
-- **採用案**: **本 Issue のマイグレーション v7 で `DROP TABLE appeals` と同時に `decisions.kind` を追加する。** 表示は**同一タスクのセクション内で決定とメンタリングを時系列に混在させ、種別ラベルで区別する**。
+- **採用案**: **本 Issue のマイグレーション v8 で `DROP TABLE appeals` と同時に `decisions.kind` を追加する。** 表示は**同一タスクのセクション内で決定とメンタリングを時系列に混在させ、種別ラベルで区別する**。
 
   ```sql
   DROP TABLE appeals;
@@ -167,7 +167,7 @@
   - **`kind` を #276 のマイグレーションで足す** — 却下。上記のとおりマイグレーションが 2 回・表示ロジックの改修が 2 回になる。
   - **種別ごとにセクションを分ける（同一タスク下で決定とメンタリングを別リストにする）** — 却下。上記の因果が読めなくなる。
   - **専用テーブル `mentorings` を新設する** — 却下（オーナー決定済み・#276 の判断ポイント 5）。JOIN とビューが増える。
-- **影響範囲**: `server/src/db/migrate.ts`（v7）・`migrate.test.ts`・`server/src/decisions/decision.ts`・`web/src/decision.ts`・`DecisionLog.tsx`。`insertDecision` は `kind` を明示せず DEFAULT に委ねる（`status` を `'active'` 固定にしている既存の書き方と同じ形。#276 がメンタリング用の書き込み経路を足すときに `kind` を明示する）。
+- **影響範囲**: `server/src/db/migrate.ts`（v8）・`migrate.test.ts`・`server/src/decisions/decision.ts`・`web/src/decision.ts`・`DecisionLog.tsx`。`insertDecision` は `kind` を明示せず DEFAULT に委ねる（`status` を `'active'` 固定にしている既存の書き方と同じ形。#276 がメンタリング用の書き込み経路を足すときに `kind` を明示する）。
 
 ### 判断 4: 画面名は変えない（論点 4）
 
@@ -207,25 +207,27 @@
 | `server/src/llm/backends/claude-code-backend.ts` の `submitVerdictShape` / `TOOL_ZOD_SHAPES.submit_verdict` / `NON_EXECUTING_TOOL_NAMES` の `submit_verdict` / `buildSubmitVerdictTool` / `buildMcpServer` の分岐 | 削除。`submit_evening_summary` 側は残す |
 | `server/src/llm/backends/api-backend.test.ts` の `submit_verdict` を題材にしたテスト | 題材を `submit_evening_summary` へ差し替える（テストが検証しているのは「ツールを 1 本強制する経路」であって進言ではない） |
 | `server/src/llm/claude-client.ts` の `requestVerdict` | **残す**（日報生成が使用中）。進言に言及するコメントのみ整理する |
-| `appeals` テーブル | v7 で `DROP TABLE` |
+| `appeals` テーブル | v8 で `DROP TABLE` |
 | `web/src/decision.ts` の `Appeal` / `AppealVerdict` / `APPEAL_VERDICTS` / `AppealSubmitResult` / `DecisionWithAppeals` | 削除（`DecisionRecord` へ統合） |
 | `web/src/decisions-api.ts` の `submitAppeal`・`use-decisions.ts` の `appeal` | 削除 |
 | `web/src/DecisionLog.tsx` の進言 UI・`STATUS_LABEL` / `VERDICT_LABEL`・`DecisionLog.css` の該当スタイル | 削除 |
 
-### マイグレーション v7
+### マイグレーション v8
 
-- 既存 version（1〜6）の定義は書き換えない（[ADR 0005](../adr/0005-sqlite-schema-policy.md) 決定 4）。v7 を追加する。
-- v7 は**文字列エントリ**として書く（`migrateToV4` のような関数エントリにしない）。`DROP TABLE appeals` は子テーブルの削除であり（`appeals` を参照する表は無い）、`ALTER TABLE ... ADD COLUMN` も表の再構築ではないため、`PRAGMA foreign_keys` のトグルを必要としない。よって既存の「version 単位の単一トランザクション」でそのまま原子適用できる。
+> **版番号について**: 本仕様の初版は「v7」と書いていたが、執筆後に Issue #256（PR #396）が v7 を取得したため **v8** へ改める（`server/src/db/migrate.ts` の `MIGRATIONS` 最大キー = 7 を実コードで確認）。連番に欠番があると `missing migration for version N` で throw するため、版番号は技術的に強制される。
+
+- 既存 version（1〜7）の定義は書き換えない（[ADR 0005](../adr/0005-sqlite-schema-policy.md) 決定 4）。v8 を追加する。
+- v8 は**文字列エントリ**として書く（`migrateToV4` のような関数エントリにしない）。`DROP TABLE appeals` は子テーブルの削除であり（`appeals` を参照する表は無い）、`ALTER TABLE ... ADD COLUMN` も表の再構築ではないため、`PRAGMA foreign_keys` のトグルを必要としない。よって既存の「version 単位の単一トランザクション」でそのまま原子適用できる。
 - `migrate.test.ts` の扱いは「そのテストがどの時点の状態を検証しているか」で分ける。
-  - **全 migration 適用後の最終状態**を検証しているもの（`creates the appeals table` / `gives appeals a nullable response column (v2)` / `accepts appeals.verdict = %s` / `rejects an invalid appeals.verdict` / 冪等性テストのテーブル一覧）→ v7 後の状態に更新する（`appeals` が存在しないこと・テーブル一覧から除外）。
-  - **古い DB を模した固定スキーマ**（テスト冒頭で手書きされている旧スキーマの `CREATE TABLE ... appeals`）→ そのまま残す。v7 適用前の DB を再現するための入力であり、変えると「旧 DB からの引き上げ」を検証できなくなる。
-  - 追加するもの: `decisions.kind` の存在・既定値・CHECK 制約、v7 適用後に `appeals` が消えること、二重実行が例外にならないこと。
+  - **全 migration 適用後の最終状態**を検証しているもの（`creates the appeals table` / `gives appeals a nullable response column (v2)` / `accepts appeals.verdict = %s` / `rejects an invalid appeals.verdict` / 冪等性テストのテーブル一覧）→ v8 後の状態に更新する（`appeals` が存在しないこと・テーブル一覧から除外）。
+  - **古い DB を模した固定スキーマ**（テスト冒頭で手書きされている旧スキーマの `CREATE TABLE ... appeals`）→ そのまま残す。v8 適用前の DB を再現するための入力であり、変えると「旧 DB からの引き上げ」を検証できなくなる。
+  - 追加するもの: `decisions.kind` の存在・既定値・CHECK 制約、v8 適用後に `appeals` が消えること、二重実行が例外にならないこと。
 
 ### 実装計画（チケット分解の見通し・案）
 
 `/create-ticket` で最終決定する前提の案。順序に依存があるため直列に進める。
 
-1. **サーバー: 進言の削除とマイグレーション v7** — 進言関連ファイルの削除、`decisions-routes.ts` の縮小、`claude-code-backend.ts` の `submit_verdict` 除去、v7 追加、`migrate.test.ts` 更新。
+1. **サーバー: 進言の削除とマイグレーション v8** — 進言関連ファイルの削除、`decisions-routes.ts` の縮小、`claude-code-backend.ts` の `submit_verdict` 除去、v8 追加、`migrate.test.ts` 更新。
 2. **サーバー: `GET /api/decisions` の応答形** — `listDecisions` に `LEFT JOIN tasks` を足し `task_title` / `kind` を返す。`decisions-routes.test.ts` を新契約へ更新。
 3. **web: 型と API クライアントの縮小** — `decision.ts` / `decisions-api.ts` / `use-decisions.ts` から進言を除き、`DecisionRecord` へ統合。
 4. **web: 決定ログのタスク軸再構成** — グルーピング純粋関数の追加、`DecisionLog.tsx` の書き換え（セクション表示・種別ラベル・ステータスバッジ削除）、`DecisionLog.test.tsx` の更新。
@@ -245,11 +247,11 @@
 - [ ] `decisions.status` の CHECK 制約が `active` / `revised` / `withdrawn` の 3 値を受理する（変更されていない）
 - [ ] 決定ログ画面にステータスバッジ（「有効」等）が表示されない
 
-### マイグレーション v7
+### マイグレーション v8
 
-- [ ] 全マイグレーション適用後の `PRAGMA user_version` が 7 になる
+- [ ] 全マイグレーション適用後の `PRAGMA user_version` が 8 になる
 - [ ] `decisions` テーブルに `kind` 列が存在する
-- [ ] v7 適用前に存在した `decisions` の行の `kind` が `'decision'` になる
+- [ ] v8 適用前に存在した `decisions` の行の `kind` が `'decision'` になる
 - [ ] `kind` に `'decision'` / `'mentoring'` 以外の値を INSERT すると CHECK 制約で拒否される
 - [ ] `runMigrations` を 2 回続けて実行しても例外にならない（冪等）
 - [ ] 途中の version が失敗した場合に `user_version` が直前の version のまま残る（既存のロールバック検証が引き続き pass する）

@@ -45,3 +45,30 @@ describe("GET /api/decisions", () => {
     expect(body.map((d) => d.content)).toEqual(["2つ目の決定", "1つ目の決定"]);
   });
 });
+
+describe("POST /api/decisions/:id/appeals", () => {
+  let db: Database.Database;
+
+  beforeEach(() => {
+    db = openDatabase(":memory:");
+    runMigrations(db);
+  });
+
+  afterEach(() => {
+    db.close();
+  });
+
+  it("returns 404 — the appeals route was removed (#358/#397)", async () => {
+    const app = createApp(db);
+    const session = insertSession(db, { type: "adhoc" });
+    const decision = insertDecision(db, { session_id: session.id, content: "決定内容" });
+
+    const res = await app.request(`/api/decisions/${decision.id}/appeals`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ content: "異議あり" }),
+    });
+
+    expect(res.status).toBe(404);
+  });
+});

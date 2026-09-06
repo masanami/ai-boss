@@ -1,6 +1,6 @@
 import type Database from "better-sqlite3";
 import type { RecentDecision } from "../boss/persona-prompt.js";
-import type { Decision, DecisionStatus } from "./decision.js";
+import type { Decision } from "./decision.js";
 
 interface DecisionRow {
   content: string;
@@ -25,10 +25,10 @@ export function findDecisionById(
 
 /**
  * Inserts a new decision with a server-managed `created_at` and `status`
- * fixed to `'active'` (transitions to `'revised'`/`'withdrawn'` are the
- * appeals flow's responsibility — out of scope here, see Issue #46).
- * `task_id`/`rationale` default to `null` when omitted. Returns the
- * persisted row (all columns, as read back from the database).
+ * fixed to `'active'`. `task_id`/`rationale` default to `null` when omitted;
+ * `kind` is left to the column's `'decision'` default (see Issue #358/#397 —
+ * `'mentoring'` rows are written by #276, not here). Returns the persisted
+ * row (all columns, as read back from the database).
  */
 export function insertDecision(
   db: Database.Database,
@@ -54,26 +54,6 @@ export function insertDecision(
     throw new Error("failed to read back the inserted decision");
   }
   return decision;
-}
-
-/**
- * Updates a decision's `status` (used by the appeals flow to move an
- * appealed decision to `'revised'` — see Issue #48). Returns the updated
- * row, or `undefined` if no decision with the given id exists.
- */
-export function updateDecisionStatus(
-  db: Database.Database,
-  id: number,
-  status: DecisionStatus,
-): Decision | undefined {
-  const result = db
-    .prepare("UPDATE decisions SET status = ? WHERE id = ?")
-    .run(status, id);
-
-  if (result.changes === 0) {
-    return undefined;
-  }
-  return findDecisionById(db, id);
 }
 
 /**
