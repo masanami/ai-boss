@@ -139,17 +139,27 @@ function dispatchSseEvent(event: SseEvent, handlers: ChatStreamHandlers): void {
  * the server abandon its LLM call. The rejection that follows is a plain
  * `AbortError` from `fetch`; callers are expected to recognize it as "the
  * user stopped this" rather than surfacing it as a failure.
+ *
+ * `replaceFromMessageId` requests a rewrite (Issue #378, #255 決定6): the
+ * server truncates the session from that message onward before generating
+ * the new reply. Omitted, the POST body is `{ content }` unchanged — this
+ * keeps the existing contract for a plain send untouched.
  */
 export async function sendChatMessage(
   sessionId: number,
   content: string,
   handlers: ChatStreamHandlers,
   signal?: AbortSignal,
+  replaceFromMessageId?: number,
 ): Promise<void> {
   const response = await fetch(`${SESSIONS_URL}/${sessionId}/messages`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ content }),
+    body: JSON.stringify(
+      replaceFromMessageId === undefined
+        ? { content }
+        : { content, replaceFromMessageId },
+    ),
     signal,
   });
   if (!response.ok || !response.body) {
