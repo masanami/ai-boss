@@ -7,7 +7,10 @@ import { recordActivityEvent } from "../activity/activity-events-repository.js";
 import { listTasks } from "../tasks/tasks-repository.js";
 import { listRecentDecisions } from "../decisions/decisions-repository.js";
 import { resolveBossSettings } from "../boss/boss-settings.js";
-import { buildPersonaPrompt } from "../boss/persona-prompt.js";
+import {
+  buildPersonaPrompt,
+  type TodaysAdhocMessage,
+} from "../boss/persona-prompt.js";
 import { BOSS_TOOLS, executeBossTool } from "../boss/boss-tools.js";
 import type { LlmBackend } from "../config.js";
 import {
@@ -17,9 +20,14 @@ import {
   type BossToolExecutor,
 } from "../llm/claude-client.js";
 import { findSessionById, listRecentSessionSummaries } from "./sessions-repository.js";
-import { insertMessage, listMessagesBySessionId } from "./messages-repository.js";
+import {
+  insertMessage,
+  listMessagesBySessionId,
+  listTodaysAdhocMessages,
+} from "./messages-repository.js";
 import { validateChatMessageInput } from "./sessions-validation.js";
 import type { Message } from "./message.js";
+import type { SessionType } from "./session.js";
 
 /** Sanitized message surfaced to the client; never includes raw error details
  * (which may contain request internals) per the critical API-key/error
@@ -58,6 +66,37 @@ function toClaudeMessages(messages: Message[]): Anthropic.MessageParam[] {
     start += 1;
   }
   return normalized.slice(start);
+}
+
+/**
+ * 会中のボスへ渡す「当日の随時チャット」の参考情報（Issue #367 / 親 #270）。
+ * 表示は #168 で当日1本のタイムラインへ統一されたのに、LLM へ渡す会話履歴は
+ * セッション単位のままだったため、ユーザーには1本の会話に見えるのにボスは
+ * 会中に随時チャットの発言を参照できない、という齟齬が残っていた。
+ *
+ * 会話履歴（`messages`）へは混ぜず、system 側の参考情報ブロックとして渡す
+ * （#270 論点① 案 C）。`TodaysAdhocMessage` の JSDoc が要求するとおり
+ * `created_at` 昇順＝古い順のまま渡す（`listTodaysAdhocMessages` の並びが
+ * そのまま契約に一致する）。
+ *
+ * **随時セッション自身のチャットでは空配列を返す**: そのセッションのメッセージは
+ * 既に `listMessagesBySessionId` 経由で会話履歴として渡っており、参考情報にも
+ * 載せると同じ発言が二重にトークンを消費し、2回発言されたかのような文脈になる
+ * （`TodaysAdhocMessage` の JSDoc が呼び出し側の責務としている二重計上の回避）。
+ */
+function collectTodaysAdhocContext(
+  db: Database.Database,
+  sessionType: SessionType,
+  now: Date,
+): TodaysAdhocMessage[] {
+  if (sessionType === "adhoc") {
+    return [];
+  }
+  return listTodaysAdhocMessages(db, now).map((message) => ({
+    role: message.role,
+    content: message.content,
+    sentAt: message.created_at,
+  }));
 }
 
 /**
@@ -148,11 +187,17 @@ export function registerChatMessageRoute(
     // morning/evening reports without the user re-explaining them.
     const recentSessionSummaries = listRecentSessionSummaries(db, 5);
     const { model, persona } = resolveBossSettings(db);
+    // 時刻の読みは1回にまとめる（Issue #367）。`listTodaysAdhocMessages` は
+    // ローカル暦日の半開区間の両端をこの値から導出するため、プロンプト側の
+    // `now` と読みが割れると真夜中をまたいで窓が壊れる（`local-day.ts` の
+    // `startOfNextLocalDayIso` の JSDoc が同じ理由で引数を必須にしている）。
+    const now = new Date();
     const system = buildPersonaPrompt(persona, {
       tasks,
       recentDecisions,
       recentSessionSummaries,
-      now: new Date(),
+      todaysAdhocMessages: collectTodaysAdhocContext(db, session.type, now),
+      now,
       sessionType: session.type,
       // 「今何時か」「締切まであと何時間か」の主経路（Issue #288）
       includeCurrentDateTime: true,
