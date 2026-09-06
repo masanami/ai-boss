@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import ChatView from "./ChatView";
 import { useChat, type UseChatResult } from "./use-chat";
-import type { ChatMessage, ChatSession } from "./chat";
+import type { ChatEntry, ChatMessage, ChatSession } from "./chat";
 
 // ChatView no longer calls useChat itself (Issue #93: the hook is lifted up
 // to AppLayout so the conversation survives a tab switch). This harness
@@ -1004,6 +1004,454 @@ describe("ChatView stop UI (Issue #254)", () => {
     ).toBeInTheDocument();
     // 「取り消されていません」といった追加の通知は出さない（#254 論点6）。
     expect(screen.getAllByRole("listitem")).toHaveLength(2);
+  });
+});
+
+// Issue #379 (#255 決定6): 発言のインライン編集 UI と削除範囲の確認 UI。
+// `makeChatState` で chatState を直接与える形で書く（この describe が検証
+// するのは「画面が chatState / entries をどう読み、どう rewrite を呼ぶか」
+// であり、`rewrite` 自身の中身は use-chat.test.ts が持つ）。
+describe("ChatView rewrite UI (Issue #379)", () => {
+  const activeSessionId = 1;
+
+  function baseChatState(overrides: Partial<UseChatResult> = {}): UseChatResult {
+    return makeChatState({ activeSessionId, ...overrides });
+  }
+
+  it("shows an edit affordance on the active session's own persisted message (AC-39)", () => {
+    render(
+      <ChatView
+        chatState={baseChatState({
+          entries: [
+            {
+              kind: "message",
+              key: "message-10",
+              role: "user",
+              content: "相談です",
+              messageId: 10,
+              sessionId: activeSessionId,
+            },
+          ],
+        })}
+      />,
+    );
+
+    expect(
+      screen.getByRole("button", { name: "発言を編集" }),
+    ).toBeInTheDocument();
+  });
+
+  it("does not show an edit affordance on the boss's message (AC-40)", () => {
+    render(
+      <ChatView
+        chatState={baseChatState({
+          entries: [
+            {
+              kind: "message",
+              key: "message-11",
+              role: "boss",
+              content: "了解した。",
+              messageId: 11,
+              sessionId: activeSessionId,
+            },
+          ],
+        })}
+      />,
+    );
+
+    expect(
+      screen.queryByRole("button", { name: "発言を編集" }),
+    ).not.toBeInTheDocument();
+  });
+
+  it("does not show an edit affordance on a message from a finished session (AC-41)", () => {
+    render(
+      <ChatView
+        chatState={baseChatState({
+          entries: [
+            {
+              kind: "message",
+              key: "message-12",
+              role: "user",
+              content: "終わった朝会の発言",
+              messageId: 12,
+              sessionId: 99,
+            },
+          ],
+        })}
+      />,
+    );
+
+    expect(
+      screen.queryByRole("button", { name: "発言を編集" }),
+    ).not.toBeInTheDocument();
+  });
+
+  it("does not show an edit affordance on an optimistically appended message without a messageId (AC-42)", () => {
+    render(
+      <ChatView
+        chatState={baseChatState({
+          entries: [
+            {
+              kind: "message",
+              key: "message-local-1",
+              role: "user",
+              content: "送信直後",
+            },
+          ],
+        })}
+      />,
+    );
+
+    expect(
+      screen.queryByRole("button", { name: "発言を編集" }),
+    ).not.toBeInTheDocument();
+  });
+
+  it("does not show an edit affordance while a reply is being generated (AC-43)", () => {
+    render(
+      <ChatView
+        chatState={baseChatState({
+          sending: true,
+          entries: [
+            {
+              kind: "message",
+              key: "message-10",
+              role: "user",
+              content: "相談です",
+              messageId: 10,
+              sessionId: activeSessionId,
+            },
+          ],
+        })}
+      />,
+    );
+
+    expect(
+      screen.queryByRole("button", { name: "発言を編集" }),
+    ).not.toBeInTheDocument();
+  });
+
+  // AC-39〜43 の4条件に加え、画面の仕様が「既存の会の開始／終了ボタンと同じ
+  // 抑止条件に揃える」としている `switching` も同じ扱いになることを固定する
+  // （AC 番号は割り当てられていないが、完了条件の一部）。
+  it("does not show an edit affordance while a session switch is in flight", () => {
+    render(
+      <ChatView
+        chatState={baseChatState({
+          switching: true,
+          entries: [
+            {
+              kind: "message",
+              key: "message-10",
+              role: "user",
+              content: "相談です",
+              messageId: 10,
+              sessionId: activeSessionId,
+            },
+          ],
+        })}
+      />,
+    );
+
+    expect(
+      screen.queryByRole("button", { name: "発言を編集" }),
+    ).not.toBeInTheDocument();
+  });
+
+  /**
+   * A timeline with: an interrupted boss reply that precedes the editable
+   * target (never part of any rewrite range, and used to prove the highlight
+   * doesn't leak onto unrelated entries), the editable user message itself,
+   * a tool notice, and a boss reply after it — all in `activeSessionId`.
+   */
+  function editableTimeline(): ChatEntry[] {
+    return [
+      {
+        kind: "message",
+        key: "message-9",
+        role: "boss",
+        content: "先に途切れた応答",
+        messageId: 9,
+        sessionId: activeSessionId,
+        interrupted: true,
+      },
+      {
+        kind: "message",
+        key: "message-10",
+        role: "user",
+        content: "相談です",
+        messageId: 10,
+        sessionId: activeSessionId,
+      },
+      {
+        kind: "tool",
+        key: "tool-1",
+        tool: {
+          name: "create_task",
+          input: {},
+          result: "{}",
+          isError: false,
+        },
+      },
+      {
+        kind: "message",
+        key: "message-11",
+        role: "boss",
+        content: "了解した。",
+        messageId: 11,
+        sessionId: activeSessionId,
+      },
+    ];
+  }
+
+  /**
+   * Renders `editableTimeline()` and starts editing its target user message
+   * (message-10). Used by every test below that needs the edit form already
+   * open.
+   */
+  function renderWithEditableMessage() {
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+    const rewrite = vi.fn();
+    const utils = render(
+      <ChatView
+        chatState={baseChatState({ rewrite, entries: editableTimeline() })}
+      />,
+    );
+    fireEvent.click(screen.getByRole("button", { name: "発言を編集" }));
+    return { ...utils, fetchMock, rewrite };
+  }
+
+  it("does not call fetch or rewrite merely by starting an edit (AC-44)", () => {
+    const { fetchMock, rewrite } = renderWithEditableMessage();
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(rewrite).not.toHaveBeenCalled();
+  });
+
+  it("shows the deletion count with the target message included in the total (AC-45)", () => {
+    renderWithEditableMessage();
+
+    // target (user) + boss reply after it = 2 messages; the tool notice is
+    // not a message and so is not counted (決定 6 の内訳は発言のみ). The
+    // interrupted boss reply *before* the target is in a different part of
+    // the timeline and must not be counted either.
+    expect(
+      screen.getByText(
+        "この操作でこの発言を含む2件（あなたの発言1件・ボスの応答1件）が削除されます",
+      ),
+    ).toBeInTheDocument();
+  });
+
+  it("warns that already-executed operations cannot be undone, with the exact default wording (AC-46)", () => {
+    renderWithEditableMessage();
+
+    expect(
+      screen.getByText("すでに実行された操作は取り消されません"),
+    ).toBeInTheDocument();
+  });
+
+  it("highlights only the entries that will actually be deleted, leaving an unrelated interrupted entry marked solely with its own class (AC-47, AC-48)", () => {
+    const { container } = renderWithEditableMessage();
+
+    // The edited message itself becomes the edit form (no longer a bubble to
+    // highlight) — the tool notice and the boss reply after it are what gets
+    // highlighted. `.chat-rewrite-target` is a class distinct from the three
+    // existing vocabularies (AC-48): if it ever collided with one of them,
+    // the interrupted entry below (which never enters a rewrite range) would
+    // wrongly pick up the highlight too, which the last assertion catches.
+    const highlighted = container.querySelectorAll(".chat-rewrite-target");
+    expect(highlighted).toHaveLength(2);
+    expect(highlighted[0]).toHaveClass("chat-tool-notice");
+    expect(highlighted[1]).toHaveTextContent("了解した。");
+
+    const interrupted = container.querySelector(".chat-message-interrupted");
+    expect(interrupted).not.toBeNull();
+    expect(interrupted!.classList.contains("chat-rewrite-target")).toBe(false);
+  });
+
+  it("calls rewrite with the edited content when the confirm action is pressed (AC-49)", () => {
+    const { rewrite } = renderWithEditableMessage();
+
+    fireEvent.change(screen.getByLabelText("書き直す内容"), {
+      target: { value: "書き直した内容" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "送り直す" }));
+
+    expect(rewrite).toHaveBeenCalledWith(10, "書き直した内容");
+  });
+
+  it("closes the form and re-enables the normal controls once confirm is pressed, without adding or removing listitems (AC-49)", () => {
+    const { container } = renderWithEditableMessage();
+    // Baseline: 4 entries in `editableTimeline()` are 4 listitems while the
+    // form is open (the form replaces the target's own listitem rather than
+    // adding one — the existing `getAllByRole("listitem")` contract).
+    expect(screen.getAllByRole("listitem")).toHaveLength(4);
+
+    fireEvent.change(screen.getByLabelText("書き直す内容"), {
+      target: { value: "書き直した内容" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "送り直す" }));
+
+    // `confirmEdit` clears the local editing state synchronously (before
+    // `rewrite`'s promise settles) — with `chatState.sending` staying `false`
+    // here (a mocked `rewrite` never flips it), the screen must already show
+    // the normal, non-editing view.
+    expect(screen.queryByLabelText("書き直す内容")).not.toBeInTheDocument();
+    expect(screen.getByLabelText("メッセージ")).toBeEnabled();
+    expect(
+      screen.getByRole("button", { name: "発言を編集" }),
+    ).toBeInTheDocument();
+    expect(screen.getAllByRole("listitem")).toHaveLength(4);
+    expect(container.querySelectorAll(".chat-rewrite-target")).toHaveLength(0);
+  });
+
+  it("returns to the normal view without calling fetch or changing the timeline when cancelled (AC-50)", () => {
+    const { fetchMock, rewrite } = renderWithEditableMessage();
+
+    fireEvent.click(screen.getByRole("button", { name: "キャンセル" }));
+
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(rewrite).not.toHaveBeenCalled();
+    expect(screen.getByText("相談です")).toBeInTheDocument();
+    expect(screen.getByText("了解した。")).toBeInTheDocument();
+    expect(screen.queryByLabelText("書き直す内容")).not.toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: "発言を編集" }),
+    ).toBeInTheDocument();
+  });
+
+  it("disables the normal message input while editing (AC-51)", () => {
+    renderWithEditableMessage();
+
+    expect(screen.getByLabelText("メッセージ")).toBeDisabled();
+  });
+
+  it("disables the confirm action while the edit form is whitespace-only (AC-52)", () => {
+    renderWithEditableMessage();
+
+    fireEvent.change(screen.getByLabelText("書き直す内容"), {
+      target: { value: "   \n  " },
+    });
+
+    expect(screen.getByRole("button", { name: "送り直す" })).toBeDisabled();
+  });
+
+  it("focuses the edit textarea as soon as editing starts, so it is reachable without an extra Tab", () => {
+    renderWithEditableMessage();
+
+    expect(screen.getByLabelText("書き直す内容")).toHaveFocus();
+  });
+
+  // self-review (Issue #379): starting/ending a meeting changes
+  // `activeSessionId`, which the open edit form's preview
+  // (`selectRewriteRange`) is scoped to — switching mid-edit used to leave
+  // the edit state stuck with no way back (the bottom input disabled, no
+  // affordance to cancel). Disabling the session-bar buttons while editing
+  // closes that path entirely.
+  it("disables the morning/evening start buttons while an edit is open", () => {
+    renderWithEditableMessage();
+
+    expect(
+      screen.getByRole("button", { name: "朝会を開始" }),
+    ).toBeDisabled();
+    expect(
+      screen.getByRole("button", { name: "夕会を開始" }),
+    ).toBeDisabled();
+  });
+
+  it("disables the meeting-end button while an edit is open", () => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+    render(
+      <ChatView
+        chatState={baseChatState({
+          sessionType: "morning",
+          entries: editableTimeline(),
+        })}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "発言を編集" }));
+
+    expect(
+      screen.getByRole("button", { name: "朝会を終了" }),
+    ).toBeDisabled();
+  });
+
+  // self-review (Issue #379): `confirmEdit` clears the form before `rewrite`
+  // settles (mirroring `send`'s "clear the input immediately" behavior) —
+  // but unlike `send`, a rewrite has no optimistic entry keeping the typed
+  // text on screen. These two tests drive `chatState.sending`/`error`
+  // through the same true→false transition `rewrite` itself goes through,
+  // to fix the resulting gap: a failed attempt must hand the user's retyped
+  // content back instead of losing it silently.
+  it("reopens the edit form with the typed content when the confirmed rewrite fails", () => {
+    const rewrite = vi.fn();
+    const entries = editableTimeline();
+    const { rerender } = render(
+      <ChatView chatState={baseChatState({ rewrite, entries })} />,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "発言を編集" }));
+    fireEvent.change(screen.getByLabelText("書き直す内容"), {
+      target: { value: "書き直した内容" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "送り直す" }));
+    expect(screen.queryByLabelText("書き直す内容")).not.toBeInTheDocument();
+
+    // `rewrite` starts generating...
+    rerender(
+      <ChatView
+        chatState={baseChatState({ rewrite, entries, sending: true })}
+      />,
+    );
+    // ...and then fails; the server never committed, so the target message
+    // is still in `entries` unchanged.
+    rerender(
+      <ChatView
+        chatState={baseChatState({
+          rewrite,
+          entries,
+          sending: false,
+          error: "書き直しに失敗しました",
+        })}
+      />,
+    );
+
+    expect(screen.getByLabelText("書き直す内容")).toHaveValue("書き直した内容");
+  });
+
+  it("does not reopen the edit form when the confirmed rewrite is merely stopped (no error surfaced)", () => {
+    const rewrite = vi.fn();
+    const entries = editableTimeline();
+    const { rerender } = render(
+      <ChatView chatState={baseChatState({ rewrite, entries })} />,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "発言を編集" }));
+    fireEvent.change(screen.getByLabelText("書き直す内容"), {
+      target: { value: "書き直した内容" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "送り直す" }));
+
+    rerender(
+      <ChatView
+        chatState={baseChatState({ rewrite, entries, sending: true })}
+      />,
+    );
+    // A stop does not set `error` (AC-23-like treatment) — `rewrite`'s own
+    // unconditional refresh is what shows the outcome instead.
+    rerender(
+      <ChatView
+        chatState={baseChatState({ rewrite, entries, sending: false, error: null })}
+      />,
+    );
+
+    expect(screen.queryByLabelText("書き直す内容")).not.toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: "発言を編集" }),
+    ).toBeInTheDocument();
   });
 });
 
