@@ -23,6 +23,16 @@ export interface UseChatResult {
   streamingText: string;
   error: string | null;
   /**
+   * The id of the session `send`/`rewrite` post to, or `null` before any
+   * session exists yet (Issue #378, AC-31). Mirrors the internal
+   * `sessionIdRef` as public state — kept in sync everywhere that ref is
+   * written (mount restore, lazy creation on first send, `startSession`,
+   * `endSession`) — so callers (the rewrite confirmation UI, via
+   * `selectRewriteRange`) can scope a rewrite to the session actually being
+   * sent to, matching `send`'s own destination.
+   */
+  activeSessionId: number | null;
+  /**
    * The in-progress message text. Lifted up from `ChatView` (Issue #153,
    * same pattern as the rest of this hook's state, Issue #93) so it survives
    * `ChatView` unmounting on a tab switch. Not persisted beyond the page
@@ -35,6 +45,27 @@ export interface UseChatResult {
   draft: string;
   setDraft: (value: string) => void;
   send: (content: string) => Promise<void>;
+  /**
+   * Rewrites a past message (Issue #378, #255 決定6): the server truncates
+   * `activeSessionId` from `messageId` onward, then generates a fresh reply
+   * to `content` as the new message at that point. No-op while `sending` or
+   * `switching` is true (AC-37, same guard `send` uses — the two send
+   * paths must not overlap) or while `activeSessionId` is `null` (nothing to
+   * rewrite into).
+   *
+   * Unlike `send`'s optimistic-append-then-reconcile shape, `rewrite` does
+   * not splice `entries` locally — it re-fetches every session in today's
+   * view and rebuilds the whole displayed timeline from the server
+   * (`startSession`/`endSession`'s own `loadTimeline` pattern) once the
+   * request settles, on *every* exit path (success, a mid-stream `error`
+   * event, a stop, or any other failure), so every resulting entry carries
+   * real `messageId`/`sessionId` values the same way a reload would
+   * (AC-33/AC-34/AC-35/AC-38c/AC-54). See the comment above
+   * `refreshTimeline` in the implementation for why this also covers AC-36:
+   * refreshing even when nothing changed server-side just redraws the same
+   * state, so a genuinely-untouched timeline still reads as unchanged.
+   */
+  rewrite: (messageId: number, content: string) => Promise<void>;
   /**
    * Cuts the in-flight boss reply short (Issue #254). No-op when nothing is
    * being generated, so callers (a stop button, an ESC handler) can fire it
@@ -52,13 +83,23 @@ export interface UseChatResult {
 
 /** Appends a just-persisted message to the timeline without a full rebuild.
  * Uses the same `message-{id}` key `buildTimeline` produces, so the entry is
- * stable across the next rebuild. */
+ * stable across the next rebuild.
+ *
+ * Sets `messageId`/`sessionId` from the persisted message (Issue #378,
+ * AC-38c): this is the entry `onDone` appends outside `buildTimeline`, and
+ * without these identifiers a rewrite issued later in the same session
+ * (without a reload) would under-count what `selectRewriteRange` says it
+ * will delete — the confirmation UI's count and highlighting are the only
+ * safeguard before an irreversible truncation (決定 6), so a half-built
+ * entry here silently breaks it. */
 function messageEntry(message: ChatMessage): ChatEntry {
   return {
     kind: "message",
     key: `message-${message.id}`,
     role: message.role,
     content: message.content,
+    messageId: message.id,
+    sessionId: message.session_id,
   };
 }
 
@@ -168,6 +209,9 @@ export function useChat(): UseChatResult {
   const [streamingText, setStreamingText] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [draft, setDraft] = useState("");
+  const [activeSessionId, setActiveSessionIdState] = useState<number | null>(
+    null,
+  );
   const sessionIdRef = useRef<number | null>(null);
   const sessionTypeRef = useRef<SessionType>("adhoc");
   const entriesRef = useRef<ChatEntry[]>([]);
@@ -185,6 +229,15 @@ export function useChat(): UseChatResult {
   // being generated (Issue #254). `stop` aborts through this; `send` clears
   // it on the way out so a later `stop` can't abort a finished request.
   const abortRef = useRef<AbortController | null>(null);
+
+  // Writes both the ref (read synchronously by `send`/`rewrite`/`endSession`
+  // in the same tick they run) and the public `activeSessionId` state
+  // (AC-31), so the two never drift apart. Every site that used to write
+  // `sessionIdRef.current` directly goes through this instead.
+  const setActiveSession = useCallback((id: number | null) => {
+    sessionIdRef.current = id;
+    setActiveSessionIdState(id);
+  }, []);
 
   useEffect(() => {
     entriesRef.current = entries;
@@ -225,7 +278,7 @@ export function useChat(): UseChatResult {
         if (cancelled) {
           return;
         }
-        sessionIdRef.current = active?.id ?? null;
+        setActiveSession(active?.id ?? null);
         if (active !== null && active.type !== "adhoc") {
           setSessionType(active.type);
         }
@@ -241,7 +294,7 @@ export function useChat(): UseChatResult {
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [setActiveSession]);
 
   const nextLocalKey = useCallback((prefix: string) => {
     entryCounterRef.current += 1;
@@ -282,7 +335,7 @@ export function useChat(): UseChatResult {
       try {
         if (sessionIdRef.current === null) {
           const session = await createSession("adhoc");
-          sessionIdRef.current = session.id;
+          setActiveSession(session.id);
         }
         const sessionId = sessionIdRef.current;
         if (sessionId === null) {
@@ -381,6 +434,142 @@ export function useChat(): UseChatResult {
         });
       }
     },
+    [ifMounted, nextLocalKey, setActiveSession],
+  );
+
+  const rewrite = useCallback(
+    async (messageId: number, content: string) => {
+      // Same mutual-exclusion guard as `send` (AC-37): the two send paths
+      // must not be open at the same time, or a rebuild from one could land
+      // on top of the other's in-flight state.
+      if (sendingRef.current || switchingRef.current) {
+        return;
+      }
+      const sessionId = sessionIdRef.current;
+      // Nothing to rewrite into (mirrors `activeSessionId` being null) — a
+      // silent no-op, like `stop` is when nothing is generating.
+      if (sessionId === null) {
+        return;
+      }
+
+      sendingRef.current = true;
+      setSending(true);
+      setError(null);
+
+      const controller = new AbortController();
+      // Armed synchronously, right before the request goes out — unlike
+      // `send`, there is no session-creation await beforehand to leave a gap
+      // where a stop could land before anything is dispatched.
+      abortRef.current = controller;
+
+      // Rebuilds the *whole* displayed timeline from the server (every
+      // session in today's view, same as `startSession`/`endSession`'s own
+      // `loadTimeline` call — not just `activeSessionId`'s messages) instead
+      // of splicing `entries` locally (unlike `send`'s
+      // optimistic-append-then-reconcile shape). `chat-messages-route.ts`
+      // runs the truncation-plus-insert transaction *before* it starts
+      // streaming a reply, so by the time `sendChatMessage`'s promise
+      // settles at all — success, a mid-stream `error` event, a stop, or a
+      // transport failure once streaming has already begun — the deletion
+      // has already either happened or never will, and a local guess based
+      // on which callback fired, or on `controller.signal.aborted`, cannot
+      // say which: a rejection can land either before or after the
+      // server-side commit, and the two look identical from here (`stop`
+      // pressed after the commit vs. a network drop after the commit vs. a
+      // guard rejecting *before* any commit all surface as the same "the
+      // promise rejected" shape). Calling this unconditionally on every exit
+      // path below, rather than only on success, is what actually closes
+      // that gap — a rewrite whose commit is uncertain to the client must
+      // never leave the screen showing pre-commit state. A no-op refresh
+      // (nothing actually changed server-side) is safe too: it just redraws
+      // the same state that was already on screen, satisfying AC-36 by
+      // outcome rather than by skipping the fetch. This also gives every
+      // entry real `messageId`/`sessionId` values for free, via
+      // `buildTimeline` (AC-38/AC-38c) — including the rewritten user
+      // message itself, which a local splice could never identify (the
+      // server never tells the client that message's persisted id; only the
+      // boss reply comes back, in the `done` event).
+      //
+      // Wrapped in its own try/catch so a failure here (a second network
+      // failure landing in this narrow window) cannot throw out of
+      // `rewrite` uncaught, nor mask whatever error message the caller below
+      // is about to show — the alternative (surfacing a distinct "refresh
+      // failed" message) would ask the user to reason about a rare
+      // double-failure; leaving `entries` exactly as they were and letting a
+      // manual reload be the recovery path is the simpler, honest fallback.
+      const refreshTimeline = async () => {
+        try {
+          const now = new Date();
+          const sessions = await fetchSessions();
+          const timeline = await loadTimeline(sessions, now, [sessionId]);
+          ifMounted(() => setEntries(timeline));
+        } catch {
+          // Best-effort only — see the comment above.
+        }
+      };
+
+      try {
+        await sendChatMessage(
+          sessionId,
+          content,
+          {
+            onText: (delta) => {
+              ifMounted(() => setStreamingText((prev) => prev + delta));
+            },
+            onTool: (tool) => {
+              // Live feedback only, during generation — the whole timeline
+              // is rebuilt from the server once the stream settles (below),
+              // so this entry never has to be the final state and does not
+              // need a `range`-derived removal the way a local splice would.
+              ifMounted(() =>
+                setEntries((prev) => [
+                  ...prev,
+                  { kind: "tool", key: nextLocalKey("tool"), tool },
+                ]),
+              );
+            },
+            onDone: () => {
+              // Nothing to do with the boss message here: `refreshTimeline`
+              // below reconstructs the same entry (and everything else)
+              // straight from the server.
+            },
+            onError: (message) => {
+              // `error` is an SSE event dispatched mid-stream, not a
+              // rejection — `sendChatMessage`'s promise still resolves
+              // normally afterwards, so `refreshTimeline` below still runs
+              // and shows whatever the server actually committed (which may
+              // include a partial, `interrupted` boss reply) alongside this
+              // message.
+              ifMounted(() => setError(message));
+            },
+          },
+          controller.signal,
+          messageId,
+        );
+        await refreshTimeline();
+      } catch (err) {
+        // Always refresh, regardless of `controller.signal.aborted` — see
+        // the comment above `refreshTimeline` for why that flag cannot
+        // distinguish "nothing changed" from "the commit already happened".
+        await refreshTimeline();
+        if (!controller.signal.aborted) {
+          // A stop is not an error (same idea as `send`'s AC-23) — no error
+          // banner for it, even though the refresh above still ran.
+          ifMounted(() =>
+            setError(
+              err instanceof Error ? err.message : "書き直しに失敗しました",
+            ),
+          );
+        }
+      } finally {
+        sendingRef.current = false;
+        abortRef.current = null;
+        ifMounted(() => {
+          setStreamingText("");
+          setSending(false);
+        });
+      }
+    },
     [ifMounted, nextLocalKey],
   );
 
@@ -419,7 +608,7 @@ export function useChat(): UseChatResult {
           [active.id],
         );
 
-        sessionIdRef.current = active.id;
+        setActiveSession(active.id);
         ifMounted(() => {
           setSessionType(type);
           setEntries(timeline);
@@ -435,7 +624,7 @@ export function useChat(): UseChatResult {
         ifMounted(() => setSwitching(false));
       }
     },
-    [ifMounted],
+    [ifMounted, setActiveSession],
   );
 
   const endSession = useCallback(async () => {
@@ -468,7 +657,7 @@ export function useChat(): UseChatResult {
       // its start day, which is now "yesterday").
       const timeline = await loadTimeline(sessions, now, [id, adhoc?.id ?? null]);
 
-      sessionIdRef.current = adhoc?.id ?? null;
+      setActiveSession(adhoc?.id ?? null);
       ifMounted(() => {
         setSessionType("adhoc");
         setEntries(timeline);
@@ -483,7 +672,7 @@ export function useChat(): UseChatResult {
       switchingRef.current = false;
       ifMounted(() => setSwitching(false));
     }
-  }, [ifMounted]);
+  }, [ifMounted, setActiveSession]);
 
   return {
     entries,
@@ -493,9 +682,11 @@ export function useChat(): UseChatResult {
     switching,
     streamingText,
     error,
+    activeSessionId,
     draft,
     setDraft,
     send,
+    rewrite,
     stop,
     startSession,
     endSession,

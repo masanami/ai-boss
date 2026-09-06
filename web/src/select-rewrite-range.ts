@@ -6,7 +6,12 @@ import type { ChatEntry } from "./chat";
  * it. This count is the **sole safeguard against an irreversible truncation**
  * (決定 6) — under- or over-reporting it defeats that safeguard, which is why
  * this function scopes everything to `activeSessionId` (導出決定 6-a) rather
- * than "everything below the target on screen".
+ * than "everything below the target on screen". One narrow, deliberate
+ * exception to "never under-report": `send`'s own optimistic user-message
+ * entry has no `messageId`/`sessionId` yet (AC-38b — the server never tells
+ * the client that message's persisted id), so this function cannot count it
+ * even though the server would delete it. See this function's own doc
+ * comment below for why that gap is accepted rather than closed.
  */
 export interface RewriteRange {
   /** Keys of every entry that disappears from the timeline, for
@@ -52,17 +57,26 @@ function emptyRange(): RewriteRange {
  * cannot repair; "nothing will be deleted" is also the safe default given
  * this count's job of never over-promising a deletion, 決定 6).
  *
- * A later `kind: "message"` entry with no `messageId`/`sessionId` (the
- * `ChatEntry` shape `useChat` still appends outside `buildTimeline`, see
- * `chat.ts`) is skipped by the `entry.sessionId !== activeSessionId` check
- * below, the same as a genuinely different session. **Known gap tracked for
- * Issue #378, not this ticket**: some of those entries are already
- * server-persisted (an optimistic send or a streamed reply whose POST has
- * resolved), so this under-counts what a rewrite would actually delete
- * until #378 has `useChat` attach real identifiers to every entry it
- * appends. Conservative in the direction that matters less badly — it never
- * *over*-promises a deletion — but is still a known incompleteness of 決定
- * 6's safeguard until #378 lands.
+ * A later `kind: "message"` entry with no `messageId`/`sessionId` is skipped
+ * by the `entry.sessionId !== activeSessionId` check below, the same as a
+ * genuinely different session. As of Issue #378, `useChat` only leaves a
+ * `kind: "message"` entry without identifiers for `send`'s own optimistic
+ * append (AC-38b — the server hasn't told the client that message's
+ * persisted id) or an interrupted-abort entry that landed before `done`;
+ * both remain a deliberate, accepted gap in this count (a rewrite reaching
+ * back past one of them under-counts it), not something #378 closes.
+ * `rewrite` itself never leaves such an entry behind — it rebuilds *every*
+ * session in today's view from the server once its request settles
+ * (`useChat`'s `refreshTimeline`, the same `loadTimeline` call
+ * `startSession`/`endSession` already use), rather than splicing an
+ * optimistic entry into `entries` the way `send` does. This function is no
+ * longer in `rewrite`'s own execution path at all (Issue #378) — it now
+ * exists solely to drive the confirmation UI's preview, computed against
+ * `entries` *before* `rewrite` is called. A *completed* boss reply appended
+ * outside `buildTimeline` (via `useChat`'s `messageEntry` helper, used by
+ * `send`'s `onDone`) always carries real `messageId`/`sessionId` (AC-38c),
+ * which is what lets that preview count a rewrite reaching back past a
+ * prior turn correctly, without a reload.
  */
 export function selectRewriteRange(
   entries: ChatEntry[],

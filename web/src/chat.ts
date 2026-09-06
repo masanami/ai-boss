@@ -78,18 +78,21 @@ export type ChatEntry =
         }
       | {
           /**
-           * Both omitted for an entry `buildTimeline` did not build:
-           * `useChat` appends these directly (an optimistic send, or a
-           * streamed reply's `onDone`/interrupted-abort handling) without
-           * looking them up. **Known gap (tracked for Issue #378, not this
-           * ticket):** some of these entries *are* already server-persisted
-           * by the time they exist on screen (the POST that created them has
-           * resolved), so `selectRewriteRange` treating "no identifiers" as
-           * "not part of any session's deletion range" under-counts a
-           * rewrite that would in fact delete them — the conservative
-           * failure mode of the two only because it never over-promises a
-           * deletion. #378 closes this by having `useChat` attach the real
-           * identifiers to every entry it appends, once they are known.
+           * Both omitted for an entry `useChat` appends without looking up
+           * its server id: the optimistic user message `send` appends before
+           * its request resolves (AC-38b — there is no id yet), and a
+           * streamed reply's interrupted-abort handling (`stop` landing
+           * before `done`, also no id). `rewrite` (Issue #378) never
+           * constructs an entry like this itself — on every exit from its
+           * request (success or failure) it rebuilds *every* session in
+           * today's view from the server, so every resulting entry goes
+           * through `buildTimeline` and uses the "both set" branch above
+           * instead. That is also true of `useChat`'s `messageEntry` helper
+           * (used by `send`'s `onDone` for a completed reply, AC-38c),
+           * which is what lets `selectRewriteRange` — now only used to
+           * drive the rewrite confirmation UI's preview, not by `rewrite`
+           * itself — count a mid-session rewrite's deletions correctly
+           * without a reload.
            */
           messageId?: undefined;
           sessionId?: undefined;
