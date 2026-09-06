@@ -1,11 +1,12 @@
 import { useDecisions } from "./use-decisions";
-import type { DecisionRecord, DecisionStatus } from "./decision";
+import { groupDecisionsByTask } from "./group-decisions-by-task";
+import type { DecisionSection } from "./group-decisions-by-task";
+import type { DecisionKind, DecisionRecord } from "./decision";
 import "./DecisionLog.css";
 
-const STATUS_LABEL: Record<DecisionStatus, string> = {
-  active: "有効",
-  revised: "修正済み",
-  withdrawn: "取り下げ",
+const KIND_LABEL: Record<DecisionKind, string> = {
+  decision: "決定",
+  mentoring: "メンタリング",
 };
 
 interface DecisionCardProps {
@@ -16,8 +17,8 @@ function DecisionCard({ decision }: DecisionCardProps) {
   return (
     <li className="decision-card">
       <div className="decision-card-header">
-        <span className={`decision-status decision-status-${decision.status}`}>
-          {STATUS_LABEL[decision.status]}
+        <span className={`decision-kind decision-kind-${decision.kind}`}>
+          {KIND_LABEL[decision.kind]}
         </span>
         <time dateTime={decision.created_at}>{decision.created_at}</time>
       </div>
@@ -25,13 +26,35 @@ function DecisionCard({ decision }: DecisionCardProps) {
       {decision.rationale !== null && (
         <p className="decision-rationale">根拠: {decision.rationale}</p>
       )}
-      {decision.task_id !== null && (
-        <p className="decision-task">関連タスク: #{decision.task_id}</p>
-      )}
     </li>
   );
 }
 
+interface DecisionTaskSectionProps {
+  section: DecisionSection;
+}
+
+function DecisionTaskSection({ section }: DecisionTaskSectionProps) {
+  return (
+    <section className="decision-section">
+      <h3 className="decision-section-title">{section.title}</h3>
+      <ul className="decision-list" aria-label={`${section.title}の記録`}>
+        {section.records.map((decision) => (
+          <DecisionCard key={decision.id} decision={decision} />
+        ))}
+      </ul>
+    </section>
+  );
+}
+
+/**
+ * The decision log, grouped into per-task sections (#358 判断1). No date
+ * filter, no task picker, no collapsing: the screen has to answer both "what
+ * did the boss decide about this task" and "what was decided recently" at
+ * once, and a picker only answers the first. Decisions keep mattering across
+ * days, so limiting the view to today would be a weak reference surface —
+ * the dashboard and the daily report already cover today.
+ */
 function DecisionLog() {
   const { decisions, status } = useDecisions();
 
@@ -46,16 +69,19 @@ function DecisionLog() {
     );
   }
 
+  const sections = groupDecisionsByTask(decisions);
+
   return (
     <div className="decision-log">
-      {decisions.length === 0 ? (
+      {sections.length === 0 ? (
         <p className="decision-log-empty">決定はまだありません</p>
       ) : (
-        <ul className="decision-list" aria-label="決定一覧">
-          {decisions.map((decision) => (
-            <DecisionCard key={decision.id} decision={decision} />
-          ))}
-        </ul>
+        sections.map((section) => (
+          <DecisionTaskSection
+            key={section.taskId ?? "unassigned"}
+            section={section}
+          />
+        ))
       )}
     </div>
   );
