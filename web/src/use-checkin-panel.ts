@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { fetchTodayActivity, postCheckin } from "./checkins-api";
 import { deriveIsOnBreak } from "./derive-break-status";
+import { describeTasksApiError } from "./tasks-api";
 import type { ActivityEvent, CheckinInput } from "./activity-event";
 import type { TaskPatchInput } from "./task";
 
@@ -263,9 +264,9 @@ export function useCheckinPanel(
         }
         return true;
       } catch (error) {
-        setSubmitError(
-          error instanceof Error ? error.message : "送信に失敗しました",
-        );
+        // AC-74・決定 2-g: エビデンス不足（code: "evidence_required"）は固定
+        // 文言、それ以外はサーバのメッセージを表示する（TaskBoard と共有）。
+        setSubmitError(describeTasksApiError(error, "送信に失敗しました"));
         return false;
       } finally {
         submittingRef.current = false;

@@ -5,6 +5,7 @@ import TaskForm from "./TaskForm";
 import type { TaskStatus } from "./task";
 import type { UseTasksResult } from "./use-tasks";
 import { TASK_DRAG_DATA_TYPE } from "./task-dnd";
+import { describeTasksApiError } from "./tasks-api";
 import "./TaskBoard.css";
 
 const COLUMNS: { status: TaskStatus; label: string }[] = [
@@ -45,9 +46,9 @@ function TaskBoard({ tasksState }: TaskBoardProps) {
     return action.then(
       () => true,
       (error: unknown) => {
-        setActionError(
-          error instanceof Error ? error.message : "操作に失敗しました",
-        );
+        // 決定 2-g・AC-76: 表示分岐はエラー文言ではなく code の値で行う
+        // （evidence_required のときは固定文言、それ以外はサーバのメッセージ）。
+        setActionError(describeTasksApiError(error, "操作に失敗しました"));
         return false;
       },
     );
