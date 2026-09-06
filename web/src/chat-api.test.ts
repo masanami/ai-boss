@@ -372,4 +372,34 @@ describe("sendChatMessage", () => {
 
     expect(fetchMock.mock.calls[0][1].signal).toBeUndefined();
   });
+
+  // Issue #378 (#255 決定6): rewrite は同じ送信経路に replaceFromMessageId を
+  // 乗せるだけで、通常送信の契約（body に無い）は変えない。
+  it("includes replaceFromMessageId in the body when given", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(sseResponse([]));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await sendChatMessage(1, "書き直した内容", collectHandlers(), undefined, 7);
+
+    expect(fetchMock).toHaveBeenCalledWith("/api/sessions/1/messages", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ content: "書き直した内容", replaceFromMessageId: 7 }),
+      signal: undefined,
+    });
+  });
+
+  it("omits replaceFromMessageId from the body when not given (existing contract unchanged)", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(sseResponse([]));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await sendChatMessage(1, "テスト", collectHandlers());
+
+    const body = JSON.parse(fetchMock.mock.calls[0][1].body as string) as Record<
+      string,
+      unknown
+    >;
+    expect(body).toEqual({ content: "テスト" });
+    expect("replaceFromMessageId" in body).toBe(false);
+  });
 });
