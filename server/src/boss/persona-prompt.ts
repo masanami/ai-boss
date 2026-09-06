@@ -438,7 +438,9 @@ function selectTodaysAdhocMessages(
 
   if (selectedNewestFirst.length === 0) {
     const newest = messages[messages.length - 1];
-    const truncatedContent = `${newest.content.slice(0, MAX_TODAYS_ADHOC_MESSAGES_TOTAL_LENGTH)}…`;
+    // 省略記号 1 文字を含めて上限ちょうどに収める（先頭「上限」文字を切り出して
+    // から `…` を足すと上限 + 1 文字になり、上限の意味が崩れる）。
+    const truncatedContent = `${newest.content.slice(0, MAX_TODAYS_ADHOC_MESSAGES_TOTAL_LENGTH - 1)}…`;
     return {
       selected: [{ ...newest, content: truncatedContent }],
       truncated: true,

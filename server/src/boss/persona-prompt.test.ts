@@ -544,7 +544,7 @@ describe("buildPersonaPrompt", () => {
         expect(prompt).toContain("一部省略");
       });
 
-      it("最新の1件だけで上限を超えるとき、先頭「上限」文字へ切り詰めて省略記号付きで採用し、「一部省略」が出る", () => {
+      it("最新の1件だけで上限を超えるとき、省略記号を含めて上限ちょうどへ切り詰めて採用し、「一部省略」が出る", () => {
         const huge = "c".repeat(MAX_TODAYS_ADHOC_MESSAGES_TOTAL_LENGTH + 100);
         const prompt = buildPersonaPrompt(DEFAULT_PERSONA_SETTINGS, {
           tasks: [],
@@ -555,12 +555,17 @@ describe("buildPersonaPrompt", () => {
           now,
         });
 
-        const truncated = huge.slice(0, MAX_TODAYS_ADHOC_MESSAGES_TOTAL_LENGTH);
+        const truncated = huge.slice(0, MAX_TODAYS_ADHOC_MESSAGES_TOTAL_LENGTH - 1);
         const idx = prompt.indexOf(truncated);
 
         expect(idx).toBeGreaterThanOrEqual(0);
-        // 切り詰めた本文の直後が "c" の続きでないこと（末尾に省略記号が付く）
-        expect(prompt[idx + truncated.length]).not.toBe("c");
+        // 切り詰めた本文の直後が省略記号であること（"c" の続きではない）
+        expect(prompt[idx + truncated.length]).toBe("…");
+        // 省略記号を含めた採用本文が上限ちょうど（上限 + 1 にならない）
+        expect(prompt.slice(idx, idx + MAX_TODAYS_ADHOC_MESSAGES_TOTAL_LENGTH)).toBe(
+          `${truncated}…`,
+        );
+        expect(prompt[idx + MAX_TODAYS_ADHOC_MESSAGES_TOTAL_LENGTH]).not.toBe("c");
         expect(prompt).toContain("一部省略");
       });
 
