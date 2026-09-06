@@ -258,7 +258,14 @@ describe("buildTimeline", () => {
     ]);
 
     expect(entries).toEqual([
-      { kind: "message", key: "message-40", role: "boss", content: "やれ。" },
+      {
+        kind: "message",
+        key: "message-40",
+        role: "boss",
+        content: "やれ。",
+        messageId: 40,
+        sessionId: 1,
+      },
     ]);
   });
 
@@ -290,6 +297,8 @@ describe("buildTimeline", () => {
         role: "boss",
         content: "まずは見積",
         interrupted: true,
+        messageId: 41,
+        sessionId: 1,
       },
     ]);
   });
@@ -307,7 +316,14 @@ describe("buildTimeline", () => {
     ]);
 
     expect(entries).toEqual([
-      { kind: "message", key: "message-42", role: "boss", content: "やれ。" },
+      {
+        kind: "message",
+        key: "message-42",
+        role: "boss",
+        content: "やれ。",
+        messageId: 42,
+        sessionId: 1,
+      },
     ]);
   });
 

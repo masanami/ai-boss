@@ -362,8 +362,22 @@ describe("useChat", () => {
 
     await waitFor(() => expect(result.current.status).toBe("ready"));
     expect(result.current.entries).toEqual([
-      { kind: "message", key: "message-1", role: "user", content: "おはようございます" },
-      { kind: "message", key: "message-2", role: "boss", content: "今日は A 案件からだ。" },
+      {
+        kind: "message",
+        key: "message-1",
+        role: "user",
+        content: "おはようございます",
+        messageId: 1,
+        sessionId: 1,
+      },
+      {
+        kind: "message",
+        key: "message-2",
+        role: "boss",
+        content: "今日は A 案件からだ。",
+        messageId: 2,
+        sessionId: 1,
+      },
     ]);
   });
 
@@ -1046,9 +1060,30 @@ describe("useChat mount restoration (Issue #93: surviving a tab switch/reload)",
         sessionType: "morning",
         event: "start",
       },
-      { kind: "message", key: "message-30", role: "user", content: "今日の予定です" },
-      { kind: "message", key: "message-1", role: "user", content: "おはようございます" },
-      { kind: "message", key: "message-2", role: "boss", content: "今日は A 案件からだ。" },
+      {
+        kind: "message",
+        key: "message-30",
+        role: "user",
+        content: "今日の予定です",
+        messageId: 30,
+        sessionId: 20,
+      },
+      {
+        kind: "message",
+        key: "message-1",
+        role: "user",
+        content: "おはようございます",
+        messageId: 1,
+        sessionId: 1,
+      },
+      {
+        kind: "message",
+        key: "message-2",
+        role: "boss",
+        content: "今日は A 案件からだ。",
+        messageId: 2,
+        sessionId: 1,
+      },
     ]);
     expect(requestedUrls(fetchMock)).toEqual([
       "/api/sessions",
@@ -1084,9 +1119,30 @@ describe("useChat mount restoration (Issue #93: surviving a tab switch/reload)",
         sessionType: "morning",
         event: "start",
       },
-      { kind: "message", key: "message-30", role: "user", content: "今日の予定です" },
-      { kind: "message", key: "message-1", role: "user", content: "おはようございます" },
-      { kind: "message", key: "message-2", role: "boss", content: "今日は A 案件からだ。" },
+      {
+        kind: "message",
+        key: "message-30",
+        role: "user",
+        content: "今日の予定です",
+        messageId: 30,
+        sessionId: 20,
+      },
+      {
+        kind: "message",
+        key: "message-1",
+        role: "user",
+        content: "おはようございます",
+        messageId: 1,
+        sessionId: 1,
+      },
+      {
+        kind: "message",
+        key: "message-2",
+        role: "boss",
+        content: "今日は A 案件からだ。",
+        messageId: 2,
+        sessionId: 1,
+      },
       {
         kind: "boundary",
         key: "boundary-20-end",
@@ -1115,15 +1171,36 @@ describe("useChat mount restoration (Issue #93: surviving a tab switch/reload)",
         sessionType: "morning",
         event: "start",
       },
-      { kind: "message", key: "message-30", role: "user", content: "今日の予定です" },
+      {
+        kind: "message",
+        key: "message-30",
+        role: "user",
+        content: "今日の予定です",
+        messageId: 30,
+        sessionId: 20,
+      },
       {
         kind: "boundary",
         key: "boundary-20-end",
         sessionType: "morning",
         event: "end",
       },
-      { kind: "message", key: "message-1", role: "user", content: "おはようございます" },
-      { kind: "message", key: "message-2", role: "boss", content: "今日は A 案件からだ。" },
+      {
+        kind: "message",
+        key: "message-1",
+        role: "user",
+        content: "おはようございます",
+        messageId: 1,
+        sessionId: 1,
+      },
+      {
+        kind: "message",
+        key: "message-2",
+        role: "boss",
+        content: "今日は A 案件からだ。",
+        messageId: 2,
+        sessionId: 1,
+      },
     ]);
   });
 
@@ -1174,7 +1251,14 @@ describe("useChat mount restoration (Issue #93: surviving a tab switch/reload)",
         sessionType: "evening",
         event: "start",
       },
-      { kind: "message", key: "message-50", role: "user", content: "今日の進捗です" },
+      {
+        kind: "message",
+        key: "message-50",
+        role: "user",
+        content: "今日の進捗です",
+        messageId: 50,
+        sessionId: 40,
+      },
       {
         kind: "boundary",
         key: "boundary-40-end",
@@ -1201,8 +1285,22 @@ describe("useChat mount restoration (Issue #93: surviving a tab switch/reload)",
     await waitFor(() => expect(result.current.status).toBe("ready"));
     expect(requestedUrls(fetchMock)).not.toContain("/api/sessions/19/messages");
     expect(result.current.entries).toEqual([
-      { kind: "message", key: "message-1", role: "user", content: "おはようございます" },
-      { kind: "message", key: "message-2", role: "boss", content: "今日は A 案件からだ。" },
+      {
+        kind: "message",
+        key: "message-1",
+        role: "user",
+        content: "おはようございます",
+        messageId: 1,
+        sessionId: 1,
+      },
+      {
+        kind: "message",
+        key: "message-2",
+        role: "boss",
+        content: "今日は A 案件からだ。",
+        messageId: 2,
+        sessionId: 1,
+      },
     ]);
   });
 
@@ -1258,6 +1356,8 @@ describe("useChat session switching", () => {
         key: "message-31",
         role: "boss",
         content: "今日はA案件から片付けろ。",
+        messageId: 31,
+        sessionId: 20,
       },
     ]);
     expect(result.current.switching).toBe(false);
@@ -1297,7 +1397,14 @@ describe("useChat session switching", () => {
         sessionType: "morning",
         event: "start",
       },
-      { kind: "message", key: "message-30", role: "user", content: "今日の予定です" },
+      {
+        kind: "message",
+        key: "message-30",
+        role: "user",
+        content: "今日の予定です",
+        messageId: 30,
+        sessionId: 20,
+      },
     ]);
   });
 
@@ -1573,8 +1680,22 @@ describe("useChat session switching", () => {
     expect(result.current.sessionType).toBe("morning");
     // AC-9: the adhoc history is still there, above the start boundary.
     expect(result.current.entries.slice(0, 3)).toEqual([
-      { kind: "message", key: "message-1", role: "user", content: "おはようございます" },
-      { kind: "message", key: "message-2", role: "boss", content: "今日は A 案件からだ。" },
+      {
+        kind: "message",
+        key: "message-1",
+        role: "user",
+        content: "おはようございます",
+        messageId: 1,
+        sessionId: 1,
+      },
+      {
+        kind: "message",
+        key: "message-2",
+        role: "boss",
+        content: "今日は A 案件からだ。",
+        messageId: 2,
+        sessionId: 1,
+      },
       {
         kind: "boundary",
         key: "boundary-20-start",
@@ -1591,15 +1712,36 @@ describe("useChat session switching", () => {
     expect(result.current.sessionType).toBe("adhoc");
     // AC-10: the meeting's own messages stay too, now bracketed by boundaries.
     expect(result.current.entries).toEqual([
-      { kind: "message", key: "message-1", role: "user", content: "おはようございます" },
-      { kind: "message", key: "message-2", role: "boss", content: "今日は A 案件からだ。" },
+      {
+        kind: "message",
+        key: "message-1",
+        role: "user",
+        content: "おはようございます",
+        messageId: 1,
+        sessionId: 1,
+      },
+      {
+        kind: "message",
+        key: "message-2",
+        role: "boss",
+        content: "今日は A 案件からだ。",
+        messageId: 2,
+        sessionId: 1,
+      },
       {
         kind: "boundary",
         key: "boundary-20-start",
         sessionType: "morning",
         event: "start",
       },
-      { kind: "message", key: "message-30", role: "user", content: "今日の予定です" },
+      {
+        kind: "message",
+        key: "message-30",
+        role: "user",
+        content: "今日の予定です",
+        messageId: 30,
+        sessionId: 20,
+      },
       {
         kind: "boundary",
         key: "boundary-20-end",
