@@ -1,23 +1,22 @@
-import { useCallback, useEffect, useState } from "react";
-import { fetchDecisions, submitAppeal } from "./decisions-api";
-import type { AppealSubmitResult, DecisionWithAppeals } from "./decision";
+import { useEffect, useState } from "react";
+import { fetchDecisions } from "./decisions-api";
+import type { DecisionRecord } from "./decision";
 
 export type DecisionsLoadStatus = "loading" | "ready" | "error";
 
 export interface UseDecisionsResult {
-  decisions: DecisionWithAppeals[];
+  decisions: DecisionRecord[];
   status: DecisionsLoadStatus;
-  appeal: (decisionId: number, content: string) => Promise<AppealSubmitResult>;
 }
 
 /**
- * Loads the decision log on mount and exposes an action to submit an appeal.
- * Mirrors the fetch-on-mount pattern used by `useTasks`. Per the ticket's
- * explicit assumption, any appeal submission (upheld or revised) simply
- * re-fetches the full list rather than merging the result locally (KISS).
+ * Loads the decision log on mount. Mirrors the fetch-on-mount pattern used by
+ * `useTasks`. Read-only: the appeals submission path was removed with the
+ * appeals feature (#358/#397) — re-litigating a decision now happens in chat,
+ * where the boss's `record_decision` tool records a new decision.
  */
 export function useDecisions(): UseDecisionsResult {
-  const [decisions, setDecisions] = useState<DecisionWithAppeals[]>([]);
+  const [decisions, setDecisions] = useState<DecisionRecord[]>([]);
   const [status, setStatus] = useState<DecisionsLoadStatus>("loading");
 
   useEffect(() => {
@@ -41,15 +40,5 @@ export function useDecisions(): UseDecisionsResult {
     };
   }, []);
 
-  const appeal = useCallback(
-    async (decisionId: number, content: string) => {
-      const result = await submitAppeal(decisionId, content);
-      const refreshed = await fetchDecisions();
-      setDecisions(refreshed);
-      return result;
-    },
-    [],
-  );
-
-  return { decisions, status, appeal };
+  return { decisions, status };
 }
