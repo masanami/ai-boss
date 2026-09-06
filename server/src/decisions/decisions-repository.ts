@@ -1,6 +1,6 @@
 import type Database from "better-sqlite3";
 import type { RecentDecision } from "../boss/persona-prompt.js";
-import type { Decision } from "./decision.js";
+import type { Decision, DecisionListItem } from "./decision.js";
 
 interface DecisionRow {
   content: string;
@@ -60,11 +60,26 @@ export function insertDecision(
  * Returns all decisions ordered by `created_at` descending (`id` as a
  * tie-breaker), for the decision log screen (`GET /api/decisions`, MVP:
  * no pagination — see the ticket's explicit assumption).
+ *
+ * Each row carries the related task's title as `task_title` (`null` when
+ * `task_id` is `null`, or when the referenced task no longer exists), so the
+ * screen can head each task section with a name instead of a raw id. The
+ * join lives here rather than in the client because `DecisionLog` holds no
+ * task list, and wiring one in would make the decision log's rendering
+ * depend on whether the task fetch succeeded (#358 判断5).
+ *
+ * Rows are returned flat, in `created_at` order — grouping into task
+ * sections is the renderer's job (#358 判断5・ADR 0006 決定1).
  */
-export function listDecisions(db: Database.Database): Decision[] {
+export function listDecisions(db: Database.Database): DecisionListItem[] {
   return db
-    .prepare("SELECT * FROM decisions ORDER BY created_at DESC, id DESC")
-    .all() as Decision[];
+    .prepare(
+      `SELECT decisions.*, tasks.title AS task_title
+       FROM decisions
+       LEFT JOIN tasks ON tasks.id = decisions.task_id
+       ORDER BY decisions.created_at DESC, decisions.id DESC`,
+    )
+    .all() as DecisionListItem[];
 }
 
 /**

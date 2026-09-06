@@ -17,3 +17,12 @@ export interface Decision {
   kind: DecisionKind;
   created_at: string;
 }
+
+// #358 判断5: 決定ログ画面はタスク名で束ねて表示するが、`DecisionLog` はタスク
+// 一覧を持っていない。`AppLayout` から `tasksState` を配線するとタスク取得の
+// 成否に決定ログの表示が従属するため、`LEFT JOIN tasks` の 1 クエリでサーバー
+// 側が解決する。`task_id` が NULL の決定（朝会の時間変更のようにタスクへ
+// 紐づかない裁定）では `task_title` も null になる。
+export interface DecisionListItem extends Decision {
+  task_title: string | null;
+}
