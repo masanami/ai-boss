@@ -4,6 +4,7 @@ import { openDatabase } from "../db/connection.js";
 import { runMigrations } from "../db/migrate.js";
 import { insertSession } from "../sessions/sessions-repository.js";
 import { insertTask } from "../tasks/tasks-repository.js";
+import type { NewTaskRecord } from "../tasks/tasks-repository.js";
 import {
   findDecisionById,
   insertDecision,
@@ -19,11 +20,40 @@ function insertRawDecision(
   sessionId: number,
   content: string,
   createdAt: string,
+  taskId: number | null = null,
 ): void {
   db.prepare(
     `INSERT INTO decisions (session_id, task_id, content, rationale, status, created_at)
-     VALUES (?, NULL, ?, NULL, 'active', ?)`,
-  ).run(sessionId, content, createdAt);
+     VALUES (?, ?, ?, NULL, 'active', ?)`,
+  ).run(sessionId, taskId, content, createdAt);
+}
+
+/** Minimal task fixture — only `title` matters to the decision log, the rest
+ * are the columns `NewTaskRecord` requires. */
+function newTask(title: string): NewTaskRecord {
+  return {
+    title,
+    description: null,
+    category: "work",
+    priority: null,
+    due_at: null,
+    status: "todo",
+    boss_comment: null,
+    estimated_minutes: null,
+  };
+}
+
+/** Builds a `created_at` value from a local wall-clock date, so ordering
+ * fixtures stay meaningful in any timezone (ADR 0007 決定5). Deliberately
+ * not a UTC string literal: the contract under test is the relative order
+ * of records, which a fixed-offset literal would silently reinterpret. */
+function localIso(
+  year: number,
+  month: number,
+  day: number,
+  hour: number,
+): string {
+  return new Date(year, month - 1, day, hour).toISOString();
 }
 
 describe("listRecentDecisions", () => {
@@ -211,5 +241,61 @@ describe("listDecisions", () => {
       "新しい決定",
       "古い決定",
     ]);
+  });
+
+  it("falls back to id descending when created_at ties", () => {
+    const session = insertSession(db, { type: "adhoc" });
+    const sameInstant = localIso(2026, 7, 5, 9);
+    insertRawDecision(db, session.id, "先に入れた決定", sameInstant);
+    insertRawDecision(db, session.id, "後に入れた決定", sameInstant);
+
+    const result = listDecisions(db);
+
+    // 同値のときは id 降順 = 後から入れたものが先（既存契約の維持）
+    expect(result.map((decision) => decision.content)).toEqual([
+      "後に入れた決定",
+      "先に入れた決定",
+    ]);
+  });
+
+  it("resolves the related task's title as task_title", () => {
+    const session = insertSession(db, { type: "adhoc" });
+    const task = insertTask(db, newTask("見積もり資料の作成"));
+    insertRawDecision(
+      db,
+      session.id,
+      "今日はこれを最優先で片付けろ",
+      localIso(2026, 7, 5, 9),
+      task.id,
+    );
+
+    const [decision] = listDecisions(db);
+
+    expect(decision.task_id).toBe(task.id);
+    expect(decision.task_title).toBe("見積もり資料の作成");
+  });
+
+  it("returns task_title = null for a decision with no task", () => {
+    const session = insertSession(db, { type: "adhoc" });
+    insertRawDecision(
+      db,
+      session.id,
+      "明日の朝会は 9:30 に変更する",
+      localIso(2026, 7, 5, 18),
+    );
+
+    const [decision] = listDecisions(db);
+
+    expect(decision.task_id).toBeNull();
+    expect(decision.task_title).toBeNull();
+  });
+
+  it("carries kind so the screen can tell decisions from mentoring", () => {
+    const session = insertSession(db, { type: "adhoc" });
+    insertRawDecision(db, session.id, "決定", localIso(2026, 7, 5, 9));
+
+    const [decision] = listDecisions(db);
+
+    expect(decision.kind).toBe("decision");
   });
 });
