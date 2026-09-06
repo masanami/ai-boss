@@ -33,6 +33,17 @@ function isNullableString(value: unknown): value is string | null {
   return value === null || typeof value === "string";
 }
 
+// evidence_required は HTTP 境界で常に boolean（機能仕様
+// docs/features/completion-evidence-enforcement.md 明示的な仮定 8）。DB の
+// INTEGER (0/1) への変換は tasks-repository.ts の1箇所に閉じており、ここでは
+// 型を JSON boolean に固定するだけ（settings-validation.ts の
+// validateBoolean と同じ規律）。
+const EVIDENCE_REQUIRED_ERROR = "evidence_required must be a boolean";
+
+function isBoolean(value: unknown): value is boolean {
+  return typeof value === "boolean";
+}
+
 // estimated_minutes は将来のサボり検知閾値（Issue #7）の基準になるため、
 // 非負整数以外を保存させない
 function isNullableNonNegativeInteger(value: unknown): value is number | null {
@@ -103,6 +114,11 @@ export function validateCreateTaskInput(
     return { valid: false, error: PRIORITY_ERROR };
   }
 
+  const evidenceRequired = body.evidence_required ?? false;
+  if (!isBoolean(evidenceRequired)) {
+    return { valid: false, error: EVIDENCE_REQUIRED_ERROR };
+  }
+
   const typeError = validateOptionalFieldTypes(body);
   if (typeError) {
     return { valid: false, error: typeError };
@@ -120,6 +136,7 @@ export function validateCreateTaskInput(
       boss_comment: (body.boss_comment as string | null | undefined) ?? null,
       estimated_minutes:
         (body.estimated_minutes as number | null | undefined) ?? null,
+      evidence_required: evidenceRequired,
     },
   };
 }
@@ -132,6 +149,7 @@ const PATCHABLE_FIELDS = [
   "status",
   "boss_comment",
   "estimated_minutes",
+  "evidence_required",
 ] as const;
 
 /**
@@ -172,6 +190,10 @@ export function validatePatchTaskInput(
     !isValidPriority(body.priority)
   ) {
     return { valid: false, error: PRIORITY_ERROR };
+  }
+
+  if ("evidence_required" in body && !isBoolean(body.evidence_required)) {
+    return { valid: false, error: EVIDENCE_REQUIRED_ERROR };
   }
 
   const typeError = validateOptionalFieldTypes(body);

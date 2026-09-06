@@ -170,6 +170,46 @@ describe("extractEveningSummary", () => {
     expect(request.system).not.toContain("現在日時:");
   });
 
+  // 機能仕様 docs/features/completion-evidence-enforcement.md 決定6:
+  // 夕会要約抽出はタスク一覧を LLM へ渡さない（buildPersonaPrompt に常に
+  // tasks: [] を渡す）ため、DB にエビデンス付きタスクが存在していても
+  // その中身・保管パスがこの経路の入力に混入しないことを確認する（AC-81）。
+  it("エビデンス付きタスクが存在しても、抽出への入力にエビデンスの中身・保管パスが含まれない（AC-81）", async () => {
+    const { insertTask } = await import("../tasks/tasks-repository.js");
+    const { insertTaskEvidence } = await import("../tasks/task-evidences-repository.js");
+    const task = insertTask(db, {
+      title: "資料作成",
+      description: null,
+      category: "work",
+      priority: null,
+      due_at: null,
+      status: "todo",
+      boss_comment: null,
+      estimated_minutes: null,
+      evidence_required: true,
+    });
+    insertTaskEvidence(db, {
+      task_id: task.id,
+      kind: "file",
+      stored_filename: "abc123.png",
+      original_filename: "secret-screenshot.png",
+      mime_type: "image/png",
+      size_bytes: 100,
+    });
+    requestVerdictMock.mockResolvedValue(
+      calledWithValid({ reportSummary: "a", bossComment: "b", keyDecisions: "なし", carryOver: "なし" }),
+    );
+
+    await extractEveningSummary(db, env, eveningMessages, noDecisions, now);
+
+    const [, request] = requestVerdictMock.mock.calls[0];
+    const serializedMessages = JSON.stringify(request.messages);
+    expect(request.system).not.toContain("secret-screenshot.png");
+    expect(request.system).not.toContain("abc123.png");
+    expect(serializedMessages).not.toContain("secret-screenshot.png");
+    expect(serializedMessages).not.toContain("abc123.png");
+  });
+
   describe("抽出への入力（当日の active 決定一覧の注入）", () => {
     it("決定一覧が空でない場合、ユーザーメッセージに各決定の content が含まれる", async () => {
       requestVerdictMock.mockResolvedValue(
