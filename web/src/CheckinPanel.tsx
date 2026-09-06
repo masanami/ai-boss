@@ -473,6 +473,7 @@ function CheckinPanel({ tasksState }: CheckinPanelProps) {
             </label>
             <button
               type="button"
+              className="checkin-primary-button"
               onClick={handleStart}
               disabled={
                 selectedTaskId === "" ||
@@ -486,6 +487,7 @@ function CheckinPanel({ tasksState }: CheckinPanelProps) {
             {hasInProgressTask && (
               <button
                 type="button"
+                className="checkin-primary-button"
                 onClick={handleComplete}
                 disabled={
                   selectedTaskId === "" ||
@@ -499,6 +501,7 @@ function CheckinPanel({ tasksState }: CheckinPanelProps) {
             {selectedTask?.status === "in_progress" && (
               <button
                 type="button"
+                className="checkin-primary-button"
                 onClick={handlePause}
                 disabled={isSubmitting || recordTimeBlocked}
               >
@@ -532,6 +535,7 @@ function CheckinPanel({ tasksState }: CheckinPanelProps) {
             )}
             <button
               type="button"
+              className="checkin-primary-button"
               onClick={handleBreakStart}
               disabled={
                 !isBreakMinutesValid ||
