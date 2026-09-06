@@ -1848,4 +1848,69 @@ describe("CheckinPanel", () => {
       expect(screen.getByRole("button", { name: "一時停止" })).toBeEnabled();
     });
   });
+
+  // #359: タスク状態を変える主操作5ボタン（着手/再開・完了・一時停止・休憩・
+  // 戻りました）だけが当たり判定を広げる共通クラス checkin-primary-button を
+  // 持つことを検証する。jsdom は実 CSS を評価しないため、実際の寸法（min-height
+  // 等）はここでは担保できない（オーナーの目視確認 /demo に委ねる）。
+  describe("primary button hit area (#359)", () => {
+    it("gives 着手 and 休憩 the primary button class while not on break, and leaves the time-input toggle unchanged", async () => {
+      const tasks = [makeTask({ id: 1, title: "資料作成" })];
+      vi.stubGlobal("fetch", createFetchMock());
+
+      render(<CheckinPanel tasksState={makeTasksState(tasks)} />);
+      await waitFor(() =>
+        expect(screen.getByRole("button", { name: "着手" })).toBeInTheDocument(),
+      );
+
+      expect(screen.getByRole("button", { name: "着手" })).toHaveClass(
+        "checkin-primary-button",
+      );
+      expect(screen.getByRole("button", { name: "休憩" })).toHaveClass(
+        "checkin-primary-button",
+      );
+      expect(
+        screen.getByRole("button", { name: "時刻を指定して記録" }),
+      ).not.toHaveClass("checkin-primary-button");
+    });
+
+    it("gives 完了 and 一時停止 the primary button class while a task is in progress", async () => {
+      const tasks = [
+        makeTask({ id: 2, title: "着手中タスク", status: "in_progress" }),
+      ];
+      vi.stubGlobal("fetch", createFetchMock());
+
+      render(<CheckinPanel tasksState={makeTasksState(tasks)} />);
+      await waitFor(() =>
+        expect(
+          screen.getByRole("button", { name: "完了" }),
+        ).toBeInTheDocument(),
+      );
+
+      expect(screen.getByRole("button", { name: "完了" })).toHaveClass(
+        "checkin-primary-button",
+      );
+      expect(screen.getByRole("button", { name: "一時停止" })).toHaveClass(
+        "checkin-primary-button",
+      );
+    });
+
+    it("keeps the primary button class on 戻りました while on break", async () => {
+      const events = [
+        makeEvent({ id: 1, type: "break_start", expected_minutes: 15 }),
+      ];
+      vi.stubGlobal("fetch", createFetchMock({ events }));
+
+      render(<CheckinPanel tasksState={makeTasksState([])} />);
+      await waitFor(() =>
+        expect(
+          screen.getByRole("button", { name: "戻りました" }),
+        ).toBeInTheDocument(),
+      );
+
+      expect(screen.getByRole("button", { name: "戻りました" })).toHaveClass(
+        "checkin-primary-button",
+      );
+    });
+  });
 });
