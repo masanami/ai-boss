@@ -1893,6 +1893,15 @@ describe("CheckinPanel", () => {
       expect(screen.getByRole("button", { name: "一時停止" })).toHaveClass(
         "checkin-primary-button",
       );
+      // 排他性の全数確認: この状態で描画されるボタンは 時刻を指定して記録
+      // （補助操作）・着手・完了・一時停止・休憩 の 5 つで、共通クラスを持つ
+      // のは主操作 4 つだけ。名前で個別に見るだけだと「補助操作にも付いて
+      // しまった」「主操作以外にも広がった」を取りこぼすため、全数で固定する。
+      const primaryButtonNames = screen
+        .getAllByRole("button")
+        .filter((button) => button.classList.contains("checkin-primary-button"))
+        .map((button) => button.textContent);
+      expect(primaryButtonNames).toEqual(["着手", "完了", "一時停止", "休憩"]);
     });
 
     it("keeps the primary button class on 戻りました while on break", async () => {

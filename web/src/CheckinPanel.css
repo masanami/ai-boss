@@ -36,12 +36,32 @@
   margin-bottom: 0.75rem;
 }
 
+/* タスク状態を変える主操作（着手/再開・完了・一時停止・休憩・戻りました）の
+   共通クラス（#244 決定1）。補助操作の .checkin-time-input-toggle button は
+   対象外で、リンク風のまま据え置く。 */
 .checkin-primary-button {
+  /* 当たり判定の下限（#244 決定2）。44px は Apple HIG のタッチ前提で、
+     ポインタ操作前提の本アプリ（ADR 0001）には過大。32px は WCAG 2.2
+     SC 2.5.8 の 24x24 CSS px を上回る。この値は「ルートフォントサイズに
+     追随させない絶対的な下限」として意図的に px で置いている。 */
   min-height: 32px;
   padding: 0.4rem 0.9rem;
   font-family: inherit;
+  /* .checkin-panel label と同じ 0.8rem に揃える（#244 決定4: 一律には
+     上げない）。UA 既定（Chrome では約 13.3px）よりわずかに小さくなるため、
+     押しやすさは font-size ではなく min-height と padding で確保している。 */
   font-size: 0.8rem;
   font-weight: 600;
+  /* ネイティブ button の既定は cursor: default。web/src の他のボタン規則は
+     すべて cursor: pointer を持つため、主操作だけ矢印カーソルで取り残されない
+     ようここで揃える。 */
+  cursor: pointer;
+}
+
+/* 対象5ボタンはいずれも disabled 条件を持つため、無効時に手カーソルが出ない
+   よう対で戻す（ChatView.css / SettingsView.css / DecisionLog.css と同じ形）。 */
+.checkin-primary-button:disabled {
+  cursor: default;
 }
 
 .checkin-time-input-toggle {
