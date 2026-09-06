@@ -142,6 +142,25 @@
   background-color: var(--color-bg-hover);
 }
 
+/* 発言の編集ボタン（Issue #379）。常に DOM 上に存在し、キーボードで到達
+   できる通常のボタン（明示的な仮定 4）。ホバー時に目立たせるのは構わないが、
+   ホバーでしか出ない実装（display: none 等）にはしない。 */
+.chat-edit-button {
+  display: block;
+  margin-top: 0.4rem;
+  background: none;
+  border: none;
+  color: var(--color-text-muted);
+  font-size: 0.75rem;
+  cursor: pointer;
+  padding: 0;
+}
+
+.chat-message:hover .chat-edit-button,
+.chat-edit-button:focus-visible {
+  color: var(--color-accent);
+}
+
 .chat-tool-notice {
   align-self: center;
   font-size: 0.8rem;
@@ -195,6 +214,96 @@
 .chat-boundary-end::after {
   background: var(--color-border);
   opacity: 1;
+}
+
+/* 削除される範囲のハイライト（決定 6 / 導出決定 6-a・6-b）。
+   `.chat-tool-notice` / `.chat-boundary` / `.chat-message-interrupted` の
+   いずれとも異なるクラスにする（AC-48）。danger 色で「これは消える」を
+   はっきり示す — 中断（`.chat-message-interrupted`）とは違い、これは
+   これから起きる破壊的操作の予告なので、危険色を使ってよい。
+
+   このルールは意図して `.chat-tool-notice` より後ろに置いている
+   （self-review, Issue #379）: 同じ詳細度のルールはスタイルシート内で後に
+   書かれた方が勝つため、前に置くと `.chat-tool-notice` 側の `border`
+   ショートハンドがこの `border-color` を無言で打ち消し、削除範囲に入った
+   ツール通知だけハイライトが効かなくなる。 */
+.chat-rewrite-target {
+  border-color: var(--color-danger);
+  box-shadow: 0 0 0 1px var(--color-danger);
+}
+
+/* インラインの編集フォーム（Issue #379）。吹き出しの外形は保ちつつ中身を
+   フォームへ差し替える。 */
+.chat-rewrite-form {
+  align-self: flex-end;
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  width: 70%;
+  border-color: var(--color-danger);
+}
+
+.chat-rewrite-textarea {
+  width: 100%;
+  min-height: 4rem;
+  resize: vertical;
+  background-color: var(--color-bg);
+  color: var(--color-text);
+  border: 1px solid var(--color-border);
+  border-radius: 8px;
+  padding: 0.5rem 0.7rem;
+  font-family: inherit;
+  font-size: 0.9rem;
+  line-height: 1.5;
+}
+
+.chat-rewrite-summary,
+.chat-rewrite-warning {
+  margin: 0;
+  font-size: 0.78rem;
+}
+
+.chat-rewrite-summary {
+  color: var(--color-text);
+}
+
+/* 「すでに実行された操作は取り消されません」— 決定 4・導出決定 6-b が
+   唯一の周知手段と位置づける警告なので、danger 色で目立たせる。 */
+.chat-rewrite-warning {
+  color: var(--color-danger);
+  font-weight: 600;
+}
+
+.chat-rewrite-actions {
+  display: flex;
+  gap: 0.5rem;
+}
+
+.chat-rewrite-actions button {
+  border-radius: 8px;
+  padding: 0.4rem 0.85rem;
+  font-size: 0.85rem;
+  cursor: pointer;
+}
+
+/* 位置（:first-child/:last-child）ではなく意味のあるクラス名で当てる
+   （self-review, Issue #379）: 確定は不可逆操作なので危険色、キャンセルは
+   通常操作の配色にする対応が、ボタンの並び順に依存しないようにする。 */
+.chat-rewrite-confirm {
+  background-color: var(--color-danger);
+  color: var(--color-bg);
+  border: none;
+}
+
+.chat-rewrite-confirm:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.chat-rewrite-cancel {
+  background-color: var(--color-bg-elevated);
+  color: var(--color-text);
+  border: 1px solid var(--color-border);
 }
 
 .chat-error {

@@ -12,6 +12,9 @@ function TaskForm({ onCreate }: TaskFormProps) {
   const [description, setDescription] = useState("");
   const [priority, setPriority] = useState<TaskPriority | "">("");
   const [dueAt, setDueAt] = useState("");
+  // 既定は未チェック（AC-66）。LLM を通らない直接作成の裁定はここでユーザー
+  // 自身が行う（機能仕様 docs/features/completion-evidence-enforcement.md 決定3）。
+  const [evidenceRequired, setEvidenceRequired] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
 
   const handleSubmit = (event: FormEvent<HTMLFormElement>) => {
@@ -26,6 +29,7 @@ function TaskForm({ onCreate }: TaskFormProps) {
       description: description.trim() === "" ? null : description.trim(),
       priority: priority === "" ? null : priority,
       due_at: dueAt === "" ? null : dueAt,
+      evidence_required: evidenceRequired,
     })
       .then((created) => {
         if (!created) {
@@ -35,6 +39,7 @@ function TaskForm({ onCreate }: TaskFormProps) {
         setDescription("");
         setPriority("");
         setDueAt("");
+        setEvidenceRequired(false);
       })
       .finally(() => {
         setIsSubmitting(false);
@@ -77,6 +82,14 @@ function TaskForm({ onCreate }: TaskFormProps) {
           type="date"
           value={dueAt}
           onChange={(event) => setDueAt(event.target.value)}
+        />
+      </label>
+      <label>
+        エビデンスを必須にする
+        <input
+          type="checkbox"
+          checked={evidenceRequired}
+          onChange={(event) => setEvidenceRequired(event.target.checked)}
         />
       </label>
       <button type="submit" disabled={isSubmitting}>

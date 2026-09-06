@@ -40,6 +40,11 @@ export const TASK_TOOLS: Anthropic.Tool[] = [
           type: "string",
           description: "ボスの決定・コメント",
         },
+        evidence_required: {
+          type: "boolean",
+          description:
+            "完了報告にエビデンス（ファイル添付・リンク）を必須にするか。省略時は false。",
+        },
       },
       required: ["title"],
     },
@@ -103,12 +108,22 @@ function executeUpdateTask(
     return { content: result.error, isError: true };
   }
 
-  const task = updateTask(db, input.id, result.data);
-  if (!task) {
-    return { content: `task ${input.id} not found`, isError: true };
+  const updateResult = updateTask(db, input.id, result.data);
+  if (!updateResult.ok) {
+    if (updateResult.reason === "not_found") {
+      return { content: `task ${input.id} not found`, isError: true };
+    }
+    // 決定 2-e: ボスチャット経由の拒否は既存のエラー返却様式で理由文字列を
+    // 返すだけでよい（専用の仕組みを足さない）。ツール結果は会話へ戻るため、
+    // この文言をボスがそのままユーザーへ伝える形になる。
+    return {
+      content:
+        "エビデンスが添付されていないため、このタスクを完了にできません。",
+      isError: true,
+    };
   }
 
-  return { content: JSON.stringify(task), isError: false };
+  return { content: JSON.stringify(updateResult.task), isError: false };
 }
 
 /**

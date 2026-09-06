@@ -24,6 +24,7 @@ function makeTask(overrides: Partial<Task> = {}): Task {
     created_at: "2026-07-05T00:00:00+09:00",
     updated_at: "2026-07-05T00:00:00+09:00",
     completed_at: null,
+    evidence_required: false,
     ...overrides,
   };
 }
@@ -197,6 +198,71 @@ describe("buildPersonaPrompt", () => {
       expect(prompt, purpose).not.toContain("#12");
       expect(prompt, purpose).toContain("レポート作成");
     }
+  });
+
+  // 機能仕様 docs/features/completion-evidence-enforcement.md 決定3-a・決定6
+  describe("タスク行のエビデンス要否・添付件数（Issue #389）", () => {
+    it("evidence_required: true のタスク行は「必須」の文言を含む（AC-21）", () => {
+      const prompt = buildPersonaPrompt(DEFAULT_PERSONA_SETTINGS, {
+        tasks: [makeTask({ title: "資料作成", evidence_required: true })],
+        recentDecisions: [],
+        now,
+      });
+
+      expect(prompt).toContain("必須");
+    });
+
+    it("evidence_required: false のタスク行は「不要」の文言を含む（AC-21）", () => {
+      const prompt = buildPersonaPrompt(DEFAULT_PERSONA_SETTINGS, {
+        tasks: [makeTask({ title: "資料作成", evidence_required: false })],
+        recentDecisions: [],
+        now,
+      });
+
+      expect(prompt).toContain("不要");
+    });
+
+    it("taskEvidenceCounts で渡した添付件数がタスク行に含まれる（AC-22）", () => {
+      const task = makeTask({ id: 7, title: "資料作成", evidence_required: true });
+      const prompt = buildPersonaPrompt(DEFAULT_PERSONA_SETTINGS, {
+        tasks: [task],
+        taskEvidenceCounts: { 7: 3 },
+        recentDecisions: [],
+        now,
+      });
+
+      expect(prompt).toContain("3件");
+    });
+
+    it("taskEvidenceCounts が省略されたタスクは添付0件として扱われる（後方互換）", () => {
+      const task = makeTask({ id: 7, title: "資料作成", evidence_required: true });
+      const prompt = buildPersonaPrompt(DEFAULT_PERSONA_SETTINGS, {
+        tasks: [task],
+        recentDecisions: [],
+        now,
+      });
+
+      expect(prompt).toContain("0件");
+    });
+
+    // 決定6: LLM へ渡してよいのは要否・件数のみ。ファイル名・URL・保管パスは
+    // タスク行の組み立てに使う入力（Task型・taskEvidenceCounts）に一切登場
+    // しないため、プロンプトへ漏れようがない。ここでは「タスク行の書式に
+    // ファイル名/URL相当の文字列が混入していない」ことを、伝わる情報の形
+    // （要否ラベル・件数）だけで再確認する（AC-79/AC-80）。
+    it("タスク行にファイル名・保管パスに相当する文字列は含まれない（AC-79/AC-80）", () => {
+      const prompt = buildPersonaPrompt(DEFAULT_PERSONA_SETTINGS, {
+        tasks: [makeTask({ title: "資料作成", evidence_required: true })],
+        taskEvidenceCounts: { 1: 2 },
+        recentDecisions: [],
+        now,
+      });
+
+      expect(prompt).not.toContain("stored_filename");
+      expect(prompt).not.toContain("original_filename");
+      expect(prompt).not.toContain(".png");
+      expect(prompt).not.toContain("evidence/");
+    });
   });
 
   it("直近の決定が空のとき、決定なしの文言を含む", () => {

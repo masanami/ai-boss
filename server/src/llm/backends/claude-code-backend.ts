@@ -104,6 +104,10 @@ const createTaskShape = {
   due_at: z.string().describe("締切（ISO 8601 日時文字列）").optional(),
   estimated_minutes: z.number().int().describe("所要時間見積もり（分）").optional(),
   boss_comment: z.string().describe("ボスの決定・コメント").optional(),
+  evidence_required: z
+    .boolean()
+    .describe("完了報告にエビデンス（ファイル添付・リンク）を必須にするか。省略時は false。")
+    .optional(),
 };
 
 const updateTaskShape = {

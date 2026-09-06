@@ -19,6 +19,7 @@ const SAMPLE_SETTINGS: Settings = {
   escalation_l3_after_minutes: 10,
   escalation_repeat_minutes: 10,
   model: "claude-sonnet-5",
+  evidence_enforcement_enabled: false,
 };
 
 describe("useSettings", () => {

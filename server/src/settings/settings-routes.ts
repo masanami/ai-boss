@@ -5,6 +5,7 @@ import { setSettingValue } from "./settings-repository.js";
 import { validatePutSettingsInput } from "./settings-validation.js";
 import { resolveBossSettings } from "../boss/boss-settings.js";
 import { loadDetectionSettings } from "../scheduler/detection-settings.js";
+import { resolveEvidenceSettings } from "./evidence-settings.js";
 
 /**
  * Flat, key-named view of the effective settings, as returned by
@@ -15,6 +16,7 @@ import { loadDetectionSettings } from "../scheduler/detection-settings.js";
 function readEffectiveSettings(db: Database.Database) {
   const { model, persona } = resolveBossSettings(db);
   const detection = loadDetectionSettings(db);
+  const evidence = resolveEvidenceSettings(db);
 
   return {
     boss_name: persona.name,
@@ -32,6 +34,7 @@ function readEffectiveSettings(db: Database.Database) {
     escalation_l3_after_minutes: detection.escalation.level2ToLevel3Minutes,
     escalation_repeat_minutes: detection.escalation.level3RepeatMinutes,
     model,
+    evidence_enforcement_enabled: evidence.enforcementEnabled,
   };
 }
 

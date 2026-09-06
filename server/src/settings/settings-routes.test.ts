@@ -41,6 +41,7 @@ interface SettingsBody {
   escalation_l3_after_minutes: number;
   escalation_repeat_minutes: number;
   model: string;
+  evidence_enforcement_enabled: boolean;
 }
 
 async function readJson<T>(res: Response): Promise<T> {
@@ -83,6 +84,7 @@ describe("settings routes", () => {
         escalation_l3_after_minutes: 10,
         escalation_repeat_minutes: 10,
         model: DEFAULT_MODEL,
+        evidence_enforcement_enabled: false,
       });
     });
 
@@ -366,6 +368,83 @@ describe("settings routes", () => {
         });
 
         expect(res.status).toBe(400);
+      });
+    });
+
+    // エビデンス強制設定（#386）。AC-7〜AC-11。
+    describe("evidence_enforcement_enabled", () => {
+      it("GET returns false by default when the key is unset (AC-7)", async () => {
+        const app = createApp(db);
+
+        const res = await app.request("/api/settings");
+
+        const body = await readJson<SettingsBody>(res);
+        expect(body.evidence_enforcement_enabled).toBe(false);
+      });
+
+      it('PUT true stores the string "true" in the settings table (AC-8)', async () => {
+        const app = createApp(db);
+
+        const res = await app.request("/api/settings", {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ evidence_enforcement_enabled: true }),
+        });
+
+        expect(res.status).toBe(200);
+        const row = db
+          .prepare("SELECT value FROM settings WHERE key = ?")
+          .get("evidence_enforcement_enabled") as { value: string } | undefined;
+        expect(row?.value).toBe("true");
+      });
+
+      it("GET reflects true immediately after PUT true (AC-9)", async () => {
+        const app = createApp(db);
+
+        await app.request("/api/settings", {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ evidence_enforcement_enabled: true }),
+        });
+
+        const getRes = await app.request("/api/settings");
+        const body = await readJson<SettingsBody>(getRes);
+        expect(body.evidence_enforcement_enabled).toBe(true);
+      });
+
+      it.each([["true"], [1], [null]])(
+        "PUT rejects a non-boolean value (%s) with 400 (AC-10)",
+        async (value) => {
+          const app = createApp(db);
+
+          const res = await app.request("/api/settings", {
+            method: "PUT",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ evidence_enforcement_enabled: value }),
+          });
+
+          expect(res.status).toBe(400);
+        },
+      );
+
+      it("PUT saves no keys at all when evidence_enforcement_enabled is invalid, even if other keys in the same request are valid (AC-11)", async () => {
+        const app = createApp(db);
+
+        const res = await app.request("/api/settings", {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            boss_name: "鬼上司",
+            evidence_enforcement_enabled: "true",
+          }),
+        });
+
+        expect(res.status).toBe(400);
+
+        const getRes = await app.request("/api/settings");
+        const body = await readJson<SettingsBody>(getRes);
+        expect(body.boss_name).toBe("ボス");
+        expect(body.evidence_enforcement_enabled).toBe(false);
       });
     });
 

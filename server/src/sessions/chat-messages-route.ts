@@ -5,6 +5,7 @@ import type Anthropic from "@anthropic-ai/sdk";
 import { readJsonBody } from "../lib/read-json-body.js";
 import { recordActivityEvent } from "../activity/activity-events-repository.js";
 import { listTasks } from "../tasks/tasks-repository.js";
+import { countTaskEvidencesByTaskIds } from "../tasks/task-evidences-repository.js";
 import { listRecentDecisions } from "../decisions/decisions-repository.js";
 import { resolveBossSettings } from "../boss/boss-settings.js";
 import {
@@ -21,6 +22,8 @@ import {
 } from "../llm/claude-client.js";
 import { findSessionById, listRecentSessionSummaries } from "./sessions-repository.js";
 import {
+  deleteMessagesFrom,
+  findMessageInSession,
   insertMessage,
   listMessagesBySessionId,
   listTodaysAdhocMessages,
@@ -161,6 +164,47 @@ export function registerChatMessageRoute(
     if (!validation.valid) {
       return c.json({ error: validation.error }, 400);
     }
+    const { content, replaceFromMessageId } = validation.data;
+
+    // やりなおし経路（replaceFromMessageId 指定時）にだけ足すガード
+    // （Issue #376, docs/features/chat-message-rewrite.md 決定3・決定1）。
+    // 通常送信（未指定）はここを一切通らず、既存の 404/400 の契約のみで
+    // 完結する — AC-8d の非回帰。
+    if (replaceFromMessageId !== undefined) {
+      // `session`（L120）は `await readJsonBody(c)` の前に読んだスナップ
+      // ショットなので、その await を挟んで別リクエストが同じセッションを
+      // 終了させる余地がある。ここで読み直してから判定することで、
+      // 「サーバは `ended_at` を信用元にする」（決定3）を await 跨ぎでも
+      // 保つ。
+      const currentSession = findSessionById(db, id) ?? session;
+      if (currentSession.ended_at !== null) {
+        return c.json(
+          {
+            error: "終了したセッションの発言は編集できません",
+            code: "session_already_ended",
+          },
+          409,
+        );
+      }
+
+      const target = findMessageInSession(db, id, replaceFromMessageId);
+      if (!target) {
+        return c.json(
+          {
+            error: `message ${replaceFromMessageId} not found in session ${id}`,
+            code: "message_not_found",
+          },
+          404,
+        );
+      }
+
+      if (target.role === "boss") {
+        return c.json(
+          { error: "ボスの発言は編集できません", code: "message_not_editable" },
+          400,
+        );
+      }
+    }
 
     let client: BossLlmClient;
     try {
@@ -173,11 +217,44 @@ export function registerChatMessageRoute(
       return c.json({ error: message }, 500);
     }
 
-    insertMessage(db, {
-      session_id: id,
-      role: "user",
-      content: validation.data.content,
-    });
+    // 切り捨て（やりなおし時のみ）と新しい発言の挿入は単一トランザクション
+    // （ADR 0005 決定 5）。片方だけが確定する中間状態を作らない
+    // （AC-21）。`insertMessage` より前・`toClaudeMessages(listMessagesBySessionId(...))`
+    // より前に切り捨てを終える必要がある（後段だと書き直した発言自身を消す、
+    // あるいは元の発言が LLM へ渡ってしまう）。
+    //
+    // **この位置は下の 2 つの文脈読み出しより前でなければならない**（#270 を
+    // 取り込んだ時点で担保対象が 1 本から 2 本に増えた）:
+    //   1. `toClaudeMessages(listMessagesBySessionId(...))` — このセッションの会話履歴
+    //   2. `collectTodaysAdhocContext(...)` — 会中のボスへ渡す当日の随時チャット（#367）
+    // どちらも DB を都度読み直すため、物理 DELETE がここで先に確定していれば
+    // 「書き直した後、元の発言はボスの文脈に含まれない」（#255 完了条件）が
+    // 両経路で構造的に成り立つ。切り捨てを下へ動かすとこの保証が静かに壊れる。
+    if (replaceFromMessageId !== undefined) {
+      try {
+        db.transaction(() => {
+          deleteMessagesFrom(db, id, replaceFromMessageId);
+          insertMessage(db, { session_id: id, role: "user", content });
+        })();
+      } catch (err) {
+        // このルートの他の失敗経路（createClaudeClient 初期化失敗）と同じ
+        // 規律: ログにはエラークラス名までしか残さない（ADR 0002 決定 4）。
+        // db.transaction が自動でロールバックしているため、切り捨てだけが
+        // 確定した中間状態にはなっていない（AC-21）。
+        console.error(
+          "chat message rewrite transaction failed:",
+          err instanceof Error ? err.name : typeof err,
+        );
+        // No `code` field here: unlike the guard rejections above, this
+        // failure isn't part of the spec's error-code table (docs/features/
+        // chat-message-rewrite.md 「画面・API設計 / API」) — it's an
+        // unexpected persistence failure, same shape as this route's other
+        // uncoded 500 (the createClaudeClient failure branch above).
+        return c.json({ error: "書き直した発言の保存に失敗しました" }, 500);
+      }
+    } else {
+      insertMessage(db, { session_id: id, role: "user", content });
+    }
     recordActivityEvent(db, { type: "chat_message" });
 
     const tasks = listTasks(db);
@@ -194,6 +271,10 @@ export function registerChatMessageRoute(
     const now = new Date();
     const system = buildPersonaPrompt(persona, {
       tasks,
+      // 決定 3-a: ボスが自分の裁定（要否）と現状（添付件数）を参照できる
+      // ようにする。ボスチャットは update_task ツールで完了操作にも使われる
+      // 経路なので、この呼び出し元だけは実件数を渡す必要がある。
+      taskEvidenceCounts: countTaskEvidencesByTaskIds(db, tasks.map((task) => task.id)),
       recentDecisions,
       recentSessionSummaries,
       todaysAdhocMessages: collectTodaysAdhocContext(db, session.type, now),

@@ -23,6 +23,13 @@ export interface Task {
   created_at: string;
   updated_at: string;
   completed_at: string | null;
+  /**
+   * 完了報告にエビデンスが要るか（機能仕様
+   * docs/features/completion-evidence-enforcement.md 明示的な仮定 8）。DB は
+   * INTEGER だが HTTP 境界では常に boolean（`server/src/tasks/tasks-repository.ts`
+   * の `mapTaskRow` が変換する）。
+   */
+  evidence_required: boolean;
 }
 
 export interface NewTaskInput {
@@ -30,6 +37,8 @@ export interface NewTaskInput {
   description?: string | null;
   priority?: TaskPriority | null;
   due_at?: string | null;
+  /** 省略時サーバ既定は `false`（`TaskForm` は明示的なチェックボックスで送る）。 */
+  evidence_required?: boolean;
 }
 
 export interface TaskPatchInput {
@@ -39,4 +48,5 @@ export interface TaskPatchInput {
   due_at?: string | null;
   status?: TaskStatus;
   boss_comment?: string | null;
+  evidence_required?: boolean;
 }

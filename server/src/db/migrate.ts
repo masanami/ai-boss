@@ -255,6 +255,38 @@ const MIGRATIONS: Record<number, MigrationEntry> = {
     ALTER TABLE notifications ADD COLUMN delivered INTEGER;
     ALTER TABLE notifications ADD COLUMN channel TEXT;
   `,
+  // エビデンス強制（#256 決定 1-b / #386）: 完了報告のファイル添付・リンクを
+  // 保持する task_evidences テーブルと、タスクごとの要否フラグ
+  // tasks.evidence_required を追加する。
+  //
+  // - `task_evidences.kind` ごとにどの列が非 null かは DB の CHECK では縛らな
+  //   い（ADR 0005 決定 5）。整合はサーバ側の検証層 1 箇所で担保する
+  //   （機能仕様 docs/features/completion-evidence-enforcement.md 決定 1-b）
+  // - `task_evidences.task_id` は `tasks(id)` を参照する外部キー。
+  //   `connection.ts` の `openDatabase` が `PRAGMA foreign_keys = ON` を常時
+  //   有効にしているため、存在しない `task_id` への INSERT は失敗する
+  // - `evidence_required` は真偽値だが SQLite に真偽型は無いため、既存慣習
+  //   （`messages.interrupted`）に合わせて INTEGER + `DEFAULT 0` を使う。
+  //   `DEFAULT 0` により既存行はすべて「不要」になり、設定 OFF→ON の遡及を
+  //   しない（決定 4）という方針と自然に整合する
+  //
+  // 既存 version は書き換えず新しい version として追加する
+  // （docs/adr/0005-sqlite-schema-policy.md 決定 4）。
+  7: `
+    CREATE TABLE IF NOT EXISTS task_evidences (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      task_id INTEGER NOT NULL REFERENCES tasks(id),
+      kind TEXT NOT NULL CHECK (kind IN ('file', 'link')),
+      stored_filename TEXT,
+      original_filename TEXT,
+      mime_type TEXT,
+      size_bytes INTEGER,
+      url TEXT,
+      created_at TEXT NOT NULL
+    );
+
+    ALTER TABLE tasks ADD COLUMN evidence_required INTEGER NOT NULL DEFAULT 0;
+  `,
 };
 
 /**

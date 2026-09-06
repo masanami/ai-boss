@@ -3,7 +3,7 @@ import { existsSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { serve } from "@hono/node-server";
 import { createApp } from "./app.js";
-import { loadConfig } from "./config.js";
+import { loadConfig, resolveEvidenceDir } from "./config.js";
 import { openDatabase } from "./db/connection.js";
 import { runMigrations } from "./db/migrate.js";
 import { startScheduler } from "./scheduler/scheduler.js";
@@ -45,7 +45,17 @@ if (!staticRoot) {
   );
 }
 
-const app = createApp(db, process.env, { staticRoot, llmBackend: config.llmBackend });
+// エビデンス強制（#256 決定 1-a / #387）: 保管ディレクトリは既存の DB パス
+// から導出する（新しい環境変数は発明しない）。`config.dbPath` は
+// `:memory:` になり得ない（`loadConfig` の実路のみを通る）ため、ここでは
+// 常に有効なディレクトリが得られる。
+const evidenceDir = resolveEvidenceDir(config.dbPath);
+
+const app = createApp(db, process.env, {
+  staticRoot,
+  llmBackend: config.llmBackend,
+  evidenceDir,
+});
 
 serve({ fetch: app.fetch, port: config.port }, (info) => {
   console.log(`ai-boss server listening on port ${info.port}`);

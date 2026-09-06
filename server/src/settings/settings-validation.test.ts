@@ -222,6 +222,51 @@ describe("validatePutSettingsInput", () => {
     });
   });
 
+  // エビデンス強制設定（#386）。決定 7: JSON は boolean、保存は "true" /
+  // "false" の文字列（"1" / "0" は使わない）。
+  describe("evidence_enforcement_enabled", () => {
+    it("accepts true and normalizes it to the string \"true\"", () => {
+      const result = validatePutSettingsInput({
+        evidence_enforcement_enabled: true,
+      });
+      expect(result).toEqual({
+        valid: true,
+        data: { evidence_enforcement_enabled: "true" },
+      });
+    });
+
+    it("accepts false and normalizes it to the string \"false\"", () => {
+      const result = validatePutSettingsInput({
+        evidence_enforcement_enabled: false,
+      });
+      expect(result).toEqual({
+        valid: true,
+        data: { evidence_enforcement_enabled: "false" },
+      });
+    });
+
+    it('rejects the string "true" (must be a JSON boolean, not a string)', () => {
+      const result = validatePutSettingsInput({
+        evidence_enforcement_enabled: "true",
+      });
+      expect(result.valid).toBe(false);
+    });
+
+    it("rejects the number 1", () => {
+      const result = validatePutSettingsInput({
+        evidence_enforcement_enabled: 1,
+      });
+      expect(result.valid).toBe(false);
+    });
+
+    it("rejects null", () => {
+      const result = validatePutSettingsInput({
+        evidence_enforcement_enabled: null,
+      });
+      expect(result.valid).toBe(false);
+    });
+  });
+
   it("accepts multiple valid keys together", () => {
     const result = validatePutSettingsInput({
       boss_name: "鬼上司",

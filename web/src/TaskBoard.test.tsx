@@ -4,6 +4,7 @@ import TaskBoard from "./TaskBoard";
 import type { Task } from "./task";
 import type { UseTasksResult } from "./use-tasks";
 import { TASK_DRAG_DATA_TYPE } from "./task-dnd";
+import { EVIDENCE_REQUIRED_DISPLAY_MESSAGE, TasksApiError } from "./tasks-api";
 
 // jsdom は DataTransfer を実装しないため、setData/getData を持つ簡易スタブを
 // 自前で用意する（Issue #122）。ドラッグ開始 → ドロップの一連の流れを模すため
@@ -37,6 +38,7 @@ function makeTask(overrides: Partial<Task>): Task {
     created_at: "2026-07-05T00:00:00.000Z",
     updated_at: "2026-07-05T00:00:00.000Z",
     completed_at: null,
+    evidence_required: false,
     ...overrides,
   };
 }
@@ -247,6 +249,60 @@ describe("TaskBoard", () => {
     // 楽観的更新をしないため tasks は変わらず、カードは元の todo カラムに残る
     const todoColumn = screen.getByRole("region", { name: "未着手" });
     expect(within(todoColumn).getByText("todoのタスク")).toBeInTheDocument();
+  });
+
+  it("keeps the card in its original column and shows the fixed evidence-required message when the evidence gate blocks the drop (AC-72/73)", async () => {
+    const task = makeTask({ id: 1, title: "todoのタスク", status: "todo" });
+    const tasksState = makeTasksState({
+      tasks: [task],
+      editTask: vi
+        .fn()
+        .mockRejectedValue(
+          new TasksApiError("サーバの文言A", "evidence_required"),
+        ),
+    });
+
+    render(<TaskBoard tasksState={tasksState} />);
+
+    const dataTransfer = makeDataTransfer(1);
+    const doneColumn = screen.getByRole("region", { name: "完了" });
+
+    fireEvent.dragOver(doneColumn, { dataTransfer });
+    fireEvent.drop(doneColumn, { dataTransfer });
+
+    await waitFor(() =>
+      expect(screen.getByRole("alert")).toHaveTextContent(
+        EVIDENCE_REQUIRED_DISPLAY_MESSAGE,
+      ),
+    );
+    const todoColumn = screen.getByRole("region", { name: "未着手" });
+    expect(within(todoColumn).getByText("todoのタスク")).toBeInTheDocument();
+  });
+
+  it("shows the same fixed message regardless of the server's wording, proving the branch is code-based (AC-76)", async () => {
+    const task = makeTask({ id: 1, title: "todoのタスク", status: "todo" });
+    const tasksState = makeTasksState({
+      tasks: [task],
+      editTask: vi
+        .fn()
+        .mockRejectedValue(
+          new TasksApiError("まったく違う文言B", "evidence_required"),
+        ),
+    });
+
+    render(<TaskBoard tasksState={tasksState} />);
+
+    const dataTransfer = makeDataTransfer(1);
+    const doneColumn = screen.getByRole("region", { name: "完了" });
+
+    fireEvent.dragOver(doneColumn, { dataTransfer });
+    fireEvent.drop(doneColumn, { dataTransfer });
+
+    await waitFor(() =>
+      expect(screen.getByRole("alert")).toHaveTextContent(
+        EVIDENCE_REQUIRED_DISPLAY_MESSAGE,
+      ),
+    );
   });
 
   it("highlights the target column while dragging a card over a different column", () => {

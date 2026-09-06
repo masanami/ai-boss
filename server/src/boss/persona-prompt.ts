@@ -80,6 +80,14 @@ export type PromptPurpose = "chat" | "notification" | "daily-report";
 export interface PersonaPromptContext {
   /** 現在のタスク一覧 */
   tasks: Task[];
+  /**
+   * タスクごとの添付エビデンス件数（`task.id` → 件数。機能仕様
+   * docs/features/completion-evidence-enforcement.md 決定 3-a: ボスが自分の
+   * 裁定（要否）と現状（添付件数）を次のターンで参照できるよう、タスク行に
+   * 載せる）。未指定・キー欠落時は 0 件として扱う（後方互換 — 既存の呼び出し
+   * 元〔通知文面・日報抽出〕はこれを渡さない）。
+   */
+  taskEvidenceCounts?: Record<number, number>;
   /** 直近の決定（新しい順を想定） */
   recentDecisions: RecentDecision[];
   /**
@@ -255,19 +263,36 @@ function formatCurrentDateTimeSection(now: Date): string {
 // ツールが有効な chat プロンプトのみに含め、通知・日報などユーザー可視文面の
 // 生成経路（ツール非公開）には渡さない — モデルが内部 id を文面に
 // エコーするのを防ぐ（PR #149 レビュー指摘）。
-function formatTaskLine(task: Task, includeId: boolean): string {
+// 決定 3-a: エビデンス要否・添付件数の両方を1つの句にまとめる。要否だけで
+// なく常に件数も出す（AC-22: 要不要にかかわらず添付件数がタスク行に含まれる）。
+function formatEvidenceInfo(evidenceRequired: boolean, evidenceCount: number): string {
+  return `${evidenceRequired ? "必須" : "不要"}・添付${evidenceCount}件`;
+}
+
+function formatTaskLine(
+  task: Task,
+  includeId: boolean,
+  evidenceCount: number,
+): string {
   const status = TASK_STATUS_LABELS[task.status];
   const priority = task.priority ? TASK_PRIORITY_LABELS[task.priority] : "未設定";
   const dueAt = task.due_at === null ? "未設定" : formatStoredDateTime(task.due_at);
   const idPart = includeId ? `#${task.id} ` : "";
-  return `- [${status}] ${idPart}${task.title}（優先度: ${priority} / 締切: ${dueAt}）`;
+  const evidenceInfo = formatEvidenceInfo(task.evidence_required, evidenceCount);
+  return `- [${status}] ${idPart}${task.title}（優先度: ${priority} / エビデンス: ${evidenceInfo} / 締切: ${dueAt}）`;
 }
 
-function formatTaskSection(tasks: Task[], includeId: boolean): string {
+function formatTaskSection(
+  tasks: Task[],
+  includeId: boolean,
+  taskEvidenceCounts: Record<number, number>,
+): string {
   if (tasks.length === 0) {
     return "現在登録されているタスクはありません。";
   }
-  return tasks.map((task) => formatTaskLine(task, includeId)).join("\n");
+  return tasks
+    .map((task) => formatTaskLine(task, includeId, taskEvidenceCounts[task.id] ?? 0))
+    .join("\n");
 }
 
 function formatDecisionLine(decision: RecentDecision): string {
@@ -534,7 +559,7 @@ export function buildPersonaPrompt(
   }
 
   sections.push(
-    `現在のタスク一覧:\n${formatTaskSection(context.tasks, purpose === "chat")}`,
+    `現在のタスク一覧:\n${formatTaskSection(context.tasks, purpose === "chat", context.taskEvidenceCounts ?? {})}`,
     `直近の決定:\n${formatDecisionSection(context.recentDecisions)}`,
     `直近の報告履歴:\n${formatSessionSummarySection(context.recentSessionSummaries ?? [])}`,
   );
