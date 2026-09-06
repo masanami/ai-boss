@@ -58,6 +58,7 @@ export interface Settings {
   escalation_l3_after_minutes: number;
   escalation_repeat_minutes: number;
   model: string;
+  evidence_enforcement_enabled: boolean;
 }
 
 /** `PUT /api/settings` accepts a partial update; this app always sends the full form. */
