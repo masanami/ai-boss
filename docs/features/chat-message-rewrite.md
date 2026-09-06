@@ -19,7 +19,8 @@ Issue #254（応答生成の停止）で「停止は中断だけを担い、発�
 - [ ] アクティブなセッション内の**自分の発言（`role: "user"`）すべて**を対象に、編集して送り直せる（直前の 1 件には限定しない）
 - [ ] 送り直すと、対象の発言と**それ以降の同一セッションのメッセージ**（自分の発言・ボスの応答の両方）が削除される
 - [ ] 送り直したあと、**元の発言はボスの文脈（LLM へ渡すメッセージ列）に含まれない**
-- [ ] 実行前に「この操作で N 件（あなたの発言 x 件・ボスの応答 y 件）が削除されます」が提示され、確定操作を経てはじめて実行される
+- [ ] 実行前に「この操作で N 件（あなたの発言 x 件・ボスの応答 y 件）が削除されます」が提示される
+- [ ] 削除は確定操作を経てはじめて実行される
 - [ ] 実行前の提示に「**すでに実行された操作は取り消されません**」が明示される
 - [ ] 終了済みセッション（`ended_at` が非 NULL）の発言は編集できない
 - [ ] ボスの発言（`role: "boss"`）は編集できない
@@ -46,7 +47,8 @@ Issue #254（応答生成の停止）で「停止は中断だけを担い、発�
   - `server/src/sessions/chat-messages-route.ts`（ガードと切り捨ての実行）
   - `web/src/chat.ts`（`ChatEntry` への識別子の付与）
   - `web/src/merge-timeline.ts`（同上）
-  - `web/src/use-chat.ts`（`rewrite` / `activeSessionId`）
+  - `web/src/use-chat.ts`（`rewrite` / `activeSessionId`、および `messageEntry` への識別子の付与）
+  - `web/src/chat-api.ts`（`sendChatMessage` に `replaceFromMessageId` を渡せるようにする）
   - `web/src/ChatView.tsx` / `ChatView.css`（編集 UI・確認 UI）
   - `web/src/select-rewrite-range.ts`（新規・純粋関数）
 - **既存コードとの関係（実コードで確認済み）**:
@@ -208,7 +210,7 @@ Issue #255 が挙げた 6 論点の決定。**いずれも 2026-09-06 に親（f
 
 ### IF / API
 
-チケット間で共有が要る境界は次の 4 点。
+チケット間で共有が要る境界は次の 5 点。
 
 ```ts
 // server/src/sessions/messages-repository.ts
@@ -257,6 +259,17 @@ export function selectRewriteRange(
 // web/src/use-chat.ts — UseChatResult に追加
 //   activeSessionId: number | null;
 //   rewrite: (messageId: number, content: string) => Promise<void>;
+
+// web/src/chat-api.ts — sendChatMessage の新シグネチャ
+//   POST ボディが { content } 固定から、replaceFromMessageId を任意で
+//   含められる形へ変わる。
+export function sendChatMessage(
+  sessionId: number,
+  content: string,
+  handlers: /* 既存の SSE ハンドラ型 */ unknown,
+  signal: AbortSignal,
+  replaceFromMessageId?: number,
+): /* 既存の戻り値型 */ unknown;
 ```
 
 `selectRewriteRange` の規則: `entries` は既に `buildTimeline` の並び（`created_at`, phase, `id` 昇順）である。対象エントリの位置以降にある `kind: "message"` かつ `sessionId === activeSessionId` のエントリを削除対象とする。**同一セッションのメッセージに限れば、この位置順はサーバの `(created_at, id)` 複合順序と一致する**（`buildTimeline` の `SortableEntry` が同じ規則で並べているため）。範囲内の `kind: "tool"` エントリも表示上は取り除く（導出決定 6-b）が、件数には含めない（決定 6 の内訳は「あなたの発言・ボスの応答」であるため）。`kind: "boundary"` は決して対象にしない。
@@ -274,7 +287,7 @@ export function selectRewriteRange(
 1. **サーバ: 切り捨てのリポジトリ関数**（`messages-repository.ts`）— `deleteMessagesFrom` / `findMessageInSession`。実 DB（`:memory:`）に対する単体テストで複合順序の規則を固定する。他が依存する土台。
 2. **サーバ: `replaceFromMessageId` の受け口とガード**（`sessions-validation.ts` / `chat-messages-route.ts`）— 1 に依存。3 つの拒否経路と、切り捨て＋挿入のトランザクション、そして「切り捨て後の文脈が LLM へ渡る」ことの統合テスト。
 3. **Web: エントリへの識別子付与と範囲算出**（`chat.ts` / `merge-timeline.ts` / `select-rewrite-range.ts`）— 1・2 と独立に着手できる。`merge-timeline.test.ts` の期待値更新を伴う（後述）。
-4. **Web: `useChat` のやりなおし経路**（`use-chat.ts`）— 2・3 に依存。`activeSessionId` の公開と `rewrite`。
+4. **Web: `useChat` のやりなおし経路**（`use-chat.ts` / `chat-api.ts`）— 2・3 に依存。`activeSessionId` の公開と `rewrite`、および `sendChatMessage` への `replaceFromMessageId` 受け渡し。
 5. **Web: 編集 UI と確認 UI**（`ChatView.tsx` / `ChatView.css`）— 3・4 に依存。
 
 ## 実装時に必ず対処する波及点
@@ -284,12 +297,13 @@ export function selectRewriteRange(
 - **切り捨ての位置**: `insertMessage` より**前**、`toClaudeMessages(listMessagesBySessionId(...))` より前で行う。後ろに置くと書き直した発言自身を消す、あるいは元の発言が LLM へ渡る。
 - **終了済みセッションのガードはやりなおし経路にだけ足す**: 通常送信（`replaceFromMessageId` 未指定）に 409 を足すと、既存の `chat-messages-route.test.ts` の契約と `use-chat.ts` の想定（サーバ側ガードは無い）を黙って変えることになる。
 - **朝会の冒頭あいさつ**（#271）: セッションの先頭は `role: "boss"` のことがある。ユーザーの最初の発言を切り捨ててもこの行は残り、`toClaudeMessages` の先頭 `assistant` 除去がそのまま効く。**この除去ロジックを触らないこと**（`LLM_BACKEND=api` でのみ露見する経路であり、既存の回帰テストが唯一の防御である）。
+- **`buildTimeline` を通らない追記経路にも識別子を付ける（見落とすと確認 UI が過少表示になる）**: `web/src/use-chat.ts` の `messageEntry` ヘルパーは、SSE の `done` で届いたボスの応答を `buildTimeline` を経由せず直接タイムラインへ積む。ここに `messageId` / `sessionId` を付け忘れると、**リロードせずに複数ターン会話した状態**でそれより前の自分の発言を編集したとき、サーバでは削除されるボス応答が `selectRewriteRange` の対象から漏れ、**確認 UI の件数とハイライトが実際の削除範囲より少なくなる**。決定 6 が「実行前の提示だけが唯一の安全機構」と置いている以上、これは安全機構そのものの破れである。`messageEntry`（および `rewrite` 成功時に積むエントリ）にも `messageId: message.id` / `sessionId: message.session_id` を必ず設定すること。**`selectRewriteRange` 単体のユニットテストでは検出できない**（テストが手組みする `entries` は識別子が揃っているため）ので、`useChat` レベルの検証（AC-38c）で固定する。
 - **切り捨て後にセッションのユーザー発言が 0 件になりうる**: 夕会でユーザーの最初の発言を編集対象にすると、切り捨て直後の一瞬だけ発言 0 件になる。同一トランザクションで書き直しが入るため確定状態では 0 件にならないが、[ADR 0008](../adr/0008-evening-dialogue-prerequisite.md) 決定 1 の前提条件（ユーザー発言 1 件以上）に触れる箇所なので、テストで「やりなおし後も日報生成の前提条件を満たす」ことを確認すること。
 
 ## 既存テストの契約への影響
 
-- **意図的に壊す**: `web/src/merge-timeline.test.ts` は `buildTimeline` の出力を `toEqual` で深い等価比較している（同ファイル 143 行目・165 行目）。`messageId` / `sessionId` の追加でこれらは失敗する。**期待値へ新フィールドを足して更新する**。振る舞いの契約（並び順・境界の導出）は変わらないため、**テスト名は変えない**。
-- **意図的に壊す**: `web/src/use-chat.test.ts` の `result.current.entries` を `toEqual` で比較しているテスト群（364・417・573・1042・1080・1111 行目付近）も同じ理由で期待値の更新が要る。こちらもテスト名は変えない。
+- **意図的に壊す**: `web/src/merge-timeline.test.ts` は `buildTimeline` の出力を `toEqual` で深い等価比較している。`kind: "message"` を含む `toEqual` 比較はすべて `messageId` / `sessionId` の追加で失敗し、`kind: "boundary"` のみの比較は影響を受けない。着手時に `grep -n 'toEqual' web/src/merge-timeline.test.ts` で該当箇所を洗い出し、**期待値に `kind: "message"` を含むものすべてに新フィールドを足して更新する**（行番号を網羅の根拠にしない）。振る舞いの契約（並び順・境界の導出）は変わらないため、**テスト名は変えない**。
+- **意図的に壊す**: `web/src/use-chat.test.ts` の `result.current.entries` を `toEqual` で比較しているテストのうち、`kind: "message"` を含む期待値を持つものすべてが同じ理由で更新を要る（空配列比較など `kind: "message"` を含まないものは対象外）。着手時に `grep -n 'entries).toEqual' web/src/use-chat.test.ts` で対象箇所を再確認すること。こちらもテスト名は変えない。
 - **壊さない**: `server/src/sessions/chat-messages-route.test.ts` / `chat-messages-route.client-abort.test.ts` / `chat-messages-route.issue-117.test.ts` — `replaceFromMessageId` は任意フィールドで、未指定時の挙動を変えないため。**未指定時の既存挙動が変わっていないことを確かめるテストを 1 本残す**こと。
 - **壊さない**: `web/src/ChatView.test.tsx` — 追加要素のみで既存の描画契約は変えない。ただし編集ボタンが `listitem` の中に増えるため、ボタンの総数や DOM 構造に依存しているテストがあれば更新する（`getAllByRole("listitem")` の件数に依存している 1004 行目付近は `listitem` の数を変えないので影響しない）。
 
@@ -307,13 +321,16 @@ export function selectRewriteRange(
 
 ### サーバ: やりなおし経路のガード
 
-- [ ] AC-8: `replaceFromMessageId` を指定せずに `POST /api/sessions/:id/messages` を呼んだときの挙動（永続化・活動イベント・SSE・エラー応答）が、本機能の実装前と変わらない
+- [ ] AC-8: `replaceFromMessageId` を指定せずに `POST /api/sessions/:id/messages` を呼んだときの永続化の挙動（メッセージの保存内容）が、本機能の実装前と変わらない
+- [ ] AC-8b: `replaceFromMessageId` を指定せずに呼んだときの活動イベント（`chat_message` の記録内容）が、本機能の実装前と変わらない
+- [ ] AC-8c: `replaceFromMessageId` を指定せずに呼んだときの SSE ストリームの形（`text` / `tool` / `done` / `error` の順序・内容）が、本機能の実装前と変わらない
+- [ ] AC-8d: `replaceFromMessageId` を指定せずに呼んだときのエラー応答（既存の 400 / 404 のステータス・ボディ）が、本機能の実装前と変わらない
 - [ ] AC-9: `replaceFromMessageId` が正の整数でない（文字列・0・負数・小数）とき 400 を返し、メッセージを削除も挿入もしない
 - [ ] AC-10: 対象セッションの `ended_at` が非 NULL のとき 409 と `code: "session_already_ended"` を返し、メッセージを削除も挿入もしない
 - [ ] AC-11: `replaceFromMessageId` が別セッションのメッセージ id のとき 404 と `code: "message_not_found"` を返し、メッセージを削除も挿入もしない
 - [ ] AC-12: `replaceFromMessageId` が存在しないメッセージ id のとき 404 と `code: "message_not_found"` を返す
 - [ ] AC-13: `replaceFromMessageId` が `role: "boss"` のメッセージのとき 400 と `code: "message_not_editable"` を返し、メッセージを削除も挿入もしない
-- [ ] AC-14: いずれの拒否経路でも LLM 呼び出しが行われない
+- [ ] AC-14: AC-9〜AC-13 の**各拒否経路それぞれ**について、LLM 呼び出しが行われない（5 経路を代表 1 件で済ませず、経路ごとに検証する）
 
 ### サーバ: やりなおしの実行
 
@@ -326,7 +343,8 @@ export function selectRewriteRange(
 - [ ] AC-21: 書き直した発言の挿入が失敗した場合、切り捨ても行われない（削除だけが確定した状態にならない）
 - [ ] AC-22: やりなおしの応答は従来と同じ SSE ストリーム（`text` / `done`）で返る
 - [ ] AC-23: セッション先頭にボスの冒頭あいさつ（#271）がある状態で最初のユーザー発言をやりなおしても、あいさつ行は削除されず、LLM へ渡るメッセージ列の先頭は `user` になる
-- [ ] AC-24: 夕会セッションで唯一のユーザー発言をやりなおした後も、そのセッションはユーザー発言 1 件以上を満たし、日報生成の前提条件（ADR 0008 決定 1）を満たす
+- [ ] AC-24: 夕会セッションで唯一のユーザー発言をやりなおした直後、そのセッションのユーザー発言件数は 1 件以上のままである（ADR 0008 決定 1 の前提条件のうち**発言件数の要件**。この時点ではセッションは未終了なので、前提条件の連言全体はまだ成立しない）
+- [ ] AC-24b: 上記のやりなおしを経た夕会セッションを終了すると、日報生成の前提条件（ADR 0008 決定 1）が成立し、日報が生成される
 
 ### Web: 範囲算出（純粋関数）
 
@@ -346,7 +364,9 @@ export function selectRewriteRange(
 - [ ] AC-35: `rewrite` の後、削除範囲外のエントリ（対象より前・別セッション）はタイムラインに残る
 - [ ] AC-36: `rewrite` が失敗した場合、エラーが表示され、タイムラインからエントリが消えない
 - [ ] AC-37: `sending` または `switching` の最中に `rewrite` を呼んでも何も起きない（既存の送信ガードと同じ抑止）
-- [ ] AC-38: `buildTimeline` が生成するメッセージエントリは `messageId` と `sessionId` を持ち、`useChat` の楽観追記エントリは持たない
+- [ ] AC-38: `buildTimeline` が生成するメッセージエントリは `messageId` と `sessionId` を持つ
+- [ ] AC-38b: `useChat` が送信時に楽観追記する自分の発言のエントリは、`messageId` を持たない（サーバ id がまだ無いため）
+- [ ] AC-38c: SSE の `done` で届いたボスの応答を `useChat` が追記したエントリは、`messageId` と `sessionId` を持つ（リロードを挟まずに複数ターン会話したあと、それより前の自分の発言を編集したときの削除件数が、実際にサーバが削除する件数と一致することまで確認する）
 
 ### Web: 画面
 
@@ -357,7 +377,7 @@ export function selectRewriteRange(
 - [ ] AC-43: 生成中（`sending`）は編集操作が表示されない
 - [ ] AC-44: 編集操作を開始しただけでは削除も送信も起きない（`fetch` が呼ばれない）
 - [ ] AC-45: 編集操作を開始すると、削除される件数と内訳（あなたの発言 x 件・ボスの応答 y 件）が表示される
-- [ ] AC-46: 編集操作を開始すると、「すでに実行された操作は取り消されません」が表示される
+- [ ] AC-46: 編集操作を開始すると、**すでに実行された操作は取り消されない旨の警告**が表示される（決定 4 が要求するのは「明示すること」＝意味であり、文言そのものではない。既定の文言は「すでに実行された操作は取り消されません」とし、テストはこの既定文言に対して書く。文言を変えるならテストも同時に変える）
 - [ ] AC-47: 編集操作を開始すると、削除対象のエントリが専用のクラス名で区別して表示される
 - [ ] AC-48: 削除対象のハイライトのクラス名は `.chat-tool-notice` / `.chat-boundary` / `.chat-message-interrupted` のいずれとも異なる
 - [ ] AC-49: 確定操作を押すとやりなおしが実行される
@@ -378,7 +398,7 @@ export function selectRewriteRange(
 4. **編集操作の見せ方**（ホバーで浮かせるか常設か）は CSS の裁量に委ねる。ただし**キーボードで到達でき、テストから安定して取得できる**こと（`aria-label` 等）を要件とする。ChatGPT のホバー表示に寄せてもよいが、ホバー専用にはしない。
 5. **削除件数 N は対象発言自身を含む**。「この発言を含む N 件が削除されます」という言い回しで曖昧さを消す。
 6. **`interrupted` なボス応答も通常の応答と同じく切り捨て範囲に入る**（特別扱いしない）。
-7. **文言**（確認文・エラーメッセージ）は本仕様のものを初期値とし、実装で調整してよい。ただし UI の分岐は `code` で行い、文言に依存させない（ADR 0008 決定 2）。
+7. **文言**（確認文・エラーメッセージ）は本仕様のものを既定値とする。**受入基準が要求するのは意味であって文字列一致ではない**（AC-46 の書き方に揃える）。実装で文言を調整してもよいが、そのときは同じ変更でテストの期待値も変える（テストは既定文言に対して書く）。UI の分岐は `code` で行い、文言に依存させない（ADR 0008 決定 2）。
 8. **`user_version` は 6 のまま**であり、本機能はマイグレーションを追加しない。将来 `user_version` が進んでいたら、その番号を基準に読み替える。
 
 ## 関連
