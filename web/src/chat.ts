@@ -47,7 +47,7 @@ export interface ChatToolEvent {
  * precedent.
  */
 export type ChatEntry =
-  | {
+  | ({
       kind: "message";
       key: string;
       role: ChatRole;
@@ -60,7 +60,41 @@ export type ChatEntry =
        * partial. Drives the interrupted rendering in `ChatView`.
        */
       interrupted?: boolean;
-    }
+    } & (
+      | {
+          /**
+           * The server-persisted message id, and the session it belongs to
+           * (Issue #377). Always set together by `buildTimeline`, which only
+           * ever builds entries from persisted `ChatMessage`s (AC-38) — this
+           * pair is intersected with the "neither" shape below (rather than
+           * each field being independently optional) so a value with only
+           * one of the two cannot be constructed: `selectRewriteRange`
+           * requires both to identify a message, and a half-set entry would
+           * silently fail that match and under-count a deletion (決定 6's
+           * safeguard is only as good as this pairing).
+           */
+          messageId: number;
+          sessionId: number;
+        }
+      | {
+          /**
+           * Both omitted for an entry `buildTimeline` did not build:
+           * `useChat` appends these directly (an optimistic send, or a
+           * streamed reply's `onDone`/interrupted-abort handling) without
+           * looking them up. **Known gap (tracked for Issue #378, not this
+           * ticket):** some of these entries *are* already server-persisted
+           * by the time they exist on screen (the POST that created them has
+           * resolved), so `selectRewriteRange` treating "no identifiers" as
+           * "not part of any session's deletion range" under-counts a
+           * rewrite that would in fact delete them — the conservative
+           * failure mode of the two only because it never over-promises a
+           * deletion. #378 closes this by having `useChat` attach the real
+           * identifiers to every entry it appends, once they are known.
+           */
+          messageId?: undefined;
+          sessionId?: undefined;
+        }
+    ))
   | { kind: "tool"; key: string; tool: ChatToolEvent }
   | {
       kind: "boundary";
