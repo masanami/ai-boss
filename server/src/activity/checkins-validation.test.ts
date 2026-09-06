@@ -7,7 +7,13 @@ describe("validateCheckinInput", () => {
 
     expect(result).toEqual({
       valid: true,
-      data: { type: "checkin", task_id: null, note: null, expected_minutes: null },
+      data: {
+        type: "checkin",
+        task_id: null,
+        note: null,
+        expected_minutes: null,
+        occurred_at: null,
+      },
     });
   });
 
@@ -47,7 +53,13 @@ describe("validateCheckinInput", () => {
 
       expect(result).toEqual({
         valid: true,
-        data: { type: "task_start", task_id: 1, note: null, expected_minutes: null },
+        data: {
+          type: "task_start",
+          task_id: 1,
+          note: null,
+          expected_minutes: null,
+          occurred_at: null,
+        },
       });
     });
 
@@ -79,7 +91,13 @@ describe("validateCheckinInput", () => {
 
       expect(result).toEqual({
         valid: true,
-        data: { type: "task_pause", task_id: 1, note: null, expected_minutes: null },
+        data: {
+          type: "task_pause",
+          task_id: 1,
+          note: null,
+          expected_minutes: null,
+          occurred_at: null,
+        },
       });
     });
 
@@ -120,7 +138,13 @@ describe("validateCheckinInput", () => {
 
       expect(result).toEqual({
         valid: true,
-        data: { type: "checkin", task_id: null, note: null, expected_minutes: null },
+        data: {
+          type: "checkin",
+          task_id: null,
+          note: null,
+          expected_minutes: null,
+          occurred_at: null,
+        },
       });
     });
 
@@ -129,7 +153,13 @@ describe("validateCheckinInput", () => {
 
       expect(result).toEqual({
         valid: true,
-        data: { type: "break_end", task_id: null, note: null, expected_minutes: null },
+        data: {
+          type: "break_end",
+          task_id: null,
+          note: null,
+          expected_minutes: null,
+          occurred_at: null,
+        },
       });
     });
 
@@ -166,6 +196,7 @@ describe("validateCheckinInput", () => {
           task_id: null,
           note: null,
           expected_minutes: 15,
+          occurred_at: null,
         },
       });
     });
@@ -214,6 +245,89 @@ describe("validateCheckinInput", () => {
       expect(result.valid).toBe(false);
       if (!result.valid) {
         expect(result.error).toContain("note");
+      }
+    });
+  });
+
+  describe("occurred_at", () => {
+    it("accepts a valid ISO 8601 date-time occurred_at (AC-1)", () => {
+      const result = validateCheckinInput({
+        type: "checkin",
+        occurred_at: "2026-07-05T09:00:00.000Z",
+      });
+
+      expect(result.valid).toBe(true);
+      if (result.valid) {
+        expect(result.data.occurred_at).toBe("2026-07-05T09:00:00.000Z");
+      }
+    });
+
+    it("defaults occurred_at to null when omitted (AC-2)", () => {
+      const result = validateCheckinInput({ type: "checkin" });
+
+      expect(result.valid).toBe(true);
+      if (result.valid) {
+        expect(result.data.occurred_at).toBeNull();
+      }
+    });
+
+    it("treats an explicit null occurred_at as omitted (AC-2)", () => {
+      const result = validateCheckinInput({
+        type: "checkin",
+        occurred_at: null,
+      });
+
+      expect(result.valid).toBe(true);
+      if (result.valid) {
+        expect(result.data.occurred_at).toBeNull();
+      }
+    });
+
+    it("rejects a date-only occurred_at (YYYY-MM-DD) (AC-3)", () => {
+      const result = validateCheckinInput({
+        type: "checkin",
+        occurred_at: "2026-07-05",
+      });
+
+      expect(result.valid).toBe(false);
+      if (!result.valid) {
+        expect(result.error).toContain("occurred_at");
+      }
+    });
+
+    it("rejects a non-string occurred_at (AC-3)", () => {
+      const result = validateCheckinInput({
+        type: "checkin",
+        occurred_at: 12345,
+      });
+
+      expect(result.valid).toBe(false);
+      if (!result.valid) {
+        expect(result.error).toContain("occurred_at");
+      }
+    });
+
+    it("rejects an occurred_at that is not a valid ISO 8601 string (AC-3)", () => {
+      const result = validateCheckinInput({
+        type: "checkin",
+        occurred_at: "not-a-date",
+      });
+
+      expect(result.valid).toBe(false);
+      if (!result.valid) {
+        expect(result.error).toContain("occurred_at");
+      }
+    });
+
+    it("rejects an occurred_at with a non-existent calendar date (AC-3)", () => {
+      const result = validateCheckinInput({
+        type: "checkin",
+        occurred_at: "2026-02-30T09:00:00.000Z",
+      });
+
+      expect(result.valid).toBe(false);
+      if (!result.valid) {
+        expect(result.error).toContain("occurred_at");
       }
     });
   });

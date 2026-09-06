@@ -44,6 +44,164 @@ describe("useCheckinPanel", () => {
     expect(result.current.status).toBe("ready");
   });
 
+  describe("submitCheckins (#243 判断6 の直列送信)", () => {
+    it("posts inputs in order, stops at the first failed POST, and reports the posted count", async () => {
+      const fetchMock = vi.fn((url: string, init?: RequestInit) => {
+        if (url === "/api/activity/today") {
+          return Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve([]) });
+        }
+        const body = JSON.parse(init?.body as string) as { type: string };
+        if (body.type === "break_end") {
+          return Promise.resolve({
+            ok: false,
+            status: 400,
+            json: () => Promise.resolve({ error: "bad break_end" }),
+          });
+        }
+        return Promise.resolve({ ok: true, status: 201, json: () => Promise.resolve(body) });
+      });
+      vi.stubGlobal("fetch", fetchMock);
+      const { result } = renderHook(() => useCheckinPanel(vi.fn()));
+      await waitFor(() => expect(result.current.status).toBe("ready"));
+
+      let outcome: { posted: number; ok: boolean } | undefined;
+      await act(async () => {
+        outcome = await result.current.submitCheckins([
+          { type: "break_start" },
+          { type: "break_end" },
+          { type: "checkin" },
+        ]);
+      });
+
+      expect(outcome).toEqual({ posted: 1, ok: false });
+      expect(result.current.submitError).toBe("bad break_end");
+      const posted = fetchMock.mock.calls
+        .filter(([url]) => url === "/api/checkins")
+        .map(([, init]) => (JSON.parse(init?.body as string) as { type: string }).type);
+      expect(posted).toEqual(["break_start", "break_end"]);
+    });
+
+    it("returns ok even when the activity reload after all POSTs fails, and refreshes tasks first", async () => {
+      let activityCalls = 0;
+      const fetchMock = vi.fn((url: string, init?: RequestInit) => {
+        if (url === "/api/activity/today") {
+          activityCalls += 1;
+          return activityCalls === 1
+            ? Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve([]) })
+            : Promise.reject(new Error("network error"));
+        }
+        const body = JSON.parse(init?.body as string) as { type: string };
+        return Promise.resolve({ ok: true, status: 201, json: () => Promise.resolve(body) });
+      });
+      vi.stubGlobal("fetch", fetchMock);
+      const refreshTasks = vi.fn().mockResolvedValue(undefined);
+      const { result } = renderHook(() => useCheckinPanel(refreshTasks));
+      await waitFor(() => expect(result.current.status).toBe("ready"));
+
+      let outcome: { posted: number; ok: boolean } | undefined;
+      await act(async () => {
+        outcome = await result.current.submitCheckins([
+          { type: "break_start" },
+          { type: "break_end" },
+        ]);
+      });
+
+      expect(outcome).toEqual({ posted: 2, ok: true });
+      expect(result.current.submitError).toBeNull();
+      expect(refreshTasks).toHaveBeenCalledTimes(1);
+      expect(result.current.status).toBe("error");
+    });
+
+    it("reconciles a lost response mid-sequence against the refreshed activity and continues to the next input (突き合わせ規律)", async () => {
+      // 1 件目（break_start, occurred_at 付き）はサーバが記録したが JSON 解釈に
+      // 失敗。再取得一覧に同 type・同時刻があれば送信済みとして 2 件目へ進む。
+      let recorded: ActivityEvent[] = [];
+      const fetchMock = vi.fn((url: string, init?: RequestInit) => {
+        if (url === "/api/activity/today") {
+          return Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve(recorded) });
+        }
+        const body = JSON.parse(init?.body as string) as { type: ActivityEvent["type"]; occurred_at: string };
+        recorded = [
+          ...recorded,
+          { ...BREAK_START_EVENT, id: recorded.length + 1, type: body.type, created_at: body.occurred_at },
+        ];
+        if (body.type === "break_start") {
+          return Promise.resolve({ ok: true, status: 201, json: () => Promise.reject(new Error("lost")) });
+        }
+        return Promise.resolve({ ok: true, status: 201, json: () => Promise.resolve(body) });
+      });
+      vi.stubGlobal("fetch", fetchMock);
+      const { result } = renderHook(() => useCheckinPanel(vi.fn()));
+      await waitFor(() => expect(result.current.status).toBe("ready"));
+
+      let outcome: { posted: number; ok: boolean } | undefined;
+      await act(async () => {
+        outcome = await result.current.submitCheckins([
+          { type: "break_start", occurred_at: "2026-07-06T08:00:00.000Z" },
+          { type: "break_end", occurred_at: "2026-07-06T08:30:00.000Z" },
+        ]);
+      });
+
+      expect(outcome).toEqual({ posted: 2, ok: true });
+      expect(result.current.submitError).toBeNull();
+      const types = fetchMock.mock.calls
+        .filter(([url]) => url === "/api/checkins")
+        .map(([, init]) => (JSON.parse(init?.body as string) as { type: string }).type);
+      expect(types).toEqual(["break_start", "break_end"]);
+    });
+
+    it("does not reconcile a lost response for an input without occurred_at", async () => {
+      const fetchMock = vi.fn((url: string) => {
+        if (url === "/api/activity/today") {
+          return Promise.resolve({
+            ok: true,
+            status: 200,
+            json: () => Promise.resolve([{ ...BREAK_START_EVENT, id: 9 }]),
+          });
+        }
+        return Promise.resolve({ ok: true, status: 201, json: () => Promise.reject(new Error("lost")) });
+      });
+      vi.stubGlobal("fetch", fetchMock);
+      const { result } = renderHook(() => useCheckinPanel(vi.fn()));
+      await waitFor(() => expect(result.current.status).toBe("ready"));
+
+      let outcome: { posted: number; ok: boolean } | undefined;
+      await act(async () => {
+        outcome = await result.current.submitCheckins([{ type: "break_start" }]);
+      });
+
+      expect(outcome).toEqual({ posted: 0, ok: false });
+      expect(result.current.submitError).toBe("lost");
+    });
+  });
+
+  it("submitCheckin treats a lost response as success when the refreshed activity contains the same type at occurred_at (突き合わせ規律)", async () => {
+    const occurredAt = "2026-07-06T08:30:00.000Z";
+    let recorded: ActivityEvent[] = [];
+    const fetchMock = vi.fn((url: string, init?: RequestInit) => {
+      if (url === "/api/activity/today") {
+        return Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve(recorded) });
+      }
+      const body = JSON.parse(init?.body as string) as { type: ActivityEvent["type"]; occurred_at: string };
+      recorded = [{ ...BREAK_START_EVENT, id: 1, type: body.type, created_at: body.occurred_at }];
+      return Promise.resolve({ ok: true, status: 201, json: () => Promise.reject(new Error("lost")) });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const refreshTasks = vi.fn().mockResolvedValue(undefined);
+    const { result } = renderHook(() => useCheckinPanel(refreshTasks));
+    await waitFor(() => expect(result.current.status).toBe("ready"));
+
+    let ok: boolean | undefined;
+    await act(async () => {
+      ok = await result.current.submitCheckin({ type: "break_end", occurred_at: occurredAt });
+    });
+
+    expect(ok).toBe(true);
+    expect(result.current.submitError).toBeNull();
+    expect(result.current.events.map((event) => event.type)).toEqual(["break_end"]);
+    expect(refreshTasks).toHaveBeenCalledTimes(1);
+  });
+
   it("sets an error status when the initial fetch fails", async () => {
     vi.stubGlobal(
       "fetch",
