@@ -40,16 +40,15 @@
 
 ## 機能要件
 
-- [ ] 朝会で、その日の仕事の進め方が適切かを点検するメンタリングのやり取りが行われる
-- [ ] メンタリングの点検観点が固定のチェックリストではなく、その日の文脈から選ばれる
+- [ ] 朝会のチャット送信時に組み立てられるシステムプロンプトへ、進め方を点検させる指示が積まれる（**検証範囲は指示の挿入までとし、ボスが実際に何を指摘したかの妥当性はテストしない**。判断 4）
+- [ ] メンタリングの点検観点が固定のチェックリストではなく、その日の文脈から選ばれる（指示文が限定列挙を課さない）
 - [ ] メンタリングを強制するかどうかを設定で切り替えられる
 - [ ] メンタリングの強制は、設定が未設定のときオンとして扱われる
 - [ ] 強制がオンのとき、メンタリングを終えていない朝会は終了できない
 - [ ] 終了がブロックされたことを、UI が安定した `code` で判別できる
 - [ ] 強制がオフのとき、朝会は従来どおりの流れで進み終了できる
 - [ ] 朝会以外でもメンタリングを開始できる導線がある
-- [ ] メンタリングで扱った観点と結論が記録として残る
-- [ ] 記録されたメンタリングを決定ログ画面から参照できる
+- [ ] メンタリングで扱った観点と結論が、会話ログとは別に構造化された記録として残る
 - [ ] 夕会の終了が本機能によってブロックされない
 - [ ] 夕会終了時のセッション要約生成が従来どおり動作する
 - [ ] 夕会終了時の日報生成フックが従来どおり動作する
@@ -66,7 +65,7 @@
 - 変更対象:
   - `server/src/boss/persona-prompt.ts`（`MENTORING_FLOW_INSTRUCTION` の追加と `MORNING_FLOW_INSTRUCTION` への差し込み）
   - `server/src/boss/mentoring-tool.ts`（新規: `record_mentoring`）・`server/src/boss/boss-tools.ts`（`BOSS_TOOLS` への追加とディスパッチ）
-  - `server/src/decisions/decisions-repository.ts`（`insertDecision` に `kind` を任意引数として追加）
+  - `server/src/decisions/decisions-repository.ts`（`insertDecision` に `kind` を任意引数として追加。あわせて**セッション単位でメンタリング記録を数える新規関数**〔例: `countMentoringDecisionsBySessionId`〕を追加する。現在の `decisions-repository.ts` は全件取得と単一行取得しか持たず、`session_id` で絞る関数が無いため。DB アクセスをリポジトリに閉じる既存の作法を守り、ルートから直接 SQL を書かない）
   - `server/src/sessions/mentoring-gate.ts`（新規: 完了判定の純粋関数）・`sessions-routes.ts`（`POST /:id/end` の前提条件チェック）
   - `server/src/sessions/chat-messages-route.ts`（メンタリング指示を積む条件の判定）・`sessions-validation.ts`
   - `server/src/settings/settings-validation.ts`（`morning_mentoring_required` の追加とバリデータ）・`settings-routes.ts`（実効設定への追加）
@@ -104,7 +103,7 @@
 ```
 
 - キー未設定のときは `true`（＝オン）を返す。
-- `PUT` は boolean のみ受理する（文字列 `"true"` は 400）。
+- `PUT` は boolean のみ受理する。文字列 `"true"` も `null` も 400 とする（`boss_strictness` と同じ扱い。`null` を「未設定へ戻す」として受理する `boss_custom_instructions` の規約は、`GET` が `null` を返すキーの往復のためにあるもので、常に `true` / `false` に解決される本キーには当てはまらない。オンへ戻したければ `true` を送ればよい）。
 
 ### チャット（`POST /api/sessions/:id/messages`）
 
@@ -114,6 +113,7 @@
 
 - `mentoring: true` のとき、そのターンのシステムプロンプトへ `MENTORING_FLOW_INSTRUCTION` を積む。
 - 朝会（`type = "morning"`）かつ強制設定がオンのときは、`mentoring` の指定にかかわらず同指示を積む。
+- **サーバーは `mentoring: true` をセッション種別で拒否しない。** 「随時メンタリングは `adhoc` で行う」（判断 1・6）は**導線の置き方**の決定であって API の制約ではない。種別ごとの許可・不許可という分岐をサーバーに増やしても守るものが無く（単一ユーザーのローカルアプリで、悪意ある呼び出し元を想定しない）、`adhoc` 限定は UI 側のボタン表示条件で表現する。
 
 ### 画面
 
@@ -121,7 +121,8 @@
   - 随時メンタリングの導線として「進め方を点検してもらう」ボタンを置く。押すと `mentoring: true` を付けた定型のユーザー発言を送る。
   - 朝会の終了が `mentoring_required` でブロックされたときは、エラー文言をそのまま出すのではなく `code` で分岐して「メンタリングを終えると朝会を終了できます」という状態表示を出す（[ADR 0008](../adr/0008-evening-dialogue-prerequisite.md) 決定 2 と同じ作法）。**その表示には、設定でオフにできることを併記する**（これを欠くと、ボスがメンタリングの記録を残さなかった場合にユーザーが朝会から抜ける手段を画面上から見つけられなくなる）。
 - **設定画面（`web/src/SettingsView.tsx`）**: 「朝会でメンタリングを必須にする」のチェックボックスを追加する。
-- **決定ログ画面**: #358 が作ったタスク軸のログをそのまま参照面として使う。**本機能では決定ログ画面を変更しない**（`kind = 'mentoring'` の表示は #358 で実装済み）。
+- **決定ログ画面**: #358 が作ったタスク軸のログをそのまま参照面として使う。**本機能では決定ログ画面を変更しない**（`kind = 'mentoring'` の表示・種別ラベル・タスク軸のグルーピングはすべて #358 の受入基準が担保済み）。したがって本機能の受入基準に決定ログ画面の表示は含めない。
+- **随時メンタリングのボタンの表示条件**: **`adhoc`（会でない区間）のチャットのときだけ表示する。** 朝会・夕会の会中は、その会のフロー指示が会話を主導しており（朝会は強制オンなら同じ指示が既に積まれている）、そこへ別経路の点検ボタンを重ねると、どちらの流れにいるのかが画面から読めなくなる。会中に点検を受けたければ会を終えてから押す。
 
 ## クリティカル設計決定
 
@@ -131,7 +132,7 @@
 - **理由**:
   - `sessions.type` は CHECK 制約（`morning` / `evening` / `adhoc`）を持つため、種別追加はテーブル再構築を伴うマイグレーションになる。得られるのは「メンタリングだけを型で切り出せる」ことだけで、割に合わない。
   - メンタリングは「今日の進め方」を扱うため、朝会の予定報告と同じ文脈の中で行うのが自然。別セッションにすると当日のタスク・報告の文脈を再度組み立てる必要が出る。
-  - 随時メンタリングも、既に「会でない区間」として存在する `adhoc` の上で成立する。新しい区間の概念を増やさない。
+  - 随時メンタリングも、既に「会でない区間」として存在する `adhoc` の上で成立する。新しい区間の概念を増やさない。**これは導線（ボタンを出す場所）の決定であって、API がセッション種別で `mentoring` フラグを拒否するという意味ではない**（「画面・API設計」参照）。
 - **代替案**:
   - **独立したセッション種別 `mentoring` を追加する** — 却下。上記のマイグレーションコストに見合わない。加えて `selectRestoreSessions` / タイムライン境界表示（`BOUNDARY_LABELS`）など、種別を前提にした既存ロジックの改修が広範に発生する。
 - **影響範囲**: マイグレーション不要。`persona-prompt.ts` と `chat-messages-route.ts` のプロンプト組み立てのみ。
@@ -149,7 +150,7 @@
   - **日報生成もブロックする** — 却下。上記のとおり原因が二重化する。過剰な作り込みでもある。
   - **ブロックせず macOS 通知で催促する** — 却下。催促は無視できるため、オーナーの「自分の意志に頼らない」という要求を満たさない。
   - **朝会の開始をブロックする（メンタリングを終えるまで他の話題に進めない）** — 却下。メンタリングは会話の中で行うため、開始をブロックすると会話そのものが始められず自己矛盾する。
-- **影響範囲**: `server/src/sessions/sessions-routes.ts` の `POST /:id/end`。ゲートは `endSession` を呼ぶ**前**に評価し、`type = 'evening'` の経路（要約生成・日報生成フック）には一切触れない。再終了（`ended_at` が既に非 NULL）では評価しない。
+- **影響範囲**: `server/src/sessions/sessions-routes.ts` の `POST /:id/end`。ゲートは `endSession` を呼ぶ**前**に評価し、`type = 'evening'` の経路（要約生成・日報生成フック）には一切触れない。再終了（`ended_at` が既に非 NULL）では評価しない。**判定に使う `type` と「初回の終了遷移か」は、既に `endSession` の前で取得している `before`（`findSessionById` の戻り値）から読む**（`endSession` 後の戻り値を使うと「初回か」を判別できない。現行コードが `isFirstEnding` を `before` から求めているのと同じ理由）。
 - **ADR 化**: この前提条件は技術的制限ではなく製品設計上の意図であるため、実装フェーズで **ADR として記録する**（`/create-adr`）。ADR 0008 と同じ理由——記録が無いと「不便だから外す」という一見妥当な改善として削除されうる。
 
 ### 判断 3: メンタリング完了の機械判定（判断ポイント 3）
@@ -173,7 +174,7 @@
 
   1. ユーザーから、今日の仕事の**進め方**（何を・どの順で・どう進めるつもりか）の申告を受ける。
   2. ボスがその進め方について、**危ういと判断した点を具体的に指摘する**。指摘が無ければ「問題なし」と明示的に断定する。**どの観点で見るかは、その日のタスク・活動記録・直近の決定からボスが選ぶ**。
-  3. 点検の**結論**（進め方をどう変えるか／変えないか）を `record_mentoring` で 1 件以上記録する。
+  3. 点検の**結論**（進め方をどう変えるか／変えないか）を `record_mentoring` で 1 件以上記録する。**このとき `content` に結論を、`rationale` に「どの点をどう危ういと判断したか」＝扱った観点を書く**（完了条件「扱った観点と結論が後から参照できる」を、会話ログを遡らずに満たすため。#358 の決定ログは `rationale` を「根拠」として表示する）。
 
 - **理由**:
   - **観点を固定すると要望を取り違える。** Issue が明記しているとおり、実現したいのは特定の観点の点検ではなく「進め方が適切かのチェック」そのものである。固定チェックリストは、仕事の性質に合わないときに形骸化して「儀式」になる。
@@ -197,6 +198,7 @@
   - **専用テーブル `mentorings` を新設する** — 却下（オーナー決定）。
   - **`record_decision` に `kind` 引数を足す** — 却下。上記の取り違えリスク。
   - **`messages` に残すだけ（構造化して保存しない）** — 却下。完了条件「扱った観点と結論が後から参照できる」を満たすには、会話ログを読み返す以外の手段が要る。判断 3 の完了判定も成立しなくなる。
+- **観点の格納先**: **`content` = 結論、`rationale` = 扱った観点**（判断 4 のステップ 3）。ボスの指摘そのものは会話（`messages`）にも残るが、それだけでは会話ログを遡らないと参照できず、完了条件を満たさない。構造化して残すのは「観点」と「結論」の 2 つで足り、やり取りの逐語は `messages` に任せる。
 - **`task_id` の扱い**: `record_mentoring` の `task_id` は `record_decision` と同じく任意とする。**対象タスクが特定できる結論には `task_id` を付けるようプロンプトで指示する**（付ければ #358 のタスク軸ログでそのタスクの下に並ぶ）。その日の進め方全体に関わる結論は `task_id` なしとなり、#358 の「タスクに紐づかない決定」セクションに入る。**どちらに落ちるかは LLM の判断であるため、受入基準にはしない。**
 - **影響範囲**: `server/src/boss/mentoring-tool.ts`（新規）・`boss-tools.ts`（`BOSS_TOOLS` に常時追加）・`decisions-repository.ts`。
 
@@ -279,13 +281,27 @@ export function isMentoringComplete(input: {
   userMessageCount: number;      // 対象セッションの role='user' の messages 件数
 }): boolean;
 
-// server/src/decisions/decisions-repository.ts（既存関数の拡張）
+// server/src/decisions/decisions-repository.ts（既存関数の拡張＋新規関数）
 export interface NewDecisionRecord {
   session_id: number;
   task_id?: number | null;
   content: string;
   rationale?: string | null;
   kind?: "decision" | "mentoring";  // 追加・既定は "decision"
+}
+export function countMentoringDecisionsBySessionId(
+  db: Database.Database,
+  sessionId: number,
+): number;
+
+// server/src/boss/persona-prompt.ts（既存の型の拡張）
+export interface PersonaPromptContext {
+  // ...既存フィールド
+  /** このターンでメンタリングの指示を積むか。**呼び出し側（チャットルート）が
+   *「朝会 かつ 強制オン」または「リクエストの mentoring フラグ」を評価して
+   * 1 つの boolean にしてから渡す**（buildPersonaPrompt は純粋関数のまま、
+   * 設定の読み取りも条件の合成も行わない）。省略時は false。 */
+  mentoring?: boolean;
 }
 ```
 
@@ -307,9 +323,12 @@ export interface NewDecisionRecord {
 
 - [ ] 強制設定がオンのとき、朝会セッションのチャット送信で組み立てられるシステムプロンプトにメンタリングの指示が含まれる
 - [ ] 強制設定がオフのとき、朝会セッションのチャット送信で組み立てられるシステムプロンプトにメンタリングの指示が含まれない
-- [ ] 強制設定がオフのときも、朝会セッションのシステムプロンプトに既存の朝会フロー指示（優先順位・ノルマの決定 → タスク反映 → `record_decision`）が含まれる
+- [ ] 強制設定がオンのとき、朝会セッションのシステムプロンプトに既存の朝会フロー指示（優先順位・ノルマの決定 → タスク反映 → `record_decision`）が含まれる
+- [ ] 強制設定がオフのとき、朝会セッションのシステムプロンプトに既存の朝会フロー指示が含まれる
 - [ ] メンタリングの指示に、点検の観点が限定列挙ではない旨が含まれる
 - [ ] メンタリングの指示が、点検の結論を `record_mentoring` で記録するよう求める
+- [ ] メンタリングの指示が、扱った観点を `rationale` に書くよう求める
+- [ ] メンタリングの指示が、外部への連絡はアプリが行わず洗い出しと促しにとどめる旨を含む
 
 ### 記録
 
@@ -317,6 +336,7 @@ export interface NewDecisionRecord {
 - [ ] `record_mentoring` の実行で `kind = 'mentoring'` の `decisions` 行が作成される
 - [ ] `record_mentoring` で作成された行の `session_id` が、呼び出し元のセッションの id になる
 - [ ] `record_mentoring` に `task_id` を渡すと、その値が記録される
+- [ ] `record_mentoring` に `rationale` を渡すと、その値が記録される
 - [ ] `record_mentoring` に存在しない `task_id` を渡すとエラー結果が返る（`record_decision` と同じ検証）
 - [ ] `record_decision` の実行で作成される行の `kind` が `'decision'` のままである
 
@@ -338,14 +358,16 @@ export interface NewDecisionRecord {
 - [ ] `mentoring: true` を付けたチャット送信で、システムプロンプトにメンタリングの指示が含まれる
 - [ ] `mentoring` を省略した随時チャットの送信では、システムプロンプトにメンタリングの指示が含まれない
 - [ ] `mentoring` に boolean 以外を渡すと 400 が返る
-- [ ] チャット画面に随時メンタリングを開始するボタンが表示される
+- [ ] 随時チャット（`adhoc`）のチャット画面に、随時メンタリングを開始するボタンが表示される
+- [ ] 朝会・夕会の会中のチャット画面に、随時メンタリングを開始するボタンが表示されない
 
 ### 設定
 
 - [ ] `GET /api/settings` の応答に `morning_mentoring_required` が含まれる
 - [ ] キーが未設定のとき `GET /api/settings` が `morning_mentoring_required: true` を返す
 - [ ] `PUT /api/settings` で `morning_mentoring_required: false` を保存できる
-- [ ] `PUT /api/settings` に `morning_mentoring_required` として boolean 以外を渡すと 400 が返る
+- [ ] `PUT /api/settings` に `morning_mentoring_required` として文字列 `"true"` を渡すと 400 が返る
+- [ ] `PUT /api/settings` に `morning_mentoring_required` として `null` を渡すと 400 が返る
 - [ ] 保存された値が `settings` テーブルに `"true"` / `"false"` の文字列として入る
 - [ ] キーの値が `"true"` / `"false"` 以外の文字列のとき、強制はオンとして解決される
 - [ ] 設定画面にメンタリングの必須設定を切り替えるコントロールが表示される
