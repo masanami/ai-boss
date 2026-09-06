@@ -1,12 +1,23 @@
 import { Hono } from "hono";
 import type Database from "better-sqlite3";
 import { readJsonBody } from "../lib/read-json-body.js";
-import { insertTask, listTasks, updateTask } from "./tasks-repository.js";
+import {
+  insertTask,
+  isEvidenceGateBlocking,
+  listTasks,
+  updateTask,
+} from "./tasks-repository.js";
 import {
   validateCreateTaskInput,
   validatePatchTaskInput,
 } from "./tasks-validation.js";
 import { createTaskEvidencesRouter } from "./task-evidences-routes.js";
+
+// 機能仕様 docs/features/completion-evidence-enforcement.md 決定 2 の
+// エラー文言。ボスチャット（task-tools.ts）とは別経路だが、同じ code を返す
+// （明示的な仮定3: `<主語>_<条件>` 形式）。
+const EVIDENCE_REQUIRED_ERROR_MESSAGE =
+  "エビデンスが添付されていないため、このタスクを完了にできません";
 
 /**
  * Creates the tasks sub-router, mounted under `/api/tasks` by the caller.
@@ -38,6 +49,22 @@ export function createTasksRouter(db: Database.Database, evidenceDir = ""): Hono
       return c.json({ error: result.error }, 400);
     }
 
+    // 決定 2-h: POST /api/tasks が status: "done" を直接受け付ける「第5の
+    // 経路」も、updateTask と同じ共有述語で判定する（関門を2つに増やさない）。
+    // taskId: null は「まだ存在しないタスク＝エビデンス件数は常に0」を表す。
+    if (
+      result.data.status === "done" &&
+      isEvidenceGateBlocking(db, {
+        taskId: null,
+        evidenceRequired: result.data.evidence_required ?? false,
+      })
+    ) {
+      return c.json(
+        { error: EVIDENCE_REQUIRED_ERROR_MESSAGE, code: "evidence_required" },
+        409,
+      );
+    }
+
     const task = insertTask(db, result.data);
     return c.json(task, 201);
   });
@@ -51,12 +78,18 @@ export function createTasksRouter(db: Database.Database, evidenceDir = ""): Hono
       return c.json({ error: result.error }, 400);
     }
 
-    const task = updateTask(db, id, result.data);
-    if (!task) {
-      return c.json({ error: `task ${id} not found` }, 404);
+    const updateResult = updateTask(db, id, result.data);
+    if (!updateResult.ok) {
+      if (updateResult.reason === "not_found") {
+        return c.json({ error: `task ${id} not found` }, 404);
+      }
+      return c.json(
+        { error: EVIDENCE_REQUIRED_ERROR_MESSAGE, code: "evidence_required" },
+        409,
+      );
     }
 
-    return c.json(task);
+    return c.json(updateResult.task);
   });
 
   return tasks;

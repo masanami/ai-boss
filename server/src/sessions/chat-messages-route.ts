@@ -5,6 +5,7 @@ import type Anthropic from "@anthropic-ai/sdk";
 import { readJsonBody } from "../lib/read-json-body.js";
 import { recordActivityEvent } from "../activity/activity-events-repository.js";
 import { listTasks } from "../tasks/tasks-repository.js";
+import { countTaskEvidencesByTaskIds } from "../tasks/task-evidences-repository.js";
 import { listRecentDecisions } from "../decisions/decisions-repository.js";
 import { resolveBossSettings } from "../boss/boss-settings.js";
 import {
@@ -270,6 +271,10 @@ export function registerChatMessageRoute(
     const now = new Date();
     const system = buildPersonaPrompt(persona, {
       tasks,
+      // 決定 3-a: ボスが自分の裁定（要否）と現状（添付件数）を参照できる
+      // ようにする。ボスチャットは update_task ツールで完了操作にも使われる
+      // 経路なので、この呼び出し元だけは実件数を渡す必要がある。
+      taskEvidenceCounts: countTaskEvidencesByTaskIds(db, tasks.map((task) => task.id)),
       recentDecisions,
       recentSessionSummaries,
       todaysAdhocMessages: collectTodaysAdhocContext(db, session.type, now),

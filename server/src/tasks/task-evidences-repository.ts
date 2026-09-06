@@ -38,6 +38,40 @@ export function countTaskEvidences(db: Database.Database, taskId: number): numbe
   return row.count;
 }
 
+/**
+ * 複数タスクのエビデンス件数をまとめて取得する（`task.id` → 件数）。
+ * `persona-prompt.ts` の `formatTaskLine` へ渡す `taskEvidenceCounts`
+ * （機能仕様 docs/features/completion-evidence-enforcement.md 決定 3-a）を
+ * 組み立てる呼び出し元（`chat-messages-route.ts` / `meeting-opening.ts`）が
+ * `countTaskEvidences` を1件ずつ呼ぶのを避けるための一括版。件数0件のタスク
+ * も含め、渡した全 `taskIds` についてキーを持つ（欠落キーが無い＝呼び出し側
+ * が `?? 0` フォールバックを重ねて書かなくてよい）。
+ */
+export function countTaskEvidencesByTaskIds(
+  db: Database.Database,
+  taskIds: number[],
+): Record<number, number> {
+  const counts: Record<number, number> = {};
+  for (const taskId of taskIds) {
+    counts[taskId] = 0;
+  }
+  if (taskIds.length === 0) {
+    return counts;
+  }
+
+  const placeholders = taskIds.map(() => "?").join(", ");
+  const rows = db
+    .prepare(
+      `SELECT task_id, COUNT(*) AS count FROM task_evidences
+       WHERE task_id IN (${placeholders}) GROUP BY task_id`,
+    )
+    .all(...taskIds) as { task_id: number; count: number }[];
+  for (const row of rows) {
+    counts[row.task_id] = row.count;
+  }
+  return counts;
+}
+
 export function findTaskEvidenceById(
   db: Database.Database,
   id: number,
