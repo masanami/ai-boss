@@ -839,6 +839,38 @@ describe("AppLayout side panel splitter (Issue #362)", () => {
     expect(splitter).toHaveAttribute("aria-valuenow", "420");
   });
 
+  it("persists the width the user asked for, not the window-clamped display value, when a widening keypress overshoots the window's ceiling", () => {
+    // Complements the two "no visible effect" regression tests above, which
+    // only pin the case where the display does NOT move. Here the display
+    // *does* move (300 -> 314), so the persist guard lets the write through
+    // -- and what gets written must be the requested 316, not the 314 the
+    // window could actually show. Persisting the clamped display value
+    // instead silently lowers the preference by the overshoot every time the
+    // user widens against a temporary ceiling, and that loss only becomes
+    // visible later, once the window is widened back out.
+    //
+    // Without this test, replacing clampToConfiguredBounds(requestedWidth)
+    // with the already-clamped nextWidth in use-side-panel-width.ts's
+    // setWidth passes the entire suite -- i.e. nothing else pins the reason
+    // clampToConfiguredBounds exists as a separate function.
+    setWindowInnerWidth(1000);
+    localStorage.setItem(SIDE_PANEL_WIDTH_STORAGE_KEY, "300");
+    render(<AppLayout />);
+    const splitter = screen.getByRole("separator", { name: "サイドパネルの幅" });
+
+    // W=1000: effective max = 1000 - 200 - 6 - 480 = 314, so the stored 300
+    // displays as-is and ArrowLeft (+16) requests 316 -- past the ceiling.
+    expect(splitter).toHaveAttribute("aria-valuenow", "300");
+
+    fireEvent.keyDown(splitter, { key: "ArrowLeft" });
+    expect(splitter).toHaveAttribute("aria-valuenow", "314");
+    expect(localStorage.getItem(SIDE_PANEL_WIDTH_STORAGE_KEY)).toBe("316");
+
+    setWindowInnerWidth(1200);
+    fireEvent(window, new Event("resize"));
+    expect(splitter).toHaveAttribute("aria-valuenow", "316");
+  });
+
   it("does not corrupt the saved preference when End is pressed while already at the effective max (second review round regression test)", () => {
     // Same class of bug as the ArrowLeft test above, caught in a second
     // review round: End requests the *window-derived* effective max, which
