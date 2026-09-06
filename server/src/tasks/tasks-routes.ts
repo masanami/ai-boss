@@ -6,12 +6,25 @@ import {
   validateCreateTaskInput,
   validatePatchTaskInput,
 } from "./tasks-validation.js";
+import { createTaskEvidencesRouter } from "./task-evidences-routes.js";
 
 /**
  * Creates the tasks sub-router, mounted under `/api/tasks` by the caller.
+ *
+ * `evidenceDir` is threaded through from `app.ts`'s `CreateAppOptions` to the
+ * nested evidences router (機能仕様
+ * docs/features/completion-evidence-enforcement.md 決定 1-a). It is only
+ * read by the evidence file endpoints (`task-evidences-routes.ts`), never by
+ * the task CRUD handlers below, so omitting it (as most existing tests that
+ * don't touch evidences do) is harmless.
  */
-export function createTasksRouter(db: Database.Database): Hono {
+export function createTasksRouter(db: Database.Database, evidenceDir = ""): Hono {
   const tasks = new Hono();
+
+  // Hono merges path params across `.route()` boundaries, so the nested
+  // router's handlers can still read `:id` via `c.req.param("id")`
+  // (verified directly against this Hono version before relying on it).
+  tasks.route("/:id/evidences", createTaskEvidencesRouter(db, evidenceDir));
 
   tasks.get("/", (c) => {
     return c.json(listTasks(db));

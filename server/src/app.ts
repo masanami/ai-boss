@@ -58,8 +58,9 @@ export interface CreateAppOptions {
    * Threaded through the same way as `staticRoot`: `index.ts` passes
    * `resolveEvidenceDir(config.dbPath)` (`config.ts`), while tests pass a
    * temp directory directly — `dbPath` may be `:memory:` in tests, from
-   * which no directory can be derived. Not yet consumed by any router in
-   * this ticket (#387); the evidence HTTP endpoints (#388) will read it.
+   * which no directory can be derived. Consumed by the evidence HTTP
+   * endpoints (`tasks/task-evidences-routes.ts`, #388) via
+   * `createTasksRouter`.
    */
   evidenceDir?: string;
 }
@@ -84,7 +85,7 @@ export function createApp(
     return c.json({ status: "ok", db: checkDatabaseConnection(db) });
   });
 
-  api.route("/tasks", createTasksRouter(db));
+  api.route("/tasks", createTasksRouter(db, options.evidenceDir));
   api.route("/sessions", createSessionsRouter(db, env, llmBackend));
   api.route("/checkins", createCheckinsRouter(db));
   api.route("/activity", createActivityRouter(db));
