@@ -47,7 +47,7 @@ export interface ChatToolEvent {
  * precedent.
  */
 export type ChatEntry =
-  | {
+  | ({
       kind: "message";
       key: string;
       role: ChatRole;
@@ -60,7 +60,44 @@ export type ChatEntry =
        * partial. Drives the interrupted rendering in `ChatView`.
        */
       interrupted?: boolean;
-    }
+    } & (
+      | {
+          /**
+           * The server-persisted message id, and the session it belongs to
+           * (Issue #377). Always set together by `buildTimeline`, which only
+           * ever builds entries from persisted `ChatMessage`s (AC-38) — this
+           * pair is intersected with the "neither" shape below (rather than
+           * each field being independently optional) so a value with only
+           * one of the two cannot be constructed: `selectRewriteRange`
+           * requires both to identify a message, and a half-set entry would
+           * silently fail that match and under-count a deletion (決定 6's
+           * safeguard is only as good as this pairing).
+           */
+          messageId: number;
+          sessionId: number;
+        }
+      | {
+          /**
+           * Both omitted for an entry `useChat` appends without looking up
+           * its server id: the optimistic user message `send` appends before
+           * its request resolves (AC-38b — there is no id yet), and a
+           * streamed reply's interrupted-abort handling (`stop` landing
+           * before `done`, also no id). `rewrite` (Issue #378) never
+           * constructs an entry like this itself — on every exit from its
+           * request (success or failure) it rebuilds *every* session in
+           * today's view from the server, so every resulting entry goes
+           * through `buildTimeline` and uses the "both set" branch above
+           * instead. That is also true of `useChat`'s `messageEntry` helper
+           * (used by `send`'s `onDone` for a completed reply, AC-38c),
+           * which is what lets `selectRewriteRange` — now only used to
+           * drive the rewrite confirmation UI's preview, not by `rewrite`
+           * itself — count a mid-session rewrite's deletions correctly
+           * without a reload.
+           */
+          messageId?: undefined;
+          sessionId?: undefined;
+        }
+    ))
   | { kind: "tool"; key: string; tool: ChatToolEvent }
   | {
       kind: "boundary";

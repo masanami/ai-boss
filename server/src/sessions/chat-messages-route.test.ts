@@ -486,6 +486,101 @@ describe("POST /api/sessions/:id/messages", () => {
     );
   });
 
+  describe("当日の随時チャットの参考情報ブロック（#367 / 親 #270）", () => {
+    const ADHOC_BLOCK_START = "---ADHOC-CHAT-START---";
+
+    /**
+     * 当日の随時セッションに1往復ぶんのメッセージを残す。`insertMessage` は
+     * `created_at` に実行時刻をそのまま入れるため、当日ローカル暦日の窓に
+     * 自然に収まる（固定日時を UTC 文字列で組まないので TZ 非依存）。
+     */
+    async function seedTodaysAdhocChat(): Promise<void> {
+      const adhocSession = await createSession();
+      insertMessage(db, {
+        session_id: adhocSession.id,
+        role: "user",
+        content: "経費精算のことで相談したい",
+      });
+      insertMessage(db, {
+        session_id: adhocSession.id,
+        role: "boss",
+        content: "経費精算は今日中に出せ。後回しにするな。",
+      });
+    }
+
+    async function createMeetingSession(
+      type: "morning" | "evening",
+    ): Promise<Session> {
+      const app = createApp(db, env);
+      return readJson<Session>(
+        await app.request("/api/sessions", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ type }),
+        }),
+      );
+    }
+
+    async function postMessage(sessionId: number): Promise<void> {
+      const app = createApp(db, env);
+      streamBossMessageMock.mockResolvedValue(fakeTextMessage("了解した"));
+      const res = await app.request(`/api/sessions/${sessionId}/messages`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ content: "報告します" }),
+      });
+      await res.text();
+    }
+
+    function lastSystemPrompt(): string {
+      const calls = streamBossMessageMock.mock.calls;
+      return (calls[calls.length - 1][1] as { system: string }).system;
+    }
+
+    it("朝会のシステムプロンプトに当日の随時チャットが参考情報として入る", async () => {
+      await seedTodaysAdhocChat();
+      const session = await createMeetingSession("morning");
+
+      await postMessage(session.id);
+
+      const system = lastSystemPrompt();
+      expect(system).toContain(ADHOC_BLOCK_START);
+      expect(system).toContain("経費精算のことで相談したい");
+      expect(system).toContain("経費精算は今日中に出せ。後回しにするな。");
+    });
+
+    it("夕会のシステムプロンプトにも当日の随時チャットが参考情報として入る", async () => {
+      await seedTodaysAdhocChat();
+      const session = await createMeetingSession("evening");
+
+      await postMessage(session.id);
+
+      const system = lastSystemPrompt();
+      expect(system).toContain(ADHOC_BLOCK_START);
+      expect(system).toContain("経費精算のことで相談したい");
+    });
+
+    it("当日の随時チャットが無い日は参考情報ブロック自体がプロンプトに現れない", async () => {
+      const session = await createMeetingSession("morning");
+
+      await postMessage(session.id);
+
+      const system = lastSystemPrompt();
+      expect(system).not.toContain(ADHOC_BLOCK_START);
+      expect(system).not.toContain("当日の随時チャット");
+    });
+
+    it("随時セッション自身のチャットでは参考情報ブロックを渡さない（会話履歴との二重計上を避ける）", async () => {
+      await seedTodaysAdhocChat();
+      const session = await createSession();
+
+      await postMessage(session.id);
+
+      const system = lastSystemPrompt();
+      expect(system).not.toContain(ADHOC_BLOCK_START);
+    });
+  });
+
   it("executes a create_task tool call via the streamBossMessage callbacks, emits a tool event, and finalizes with the resulting text", async () => {
     const session = await createSession();
     streamBossMessageMock.mockImplementation(

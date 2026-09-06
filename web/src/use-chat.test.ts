@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { act, renderHook, waitFor } from "@testing-library/react";
 import { useChat } from "./use-chat";
 import type { ChatMessage, ChatSession } from "./chat";
+import { selectRewriteRange } from "./select-rewrite-range";
 
 // Local-time anchors: `isSameLocalDay` compares local dates, so all
 // "today"/"yesterday" session timestamps are derived from local-date
@@ -362,8 +363,22 @@ describe("useChat", () => {
 
     await waitFor(() => expect(result.current.status).toBe("ready"));
     expect(result.current.entries).toEqual([
-      { kind: "message", key: "message-1", role: "user", content: "おはようございます" },
-      { kind: "message", key: "message-2", role: "boss", content: "今日は A 案件からだ。" },
+      {
+        kind: "message",
+        key: "message-1",
+        role: "user",
+        content: "おはようございます",
+        messageId: 1,
+        sessionId: 1,
+      },
+      {
+        kind: "message",
+        key: "message-2",
+        role: "boss",
+        content: "今日は A 案件からだ。",
+        messageId: 2,
+        sessionId: 1,
+      },
     ]);
   });
 
@@ -416,7 +431,14 @@ describe("useChat", () => {
     });
     expect(result.current.entries).toEqual([
       { kind: "message", key: "user-local-1", role: "user", content: "相談があります" },
-      { kind: "message", key: "message-3", role: "boss", content: BOSS_REPLY.content },
+      {
+        kind: "message",
+        key: "message-3",
+        role: "boss",
+        content: BOSS_REPLY.content,
+        messageId: BOSS_REPLY.id,
+        sessionId: BOSS_REPLY.session_id,
+      },
     ]);
     expect(result.current.sending).toBe(false);
     expect(result.current.streamingText).toBe("");
@@ -467,6 +489,8 @@ describe("useChat", () => {
       key: "message-3",
       role: "boss",
       content: BOSS_REPLY.content,
+      messageId: BOSS_REPLY.id,
+      sessionId: BOSS_REPLY.session_id,
     });
   });
 
@@ -1046,9 +1070,30 @@ describe("useChat mount restoration (Issue #93: surviving a tab switch/reload)",
         sessionType: "morning",
         event: "start",
       },
-      { kind: "message", key: "message-30", role: "user", content: "今日の予定です" },
-      { kind: "message", key: "message-1", role: "user", content: "おはようございます" },
-      { kind: "message", key: "message-2", role: "boss", content: "今日は A 案件からだ。" },
+      {
+        kind: "message",
+        key: "message-30",
+        role: "user",
+        content: "今日の予定です",
+        messageId: 30,
+        sessionId: 20,
+      },
+      {
+        kind: "message",
+        key: "message-1",
+        role: "user",
+        content: "おはようございます",
+        messageId: 1,
+        sessionId: 1,
+      },
+      {
+        kind: "message",
+        key: "message-2",
+        role: "boss",
+        content: "今日は A 案件からだ。",
+        messageId: 2,
+        sessionId: 1,
+      },
     ]);
     expect(requestedUrls(fetchMock)).toEqual([
       "/api/sessions",
@@ -1084,9 +1129,30 @@ describe("useChat mount restoration (Issue #93: surviving a tab switch/reload)",
         sessionType: "morning",
         event: "start",
       },
-      { kind: "message", key: "message-30", role: "user", content: "今日の予定です" },
-      { kind: "message", key: "message-1", role: "user", content: "おはようございます" },
-      { kind: "message", key: "message-2", role: "boss", content: "今日は A 案件からだ。" },
+      {
+        kind: "message",
+        key: "message-30",
+        role: "user",
+        content: "今日の予定です",
+        messageId: 30,
+        sessionId: 20,
+      },
+      {
+        kind: "message",
+        key: "message-1",
+        role: "user",
+        content: "おはようございます",
+        messageId: 1,
+        sessionId: 1,
+      },
+      {
+        kind: "message",
+        key: "message-2",
+        role: "boss",
+        content: "今日は A 案件からだ。",
+        messageId: 2,
+        sessionId: 1,
+      },
       {
         kind: "boundary",
         key: "boundary-20-end",
@@ -1115,15 +1181,36 @@ describe("useChat mount restoration (Issue #93: surviving a tab switch/reload)",
         sessionType: "morning",
         event: "start",
       },
-      { kind: "message", key: "message-30", role: "user", content: "今日の予定です" },
+      {
+        kind: "message",
+        key: "message-30",
+        role: "user",
+        content: "今日の予定です",
+        messageId: 30,
+        sessionId: 20,
+      },
       {
         kind: "boundary",
         key: "boundary-20-end",
         sessionType: "morning",
         event: "end",
       },
-      { kind: "message", key: "message-1", role: "user", content: "おはようございます" },
-      { kind: "message", key: "message-2", role: "boss", content: "今日は A 案件からだ。" },
+      {
+        kind: "message",
+        key: "message-1",
+        role: "user",
+        content: "おはようございます",
+        messageId: 1,
+        sessionId: 1,
+      },
+      {
+        kind: "message",
+        key: "message-2",
+        role: "boss",
+        content: "今日は A 案件からだ。",
+        messageId: 2,
+        sessionId: 1,
+      },
     ]);
   });
 
@@ -1174,7 +1261,14 @@ describe("useChat mount restoration (Issue #93: surviving a tab switch/reload)",
         sessionType: "evening",
         event: "start",
       },
-      { kind: "message", key: "message-50", role: "user", content: "今日の進捗です" },
+      {
+        kind: "message",
+        key: "message-50",
+        role: "user",
+        content: "今日の進捗です",
+        messageId: 50,
+        sessionId: 40,
+      },
       {
         kind: "boundary",
         key: "boundary-40-end",
@@ -1201,8 +1295,22 @@ describe("useChat mount restoration (Issue #93: surviving a tab switch/reload)",
     await waitFor(() => expect(result.current.status).toBe("ready"));
     expect(requestedUrls(fetchMock)).not.toContain("/api/sessions/19/messages");
     expect(result.current.entries).toEqual([
-      { kind: "message", key: "message-1", role: "user", content: "おはようございます" },
-      { kind: "message", key: "message-2", role: "boss", content: "今日は A 案件からだ。" },
+      {
+        kind: "message",
+        key: "message-1",
+        role: "user",
+        content: "おはようございます",
+        messageId: 1,
+        sessionId: 1,
+      },
+      {
+        kind: "message",
+        key: "message-2",
+        role: "boss",
+        content: "今日は A 案件からだ。",
+        messageId: 2,
+        sessionId: 1,
+      },
     ]);
   });
 
@@ -1258,6 +1366,8 @@ describe("useChat session switching", () => {
         key: "message-31",
         role: "boss",
         content: "今日はA案件から片付けろ。",
+        messageId: 31,
+        sessionId: 20,
       },
     ]);
     expect(result.current.switching).toBe(false);
@@ -1297,7 +1407,14 @@ describe("useChat session switching", () => {
         sessionType: "morning",
         event: "start",
       },
-      { kind: "message", key: "message-30", role: "user", content: "今日の予定です" },
+      {
+        kind: "message",
+        key: "message-30",
+        role: "user",
+        content: "今日の予定です",
+        messageId: 30,
+        sessionId: 20,
+      },
     ]);
   });
 
@@ -1573,8 +1690,22 @@ describe("useChat session switching", () => {
     expect(result.current.sessionType).toBe("morning");
     // AC-9: the adhoc history is still there, above the start boundary.
     expect(result.current.entries.slice(0, 3)).toEqual([
-      { kind: "message", key: "message-1", role: "user", content: "おはようございます" },
-      { kind: "message", key: "message-2", role: "boss", content: "今日は A 案件からだ。" },
+      {
+        kind: "message",
+        key: "message-1",
+        role: "user",
+        content: "おはようございます",
+        messageId: 1,
+        sessionId: 1,
+      },
+      {
+        kind: "message",
+        key: "message-2",
+        role: "boss",
+        content: "今日は A 案件からだ。",
+        messageId: 2,
+        sessionId: 1,
+      },
       {
         kind: "boundary",
         key: "boundary-20-start",
@@ -1591,15 +1722,36 @@ describe("useChat session switching", () => {
     expect(result.current.sessionType).toBe("adhoc");
     // AC-10: the meeting's own messages stay too, now bracketed by boundaries.
     expect(result.current.entries).toEqual([
-      { kind: "message", key: "message-1", role: "user", content: "おはようございます" },
-      { kind: "message", key: "message-2", role: "boss", content: "今日は A 案件からだ。" },
+      {
+        kind: "message",
+        key: "message-1",
+        role: "user",
+        content: "おはようございます",
+        messageId: 1,
+        sessionId: 1,
+      },
+      {
+        kind: "message",
+        key: "message-2",
+        role: "boss",
+        content: "今日は A 案件からだ。",
+        messageId: 2,
+        sessionId: 1,
+      },
       {
         kind: "boundary",
         key: "boundary-20-start",
         sessionType: "morning",
         event: "start",
       },
-      { kind: "message", key: "message-30", role: "user", content: "今日の予定です" },
+      {
+        kind: "message",
+        key: "message-30",
+        role: "user",
+        content: "今日の予定です",
+        messageId: 30,
+        sessionId: 20,
+      },
       {
         kind: "boundary",
         key: "boundary-20-end",
@@ -1794,5 +1946,835 @@ describe("useChat session switching", () => {
     await act(async () => {
       await switchPromise;
     });
+  });
+});
+
+// Issue #378 (#255 決定6): `activeSessionId` is the id `send`/`rewrite` post
+// to, exposed so a rewrite confirmation UI can scope `selectRewriteRange` to
+// the same session `send` would use (AC-31).
+describe("useChat activeSessionId (Issue #378)", () => {
+  it("is null before any session exists", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValueOnce(jsonResponse([])));
+
+    const { result } = renderHook(() => useChat());
+    await waitFor(() => expect(result.current.status).toBe("ready"));
+
+    expect(result.current.activeSessionId).toBeNull();
+  });
+
+  it("is the session restored on mount", async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(jsonResponse([SESSION]))
+      .mockResolvedValueOnce(jsonResponse(HISTORY));
+    vi.stubGlobal("fetch", fetchMock);
+
+    const { result } = renderHook(() => useChat());
+    await waitFor(() => expect(result.current.status).toBe("ready"));
+
+    expect(result.current.activeSessionId).toBe(SESSION.id);
+  });
+
+  it("updates to the session lazily created by the first send", async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(jsonResponse([]))
+      .mockResolvedValueOnce(jsonResponse(SESSION, 201))
+      .mockResolvedValueOnce(
+        sseResponse([`event: done\ndata: ${JSON.stringify(BOSS_REPLY)}\n\n`]),
+      );
+    vi.stubGlobal("fetch", fetchMock);
+
+    const { result } = renderHook(() => useChat());
+    await waitFor(() => expect(result.current.status).toBe("ready"));
+    expect(result.current.activeSessionId).toBeNull();
+
+    await act(async () => {
+      await result.current.send("相談があります");
+    });
+
+    expect(result.current.activeSessionId).toBe(SESSION.id);
+  });
+});
+
+// Issue #378 (#255 決定6): やりなおし。サーバの切り捨てに合わせて、クライアント
+// のタイムラインからも削除範囲のエントリを取り除く。
+describe("useChat rewrite (Issue #378)", () => {
+  it("does nothing when activeSessionId is null", async () => {
+    const fetchMock = vi.fn().mockResolvedValueOnce(jsonResponse([]));
+    vi.stubGlobal("fetch", fetchMock);
+
+    const { result } = renderHook(() => useChat());
+    await waitFor(() => expect(result.current.status).toBe("ready"));
+
+    await act(async () => {
+      await result.current.rewrite(1, "書き直したい");
+    });
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(result.current.entries).toEqual([]);
+    expect(result.current.error).toBeNull();
+  });
+
+  // #254: rewrite shares the same stop mechanism `send` uses — arming an
+  // `AbortController` before the request goes out, so the existing stop
+  // button/ESC handler can hang up on it. Without this wiring, `sending`
+  // still becomes true (so the stop button renders per docs/features/
+  // chat-message-rewrite.md 導出決定 6-c's premise that generation can
+  // always be stopped) but pressing it would silently do nothing.
+  it("can be stopped mid-generation like `send`, and refreshes the timeline from the server afterward", async () => {
+    // Same shape as `abortableSseStream` in the "useChat stop" describe
+    // block below (not reachable from here — function-scoped to that
+    // block): a stream whose pending `read()` rejects with `AbortError`
+    // once `signal` aborts, matching real `fetch` behavior (without this,
+    // aborting would leave a stub that does nothing, and the test could
+    // pass without `rewrite` actually wiring `signal` through at all).
+    function abortableSseStream(signal?: AbortSignal) {
+      let streamController: ReadableStreamDefaultController<Uint8Array> | null =
+        null;
+      const encoder = new TextEncoder();
+      const body = new ReadableStream<Uint8Array>({
+        start(controller) {
+          streamController = controller;
+        },
+      });
+      signal?.addEventListener(
+        "abort",
+        () => {
+          const error = new Error("The operation was aborted.");
+          error.name = "AbortError";
+          streamController?.error(error);
+        },
+        { once: true },
+      );
+      return {
+        response: { ok: true, status: 200, body },
+        push(chunk: string) {
+          streamController?.enqueue(encoder.encode(chunk));
+        },
+      };
+    }
+
+    let capturedSignal: AbortSignal | undefined;
+    let stream: ReturnType<typeof abortableSseStream> | undefined;
+
+    // What the server has actually committed by the time the abort lands:
+    // the truncate+insert transaction ran before streaming started
+    // (chat-messages-route.ts), and the text already delivered is persisted
+    // as an `interrupted` boss reply once the abort reaches the server too.
+    const rewriteUserMessage: ChatMessage = {
+      id: 5,
+      session_id: 1,
+      role: "user",
+      content: "書き直した最初の発言",
+      interrupted: 0,
+      created_at: localIso(5, 9, 25),
+    };
+    const partialBossReply: ChatMessage = {
+      id: 6,
+      session_id: 1,
+      role: "boss",
+      content: "まずは見積",
+      interrupted: 1,
+      created_at: localIso(5, 9, 30),
+    };
+    const state: RoutedFetchState = {
+      sessions: [SESSION],
+      messages: { 1: HISTORY },
+    };
+    const fetchMock = vi.fn(
+      (url: string, init?: { method?: string; signal?: AbortSignal }) => {
+        const method = init?.method ?? "GET";
+        if (url === "/api/sessions" && method === "GET") {
+          return Promise.resolve(jsonResponse(state.sessions));
+        }
+        if (/^\/api\/sessions\/\d+\/messages$/.test(url) && method === "POST") {
+          capturedSignal = init?.signal;
+          stream = abortableSseStream(init?.signal);
+          return Promise.resolve(stream.response);
+        }
+        const messagesMatch = /^\/api\/sessions\/(\d+)\/messages$/.exec(url);
+        if (messagesMatch) {
+          return Promise.resolve(
+            jsonResponse(state.messages?.[Number(messagesMatch[1])] ?? []),
+          );
+        }
+        throw new Error(`unexpected fetch: ${method} ${url}`);
+      },
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    const { result } = renderHook(() => useChat());
+    await waitFor(() => expect(result.current.status).toBe("ready"));
+
+    act(() => {
+      void result.current.rewrite(1, "書き直した最初の発言");
+    });
+    await waitFor(() => expect(capturedSignal).toBeInstanceOf(AbortSignal));
+    expect(capturedSignal?.aborted).toBe(false);
+
+    stream?.push('event: text\ndata: {"text":"まずは見積"}\n\n');
+    await waitFor(() => expect(result.current.streamingText).toBe("まずは見積"));
+
+    state.messages = { 1: [rewriteUserMessage, partialBossReply] };
+
+    act(() => result.current.stop());
+
+    await waitFor(() => expect(result.current.sending).toBe(false));
+    expect(result.current.entries).toEqual([
+      {
+        kind: "message",
+        key: "message-5",
+        role: "user",
+        content: "書き直した最初の発言",
+        messageId: 5,
+        sessionId: 1,
+      },
+      {
+        kind: "message",
+        key: "message-6",
+        role: "boss",
+        content: "まずは見積",
+        messageId: 6,
+        sessionId: 1,
+        interrupted: true,
+      },
+    ]);
+    expect(result.current.error).toBeNull();
+    expect(result.current.streamingText).toBe("");
+  });
+
+  // AC-32: the request body carries `replaceFromMessageId`, distinct from a
+  // plain send's `{ content }`-only body (chat-api.test.ts pins the body
+  // shape itself; this pins that `useChat` actually passes the id through).
+  it("POSTs replaceFromMessageId alongside content", async () => {
+    const rewriteReply: ChatMessage = {
+      id: 10,
+      session_id: 1,
+      role: "boss",
+      content: "書き直した後の応答",
+      interrupted: 0,
+      created_at: localIso(5, 11),
+    };
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(jsonResponse([SESSION])) // mount: GET /api/sessions
+      .mockResolvedValueOnce(jsonResponse(HISTORY)) // mount: GET /1/messages
+      .mockResolvedValueOnce(
+        sseResponse([`event: done\ndata: ${JSON.stringify(rewriteReply)}\n\n`]),
+      ) // POST /1/messages (rewrite)
+      // `rewrite` rebuilds the displayed timeline from the server once the
+      // request settles (see use-chat.ts's `refreshTimeline`), so a
+      // successful rewrite issues the same two GETs a mount does.
+      .mockResolvedValueOnce(jsonResponse([SESSION]))
+      .mockResolvedValueOnce(jsonResponse([rewriteReply]));
+    vi.stubGlobal("fetch", fetchMock);
+
+    const { result } = renderHook(() => useChat());
+    await waitFor(() => expect(result.current.status).toBe("ready"));
+
+    await act(async () => {
+      await result.current.rewrite(1, "書き直した最初の発言");
+    });
+
+    expect(fetchMock).toHaveBeenNthCalledWith(3, "/api/sessions/1/messages", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        content: "書き直した最初の発言",
+        replaceFromMessageId: 1,
+      }),
+      signal: expect.any(AbortSignal),
+    });
+  });
+
+  // AC-38c: the confirmation UI (not built in this ticket — #378 only wires
+  // `useChat`) shows its deletion count via `selectRewriteRange` run
+  // directly against `entries`, *before* `rewrite` is ever called. This
+  // pins that, after two turns sent without a reload, that count for a
+  // rewrite reaching back to the first turn matches what the server would
+  // actually delete: the second turn's boss reply is a `useChat`-appended
+  // entry (`messageEntry`, outside `buildTimeline`) and must carry
+  // `messageId`/`sessionId` for `selectRewriteRange` to count it — the
+  // defect the ticket calls out (a half-built entry silently under-counts a
+  // deletion, defeating 決定 6's sole safeguard).
+  it("selectRewriteRange counts a second turn's boss reply sent without a reload, matching what the server would actually delete", async () => {
+    const turn2BossReply: ChatMessage = {
+      id: 3,
+      session_id: 1,
+      role: "boss",
+      content: "タスク化した",
+      interrupted: 0,
+      created_at: localIso(5, 10),
+    };
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(jsonResponse([SESSION]))
+      .mockResolvedValueOnce(jsonResponse(HISTORY))
+      .mockResolvedValueOnce(
+        sseResponse([`event: done\ndata: ${JSON.stringify(turn2BossReply)}\n\n`]),
+      );
+    vi.stubGlobal("fetch", fetchMock);
+
+    const { result } = renderHook(() => useChat());
+    await waitFor(() => expect(result.current.status).toBe("ready"));
+
+    await act(async () => {
+      await result.current.send("追加の相談");
+    });
+
+    const range = selectRewriteRange(
+      result.current.entries,
+      result.current.activeSessionId!,
+      HISTORY[0].id,
+    );
+
+    // The server deletes every session-1 message from HISTORY[0] onward:
+    // both HISTORY messages plus turn 2's boss reply — 3 total, 1 of them
+    // the user's (HISTORY[0] itself), 2 the boss's (HISTORY[1] and turn
+    // 2's reply). Turn 2's own optimistic user entry has no identifiers yet
+    // (AC-38b) and is excluded from this count either way — a separate,
+    // already-accepted gap this ticket does not close (see
+    // select-rewrite-range.ts's doc comment).
+    expect(range).toEqual({
+      keys: ["message-1", "message-2", `message-${turn2BossReply.id}`],
+      total: 3,
+      userCount: 1,
+      bossCount: 2,
+    });
+  });
+
+  // AC-36: a failed rewrite must not touch the timeline. The request here is
+  // rejected before any transaction could run (chat-messages-route.ts's
+  // guards all return before `db.transaction`), so nothing changed
+  // server-side — `rewrite` still refreshes unconditionally (see
+  // `refreshTimeline`'s doc comment in use-chat.ts for why it cannot tell
+  // this apart from a post-commit failure), but that refresh reads back the
+  // exact same, untruncated history, so the visible timeline ends up
+  // identical to what it was before (`toEqual`, since the refresh always
+  // produces a new array — asserting reference identity would fail here for
+  // reasons that have nothing to do with AC-36).
+  it("leaves the timeline unchanged when the rewrite request fails", async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(jsonResponse([SESSION])) // mount: GET /api/sessions
+      .mockResolvedValueOnce(jsonResponse(HISTORY)) // mount: GET /1/messages
+      .mockResolvedValueOnce({
+        ok: false,
+        status: 500,
+        json: () => Promise.resolve({ error: "database is locked" }),
+        body: null,
+      }) // POST /1/messages (rejected — no transaction ran)
+      .mockResolvedValueOnce(jsonResponse([SESSION])) // refreshTimeline: GET /api/sessions
+      .mockResolvedValueOnce(jsonResponse(HISTORY)); // refreshTimeline: GET /1/messages
+    vi.stubGlobal("fetch", fetchMock);
+
+    const { result } = renderHook(() => useChat());
+    await waitFor(() => expect(result.current.status).toBe("ready"));
+    const entriesBefore = result.current.entries;
+
+    await act(async () => {
+      await result.current.rewrite(1, "書き直したい");
+    });
+
+    expect(result.current.entries).toEqual(entriesBefore);
+    expect(result.current.error).toBe("database is locked");
+    expect(result.current.sending).toBe(false);
+  });
+
+  // `error` is an SSE event dispatched mid-stream, not a rejection —
+  // `sendChatMessage`'s promise still resolves normally, so this is a
+  // different path than the previous test (which never reaches the server
+  // at all). By the time this event arrives the truncate+insert transaction
+  // has already committed (chat-messages-route.ts runs it before
+  // `streamSSE`), so the timeline must still refresh to the server's
+  // post-truncation state even though generation itself failed.
+  it("shows the error and refreshes the timeline from the server when generation fails mid-stream", async () => {
+    const rewriteUserMessage: ChatMessage = {
+      id: 5,
+      session_id: 1,
+      role: "user",
+      content: "書き直したい",
+      interrupted: 0,
+      created_at: localIso(5, 9, 25),
+    };
+    const partialBossReply: ChatMessage = {
+      id: 6,
+      session_id: 1,
+      role: "boss",
+      content: "まずは",
+      interrupted: 1,
+      created_at: localIso(5, 9, 30),
+    };
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(jsonResponse([SESSION]))
+      .mockResolvedValueOnce(jsonResponse(HISTORY))
+      .mockResolvedValueOnce(
+        sseResponse([
+          'event: text\ndata: {"text":"まずは"}\n\n',
+          'event: error\ndata: {"error":"ボスの応答中にエラーが発生しました"}\n\n',
+        ]),
+      )
+      .mockResolvedValueOnce(jsonResponse([SESSION]))
+      .mockResolvedValueOnce(
+        jsonResponse([rewriteUserMessage, partialBossReply]),
+      );
+    vi.stubGlobal("fetch", fetchMock);
+
+    const { result } = renderHook(() => useChat());
+    await waitFor(() => expect(result.current.status).toBe("ready"));
+
+    await act(async () => {
+      await result.current.rewrite(1, "書き直したい");
+    });
+
+    expect(result.current.error).toBe("ボスの応答中にエラーが発生しました");
+    expect(result.current.entries).toEqual([
+      {
+        kind: "message",
+        key: "message-5",
+        role: "user",
+        content: "書き直したい",
+        messageId: 5,
+        sessionId: 1,
+      },
+      {
+        kind: "message",
+        key: "message-6",
+        role: "boss",
+        content: "まずは",
+        messageId: 6,
+        sessionId: 1,
+        interrupted: true,
+      },
+    ]);
+    expect(result.current.sending).toBe(false);
+  });
+
+  // A rejected `reader.read()` that is *not* an abort (a genuine connection
+  // failure, distinct from both the previous tests) also lands after the
+  // transaction already committed, once the initial `fetch` has resolved
+  // `ok`. Self-review (round 2) flagged this as the one path the first
+  // version of this fix still missed: `refreshTimeline` must run
+  // unconditionally in the catch block, not only when
+  // `controller.signal.aborted`, or the screen is left showing pre-rewrite
+  // history while an error banner (misleadingly) suggests nothing happened.
+  it("refreshes the timeline from the server after a non-abort connection failure mid-stream", async () => {
+    const encoder = new TextEncoder();
+    let pullCount = 0;
+    const body = new ReadableStream<Uint8Array>({
+      pull(controller) {
+        pullCount += 1;
+        if (pullCount === 1) {
+          controller.enqueue(
+            encoder.encode('event: text\ndata: {"text":"まずは"}\n\n'),
+          );
+          return;
+        }
+        controller.error(new Error("network error"));
+      },
+    });
+    const rewriteUserMessage: ChatMessage = {
+      id: 5,
+      session_id: 1,
+      role: "user",
+      content: "書き直したい",
+      interrupted: 0,
+      created_at: localIso(5, 9, 25),
+    };
+    const partialBossReply: ChatMessage = {
+      id: 6,
+      session_id: 1,
+      role: "boss",
+      content: "まずは",
+      interrupted: 1,
+      created_at: localIso(5, 9, 30),
+    };
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(jsonResponse([SESSION]))
+      .mockResolvedValueOnce(jsonResponse(HISTORY))
+      .mockResolvedValueOnce({ ok: true, status: 200, body })
+      .mockResolvedValueOnce(jsonResponse([SESSION]))
+      .mockResolvedValueOnce(
+        jsonResponse([rewriteUserMessage, partialBossReply]),
+      );
+    vi.stubGlobal("fetch", fetchMock);
+
+    const { result } = renderHook(() => useChat());
+    await waitFor(() => expect(result.current.status).toBe("ready"));
+
+    await act(async () => {
+      await result.current.rewrite(1, "書き直したい");
+    });
+
+    expect(result.current.error).toBe("network error");
+    expect(result.current.entries).toEqual([
+      {
+        kind: "message",
+        key: "message-5",
+        role: "user",
+        content: "書き直したい",
+        messageId: 5,
+        sessionId: 1,
+      },
+      {
+        kind: "message",
+        key: "message-6",
+        role: "boss",
+        content: "まずは",
+        messageId: 6,
+        sessionId: 1,
+        interrupted: true,
+      },
+    ]);
+    expect(result.current.sending).toBe(false);
+  });
+
+  // AC-37: rewrite shares send's sendingRef guard, so the two send paths
+  // never overlap.
+  it("does nothing while a send is already in flight", async () => {
+    let resolvePost: (value: unknown) => void = () => {};
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(jsonResponse([])) // mount: no adhoc session
+      .mockImplementationOnce(
+        () =>
+          new Promise((resolve) => {
+            resolvePost = resolve;
+          }),
+      ); // createSession("adhoc") pending
+    vi.stubGlobal("fetch", fetchMock);
+
+    const { result } = renderHook(() => useChat());
+    await waitFor(() => expect(result.current.status).toBe("ready"));
+
+    let sendPromise: Promise<void>;
+    act(() => {
+      sendPromise = result.current.send("送信中に割り込みを試みる");
+    });
+
+    await act(async () => {
+      await result.current.rewrite(1, "割り込み書き直し");
+    });
+
+    // Only the mount fetch + the in-flight send's session-creation POST have
+    // run; rewrite issued nothing.
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+
+    resolvePost(jsonResponse(SESSION, 201));
+    await act(async () => {
+      await sendPromise;
+    });
+  });
+
+  // AC-37, switching side: rewrite also shares switchingRef with
+  // startSession/endSession.
+  it("does nothing while a session switch is in flight", async () => {
+    let resolveList: (value: unknown) => void = () => {};
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(jsonResponse([])) // mount: no adhoc session
+      .mockImplementationOnce(
+        () =>
+          new Promise((resolve) => {
+            resolveList = resolve;
+          }),
+      ); // startSession's list lookup pending
+    vi.stubGlobal("fetch", fetchMock);
+
+    const { result } = renderHook(() => useChat());
+    await waitFor(() => expect(result.current.status).toBe("ready"));
+
+    let switchPromise: Promise<void>;
+    act(() => {
+      switchPromise = result.current.startSession("morning");
+    });
+
+    await act(async () => {
+      await result.current.rewrite(1, "切替中の書き直し");
+    });
+
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+
+    resolveList(jsonResponse(MORNING_SESSION_TODAY, 201));
+    await act(async () => {
+      await switchPromise;
+    });
+  });
+
+  // AC-33/AC-34/AC-35, combined in one scenario: a rewrite that reaches back
+  // past a *later* turn sent without a reload (turn 2 below), with
+  // `otherSession`'s message sitting *between* the target and the entries
+  // being deleted in screen order (導出決定 6-a) — pinning that a different
+  // session is kept regardless of position, not merely when it trails
+  // everything. `rewrite` rebuilds the active session's segment of the
+  // timeline from the server (see use-chat.ts's `refreshTimeline`), so this
+  // also demonstrates every resulting entry carries real
+  // `messageId`/`sessionId` (AC-38/AC-54) the same way a reload would —
+  // there is no local splice left to under-count anything.
+  it("deletes the target's own session (history entries, a live tool entry, and a later turn's exchange sent without a reload), keeps a different session's message that sits in between, and appends the rewritten exchange at the end", async () => {
+    const targetSession: ChatSession = {
+      id: 1,
+      type: "adhoc",
+      started_at: localIso(5, 9),
+      ended_at: null,
+      summary: null,
+    };
+    const otherSession: ChatSession = {
+      id: 20,
+      type: "morning",
+      started_at: localIso(5, 9, 5),
+      ended_at: localIso(5, 9, 10),
+      summary: null,
+    };
+    const targetMessage: ChatMessage = {
+      id: 1,
+      session_id: 1,
+      role: "user",
+      content: "最初の相談",
+      interrupted: 0,
+      created_at: localIso(5, 9),
+    };
+    const otherSessionMessage: ChatMessage = {
+      id: 30,
+      session_id: 20,
+      role: "user",
+      content: "会議の発言",
+      interrupted: 0,
+      created_at: localIso(5, 9, 5),
+    };
+    const laterSameSessionMessage: ChatMessage = {
+      id: 2,
+      session_id: 1,
+      role: "boss",
+      content: "後回しにしろ",
+      interrupted: 0,
+      created_at: localIso(5, 9, 15),
+    };
+    // Turn 2's boss reply as the SSE `done` event carries it (no
+    // `messageId`/`sessionId` — that shape is added by `messageEntry`).
+    const turn2BossReplyForStream: ChatMessage = {
+      id: 4,
+      session_id: 1,
+      role: "boss",
+      content: "タスク化した",
+      interrupted: 0,
+      created_at: localIso(5, 9, 20),
+    };
+    // Turn 2's own persisted user message row (server-side truth) is never
+    // modeled here: it is deleted by the rewrite below before any GET would
+    // report it, and the client never learns its id anyway (AC-38b).
+    const toolEvent = {
+      name: "create_task",
+      input: { title: "資料作成" },
+      result: JSON.stringify({ id: 5, title: "資料作成" }),
+      isError: false,
+    };
+    // What the rewrite actually persists: the user's rewritten message
+    // (inserted first, within the truncate+insert transaction) and the new
+    // boss reply (inserted after generation completes).
+    const rewriteUserMessage: ChatMessage = {
+      id: 5,
+      session_id: 1,
+      role: "user",
+      content: "書き直した最初の発言",
+      interrupted: 0,
+      created_at: localIso(5, 9, 25),
+    };
+    const rewriteReply: ChatMessage = {
+      id: 6,
+      session_id: 1,
+      role: "boss",
+      content: "書き直した後の応答",
+      interrupted: 0,
+      created_at: localIso(5, 9, 30),
+    };
+
+    const state: RoutedFetchState = {
+      sessions: [targetSession, otherSession],
+      messages: {
+        1: [targetMessage, laterSameSessionMessage],
+        20: [otherSessionMessage],
+      },
+      stream: sseResponse([
+        `event: tool\ndata: ${JSON.stringify(toolEvent)}\n\n`,
+        `event: done\ndata: ${JSON.stringify(turn2BossReplyForStream)}\n\n`,
+      ]),
+    };
+    const fetchMock = routedFetch(state);
+    vi.stubGlobal("fetch", fetchMock);
+
+    const { result } = renderHook(() => useChat());
+    await waitFor(() => expect(result.current.status).toBe("ready"));
+    expect(result.current.activeSessionId).toBe(1);
+    // Sanity check on the merged mount timeline: the other session's message
+    // sits between the target and the later same-session message, not after
+    // everything.
+    expect(
+      result.current.entries
+        .filter((entry) => entry.kind === "message")
+        .map((entry) => (entry.kind === "message" ? entry.content : null)),
+    ).toEqual(["最初の相談", "会議の発言", "後回しにしろ"]);
+
+    // Turn 2, sent without a reload: a live tool entry appears mid-stream.
+    await act(async () => {
+      await result.current.send("タスク化して");
+    });
+    expect(result.current.entries.some((entry) => entry.kind === "tool")).toBe(
+      true,
+    );
+
+    // Model the server's post-rewrite state for the `refreshTimeline` GETs
+    // `rewrite` is about to issue: session 1 truncated from message id 1
+    // onward (dropping the target, the later same-session boss reply, and
+    // all of turn 2) and replaced with the rewritten exchange. Session 20 is
+    // untouched.
+    state.stream = sseResponse([
+      `event: done\ndata: ${JSON.stringify(rewriteReply)}\n\n`,
+    ]);
+    state.messages = {
+      ...state.messages,
+      1: [rewriteUserMessage, rewriteReply],
+    };
+
+    await act(async () => {
+      await result.current.rewrite(1, "書き直した最初の発言");
+    });
+
+    expect(result.current.entries).toEqual([
+      {
+        kind: "boundary",
+        key: "boundary-20-start",
+        sessionType: "morning",
+        event: "start",
+      },
+      {
+        kind: "message",
+        key: "message-30",
+        role: "user",
+        content: "会議の発言",
+        messageId: 30,
+        sessionId: 20,
+      },
+      {
+        kind: "boundary",
+        key: "boundary-20-end",
+        sessionType: "morning",
+        event: "end",
+      },
+      {
+        kind: "message",
+        key: "message-5",
+        role: "user",
+        content: "書き直した最初の発言",
+        messageId: 5,
+        sessionId: 1,
+      },
+      {
+        kind: "message",
+        key: "message-6",
+        role: "boss",
+        content: "書き直した後の応答",
+        messageId: 6,
+        sessionId: 1,
+      },
+    ]);
+    // The live tool entry from turn 2 is gone too — not because it was
+    // matched against a locally computed deletion range, but because the
+    // whole active-session segment was rebuilt from the server (which never
+    // persists `kind: "tool"` entries at all, 導出決定 6-b).
+    expect(result.current.entries.some((entry) => entry.kind === "tool")).toBe(
+      false,
+    );
+    expect(result.current.error).toBeNull();
+    expect(result.current.sending).toBe(false);
+
+    const postCalls = fetchMock.mock.calls.filter(
+      ([url, init]) =>
+        url === "/api/sessions/1/messages" && init?.method === "POST",
+    );
+    expect(postCalls).toHaveLength(2);
+    const secondPostInit = postCalls[1]?.[1] as { body?: string } | undefined;
+    expect(JSON.parse(secondPostInit?.body ?? "")).toEqual({
+      content: "書き直した最初の発言",
+      replaceFromMessageId: 1,
+    });
+  });
+});
+
+// AC-54: a rewrite's truncation is persisted server-side, so a reload must
+// show exactly what the rewrite just produced. `rewrite` itself rebuilds the
+// timeline from the same `fetchSessions`/`fetchSessionMessages` +
+// `buildTimeline` pipeline a fresh mount uses (use-chat.ts's
+// `refreshTimeline`), so this test exercises the real `rewrite` call and then
+// mounts a second, independent `useChat()` against the same (now-truncated)
+// mocked server state, asserting the two produce identical entries — not a
+// mount-only reconstruction of what a rewrite is assumed to have left behind.
+describe("useChat reload after rewrite (Issue #378, AC-54)", () => {
+  it("shows the same timeline on a fresh mount as right after the rewrite", async () => {
+    const rewriteUserMessage: ChatMessage = {
+      id: 11,
+      session_id: 1,
+      role: "user",
+      content: "書き直した最初の発言",
+      interrupted: 0,
+      created_at: localIso(5, 9, 25),
+    };
+    const rewriteReply: ChatMessage = {
+      id: 12,
+      session_id: 1,
+      role: "boss",
+      content: "書き直した後の応答",
+      interrupted: 0,
+      created_at: localIso(5, 9, 30),
+    };
+
+    const state: RoutedFetchState = {
+      sessions: [SESSION],
+      messages: { 1: HISTORY },
+      stream: sseResponse([`event: done\ndata: ${JSON.stringify(rewriteReply)}\n\n`]),
+    };
+    const fetchMock = routedFetch(state);
+    vi.stubGlobal("fetch", fetchMock);
+
+    const { result, unmount } = renderHook(() => useChat());
+    await waitFor(() => expect(result.current.status).toBe("ready"));
+
+    // The server has now truncated and replaced session 1's history — model
+    // that by swapping what the next GET .../messages reports, exactly as a
+    // real rewrite would leave it.
+    state.messages = { 1: [rewriteUserMessage, rewriteReply] };
+
+    await act(async () => {
+      await result.current.rewrite(HISTORY[0].id, "書き直した最初の発言");
+    });
+    const afterRewrite = result.current.entries;
+    unmount();
+
+    // A fresh mount re-reads the same (now-truncated) server state.
+    const { result: reloaded } = renderHook(() => useChat());
+    await waitFor(() => expect(reloaded.current.status).toBe("ready"));
+
+    expect(reloaded.current.entries).toEqual(afterRewrite);
+    expect(afterRewrite).toEqual([
+      {
+        kind: "message",
+        key: "message-11",
+        role: "user",
+        content: "書き直した最初の発言",
+        messageId: 11,
+        sessionId: 1,
+      },
+      {
+        kind: "message",
+        key: "message-12",
+        role: "boss",
+        content: "書き直した後の応答",
+        messageId: 12,
+        sessionId: 1,
+      },
+    ]);
   });
 });
