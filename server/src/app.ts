@@ -52,6 +52,16 @@ export interface CreateAppOptions {
    * `createApp` option.
    */
   llmBackend?: LlmBackend;
+  /**
+   * Directory where task evidence files (attachments) are stored on disk
+   * (機能仕様 docs/features/completion-evidence-enforcement.md 決定 1-a).
+   * Threaded through the same way as `staticRoot`: `index.ts` passes
+   * `resolveEvidenceDir(config.dbPath)` (`config.ts`), while tests pass a
+   * temp directory directly — `dbPath` may be `:memory:` in tests, from
+   * which no directory can be derived. Not yet consumed by any router in
+   * this ticket (#387); the evidence HTTP endpoints (#388) will read it.
+   */
+  evidenceDir?: string;
 }
 
 /**
