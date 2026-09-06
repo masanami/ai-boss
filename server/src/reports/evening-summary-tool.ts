@@ -1,8 +1,8 @@
 // 日報生成の「値の抽出」段（収集 → 値の抽出 → レンダリング → 保存 の4段の
 // うち2段目。docs/adr/0006-renderer-owns-structure.md）で使うツール定義。
 //
-// `server/src/decisions/verdict-tool.ts` に倣い、JSON Schema ＋ 入力バリデータ
-// を1ファイルにまとめる。LLM に Markdown を組み立てさせない
+// JSON Schema ＋ 入力バリデータを1ファイルにまとめる（1ツール1ファイルの
+// 既存慣習）。LLM に Markdown を組み立てさせない
 // （ADR 0006 決定 2）ため、ツールが要求するのは「報告の要点」
 // 「ボスの講評」「決定の要点」「翌日への持ち越し」の4つの**値**のみで、
 // 見出し・箇条書き記法などの構造は一切含めない。「決定の要点」は Issue #144
@@ -65,7 +65,7 @@ function isNonEmptyString(value: unknown): value is string {
 
 /**
  * `submit_evening_summary` の tool_use 入力を検証する。4値はすべて必須かつ
- * 空文字不可（`parseVerdictToolInput` と同じ厳格さ）。1つでも欠落・空文字
+ * 空文字不可（`isNonEmptyString` で厳格に判定する）。1つでも欠落・空文字
  * があれば `valid: false` を返し、呼び出し側（抽出ステップ）はこれを
  * 「不正形」としてフォールバック（4値なし）へ倒す。
  */

@@ -89,7 +89,7 @@ export function createApp(
   api.route("/sessions", createSessionsRouter(db, env, llmBackend));
   api.route("/checkins", createCheckinsRouter(db));
   api.route("/activity", createActivityRouter(db));
-  api.route("/decisions", createDecisionsRouter(db, env, llmBackend));
+  api.route("/decisions", createDecisionsRouter(db));
   api.route("/dashboard", createDashboardRouter(db, env));
   api.route("/reports", createReportsRouter(db, env));
   api.route("/work-logs", createWorkLogsRouter(db));

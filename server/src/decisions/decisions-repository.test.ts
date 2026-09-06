@@ -9,7 +9,6 @@ import {
   insertDecision,
   listDecisions,
   listRecentDecisions,
-  updateDecisionStatus,
 } from "./decisions-repository.js";
 
 /** Raw-SQL helper for tests that need explicit control over `created_at`
@@ -132,6 +131,17 @@ describe("insertDecision", () => {
     });
   });
 
+  it("defaults kind to 'decision' (#358/#397 — 'mentoring' rows are written by #276, not here)", () => {
+    const session = insertSession(db, { type: "adhoc" });
+
+    const decision = insertDecision(db, {
+      session_id: session.id,
+      content: "資料作成を最優先にする",
+    });
+
+    expect(decision.kind).toBe("decision");
+  });
+
   it("persists the decision so it can be read back from the database", () => {
     const session = insertSession(db, { type: "adhoc" });
 
@@ -171,36 +181,6 @@ describe("findDecisionById", () => {
     const found = findDecisionById(db, inserted.id);
 
     expect(found).toEqual(inserted);
-  });
-});
-
-describe("updateDecisionStatus", () => {
-  let db: Database.Database;
-
-  beforeEach(() => {
-    db = openDatabase(":memory:");
-    runMigrations(db);
-  });
-
-  afterEach(() => {
-    db.close();
-  });
-
-  it("updates the decision's status and returns the updated row", () => {
-    const session = insertSession(db, { type: "adhoc" });
-    const decision = insertDecision(db, {
-      session_id: session.id,
-      content: "資料作成を最優先にする",
-    });
-
-    const updated = updateDecisionStatus(db, decision.id, "revised");
-
-    expect(updated).toMatchObject({ id: decision.id, status: "revised" });
-    expect(findDecisionById(db, decision.id)).toMatchObject({ status: "revised" });
-  });
-
-  it("returns undefined when no decision with the given id exists", () => {
-    expect(updateDecisionStatus(db, 9999, "revised")).toBeUndefined();
   });
 });
 

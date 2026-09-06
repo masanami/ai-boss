@@ -287,6 +287,27 @@ const MIGRATIONS: Record<number, MigrationEntry> = {
 
     ALTER TABLE tasks ADD COLUMN evidence_required INTEGER NOT NULL DEFAULT 0;
   `,
+  // 進言（appeals）の削除とタスク軸ログ（#358 判断3・#397）: 使われていない
+  // appeals テーブルを削除し、後続 #276（メンタリング）が記録先として使う
+  // decisions.kind 列を同じマイグレーションで追加する。
+  //
+  // - `DROP TABLE appeals` は子テーブルの削除（appeals を参照する表は無い）で
+  //   あり、`ALTER TABLE ... ADD COLUMN` も表の再構築ではないため、v4
+  //   （`migrateToV4`）と異なり `PRAGMA foreign_keys` のトグルを必要としない。
+  //   よって文字列エントリのまま、既存の「version 単位の単一トランザクショ
+  //   ン」で原子適用できる（docs/features/decision-log-task-axis.md 判断3）。
+  // - `kind` は DEFAULT 'decision' なので、v8 適用前に存在した行はすべて
+  //   'decision' になる。#276 がメンタリング用の書き込み経路を足すときに
+  //   'mentoring' を明示する（`insertDecision` は今後も `kind` を明示せず
+  //   DEFAULT に委ねる）。
+  //
+  // 既存 version は書き換えず新しい version として追加する
+  // （docs/adr/0005-sqlite-schema-policy.md 決定 4）。
+  8: `
+    DROP TABLE appeals;
+    ALTER TABLE decisions ADD COLUMN kind TEXT NOT NULL DEFAULT 'decision'
+      CHECK (kind IN ('decision', 'mentoring'));
+  `,
 };
 
 /**
