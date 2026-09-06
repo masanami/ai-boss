@@ -20,6 +20,7 @@ function makeTask(overrides: Partial<Task> & { id: number }): Task {
     created_at: new Date(2026, 6, 25, 9).toISOString(),
     updated_at: new Date(2026, 6, 25, 9).toISOString(),
     completed_at: null,
+    evidence_required: false,
     ...overrides,
   };
 }
