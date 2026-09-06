@@ -157,7 +157,9 @@ describe("POST /api/sessions/:id/messages with replaceFromMessageId (Issue #376)
     db.close();
   });
 
-  async function createSession(type: "adhoc" | "evening" = "adhoc"): Promise<Session> {
+  async function createSession(
+    type: "adhoc" | "morning" | "evening" = "adhoc",
+  ): Promise<Session> {
     const app = createApp(db, env);
     return readJson<Session>(
       await app.request("/api/sessions", {
@@ -596,5 +598,57 @@ describe("POST /api/sessions/:id/messages with replaceFromMessageId (Issue #376)
       count: number;
     };
     expect(reportRow.count).toBe(1);
+  });
+
+  // --- #255 × #270 の相互作用: 切り捨ては「当日の随時チャット」参考情報にも及ぶ ---
+  //
+  // Issue #270（PR #373）が、会中のボスへ渡す system プロンプトに「当日の随時
+  // チャット」の参考情報ブロックを足した（`collectTodaysAdhocContext` →
+  // `listTodaysAdhocMessages`）。これは `listMessagesBySessionId` とは**別の
+  // 読み出し経路**なので、#255 の完了条件「書き直した後、元の発言はボスの文脈に
+  // 含まれない」がこちらでも成り立つことを固定しておく必要がある。
+  //
+  // 現状は物理 DELETE（`deleteMessagesFrom`）＋「切り捨てを両方の文脈読み出しより
+  // 前に置く」順序で構造的に担保されているが、その担保はどちらも暗黙のもの
+  // （論理削除へ変える／参考情報をキャッシュする／切り捨てを後段へ動かす、の
+  // いずれでも静かに壊れる）。ここで固定しておかないと、二重に読まれる面が
+  // 増えたことに気づかないまま回帰しうる。
+  describe("#270 の当日の随時チャット参考情報との相互作用", () => {
+    function lastSystemPrompt(): string {
+      const calls = streamBossMessageMock.mock.calls;
+      return (calls[calls.length - 1][1] as { system: string }).system;
+    }
+
+    it("随時チャットで切り捨てた発言は、その後の朝会でボスへ渡る当日の随時チャット参考情報に残らない", async () => {
+      const adhoc = await createSession("adhoc");
+
+      // 随時チャットで 2 ターン会話する。1 ターン目の発言を後で書き直す。
+      streamBossMessageMock.mockResolvedValue(
+        fakeTextMessage("それは経費で落とせ。"),
+      );
+      await (await sendMessage(adhoc.id, "誤った内容を送ってしまった")).text();
+      const firstUser = messagesOf(db, adhoc.id).find((m) => m.role === "user")!;
+      await (await sendMessage(adhoc.id, "ついでにこれも相談したい")).text();
+
+      // 1 ターン目の発言を書き直す = それ以降の随時チャットを切り捨てる。
+      streamBossMessageMock.mockResolvedValue(fakeTextMessage("了解した。"));
+      await (
+        await sendMessage(adhoc.id, "本当に相談したかった内容", firstUser.id)
+      ).text();
+
+      // 朝会を開始して発言する。ここで #373 の参考情報ブロックが組み立てられる。
+      const morning = await createSession("morning");
+      streamBossMessageMock.mockClear();
+      streamBossMessageMock.mockResolvedValue(fakeTextMessage("報告を受けた。"));
+      await (await sendMessage(morning.id, "今日の予定を報告します")).text();
+
+      const system = lastSystemPrompt();
+      // 書き直した内容は参考情報に載る（機能そのものは生きている）。
+      expect(system).toContain("本当に相談したかった内容");
+      // 切り捨てた発言（ユーザー・ボスの両方）は載らない。
+      expect(system).not.toContain("誤った内容を送ってしまった");
+      expect(system).not.toContain("ついでにこれも相談したい");
+      expect(system).not.toContain("それは経費で落とせ。");
+    });
   });
 });

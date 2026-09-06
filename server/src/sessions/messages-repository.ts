@@ -1,4 +1,5 @@
 import type Database from "better-sqlite3";
+import { startOfLocalDayIso, startOfNextLocalDayIso } from "../activity/local-day.js";
 import type { Message, MessageRole } from "./message.js";
 
 export interface NewMessageRecord {
@@ -123,4 +124,41 @@ export function deleteMessagesFrom(
     .run(sessionId, anchor.created_at, anchor.created_at, fromMessageId);
 
   return result.changes;
+}
+
+/**
+ * Returns messages belonging to `adhoc` sessions whose `created_at` falls on
+ * `now`'s local calendar day, ordered by `created_at` ascending with `id`
+ * ascending as a tie-breaker (same deterministic ordering as
+ * `listMessagesBySessionId`). Morning/evening session messages are excluded.
+ *
+ * "Today" is the half-open range `[当日ローカル 00:00, 翌ローカル暦日 00:00)`
+ * (ADR 0007 決定3), mirroring `today-escalation.ts`'s
+ * `calculateTodayMaxEscalationLevel`: both boundaries are derived from the
+ * same `now` so a future-dated row (clock/timezone rolled back) cannot widen
+ * the window.
+ *
+ * Reads the `messages` table live on every call, so a message truncated by a
+ * rewrite (`deleteMessagesFrom` above, Issue #255) can never surface here:
+ * the row is physically gone by the time this runs. That is what keeps
+ * 「書き直した後、元の発言はボスの文脈に含まれない」 true for *this* context
+ * path too, not just the session's own conversation history — see
+ * `chat-messages-route.ts`, where the truncation transaction is ordered
+ * ahead of both context reads.
+ */
+export function listTodaysAdhocMessages(
+  db: Database.Database,
+  now: Date,
+): Message[] {
+  return db
+    .prepare(
+      `SELECT messages.*
+       FROM messages
+       JOIN sessions ON sessions.id = messages.session_id
+       WHERE sessions.type = 'adhoc'
+         AND messages.created_at >= ?
+         AND messages.created_at < ?
+       ORDER BY messages.created_at ASC, messages.id ASC`,
+    )
+    .all(startOfLocalDayIso(now), startOfNextLocalDayIso(now)) as Message[];
 }
