@@ -374,6 +374,36 @@ describe("POST /api/sessions/:id/messages", () => {
     expect(streamBossMessageMock.mock.calls[0][1].system).toContain("資料作成");
   });
 
+  // 機能仕様 docs/features/completion-evidence-enforcement.md 決定3-a
+  it("includes the task's evidence requirement and attached-evidence count in the system prompt (AC-21/AC-22)", async () => {
+    const session = await createSession();
+    streamBossMessageMock.mockResolvedValue(fakeTextMessage("了解した"));
+    const app = createApp(db, env);
+
+    const createRes = await app.request("/api/tasks", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ title: "資料作成", evidence_required: true }),
+    });
+    const created = await readJson<{ id: number }>(createRes);
+    await app.request(`/api/tasks/${created.id}/evidences`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ url: "https://example.com/report" }),
+    });
+
+    const res = await app.request(`/api/sessions/${session.id}/messages`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ content: "進捗どうですか" }),
+    });
+    await res.text();
+
+    const system = streamBossMessageMock.mock.calls[0][1].system as string;
+    expect(system).toContain("必須");
+    expect(system).toContain("1件");
+  });
+
   // Issue #288: チャットは現在日時を「出す」側の経路。ラベルの有無だけを見る
   // （表記そのものの検証は persona-prompt.test.ts が持つ）。
   it("includes the current date/time section in the system prompt (#288)", async () => {

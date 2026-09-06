@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { act, renderHook, waitFor } from "@testing-library/react";
 import { useCheckinPanel } from "./use-checkin-panel";
+import { EVIDENCE_REQUIRED_DISPLAY_MESSAGE, TasksApiError } from "./tasks-api";
 import type { ActivityEvent } from "./activity-event";
 
 const TASK_START_EVENT: ActivityEvent = {
@@ -540,6 +541,33 @@ describe("useCheckinPanel", () => {
 
     expect(completed).toBe(false);
     expect(result.current.submitError).toBe("task 1 not found");
+  });
+
+  it("sets the fixed evidence-required message when completeTask's editTask rejects with code: evidence_required (AC-74)", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue({
+        ok: true,
+        status: 200,
+        json: () => Promise.resolve([]),
+      }),
+    );
+    const editTask = vi
+      .fn()
+      .mockRejectedValue(
+        new TasksApiError("サーバの文言（何でもよい）", "evidence_required"),
+      );
+
+    const { result } = renderHook(() => useCheckinPanel(vi.fn()));
+    await waitFor(() => expect(result.current.status).toBe("ready"));
+
+    let completed = true;
+    await act(async () => {
+      completed = await result.current.completeTask(1, editTask);
+    });
+
+    expect(completed).toBe(false);
+    expect(result.current.submitError).toBe(EVIDENCE_REQUIRED_DISPLAY_MESSAGE);
   });
 
   it("ignores a second completeTask call while one is in flight (double-click guard, Issue #138)", async () => {

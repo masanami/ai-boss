@@ -3,6 +3,7 @@ import type Database from "better-sqlite3";
 import type Anthropic from "@anthropic-ai/sdk";
 import { openDatabase } from "../db/connection.js";
 import { runMigrations } from "../db/migrate.js";
+import { insertTask } from "../tasks/tasks-repository.js";
 
 const { createClaudeClientMock, createBossMessageMock } = vi.hoisted(() => ({
   createClaudeClientMock: vi.fn(),
@@ -95,6 +96,30 @@ describe("generateMeetingOpening", () => {
     expect(createBossMessageMock).toHaveBeenCalledWith(
       expect.anything(),
       expect.objectContaining({ system: expect.stringContaining("朝会（計画セッション）") }),
+    );
+  });
+
+  // 機能仕様 docs/features/completion-evidence-enforcement.md 決定3-a
+  it("includes a task's evidence requirement in the system prompt (AC-21)", async () => {
+    const now = new Date(2026, 7, 20, 8, 0);
+    insertTask(db, {
+      title: "資料作成",
+      description: null,
+      category: "work",
+      priority: null,
+      due_at: null,
+      status: "todo",
+      boss_comment: null,
+      estimated_minutes: null,
+      evidence_required: true,
+    });
+    createBossMessageMock.mockResolvedValue(fakeTextMessage("報告しろ"));
+
+    await generateMeetingOpening(db, env, now, "morning");
+
+    expect(createBossMessageMock).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ system: expect.stringContaining("必須") }),
     );
   });
 

@@ -236,6 +236,7 @@ describe("runMigrations", () => {
         "notifications",
         "activity_events",
         "daily_reports",
+        "task_evidences",
         "sqlite_sequence",
       ].sort(),
     );
@@ -394,8 +395,8 @@ describe("runMigrations", () => {
 
     expect(tableNames(v2Db)).toContain("daily_reports");
     // runMigrations always advances to the latest known version (v3 adds
-    // daily_reports on the way; v4 then rebuilds tasks/activity_events).
-    expect(v2Db.pragma("user_version", { simple: true })).toBe(6);
+    // daily_reports on the way; later versions add further schema changes).
+    expect(v2Db.pragma("user_version", { simple: true })).toBe(7);
     // existing tables/rows are untouched
     expect(tableNames(v2Db)).toContain("tasks");
 
@@ -422,7 +423,7 @@ describe("runMigrations", () => {
 
     runMigrations(v3Db);
 
-    expect(v3Db.pragma("user_version", { simple: true })).toBe(6);
+    expect(v3Db.pragma("user_version", { simple: true })).toBe(7);
     expect(tableNames(v3Db)).toContain("tasks");
     expect(tableNames(v3Db)).toContain("activity_events");
 
@@ -526,7 +527,7 @@ describe("runMigrations", () => {
 
     runMigrations(v4Db);
 
-    expect(v4Db.pragma("user_version", { simple: true })).toBe(6);
+    expect(v4Db.pragma("user_version", { simple: true })).toBe(7);
     const message = v4Db
       .prepare("SELECT role, content, interrupted FROM messages WHERE id = ?")
       .get(messageId) as { role: string; content: string; interrupted: number };
@@ -583,7 +584,7 @@ describe("runMigrations", () => {
 
     runMigrations(v5Db);
 
-    expect(v5Db.pragma("user_version", { simple: true })).toBe(6);
+    expect(v5Db.pragma("user_version", { simple: true })).toBe(7);
     const notification = v5Db
       .prepare(
         "SELECT type, rule_key, escalation_level, body, sent_at, delivered, channel FROM notifications WHERE id = ?",
@@ -656,6 +657,106 @@ describe("runMigrations", () => {
         )
         .run(9999, "user", "hello", NOW),
     ).toThrow();
+  });
+
+  // エビデンス強制（#256 / #386）: task_evidences テーブルと
+  // tasks.evidence_required 列（マイグレーション v7）。受入基準 AC-1〜AC-6。
+  describe("task_evidences and tasks.evidence_required (v7, #386)", () => {
+    function insertTask(status = "todo"): number {
+      return Number(
+        db
+          .prepare(
+            "INSERT INTO tasks (title, status, created_at, updated_at) VALUES (?, ?, ?, ?)",
+          )
+          .run("タスク", status, NOW, NOW).lastInsertRowid,
+      );
+    }
+
+    it("creates the task_evidences table (AC-1)", () => {
+      expect(tableNames(db)).toContain("task_evidences");
+    });
+
+    it("gives tasks an evidence_required column (AC-2)", () => {
+      expect(columnNames(db, "tasks")).toContain("evidence_required");
+    });
+
+    it("defaults evidence_required to 0 for a newly inserted task", () => {
+      const taskId = insertTask();
+      const task = db
+        .prepare("SELECT evidence_required FROM tasks WHERE id = ?")
+        .get(taskId) as { evidence_required: number };
+      expect(task.evidence_required).toBe(0);
+    });
+
+    it("upgrades a v6 database to v7, defaulting pre-existing tasks' evidence_required to 0 (AC-3)", () => {
+      // v1〜v3 のスキーマ（evidence_required 列が無い）を土台に、既存タスクを
+      // 1 件作ってから完全なマイグレーションを走らせる。v4〜v6 は
+      // evidence_required に触れないため、この経路で v7 到達時点の遡及有無
+      // （決定 4: 遡及しない）を確認できる。
+      const v6Db = openDatabase(":memory:");
+      v6Db.exec(V1_THROUGH_V3_SQL);
+      v6Db.pragma("user_version = 3");
+
+      const taskId = Number(
+        v6Db
+          .prepare(
+            "INSERT INTO tasks (title, status, created_at, updated_at) VALUES (?, ?, ?, ?)",
+          )
+          .run("v7以前からのタスク", "todo", NOW, NOW).lastInsertRowid,
+      );
+      expect(columnNames(v6Db, "tasks")).not.toContain("evidence_required");
+      expect(tableNames(v6Db)).not.toContain("task_evidences");
+
+      runMigrations(v6Db);
+
+      expect(v6Db.pragma("user_version", { simple: true })).toBe(7);
+      expect(tableNames(v6Db)).toContain("task_evidences");
+      expect(columnNames(v6Db, "tasks")).toContain("evidence_required");
+
+      const task = v6Db
+        .prepare("SELECT evidence_required FROM tasks WHERE id = ?")
+        .get(taskId) as { evidence_required: number };
+      expect(task.evidence_required).toBe(0);
+
+      v6Db.close();
+    });
+
+    it("rejects a task_evidences.kind outside 'file' / 'link' (AC-4)", () => {
+      const taskId = insertTask();
+
+      expect(() =>
+        db
+          .prepare(
+            "INSERT INTO task_evidences (task_id, kind, created_at) VALUES (?, ?, ?)",
+          )
+          .run(taskId, "screenshot", NOW),
+      ).toThrow();
+    });
+
+    it.each([["file"], ["link"]])(
+      "accepts task_evidences.kind = %s",
+      (kind) => {
+        const taskId = insertTask();
+
+        expect(() =>
+          db
+            .prepare(
+              "INSERT INTO task_evidences (task_id, kind, created_at) VALUES (?, ?, ?)",
+            )
+            .run(taskId, kind, NOW),
+        ).not.toThrow();
+      },
+    );
+
+    it("rejects a task_evidences.task_id that does not reference an existing task (AC-5)", () => {
+      expect(() =>
+        db
+          .prepare(
+            "INSERT INTO task_evidences (task_id, kind, created_at) VALUES (?, ?, ?)",
+          )
+          .run(9999, "link", NOW),
+      ).toThrow();
+    });
   });
 
   describe("CHECK constraints", () => {

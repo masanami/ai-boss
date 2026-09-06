@@ -1,3 +1,5 @@
+import { dirname, join } from "node:path";
+
 const DEFAULT_PORT = 8787;
 const DEFAULT_DB_PATH = "./data/ai-boss.db";
 /** Default backend used by `loadConfig`, re-exported so callers that need a
@@ -82,6 +84,19 @@ export function resolveLlmBackend(env: NodeJS.ProcessEnv): LlmBackend {
       " / ",
     )} のいずれかです。`,
   );
+}
+
+/**
+ * Derives the evidence storage directory from the DB file path (機能仕様
+ * docs/features/completion-evidence-enforcement.md 決定 1-a): a sibling
+ * `evidence/` directory next to the SQLite file, so no new environment
+ * variable is introduced. Pure — the caller decides how to handle `:memory:`
+ * (no directory can be derived from it; `index.ts` only calls this with the
+ * real `config.dbPath`, and tests pass a temp directory to `CreateAppOptions`
+ * directly instead of calling this function).
+ */
+export function resolveEvidenceDir(dbPath: string): string {
+  return join(dirname(dbPath), "evidence");
 }
 
 export function loadConfig(env: NodeJS.ProcessEnv): AppConfig {

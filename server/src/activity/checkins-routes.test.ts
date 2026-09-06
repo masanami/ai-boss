@@ -5,6 +5,7 @@ import { runMigrations } from "../db/migrate.js";
 import { createApp } from "../app.js";
 import { insertTask } from "../tasks/tasks-repository.js";
 import type { NewTaskRecord } from "../tasks/tasks-repository.js";
+import { setSettingValue } from "../settings/settings-repository.js";
 import type { Task, TaskStatus } from "../tasks/task.js";
 import { isTopTaskUnstarted } from "../detection/unstarted.js";
 import { DEFAULT_DETECTION_SETTINGS } from "../detection/detection-types.js";
@@ -454,6 +455,30 @@ describe("POST /api/checkins", () => {
         .prepare("SELECT type FROM activity_events WHERE task_id = ? ORDER BY id ASC")
         .all(task.id) as { type: string }[];
       expect(events.map((event) => event.type)).toEqual(["task_start", "task_update"]);
+    });
+
+    // 機能仕様 docs/features/completion-evidence-enforcement.md 決定2:
+    // task_start はステータスを "in_progress" にするだけで "done" には
+    // 到達しないため、エビデンス強制の設定が ON でも 409 になってはならない
+    // (AC-38)。updateTask の戻り値が UpdateTaskResult に変わっても
+    // (checkins-routes.ts はその戻り値を使わないため) この経路の挙動は
+    // 変わらないことをここで確認する。
+    it("does not return 409 even when evidence enforcement is on and the task requires evidence (AC-38)", async () => {
+      const app = createApp(db);
+      setSettingValue(db, "evidence_enforcement_enabled", "true");
+      const task = insertWorkTask(db, { status: "todo", evidence_required: true });
+
+      const res = await app.request("/api/checkins", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ type: "task_start", task_id: task.id }),
+      });
+
+      expect(res.status).toBe(201);
+      const updated = db
+        .prepare("SELECT status FROM tasks WHERE id = ?")
+        .get(task.id) as { status: string };
+      expect(updated.status).toBe("in_progress");
     });
   });
 
