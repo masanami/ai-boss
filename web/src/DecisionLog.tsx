@@ -1,67 +1,24 @@
-import { useState } from "react";
-import type { FormEvent } from "react";
 import { useDecisions } from "./use-decisions";
-import type {
-  AppealSubmitResult,
-  AppealVerdict,
-  DecisionStatus,
-  DecisionWithAppeals,
-} from "./decision";
+import { groupDecisionsByTask } from "./group-decisions-by-task";
+import type { DecisionSection } from "./group-decisions-by-task";
+import type { DecisionKind, DecisionRecord } from "./decision";
 import "./DecisionLog.css";
 
-const STATUS_LABEL: Record<DecisionStatus, string> = {
-  active: "有効",
-  revised: "修正済み",
-  withdrawn: "取り下げ",
-};
-
-const VERDICT_LABEL: Record<AppealVerdict, string> = {
-  upheld: "維持",
-  revised: "修正",
+const KIND_LABEL: Record<DecisionKind, string> = {
+  decision: "決定",
+  mentoring: "メンタリング",
 };
 
 interface DecisionCardProps {
-  decision: DecisionWithAppeals;
-  onAppeal: (
-    decisionId: number,
-    content: string,
-  ) => Promise<AppealSubmitResult>;
+  decision: DecisionRecord;
 }
 
-function DecisionCard({ decision, onAppeal }: DecisionCardProps) {
-  const [isAppealing, setIsAppealing] = useState(false);
-  const [draft, setDraft] = useState("");
-  const [isSubmitting, setIsSubmitting] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-
-  const handleSubmit = (event: FormEvent<HTMLFormElement>) => {
-    event.preventDefault();
-    if (isSubmitting || draft.trim() === "") {
-      return;
-    }
-
-    setIsSubmitting(true);
-    setError(null);
-    onAppeal(decision.id, draft.trim())
-      .then(() => {
-        setIsAppealing(false);
-        setDraft("");
-      })
-      .catch((err: unknown) => {
-        setError(err instanceof Error ? err.message : "進言の送信に失敗しました");
-      })
-      .finally(() => {
-        setIsSubmitting(false);
-      });
-  };
-
+function DecisionCard({ decision }: DecisionCardProps) {
   return (
     <li className="decision-card">
       <div className="decision-card-header">
-        <span
-          className={`decision-status decision-status-${decision.status}`}
-        >
-          {STATUS_LABEL[decision.status]}
+        <span className={`decision-kind decision-kind-${decision.kind}`}>
+          {KIND_LABEL[decision.kind]}
         </span>
         <time dateTime={decision.created_at}>{decision.created_at}</time>
       </div>
@@ -69,73 +26,37 @@ function DecisionCard({ decision, onAppeal }: DecisionCardProps) {
       {decision.rationale !== null && (
         <p className="decision-rationale">根拠: {decision.rationale}</p>
       )}
-      {decision.task_id !== null && (
-        <p className="decision-task">関連タスク: #{decision.task_id}</p>
-      )}
-      {decision.appeals.length > 0 && (
-        <ul className="decision-appeals" aria-label="進言履歴">
-          {decision.appeals.map((appeal) => (
-            <li key={appeal.id} className="appeal-item">
-              <p className="appeal-content">進言: {appeal.content}</p>
-              <p
-                className={`appeal-verdict appeal-verdict-${appeal.verdict}`}
-              >
-                裁定: {VERDICT_LABEL[appeal.verdict]}
-              </p>
-              {appeal.response !== null && (
-                <p className="appeal-response">{appeal.response}</p>
-              )}
-            </li>
-          ))}
-        </ul>
-      )}
-      {decision.status === "active" && (
-        <div className="decision-appeal-action">
-          {!isAppealing ? (
-            <button type="button" onClick={() => setIsAppealing(true)}>
-              進言する
-            </button>
-          ) : (
-            <form
-              className="appeal-form"
-              aria-label={`決定${decision.id}への進言`}
-              onSubmit={handleSubmit}
-            >
-              <label>
-                進言内容
-                <textarea
-                  value={draft}
-                  onChange={(event) => setDraft(event.target.value)}
-                  disabled={isSubmitting}
-                />
-              </label>
-              <div className="appeal-form-actions">
-                <button type="submit" disabled={isSubmitting}>
-                  {isSubmitting ? "送信中…" : "送信"}
-                </button>
-                <button
-                  type="button"
-                  onClick={() => {
-                    setIsAppealing(false);
-                    setError(null);
-                    setDraft("");
-                  }}
-                  disabled={isSubmitting}
-                >
-                  キャンセル
-                </button>
-              </div>
-              {error !== null && <p role="alert">{error}</p>}
-            </form>
-          )}
-        </div>
-      )}
     </li>
   );
 }
 
+interface DecisionTaskSectionProps {
+  section: DecisionSection;
+}
+
+function DecisionTaskSection({ section }: DecisionTaskSectionProps) {
+  return (
+    <section className="decision-section">
+      <h3 className="decision-section-title">{section.title}</h3>
+      <ul className="decision-list" aria-label={`${section.title}の記録`}>
+        {section.records.map((decision) => (
+          <DecisionCard key={decision.id} decision={decision} />
+        ))}
+      </ul>
+    </section>
+  );
+}
+
+/**
+ * The decision log, grouped into per-task sections (#358 判断1). No date
+ * filter, no task picker, no collapsing: the screen has to answer both "what
+ * did the boss decide about this task" and "what was decided recently" at
+ * once, and a picker only answers the first. Decisions keep mattering across
+ * days, so limiting the view to today would be a weak reference surface —
+ * the dashboard and the daily report already cover today.
+ */
 function DecisionLog() {
-  const { decisions, status, appeal } = useDecisions();
+  const { decisions, status } = useDecisions();
 
   if (status === "loading") {
     return <p className="decision-log-status">決定ログを読み込み中…</p>;
@@ -148,20 +69,19 @@ function DecisionLog() {
     );
   }
 
+  const sections = groupDecisionsByTask(decisions);
+
   return (
     <div className="decision-log">
-      {decisions.length === 0 ? (
+      {sections.length === 0 ? (
         <p className="decision-log-empty">決定はまだありません</p>
       ) : (
-        <ul className="decision-list" aria-label="決定一覧">
-          {decisions.map((decision) => (
-            <DecisionCard
-              key={decision.id}
-              decision={decision}
-              onAppeal={appeal}
-            />
-          ))}
-        </ul>
+        sections.map((section) => (
+          <DecisionTaskSection
+            key={section.taskId ?? "unassigned"}
+            section={section}
+          />
+        ))
       )}
     </div>
   );

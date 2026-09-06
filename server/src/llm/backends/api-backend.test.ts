@@ -296,12 +296,12 @@ describe("createApiMessage", () => {
     createMock.mockResolvedValue({ content: [] });
     const client = createApiClient("sk-ant-test-key");
     const messages: Parameters<typeof createApiMessage>[1]["messages"] = [
-      { role: "user", content: "進言内容" },
+      { role: "user", content: "夕会の会話ログ" },
     ];
     const tools: NonNullable<Parameters<typeof createApiMessage>[1]["tools"]> = [
       {
-        name: "submit_verdict",
-        description: "裁定を提出する",
+        name: "submit_evening_summary",
+        description: "夕会サマリの値を提出する",
         input_schema: { type: "object", properties: {} },
       },
     ];
@@ -311,7 +311,7 @@ describe("createApiMessage", () => {
       system: "あなたはボスです",
       messages,
       tools,
-      toolChoice: { type: "tool", name: "submit_verdict" },
+      toolChoice: { type: "tool", name: "submit_evening_summary" },
       maxTokens: 2048,
       thinking: { type: "disabled" },
     });
@@ -322,7 +322,7 @@ describe("createApiMessage", () => {
       system: "あなたはボスです",
       messages,
       tools,
-      tool_choice: { type: "tool", name: "submit_verdict" },
+      tool_choice: { type: "tool", name: "submit_evening_summary" },
       thinking: { type: "disabled" },
     });
   });
@@ -357,20 +357,20 @@ describe("createApiMessage", () => {
   it("normalizes the resolved message's content blocks", async () => {
     createMock.mockResolvedValue({
       content: [
-        { type: "tool_use", id: "tool_1", name: "submit_verdict", input: { verdict: "upheld" } },
+        { type: "tool_use", id: "tool_1", name: "submit_evening_summary", input: { carry_over: "なし" } },
       ],
     });
     const client = createApiClient("sk-ant-test-key");
 
     const result = await createApiMessage(client, {
       model: "claude-sonnet-5",
-      messages: [{ role: "user", content: "進言内容" }],
+      messages: [{ role: "user", content: "夕会の会話ログ" }],
       maxTokens: 1024,
       thinking: { type: "disabled" },
     });
 
     expect(result.content).toEqual([
-      { type: "tool_use", id: "tool_1", name: "submit_verdict", input: { verdict: "upheld" } },
+      { type: "tool_use", id: "tool_1", name: "submit_evening_summary", input: { carry_over: "なし" } },
     ]);
   });
 

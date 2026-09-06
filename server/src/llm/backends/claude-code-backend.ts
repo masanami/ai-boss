@@ -11,7 +11,6 @@ import type {
 } from "../claude-client.js";
 import { SWITCH_TO_API_BACKEND_HINT } from "../../config.js";
 import { TASK_PRIORITIES, TASK_STATUSES } from "../../tasks/task.js";
-import { APPEAL_VERDICTS } from "../../decisions/appeal.js";
 import { createTimedExecFile, type ExecFileFn } from "../../lib/exec-file.js";
 
 /**
@@ -23,9 +22,9 @@ import { createTimedExecFile, type ExecFileFn } from "../../lib/exec-file.js";
  * クリティカル設計決定（docs/adr/0003-llm-backend-isolation.md）:
  * - カスタムツールは in-process MCP サーバ（`createSdkMcpServer` / `tool()`）
  *   として提供する。既存の JSON Schema（`boss-tools.ts` / `task-tools.ts` /
- *   `verdict-tool.ts` / `reports/evening-summary-tool.ts`）は単一ソースとして
- *   変更しない。Zod スキーマはこのファイル内に閉じて手書きし、整合はユニット
- *   テストで担保する（`TOOL_ZOD_SHAPES` を参照）。
+ *   `reports/evening-summary-tool.ts`）は単一ソースとして変更しない。Zod
+ *   スキーマはこのファイル内に閉じて手書きし、整合はユニットテストで担保する
+ *   （`TOOL_ZOD_SHAPES` を参照）。
  * - 「ツール実行主体の一本化」（ADR 0003 決定 2）: サーバ側の実行関数を持つツール
  *   （`create_task` / `update_task` / `record_decision` — DB 書き込み。
  *   `get_activity_log`（Issue #150） — DB 読み出しのみだが同じ経路）は MCP
@@ -34,13 +33,13 @@ import { createTimedExecFile, type ExecFileFn } from "../../lib/exec-file.js";
  *   （`claude-client.ts`）はこの結果を tool_use として再実行しない
  *   （`streamBossMessage` は claude-code バックエンド時、単一 dispatch のみ
  *   行い MAX_TOOL_ROUNDS ループを回さない — 詳細は `claude-client.ts`）。
- * - `submit_verdict` はツール実行関数を持たない（DB 書き込みは呼び出し元の
- *   `appeals-route.ts` がトランザクションで行う）。MCP ハンドラは入力を
- *   捕捉して受理応答を返すのみで、検証（`parseVerdictToolInput`）は既存の
- *   `requestVerdict`（`claude-client.ts`）が返り値の tool_use ブロックに
- *   対して行う — API バックエンドと同じ経路を通すことで検証ロジックの
- *   重複を避ける。`submit_evening_summary`（Issue #108）も同じ理由・同じ
- *   経路で非実行ツールとして扱う（`buildSubmitEveningSummaryTool` 参照）。
+ * - `submit_evening_summary`（Issue #108）はツール実行関数を持たない（DB
+ *   書き込みは呼び出し元の `generate-daily-report.ts` が行う）。MCP ハンドラ
+ *   は入力を捕捉して受理応答を返すのみで、検証（`parseEveningSummaryToolInput`）
+ *   は既存の `requestVerdict`（`claude-client.ts`）が返り値の tool_use ブロック
+ *   に対して行う — API バックエンドと同じ経路を通すことで検証ロジックの重複
+ *   を避ける（`buildSubmitEveningSummaryTool` 参照。#397 で `submit_verdict`
+ *   は削除済み — 進言〔appeals〕機能自体が未使用のため一括撤去した）。
  */
 
 const MCP_SERVER_NAME = "ai-boss";
@@ -83,10 +82,10 @@ function buildCanUseTool(permittedMcpToolNames: readonly string[]) {
  * that qualified name too. Strip it back to the bare name our own callers
  * use (`requestVerdict`'s `toolName` match, `executeBossTool`'s dispatch)
  * before surfacing a `tool_use` block in the normalized `BossLlmMessage` —
- * self-review caught this: without stripping, claude-code re-adjudication
- * would never match `toolName === "submit_verdict"` and always resolve to
- * `{called: false}` (HTTP 500), since `requestVerdict` compares against the
- * bare name.
+ * self-review caught this: without stripping, a claude-code
+ * `requestVerdict` caller (e.g. `submit_evening_summary` extraction) would
+ * never match `toolName === "submit_evening_summary"` and always resolve to
+ * `{called: false}`, since `requestVerdict` compares against the bare name.
  */
 function unqualifyToolName(name: string): string {
   return name.startsWith(MCP_TOOL_NAME_PREFIX) ? name.slice(MCP_TOOL_NAME_PREFIX.length) : name;
@@ -143,18 +142,11 @@ const getActivityLogShape = {
     .optional(),
 };
 
-const submitVerdictShape = {
-  verdict: z.enum(APPEAL_VERDICTS).describe("裁定結果。維持なら upheld、修正するなら revised。"),
-  response: z.string().describe("ボスの再裁定文（ユーザーに提示する説明・断言）"),
-  revised_content: z.string().describe("verdict が revised の場合の修正後の決定内容（必須）").optional(),
-  revised_rationale: z.string().describe("修正の根拠").optional(),
-};
-
 /** 日報生成の値の抽出ステップで使う `submit_evening_summary` の Zod 対応。
- * `submit_verdict` と同じく DB 書き込みを伴わない「値の報告」ツールで、4値
- * はすべて必須（JSON Schema 側 `evening-summary-tool.ts` の `required` と
- * 一致 — 整合はテストで担保）。`key_decisions`（Issue #144: 日報「決定事項」
- * の廃止・夕会サマリへの統合）は「決定の要点」を表す。 */
+ * DB 書き込みを伴わない「値の報告」ツールで、4値はすべて必須（JSON Schema
+ * 側 `evening-summary-tool.ts` の `required` と一致 — 整合はテストで担保）。
+ * `key_decisions`（Issue #144: 日報「決定事項」の廃止・夕会サマリへの統合）
+ * は「決定の要点」を表す。 */
 const submitEveningSummaryShape = {
   report_summary: z.string().describe("ユーザーが夕会で報告した内容の要点（平文・簡潔に）"),
   boss_comment: z.string().describe("その報告に対するボスの講評・評価コメント（平文・簡潔に）"),
@@ -172,23 +164,20 @@ const submitEveningSummaryShape = {
 /**
  * Exported so a unit test can assert the Zod shapes' keys/required-ness stay
  * aligned with the JSON Schema tool definitions (`BOSS_TOOLS`,
- * `SUBMIT_VERDICT_TOOL`, `SUBMIT_EVENING_SUMMARY_TOOL`) that remain the
- * single source of truth.
+ * `SUBMIT_EVENING_SUMMARY_TOOL`) that remain the single source of truth.
  */
 export const TOOL_ZOD_SHAPES = {
   create_task: createTaskShape,
   update_task: updateTaskShape,
   record_decision: recordDecisionShape,
   get_activity_log: getActivityLogShape,
-  submit_verdict: submitVerdictShape,
   submit_evening_summary: submitEveningSummaryShape,
 } as const;
 
 /** Tool names with their own non-executing handler (report-a-value tools;
- * see `buildSubmitVerdictTool` / `buildSubmitEveningSummaryTool`). Kept as a
- * single source alongside `EXECUTED_TOOL_NAMES` below rather than
- * duplicating the literal list. */
-const NON_EXECUTING_TOOL_NAMES = new Set(["submit_verdict", "submit_evening_summary"]);
+ * see `buildSubmitEveningSummaryTool`). Kept as a single source alongside
+ * `EXECUTED_TOOL_NAMES` below rather than duplicating the literal list. */
+const NON_EXECUTING_TOOL_NAMES = new Set(["submit_evening_summary"]);
 
 /** Derived from `TOOL_ZOD_SHAPES` (minus the non-executing tools above, each
  * of which has its own handler) rather than a separately hand-maintained
@@ -513,15 +502,16 @@ export type ClaudeCodeUnavailableReason = "not_installed" | "unknown";
  * unavailability (not installed / not logged in), as opposed to an in-turn
  * execution failure such as hitting the max-turns cap (which keeps using
  * `ClaudeCodeBackendError` — see the `result` message handling in
- * `runClaudeCodeQuery` below). The 4 existing call sites' generic `Error`
- * catches (chat/appeals routes → HTTP 500; dashboard comment / notification
- * body → template fallback) handle this without any change, since they all
- * catch `Error` broadly (補足決定「FR-10 とエラーハンドリングの整合」).
+ * `runClaudeCodeQuery` below). The existing call sites' generic `Error`
+ * catches (chat route → HTTP 500; dashboard comment / notification body /
+ * evening-summary extraction → template/fallback) handle this without any
+ * change, since they all catch `Error` broadly (補足決定「FR-10 とエラー
+ * ハンドリングの整合」).
  *
  * Every site that logs an error like this logs `error.name` only, never
  * `.message`/`.reason` (the existing "log class name only" discipline — see
- * `notifier.ts` and the chat/appeals routes' catch comments), so `reason` is
- * for programmatic use only and is never written to a log.
+ * `notifier.ts` and the chat route's catch comments), so `reason` is for
+ * programmatic use only and is never written to a log.
  */
 export class ClaudeCodeUnavailableError extends Error {
   readonly reason: ClaudeCodeUnavailableReason;
@@ -572,29 +562,12 @@ function buildExecutedTool(name: string, description: string, shape: Record<stri
 }
 
 /**
- * `submit_verdict` has no execution function of its own — the DB write
- * happens in the caller (`appeals-route.ts`'s transaction) after
- * `requestVerdict` resolves, and validation (`parseVerdictToolInput`) is
- * performed by `requestVerdict` itself against the `tool_use` block that
- * naturally appears in the model's assistant message (captured by
- * `runClaudeCodeQuery`'s message loop below — same as the `api` backend,
- * which never executes this tool either). This handler's only job is to
- * satisfy the MCP round-trip the SDK requires to complete the turn.
- */
-function buildSubmitVerdictTool(description: string) {
-  return tool("submit_verdict", description, submitVerdictShape, async () => {
-    return { content: [{ type: "text" as const, text: "裁定を受け付けた。" }] };
-  });
-}
-
-/**
- * `submit_evening_summary`（Issue #108: 日報生成の「値の抽出」ステップ）も
- * `submit_verdict` と同じ理由で実行関数を持たない: DB 書き込み（`daily_reports`
- * への UPSERT）は呼び出し元（`generate-daily-report.ts`）が
- * `requestVerdict` の戻り値を見て行い、検証（`parseEveningSummaryToolInput`）
- * も `requestVerdict` 自身が `tool_use` ブロックに対して行う（`api` バック
- * エンドと同じ検証経路を通す）。このハンドラは Agent SDK の MCP ラウンド
- * トリップを完了させるだけの受理応答を返す。
+ * `submit_evening_summary`（Issue #108: 日報生成の「値の抽出」ステップ）は
+ * 実行関数を持たない: DB 書き込み（`daily_reports` への UPSERT）は呼び出し元
+ * （`generate-daily-report.ts`）が `requestVerdict` の戻り値を見て行い、
+ * 検証（`parseEveningSummaryToolInput`）も `requestVerdict` 自身が `tool_use`
+ * ブロックに対して行う（`api` バックエンドと同じ検証経路を通す）。このハンド
+ * ラは Agent SDK の MCP ラウンドトリップを完了させるだけの受理応答を返す。
  */
 function buildSubmitEveningSummaryTool(description: string) {
   return tool("submit_evening_summary", description, submitEveningSummaryShape, async () => {
@@ -604,16 +577,13 @@ function buildSubmitEveningSummaryTool(description: string) {
 
 /** Builds the in-process MCP server exposing exactly the tools named in
  * `tools` (the JSON Schema `Anthropic.Tool[]` the facade forwards — for
- * chat this is `BOSS_TOOLS`, for re-adjudication `[SUBMIT_VERDICT_TOOL]`,
- * for daily-report extraction `[SUBMIT_EVENING_SUMMARY_TOOL]`, for
- * dashboard-comment/notification-body it is empty/undefined). Throws if a
- * tool name has no registered Zod schema — a defensive guard, since the
- * call sites are all controlled by this codebase. */
+ * chat this is `BOSS_TOOLS`, for daily-report extraction
+ * `[SUBMIT_EVENING_SUMMARY_TOOL]`, for dashboard-comment/notification-body it
+ * is empty/undefined). Throws if a tool name has no registered Zod schema —
+ * a defensive guard, since the call sites are all controlled by this
+ * codebase. */
 function buildMcpServer(toolDefs: Anthropic.Tool[], hooks: McpHooks) {
   const tools = toolDefs.map((toolDef) => {
-    if (toolDef.name === "submit_verdict") {
-      return buildSubmitVerdictTool(toolDef.description ?? "");
-    }
     if (toolDef.name === "submit_evening_summary") {
       return buildSubmitEveningSummaryTool(toolDef.description ?? "");
     }
@@ -655,7 +625,7 @@ export interface ClaudeCodeMessageRequest {
   system?: string;
   messages: Anthropic.MessageParam[];
   /** JSON Schema tool definitions from the facade (`BOSS_TOOLS` /
-   * `[SUBMIT_VERDICT_TOOL]` / undefined). Only used to decide which
+   * `[SUBMIT_EVENING_SUMMARY_TOOL]` / undefined). Only used to decide which
    * in-process MCP tools to register — `maxTokens`/`toolChoice` have no
    * Agent SDK equivalent and are intentionally not forwarded (see the
    * feature spec's 前提・仮定 3). */

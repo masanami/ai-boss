@@ -42,8 +42,9 @@ export {
 
 /**
  * Facade over the LLM backends (`api` and, since Issue #79, `claude-code`)
- * used for boss dialogue (chat), re-adjudication (appeals), dashboard
- * comment generation, and notification copy generation.
+ * used for boss dialogue (chat), daily-report evening-summary extraction
+ * (Issue #108), dashboard comment generation, and notification copy
+ * generation.
  *
  * クリティカル設計決定（docs/adr/0003-llm-backend-isolation.md）:
  * - ツール実行主体はファサード配下に一本化する（呼び出し元はツールを
@@ -100,7 +101,7 @@ export class LlmTimeoutError extends Error {
  * of a client handle: the Agent SDK's `query()` (Issue #79) is stateless per
  * call and needs no equivalent of `Anthropic`. self-review (design-reviewer):
  * `createClaudeClient` itself runs per request today (all 4 call sites
- * construct a fresh client per chat/appeal/comment/notification call), so
+ * construct a fresh client per chat/report/comment/notification call), so
  * this env is in practice rebuilt from the live `process.env` on every call
  * too — "once here" refers to "once per client, not once per `query()`
  * invocation on that client", not "once for the process's lifetime". */
@@ -301,9 +302,10 @@ function isToolUseBlock(block: BossContentBlock): block is BossToolUseBlock {
  * Issue #118: when the (now-default) `claude-code` backend's execution
  * environment is unavailable, logs {@link CLAUDE_CODE_UNAVAILABLE_HINT} via
  * `console.warn` before letting the error continue to propagate unchanged —
- * the existing error contract (HTTP 500 for chat/appeals, template fallback
- * for dashboard comment / notification body) is untouched, only a warning is
- * added. Every call site that logs a `ClaudeCodeUnavailableError` today logs
+ * the existing error contract (HTTP 500 for chat, fallback result for the
+ * evening-summary extraction step, template fallback for dashboard comment /
+ * notification body) is untouched, only a warning is added. Every call site
+ * that logs a `ClaudeCodeUnavailableError` today logs
  * `err.name` only (never `.message`), per the "log class name only"
  * discipline (see that error type's own doc comment) — the static hint is
  * this module's way of surfacing actionable guidance without leaking
@@ -452,12 +454,12 @@ async function dispatchStream(
  * Dispatches a single non-streaming round (`createBossMessage` /
  * `requestVerdict`), for either backend (Issue #176 extended this to `api` —
  * see `dispatchStream`'s doc comment for the parallel history). Never
- * executes a DB-writing tool itself — `submit_verdict` has no execution
- * function (see `backends/claude-code-backend.ts`'s doc comment), the
- * dashboard-comment / notification-body callers pass no tools at all, and
- * `api`'s `createApiMessage` has no tool-execution loop of its own either —
- * so `hasSideEffect` is always `false` here: every failure is safe to retry
- * (AC-11).
+ * executes a DB-writing tool itself — `submit_evening_summary` has no
+ * execution function (see `backends/claude-code-backend.ts`'s doc comment),
+ * the dashboard-comment / notification-body callers pass no tools at all,
+ * and `api`'s `createApiMessage` has no tool-execution loop of its own
+ * either — so `hasSideEffect` is always `false` here: every failure is safe
+ * to retry (AC-11).
  */
 async function dispatchCreate(
   client: BossLlmClient,
@@ -605,8 +607,8 @@ export async function streamBossMessage(
 
 /**
  * Sends `request` to the boss LLM and resolves with the full response in
- * one round-trip (no streaming, no tool loop). Used by the appeals
- * re-adjudication flow (Issue #48) via {@link requestVerdict}.
+ * one round-trip (no streaming, no tool loop). Used by the daily-report
+ * evening-summary extraction step (Issue #108) via {@link requestVerdict}.
  */
 export function createBossMessage(
   client: BossLlmClient,
@@ -646,9 +648,10 @@ export type VerdictOutcome<T> =
  * Single round-trip that expects the model to call `toolName` (the caller
  * sets `request.tools`/`request.toolChoice` to force it). Returns a
  * "verified result, or explicit no-call" contract so callers (e.g. the
- * appeals route) don't need to reach into `message.content` themselves.
+ * daily-report evening-summary extraction step, `reports/extract-evening-
+ * summary.ts`) don't need to reach into `message.content` themselves.
  * `validate` is injected by the caller to avoid this module depending on any
- * particular domain (e.g. `decisions/`) — see the ticket's DI requirement.
+ * particular domain (e.g. `reports/`) — see the ticket's DI requirement.
  *
  * Uses the *last* matching `tool_use` block rather than the first: the `api`
  * backend forces a single tool call via `toolChoice` so there is normally
