@@ -48,14 +48,40 @@ export const EVIDENCE_REQUIRED_DISPLAY_MESSAGE =
   "エビデンスが添付されていないため、完了にできません";
 
 /**
- * `TasksApiError` を UI 表示用の文言に変換する。`code === "evidence_required"`
- * のときだけ固定文言を返し（決定 2-g・AC-76）、それ以外はサーバのエラー
- * メッセージ（`TasksApiError` 以外の Error も含む）を使う。呼び出し元
- * （`TaskBoard.tsx` の DnD・`use-checkin-panel.ts` の完了操作）で共有する。
+ * サーバの安定した `code` に対応する UI 所有の日本語文言（決定 2-g）。
+ *
+ * サーバ側のメッセージは開発者向けの英語（`task-evidences-routes.ts` の
+ * "extension not allowed: …" 等）なので、そのまま日本語 UI に出さない。
+ * ここに載っているのは `server/src/tasks/task-evidences-routes.ts` と
+ * `server/src/tasks/tasks-routes.ts` が返す `code` の全件で、**分岐は文言では
+ * なく `code` の値で行う**（AC-76: 文言だけを変えたエラーでも同じ分岐になる）。
+ */
+const ERROR_MESSAGE_BY_CODE: Record<string, string> = {
+  evidence_required: EVIDENCE_REQUIRED_DISPLAY_MESSAGE,
+  evidence_extension_not_allowed:
+    "この形式のファイルは添付できません（画像・PDF・テキスト・Office 文書のみ）",
+  evidence_file_too_large: "ファイルが大きすぎます（1 件あたり 10 MB まで）",
+  evidence_limit_exceeded:
+    "エビデンスは 1 つのタスクにつき 10 件までです。不要なものを削除してください",
+  evidence_url_scheme_not_allowed:
+    "http または https で始まる URL を指定してください",
+  task_already_done:
+    "完了したタスクのエビデンスは削除できません。ステータスを戻してから削除してください",
+};
+
+/**
+ * `TasksApiError` を UI 表示用の文言に変換する。既知の `code` は
+ * {@link ERROR_MESSAGE_BY_CODE} の日本語文言へ、未知の `code`・`code` 無しの
+ * エラーはサーバのメッセージ（`TasksApiError` 以外の `Error` も含む）へ落とす。
+ * 呼び出し元（`TaskBoard.tsx` の DnD・`use-checkin-panel.ts` の完了操作・
+ * `use-task-evidences.ts` のエビデンス操作）で共有する。
  */
 export function describeTasksApiError(error: unknown, fallback: string): string {
-  if (error instanceof TasksApiError && error.code === "evidence_required") {
-    return EVIDENCE_REQUIRED_DISPLAY_MESSAGE;
+  if (error instanceof TasksApiError && error.code !== undefined) {
+    const message = ERROR_MESSAGE_BY_CODE[error.code];
+    if (message !== undefined) {
+      return message;
+    }
   }
   return error instanceof Error ? error.message : fallback;
 }

@@ -1,17 +1,10 @@
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import type { ChangeEvent, DragEvent, FormEvent, KeyboardEvent } from "react";
 import { TASK_STATUSES } from "./task";
 import type { Task, TaskPatchInput, TaskPriority, TaskStatus } from "./task";
 import { TASK_DRAG_DATA_TYPE } from "./task-dnd";
 import type { TaskEvidence } from "./task-evidence";
-import {
-  addFileEvidence,
-  addLinkEvidence,
-  deleteTaskEvidence,
-  describeTasksApiError,
-  evidenceContentUrl,
-  fetchTaskEvidences,
-} from "./tasks-api";
+import { useTaskEvidences } from "./use-task-evidences";
 
 interface TaskCardProps {
   task: Task;
@@ -38,8 +31,6 @@ const STATUS_LABEL: Record<TaskStatus, string> = {
   done: "完了",
   dropped: "中止",
 };
-
-type EvidenceListStatus = "idle" | "loading" | "ready" | "error";
 
 // due_at は yyyy-MM-dd を想定するが、ISO 日時（ボスの tool use 等の将来経路）
 // が入っても date input が黙って空欄→null 保存しないよう日付部分に正規化する
@@ -73,41 +64,22 @@ function TaskCard({
     task.evidence_required,
   );
 
-  // タスク詳細（編集 UI）のエビデンス一覧・追加・削除（AC-67〜71）。
-  const [evidences, setEvidences] = useState<TaskEvidence[]>([]);
-  const [evidencesStatus, setEvidencesStatus] =
-    useState<EvidenceListStatus>("idle");
   const [linkUrl, setLinkUrl] = useState("");
-  const [evidenceActionError, setEvidenceActionError] = useState<
-    string | null
-  >(null);
 
-  // 編集モードに入っている間だけ、当該タスクのエビデンス一覧を取得する
-  // （タスク一覧の各行が常時取得すると N+1 になるため）。
-  useEffect(() => {
-    if (!isEditing) {
-      return;
-    }
-    let cancelled = false;
-    setEvidencesStatus("loading");
-    fetchTaskEvidences(task.id)
-      .then((list) => {
-        if (cancelled) {
-          return;
-        }
-        setEvidences(list);
-        setEvidencesStatus("ready");
-      })
-      .catch(() => {
-        if (cancelled) {
-          return;
-        }
-        setEvidencesStatus("error");
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [isEditing, task.id]);
+  // タスク詳細（編集 UI）のエビデンス一覧・追加・削除（AC-67〜71）。IO は
+  // フックが所有し、このコンポーネントは表示に徹する（この web/ の既存規約）。
+  // 編集モードに入っている間だけ取得する（タスク一覧の各行が常時取得すると
+  // N+1 になるため）。
+  const {
+    evidences,
+    status: evidencesStatus,
+    actionError: evidenceActionError,
+    isMutating,
+    addFile,
+    addLink,
+    remove: removeEvidence,
+    contentUrl,
+  } = useTaskEvidences(task.id, isEditing);
 
   const startEditing = () => {
     setTitle(task.title);
@@ -116,7 +88,6 @@ function TaskCard({
     setDueAt(toDateInputValue(task.due_at));
     setEvidenceRequired(task.evidence_required);
     setLinkUrl("");
-    setEvidenceActionError(null);
     setIsEditing(true);
   };
 
@@ -170,16 +141,7 @@ function TaskCard({
     if (!file) {
       return;
     }
-    setEvidenceActionError(null);
-    addFileEvidence(task.id, file)
-      .then((created) => {
-        setEvidences((prev) => [...prev, created]);
-      })
-      .catch((error: unknown) => {
-        setEvidenceActionError(
-          describeTasksApiError(error, "エビデンスの追加に失敗しました"),
-        );
-      });
+    void addFile(file);
   };
 
   const handleAddLink = () => {
@@ -187,17 +149,12 @@ function TaskCard({
     if (url === "") {
       return;
     }
-    setEvidenceActionError(null);
-    addLinkEvidence(task.id, url)
-      .then((created) => {
-        setEvidences((prev) => [...prev, created]);
+    // 失敗時に入力を消さない（消すと再入力を強いる）。成功したときだけ空にする。
+    void addLink(url).then((added) => {
+      if (added) {
         setLinkUrl("");
-      })
-      .catch((error: unknown) => {
-        setEvidenceActionError(
-          describeTasksApiError(error, "エビデンスの追加に失敗しました"),
-        );
-      });
+      }
+    });
   };
 
   // URL 入力はタスク編集フォーム（送信ボタン「保存」を持つ）の内側にあるため、
@@ -212,16 +169,7 @@ function TaskCard({
   };
 
   const handleDeleteEvidence = (evidenceId: number) => {
-    setEvidenceActionError(null);
-    deleteTaskEvidence(task.id, evidenceId)
-      .then(() => {
-        setEvidences((prev) => prev.filter((item) => item.id !== evidenceId));
-      })
-      .catch((error: unknown) => {
-        setEvidenceActionError(
-          describeTasksApiError(error, "エビデンスの削除に失敗しました"),
-        );
-      });
+    void removeEvidence(evidenceId);
   };
 
   if (isEditing) {
@@ -289,7 +237,7 @@ function TaskCard({
                 <li key={evidence.id}>
                   {evidence.kind === "file" ? (
                     <a
-                      href={evidenceContentUrl(task.id, evidence.id)}
+                      href={contentUrl(evidence.id)}
                       target="_blank"
                       rel="noreferrer"
                     >
@@ -306,6 +254,7 @@ function TaskCard({
                   )}
                   <button
                     type="button"
+                    disabled={isMutating}
                     onClick={() => handleDeleteEvidence(evidence.id)}
                   >
                     削除
@@ -316,7 +265,11 @@ function TaskCard({
           )}
           <label>
             エビデンスファイル
-            <input type="file" onChange={handleFileSelected} />
+            <input
+              type="file"
+              disabled={isMutating}
+              onChange={handleFileSelected}
+            />
           </label>
           <label>
             エビデンスURL
@@ -326,7 +279,7 @@ function TaskCard({
               onKeyDown={handleLinkUrlKeyDown}
             />
           </label>
-          <button type="button" onClick={handleAddLink}>
+          <button type="button" disabled={isMutating} onClick={handleAddLink}>
             URLを追加
           </button>
           {evidenceActionError !== null && (
