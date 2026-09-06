@@ -29,8 +29,11 @@
 - [ ] 人間はボスの裁定を上書きできる（タスク詳細で要否をトグルできる）
 - [ ] 設定 ON かつエビデンス要のタスクは、エビデンスが 0 件だと `done` にできない
 - [ ] 強制はサーバ側で効き、UI・ボスチャットのツール・API 直叩きのどの経路でも同じ判定になる
-- [ ] タスクにファイル（アプリ管理下へコピー）またはリンク（URL）をエビデンスとして添付できる
-- [ ] 添付済みエビデンスを一覧・閲覧・削除できる UI がある
+- [ ] タスクにファイルをエビデンスとして添付できる（アプリ管理下へコピーされる）
+- [ ] タスクにリンク（URL）をエビデンスとして添付できる
+- [ ] 添付済みエビデンスを一覧できる UI がある
+- [ ] 添付済みエビデンスの中身を閲覧できる UI がある
+- [ ] 添付済みエビデンスを削除できる UI がある
 - [ ] `done` のタスクからエビデンスを削除しようとすると拒否される
 - [ ] エビデンス要否フラグをユーザーが落とした事実が活動ログに残る
 - [ ] エビデンスの**本体（ファイルの中身）は LLM へ一切送らない**
@@ -98,9 +101,11 @@
 
 既存 API の変更:
 
-- `tasks` の各レスポンス（`GET /api/tasks` / `POST` / `PATCH`）に `evidence_required`（`0 | 1`）が増える
-- `POST /api/tasks` が `evidence_required` を受け付ける（省略時 `false`）
-- `PATCH /api/tasks/:id` が `evidence_required` を受け付ける
+- `tasks` の各レスポンス（`GET /api/tasks` / `POST` / `PATCH`）に `evidence_required`（**boolean**）が増える
+- `POST /api/tasks` が `evidence_required`（boolean）を受け付ける（省略時 `false`）
+- `PATCH /api/tasks/:id` が `evidence_required`（boolean）を受け付ける
+
+`evidence_required` は **HTTP 境界では一貫して boolean**、**DB では INTEGER（`0` / `1`）** とする（変換はリポジトリ層 1 箇所。決定 1-b・明示的な仮定 8）。
 - `GET /api/settings` / `PUT /api/settings` に `evidence_enforcement_enabled`（JSON 上は boolean）が増える
 
 ### 画面
@@ -164,12 +169,23 @@ ALTER TABLE tasks ADD COLUMN evidence_required INTEGER NOT NULL DEFAULT 0;
 
 保存を**許可する**拡張子（大文字小文字を区別せず判定する）:
 
-| 分類 | 拡張子 |
-|---|---|
-| 画像 | `.png` `.jpg` `.jpeg` `.gif` `.webp` `.heic` |
-| PDF | `.pdf` |
-| テキスト系 | `.txt` `.md` `.csv` `.log` `.json` |
-| 文書 | `.docx` `.xlsx` `.pptx` |
+| 分類 | 拡張子 | `mime_type` / 配信時の `Content-Type` |
+|---|---|---|
+| 画像 | `.png` | `image/png` |
+| 画像 | `.jpg` `.jpeg` | `image/jpeg` |
+| 画像 | `.gif` | `image/gif` |
+| 画像 | `.webp` | `image/webp` |
+| 画像 | `.heic` | `image/heic` |
+| PDF | `.pdf` | `application/pdf` |
+| テキスト系 | `.txt` `.log` | `text/plain` |
+| テキスト系 | `.md` | `text/markdown` |
+| テキスト系 | `.csv` | `text/csv` |
+| テキスト系 | `.json` | `application/json` |
+| 文書 | `.docx` | `application/vnd.openxmlformats-officedocument.wordprocessingml.document` |
+| 文書 | `.xlsx` | `application/vnd.openxmlformats-officedocument.spreadsheetml.sheet` |
+| 文書 | `.pptx` | `application/vnd.openxmlformats-officedocument.presentationml.presentation` |
+
+この表が拡張子ホワイトリストと MIME 導出の**単一の情報源**である（`mime_type` 列の保存値も、`content` 配信時の `Content-Type` も、ここから引く）。
 
 上記以外はすべて拒否する（ホワイトリストなので、明示的に許可した形式だけが通る）。とくに次は**明示的に拒否**する:
 
@@ -182,7 +198,7 @@ ALTER TABLE tasks ADD COLUMN evidence_required INTEGER NOT NULL DEFAULT 0;
 
 ### 決定 2: 強制の関門はサーバ側のタスク更新経路 1 箇所（論点 3）
 
-- **採用案**: `server/src/tasks/tasks-repository.ts` の `updateTask()` を唯一の関門にする。`done` への遷移を試みたとき、設定 ON かつ当該タスクが `evidence_required = 1` かつエビデンス 0 件なら、**409 と安定した `code: "evidence_required"`** で拒否する
+- **採用案**: `server/src/tasks/tasks-repository.ts` の `updateTask()` を唯一の関門にする。`done` への遷移を試みたとき、設定 ON かつ当該タスクが `evidence_required: true` かつエビデンス 0 件なら、**409 と安定した `code: "evidence_required"`** で拒否する
 - **理由**: 完了に至る 4 経路が**実コード上すべて `updateTask()` を通る**ことを確認済み:
   1. チェックインパネルの「完了」ボタン → `web/src/use-checkin-panel.ts:252` の `editTask(taskId, { status: "done" })` → `web/src/tasks-api.ts` の `patchTask` → `PATCH /api/tasks/:id` → `server/src/tasks/tasks-routes.ts:41` → `updateTask`
   2. タスクボードの DnD / カードのステータス変更 → `web/src/TaskBoard.tsx:112,146` の `editTask` → 同上
@@ -197,17 +213,22 @@ ALTER TABLE tasks ADD COLUMN evidence_required INTEGER NOT NULL DEFAULT 0;
 
 **導出決定 2-a: 判定条件は「`done` への遷移」であって「`done` であること」ではない。** `patch.status === "done" && existing.status !== "done"` のときだけ関門を通す。これは `updateTask` が既に `completed_at` の更新に使っている条件（`tasks-repository.ts:112-118`）と同じで、決定 4（遡及しない）をこの 1 条件で自然に満たす。既に `done` のタスクにタイトルだけ `PATCH` しても弾かれない。
 
-**導出決定 2-b: `updateTask` の戻り値を判別可能にする。** 現在の戻り値は `Task | undefined`（`undefined` = 該当タスク無し）で、「拒否」を表現できない。判別可能なユニオン（成功 / 該当なし / エビデンス不足）へ変える。既存の呼び出し元 3 箇所（`tasks-routes.ts` / `task-tools.ts` / `checkins-routes.ts`）はすべて型エラーで気付ける。
+**導出決定 2-b: `updateTask` の戻り値を判別可能にする。** 現在の戻り値は `Task | undefined`（`undefined` = 該当タスク無し）で、「拒否」を表現できない。判別可能なユニオン（成功 / 該当なし / エビデンス不足）へ変える。既存の呼び出し元 3 箇所のうち `tasks-routes.ts:41` と `task-tools.ts:106` の 2 箇所は戻り値を使っているため型エラーで気付けるが、**`checkins-routes.ts:164` は戻り値を捨てているため型エラーにならない**（後述「実装時に必ず対処する波及点」）。
 
-**導出決定 2-c: 拒否は「何も書かない」。** 拒否時は `tasks` 行（`status` / `updated_at` / `completed_at`）を一切更新せず、`task_update` 活動イベントも記録しない。関門は既存のトランザクションに入る前に評価する。
+**導出決定 2-c: 関門が見る `evidence_required` は、パッチ適用後の値である。** 1 回の `PATCH` で `evidence_required` と `status` を同時に変えられるため（例: `{ evidence_required: false, status: "done" }`）、関門が「既存行の値」と「パッチ適用後の値」のどちらを見るかで結果が変わる。**パッチ適用後の値を見る**。理由は 2 つ:
 
-**導出決定 2-d: ボスチャット経由の拒否はボスがユーザーに伝える。** `executeUpdateTask` は既存のエラー返却様式（`{ content, isError: true }`）で理由文字列を返す。ツール結果は会話に戻るため、ボスが「エビデンスが無いので完了にできない」と伝える形になる。ここに専用の仕組みは足さない。
+- `updateTask` は既に他のフィールドをパッチ適用後の行（`next`）として扱っており（`tasks-repository.ts:109`）、そこだけ適用前の値を見るのは一貫しない
+- 決定 5 のとおり「要否フラグの自己解除は許す」ので、フラグを外してから `done` にする 2 回の `PATCH` は元々許される。それを 1 回の `PATCH` で行っただけの操作を弾く理由が無い。フラグを外した痕跡は決定 3-b により `task_update` の `note` に残る
 
-**導出決定 2-e: DnD で弾かれたカードは元の列に残る。** `web/src/use-tasks.ts:59-62` の `editTask` は `patchTask` が解決してから state を更新する楽観更新なしの実装なので、409 で reject された時点でカードは移動していない。したがって「元の列へ戻す」ための追加実装は不要で、要件は「移動していないこと」と「理由が表示されること」の 2 点に落ちる。理由の表示は `TaskBoard.tsx` の既存 `actionError`（`<p role="alert">`）に載せる。
+**導出決定 2-d: 拒否は「何も書かない」。** 拒否時は `tasks` 行（`status` / `updated_at` / `completed_at`）を一切更新せず、`task_update` 活動イベントも記録しない。関門は既存のトランザクションに入る前に評価する。
 
-**導出決定 2-f: web の API 層はエラーの `code` を保持する。** 現在の `web/src/tasks-api.ts` は `{ error }` の文言だけを `Error` にして投げるため `code` で分岐できない。`web/src/daily-reports-api.ts` の `ReportApiError`（`message` + `code`）と同じ形のエラークラスをタスク API 側にも用意し、UI は文言でなく `code` で分岐する（[ADR 0008](../adr/0008-evening-dialogue-prerequisite.md) 決定 2 と同じ規律）。
+**導出決定 2-e: ボスチャット経由の拒否はボスがユーザーに伝える。** `executeUpdateTask` は既存のエラー返却様式（`{ content, isError: true }`）で理由文字列を返す。ツール結果は会話に戻るため、ボスが「エビデンスが無いので完了にできない」と伝える形になる。ここに専用の仕組みは足さない。
 
-**導出決定 2-g: 作成時に直接 `done` にする経路も同じ判定にする。** `POST /api/tasks` は `status: "done"` を受け付ける（`insertTask` は `record.status === "done"` で `completed_at` を入れる。`tasks-repository.ts:45`）。新規タスクにエビデンスは付けられないので、設定 ON で `evidence_required: true` かつ `status: "done"` の作成は必ず「エビデンス 0 件で `done`」になる。関門の判定式を共有の純粋述語に切り出し、`insertTask` 経路からも同じ `code: "evidence_required"` で 409 を返す。**関門を 2 つに増やすのではなく、1 つの述語を 2 箇所から呼ぶ**（この経路は UI からは到達しない — `TaskForm` は `status` を送らず、`create_task` ツールのスキーマにも `status` は無い）。
+**導出決定 2-f: DnD で弾かれたカードは元の列に残る。** `web/src/use-tasks.ts:59-62` の `editTask` は `patchTask` が解決してから state を更新する楽観更新なしの実装なので、409 で reject された時点でカードは移動していない。したがって「元の列へ戻す」ための追加実装は不要で、要件は「移動していないこと」と「理由が表示されること」の 2 点に落ちる。理由の表示は `TaskBoard.tsx` の既存 `actionError`（`<p role="alert">`）に載せる。
+
+**導出決定 2-g: web の API 層はエラーの `code` を保持する。** 現在の `web/src/tasks-api.ts` は `{ error }` の文言だけを `Error` にして投げるため `code` で分岐できない。`web/src/daily-reports-api.ts` の `ReportApiError`（`message` + `code`）と同じ形のエラークラスをタスク API 側にも用意し、UI は文言でなく `code` で分岐する（[ADR 0008](../adr/0008-evening-dialogue-prerequisite.md) 決定 2 と同じ規律）。
+
+**導出決定 2-h: 作成時に直接 `done` にする経路も同じ判定にする。** `POST /api/tasks` は `status: "done"` を受け付ける（`insertTask` は `record.status === "done"` で `completed_at` を入れる。`tasks-repository.ts:45`）。新規タスクにエビデンスは付けられないので、設定 ON で `evidence_required: true` かつ `status: "done"` の作成は必ず「エビデンス 0 件で `done`」になる。関門の判定式を共有の純粋述語に切り出し、`insertTask` 経路からも同じ `code: "evidence_required"` で 409 を返す。**関門を 2 つに増やすのではなく、1 つの述語を 2 箇所から呼ぶ**（この経路は UI からは到達しない — `TaskForm` は `status` を送らず、`create_task` ツールのスキーマにも `status` は無い）。
 
 ### 決定 3: 裁定者はボス（LLM）。人間が上書きでき、上書きは活動ログに残る（論点 1）
 
@@ -275,7 +296,7 @@ ALTER TABLE tasks ADD COLUMN evidence_required INTEGER NOT NULL DEFAULT 0;
 - **理由**: `settings` テーブルは `key TEXT PRIMARY KEY, value TEXT`（`migrate.ts` v1）で、値の型は文字列に固定されている。既存バリデータも数値（`boss_strictness` / `*_minutes`）を `String(value)` にして保存しており（`settings-validation.ts:90,122`）、「JSON では型付き・保存は文字列」という変換の前例がある。boolean もこの前例に揃える
 - **代替案**:
   - **`"1"` / `"0"` で持つ** — 却下。既存の数値設定（分・強度）と同じ見た目になり、DB を直接覗いたときに区別できない
-  - **`settings.value` の型を変える / 別テーブルを作る** — 却下。KV の単純さが失われ、既存 14 キーすべてに波及する
+  - **`settings.value` の型を変える / 別テーブルを作る** — 却下。KV の単純さが失われ、既存 15 キーすべてに波及する
 
 **導出決定 7-a: 新しい設定キー名は `evidence_enforcement_enabled` とする。** `SETTINGS_KEYS`（`settings-validation.ts:11-27`）の既存 15 キーは、ドメイン接頭辞付きの snake_case（`boss_*` / `work_*` / `detection_*` / `escalation_*`）か、単独の名詞（`model`）である。本機能は新しいドメインなので `evidence_` を接頭辞にし、`detection_unstarted_fallback_minutes` と同じ `<ドメイン>_<対象>_<属性>` の形に揃える。**新しい命名体系は導入しない。**
 
@@ -328,7 +349,7 @@ export type UpdateTaskResult =
 ```
 
 ```ts
-// 決定 2-g で 2 箇所から呼ぶ共有述語
+// 決定 2-h で 2 箇所から呼ぶ共有述語
 export function isEvidenceGateBlocking(
   db: Database.Database,
   input: { taskId: number | null; evidenceRequired: boolean },
@@ -347,7 +368,7 @@ export function isEvidenceGateBlocking(
 2. **エビデンスの保管とリポジトリ**: `resolveEvidenceDir`、`CreateAppOptions` への配線、`task_evidences` のリポジトリ、拡張子・サイズ・件数・URL スキームの検証（決定 1）
 3. **エビデンス API**: `GET` / `POST` / `GET …/content` / `DELETE` の 4 エンドポイント、`done` 後の削除拒否（決定 1・5）
 4. **強制の関門と裁定の保持**: `updateTask` の関門と戻り値変更、`POST /api/tasks` 経路、`evidence_required` の POST/PATCH 受付、`create_task` ツールへの追加、`formatTaskLine` への追加、上書きの `note` 記録（決定 2・3）
-5. **web**: 設定トグル、`TaskForm` のチェックボックス、タスク詳細のエビデンス UI、`code` を保持するエラークラスと DnD / チェックインパネルのエラー表示（決定 2-e・2-f・7）
+5. **web**: 設定トグル、`TaskForm` のチェックボックス、タスク詳細のエビデンス UI、`code` を保持するエラークラスと DnD / チェックインパネルのエラー表示（決定 2-f・2-g・7）
 
 チケット 4 は 1〜3 に依存する。5 は 1〜4 に依存する。1・2 は並列可能。
 
@@ -369,7 +390,9 @@ export function isEvidenceGateBlocking(
 5. **`.svg` を画像から除外する**（決定 1-c）。「画像は許可」の文言上は含まれうるが、同一オリジンからのインライン配信でスクリプトが動きうるため、実行可能形式の拒否と同じ理由で外した
 6. **ファイルは 1 リクエスト 1 件**とする（`multipart` のフィールド名 `file`）。複数同時アップロードは UI の複雑さに見合わない（YAGNI）。件数上限 10 は複数回の追加で到達する
 7. **日報へのエビデンス掲載は本機能のスコープ外**とする（決定 6）。Issue #256 の論点 6 は「渡す範囲の境界を引く」ことであり、掲載自体は要求されていない
-8. **`evidence_required` の JSON 表現**: DB は INTEGER だが、API のレスポンス・リクエストでは既存の `tasks` 列と同じく**そのままの値**（`0 | 1`）で扱う。`messages.interrupted` の前例に倣い、boolean への変換層は設定キー（決定 7）にだけ置く
+8. **`evidence_required` の JSON 表現は boolean に統一する**。DB は INTEGER（`0` / `1`）だが、**`POST` / `PATCH` のリクエストボディも `GET` / `POST` / `PATCH` のレスポンスも boolean** とし、変換は `tasks-repository.ts` の 1 箇所に置く。「JSON では型付き・保存は素の型」という点で決定 7（設定キーの boolean）と同じ作法であり、web 側の `Task` 型・`TaskPatchInput` 型・チェックボックスがそのまま繋がる。**`0` / `1` を HTTP 境界に出さない**（片方向だけ boolean にすると `GET` の結果をそのまま `PATCH` に送り返せなくなる）
+9. **エビデンスの「閲覧」は遷移で実現する**（タスク詳細内に独自プレビュー UI を作らない）。ファイル型は `content` エンドポイントへ、リンク型は `url` へ遷移し、画像・PDF のインライン表示はブラウザに任せる（決定 1-c-ii の `Content-Disposition` がそれを決める）。独自ビューアの実装は YAGNI
+10. **拡張子 → MIME の対応表を決定 1-c に置き、そこを単一の情報源とする**。実装者ごとに `.log` / `.heic` 等の MIME を選び直すと `mime_type` 列と `Content-Type` ヘッダが食い違うため
 
 ## 受入基準
 
@@ -394,11 +417,13 @@ export function isEvidenceGateBlocking(
 
 ### エビデンス要否フラグ（裁定）
 
-- [ ] `POST /api/tasks` で `evidence_required` を省略すると、作成されたタスクの `evidence_required` は `0` になる
-- [ ] `POST /api/tasks` に `evidence_required: true` を送ると、作成されたタスクの `evidence_required` は `1` になる
-- [ ] `create_task` ツールに `evidence_required: true` を渡すと、作成されたタスクの `evidence_required` は `1` になる
-- [ ] `create_task` ツールで `evidence_required` を省略すると `0` になる
-- [ ] `PATCH /api/tasks/:id` で `evidence_required` を `1` から `0` に変更できる
+- [ ] `POST /api/tasks` で `evidence_required` を省略すると、レスポンスの `evidence_required` は `false` になる
+- [ ] `POST /api/tasks` に `evidence_required: true` を送ると、レスポンスの `evidence_required` は `true` になる
+- [ ] `POST /api/tasks` に boolean 以外の `evidence_required`（`1` / `"true"`）を送ると 400 を返す
+- [ ] `create_task` ツールに `evidence_required: true` を渡すと、作成されたタスクの `evidence_required` は `true` になる
+- [ ] `create_task` ツールで `evidence_required` を省略すると `false` になる
+- [ ] `PATCH /api/tasks/:id` で `evidence_required` を `true` から `false` に変更できる
+- [ ] `GET /api/tasks` の各要素の `evidence_required` は boolean である（`0` / `1` を返さない）
 - [ ] `evidence_required` を変更する `PATCH` は、`note` に変更内容を含む `task_update` 活動イベントを記録する
 - [ ] `evidence_required` を含まない `PATCH` が記録する `task_update` 活動イベントの `note` は `null` のままである
 - [ ] ボスチャットのシステムプロンプトのタスク行に、そのタスクのエビデンス要否が含まれる
@@ -406,19 +431,21 @@ export function isEvidenceGateBlocking(
 
 ### 強制（`done` ゲート）
 
-- [ ] 設定 ON・`evidence_required = 1`・エビデンス 0 件のタスクへの `PATCH /api/tasks/:id { status: "done" }` は 409 を返す
+- [ ] 設定 ON・`evidence_required: true`・エビデンス 0 件のタスクへの `PATCH /api/tasks/:id { status: "done" }` は 409 を返す
 - [ ] 上記 409 のレスポンスボディは `code: "evidence_required"` を含む
 - [ ] 上記 409 のあと、対象タスクの `status` は `done` に変わっていない
 - [ ] 上記 409 のあと、対象タスクの `completed_at` は `null` のままである
 - [ ] 上記 409 のあと、`task_update` 活動イベントは記録されていない
-- [ ] 設定 OFF なら、`evidence_required = 1`・エビデンス 0 件のタスクを `done` にできる
-- [ ] 設定 ON でも、`evidence_required = 0` のタスクはエビデンス 0 件で `done` にできる
-- [ ] 設定 ON・`evidence_required = 1` でも、エビデンスが 1 件あれば `done` にできる
-- [ ] 設定 ON・`evidence_required = 1`・エビデンス 0 件のタスクを `dropped` にすることはできる
-- [ ] 設定 ON・`evidence_required = 1`・エビデンス 0 件で `update_task` ツールを `status: "done"` で実行すると、`isError: true` の結果が返る
+- [ ] 設定 OFF なら、`evidence_required: true`・エビデンス 0 件のタスクを `done` にできる
+- [ ] 設定 ON でも、`evidence_required: false` のタスクはエビデンス 0 件で `done` にできる
+- [ ] 設定 ON・`evidence_required: true` でも、エビデンスが 1 件あれば `done` にできる
+- [ ] 設定 ON・`evidence_required: true`・エビデンス 0 件のタスクを `dropped` にすることはできる
+- [ ] 設定 ON・`evidence_required: true`・エビデンス 0 件で `update_task` ツールを `status: "done"` で実行すると、`isError: true` の結果が返る
 - [ ] 上記ツール実行の結果テキストは、エビデンスが不足していることを示す文言を含む
 - [ ] 設定 ON・`evidence_required: true`・`status: "done"` を同時に指定した `POST /api/tasks` は 409 と `code: "evidence_required"` を返す
-- [ ] 既に `status = "done"` のタスクへの `PATCH { title: "…" }` は、設定 ON・`evidence_required = 1`・エビデンス 0 件でも成功する（遡及しない）
+- [ ] 既に `status = "done"` のタスクへの `PATCH { title: "…" }` は、設定 ON・`evidence_required: true`・エビデンス 0 件でも成功する（遡及しない）
+- [ ] 設定 ON・エビデンス 0 件のタスクへの `PATCH { evidence_required: false, status: "done" }` は成功する（関門はパッチ適用後の値を見る。決定 2-c）
+- [ ] 上記の `PATCH` は、`evidence_required` の変更内容を `note` に含む `task_update` 活動イベントを記録する
 - [ ] `POST /api/checkins` の `task_start` によるステータス遷移は、設定 ON でも 409 にならない（`done` に到達しない経路）
 
 ### エビデンスの追加
@@ -465,7 +492,10 @@ export function isEvidenceGateBlocking(
 - [ ] タスクボードで `done` 列へ DnD して 409 が返ったとき、カードは元の列に表示されたままである
 - [ ] 上記のとき、エビデンス不足を示すメッセージが `role="alert"` の要素に表示される
 - [ ] チェックインパネルの「完了」ボタンが 409 で失敗したとき、エビデンス不足を示すメッセージが表示される
-- [ ] web の API エラーは `code` を保持し、UI はエラー文言ではなく `code` で分岐する
+- [ ] `web/src/tasks-api.ts` が投げるエラーは、レスポンスボディの `code` を保持したプロパティを持つ
+- [ ] タスクボード・チェックインパネルの表示分岐は、エラー文言ではなく `code` の値で行われる（文言だけを変えたエラーでも同じ分岐になる）
+- [ ] タスク詳細でファイル型エビデンスを開くと、`GET /api/tasks/:id/evidences/:evidenceId/content` へ遷移する（画像・PDF はブラウザがインライン表示し、それ以外はダウンロードになる。決定 1-c-ii）
+- [ ] タスク詳細でリンク型エビデンスを開くと、保存された `url` へ遷移する
 
 ### LLM 境界（決定 6）
 
