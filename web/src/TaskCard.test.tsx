@@ -457,6 +457,59 @@ describe("TaskCard", () => {
     );
   });
 
+  // URL 入力は編集フォーム（送信ボタン「保存」を持つ）の内側にあるため、
+  // Enter の暗黙送信を捕まえないとタスク編集が保存されて編集モードが閉じ、
+  // 入力した URL は追加されないまま捨てられる（入力の消失）。
+  it("adds the link evidence when Enter is pressed in the URL field, instead of submitting the edit form", async () => {
+    const fetchMock = vi.fn();
+    fetchMock.mockResolvedValueOnce({
+      ok: true,
+      status: 200,
+      json: () => Promise.resolve([]),
+    });
+    const created = makeEvidence({
+      id: 12,
+      kind: "link",
+      url: "https://example.com/enter",
+    });
+    fetchMock.mockResolvedValueOnce({
+      ok: true,
+      status: 201,
+      json: () => Promise.resolve(created),
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const onEdit = vi.fn();
+    render(
+      <TaskCard task={BASE_TASK} onStatusChange={vi.fn()} onEdit={onEdit} />,
+    );
+    fireEvent.click(screen.getByRole("button", { name: "編集" }));
+    await waitFor(() =>
+      expect(screen.getByText("まだエビデンスはありません")).toBeInTheDocument(),
+    );
+
+    const urlField = screen.getByLabelText("エビデンスURL");
+    fireEvent.change(urlField, {
+      target: { value: "https://example.com/enter" },
+    });
+    // fireEvent は preventDefault が呼ばれると false を返す。jsdom は HTML の
+    // 暗黙送信を実装しないため「送信されないこと」を直接は観測できず、
+    // preventDefault が呼ばれた事実で担保する（実ブラウザではこれが暗黙送信を
+    // 止める）。
+    const notCancelled = fireEvent.keyDown(urlField, {
+      key: "Enter",
+      cancelable: true,
+    });
+    expect(notCancelled).toBe(false);
+
+    await waitFor(() =>
+      expect(screen.getByText("https://example.com/enter")).toBeInTheDocument(),
+    );
+    // 編集モードは閉じない
+    expect(onEdit).not.toHaveBeenCalled();
+    expect(screen.getByLabelText("エビデンスURL")).toBeInTheDocument();
+  });
+
   it("removes an evidence from the list when deleted (AC-70)", async () => {
     const fetchMock = vi.fn();
     fetchMock.mockResolvedValueOnce({

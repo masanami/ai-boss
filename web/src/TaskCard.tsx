@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import type { ChangeEvent, DragEvent, FormEvent } from "react";
+import type { ChangeEvent, DragEvent, FormEvent, KeyboardEvent } from "react";
 import { TASK_STATUSES } from "./task";
 import type { Task, TaskPatchInput, TaskPriority, TaskStatus } from "./task";
 import { TASK_DRAG_DATA_TYPE } from "./task-dnd";
@@ -200,6 +200,17 @@ function TaskCard({
       });
   };
 
+  // URL 入力はタスク編集フォーム（送信ボタン「保存」を持つ）の内側にあるため、
+  // Enter を捕まえないと HTML の暗黙送信でタスク編集が保存され、編集モードが
+  // 閉じて入力中の URL が捨てられる。Enter は「URLを追加」と同じ動作にする。
+  const handleLinkUrlKeyDown = (event: KeyboardEvent<HTMLInputElement>) => {
+    if (event.key !== "Enter") {
+      return;
+    }
+    event.preventDefault();
+    handleAddLink();
+  };
+
   const handleDeleteEvidence = (evidenceId: number) => {
     setEvidenceActionError(null);
     deleteTaskEvidence(task.id, evidenceId)
@@ -312,6 +323,7 @@ function TaskCard({
             <input
               value={linkUrl}
               onChange={(event) => setLinkUrl(event.target.value)}
+              onKeyDown={handleLinkUrlKeyDown}
             />
           </label>
           <button type="button" onClick={handleAddLink}>

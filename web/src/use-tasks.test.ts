@@ -183,4 +183,41 @@ describe("useTasks", () => {
 
     expect(result.current.tasks).toEqual([updated]);
   });
+
+  // AC-72（機能仕様 決定 2-f）の実体はここにある: editTask は楽観更新をせず、
+  // patchTask が解決してから state を更新する。したがって完了ゲートの 409 で
+  // reject されたとき、タスクの status は変わらない＝タスクボードのカードは
+  // 元の列に残る。TaskBoard 側でこれを確かめようとしても、カラムの所属は
+  // 注入された tasks から導出されるだけなので恒真のアサーションになり、
+  // 楽観更新を足す変異を検出できない（実測で確認）。担保はこの層に置く。
+  it("leaves the task unchanged when editTask rejects (no optimistic update)", async () => {
+    const fetchMock = vi.fn();
+    fetchMock.mockResolvedValueOnce({
+      ok: true,
+      status: 200,
+      json: () => Promise.resolve([SAMPLE_TASK]),
+    });
+    fetchMock.mockResolvedValueOnce({
+      ok: false,
+      status: 409,
+      json: () =>
+        Promise.resolve({
+          error: "evidence required",
+          code: "evidence_required",
+        }),
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const { result } = renderHook(() => useTasks());
+    await waitFor(() => expect(result.current.tasks).toEqual([SAMPLE_TASK]));
+
+    await act(async () => {
+      await expect(
+        result.current.editTask(1, { status: "done" }),
+      ).rejects.toThrow();
+    });
+
+    expect(result.current.tasks).toEqual([SAMPLE_TASK]);
+    expect(result.current.tasks[0].status).toBe(SAMPLE_TASK.status);
+  });
 });
