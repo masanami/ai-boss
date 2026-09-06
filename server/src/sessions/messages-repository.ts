@@ -1,4 +1,5 @@
 import type Database from "better-sqlite3";
+import { startOfLocalDayIso, startOfNextLocalDayIso } from "../activity/local-day.js";
 import type { Message, MessageRole } from "./message.js";
 
 export interface NewMessageRecord {
@@ -62,4 +63,33 @@ export function listMessagesBySessionId(
       "SELECT * FROM messages WHERE session_id = ? ORDER BY created_at ASC, id ASC",
     )
     .all(sessionId) as Message[];
+}
+
+/**
+ * Returns messages belonging to `adhoc` sessions whose `created_at` falls on
+ * `now`'s local calendar day, ordered by `created_at` ascending with `id`
+ * ascending as a tie-breaker (same deterministic ordering as
+ * `listMessagesBySessionId`). Morning/evening session messages are excluded.
+ *
+ * "Today" is the half-open range `[当日ローカル 00:00, 翌ローカル暦日 00:00)`
+ * (ADR 0007 決定3), mirroring `today-escalation.ts`'s
+ * `calculateTodayMaxEscalationLevel`: both boundaries are derived from the
+ * same `now` so a future-dated row (clock/timezone rolled back) cannot widen
+ * the window.
+ */
+export function listTodaysAdhocMessages(
+  db: Database.Database,
+  now: Date,
+): Message[] {
+  return db
+    .prepare(
+      `SELECT messages.*
+       FROM messages
+       JOIN sessions ON sessions.id = messages.session_id
+       WHERE sessions.type = 'adhoc'
+         AND messages.created_at >= ?
+         AND messages.created_at < ?
+       ORDER BY messages.created_at ASC, messages.id ASC`,
+    )
+    .all(startOfLocalDayIso(now), startOfNextLocalDayIso(now)) as Message[];
 }
