@@ -42,12 +42,17 @@
 ## 機能要件
 
 - [ ] 決定ログ画面から進言の導線（ボタン・フォーム・履歴表示）が無くなる
-- [ ] 進言の API・ツール・テーブル・型が、アプリのどこにも残らない
+- [ ] 進言の API エンドポイントが存在しない
+- [ ] 進言のツール（`submit_verdict`）の定義が存在しない
+- [ ] `appeals` テーブルが存在しない
+- [ ] 進言の型定義（`Appeal` / `AppealVerdict` / `APPEAL_VERDICTS` / `AppealSubmitResult` / `DecisionWithAppeals`）が存在しない
 - [ ] 決定ログのステータスバッジが表示されない
 - [ ] 決定がタスクごとに束ねて表示され、タスク名で辿れる
 - [ ] タスクに紐づかない決定にも置き場がある
-- [ ] 記録の種別（決定／メンタリング）を保持でき、画面がそれを判別して表示できる
-- [ ] 既存の「決定の表示・取得」契約（新しい順に全件返す・0 件時の表示）が壊れない
+- [ ] `decisions` が記録の種別（決定／メンタリング）を保持できる
+- [ ] 決定ログ画面が記録の種別を判別して表示できる
+- [ ] `GET /api/decisions` が既存どおり新しい順に全件返す
+- [ ] 記録が 0 件のときの決定ログ画面の表示が変わらない
 
 ## 技術的な制約・方針
 
@@ -55,12 +60,15 @@
 - 変更対象:
   - 削除: `server/src/decisions/appeals-route.ts` / `appeals-repository.ts` / `appeals-validation.ts` / `appeal.ts` / `verdict-tool.ts` と各テスト
   - `server/src/db/migrate.ts`（マイグレーション v7 の追加）・`server/src/db/migrate.test.ts`
-  - `server/src/decisions/decisions-routes.ts`・`decisions-repository.ts`・`decision.ts` と各テスト
+  - `server/src/decisions/decisions-routes.ts`・`decision.ts` と各テスト
+  - `server/src/decisions/decisions-repository.ts`（`updateDecisionStatus` の削除・`listDecisions` への JOIN 追加・`insertDecision` の docstring から進言フローへの言及を除去）と `decisions-repository.test.ts`
   - `server/src/llm/backends/claude-code-backend.ts`（`submit_verdict` の Zod シェイプと専用ハンドラ）と `claude-code-backend.test.ts`
   - `server/src/llm/backends/api-backend.test.ts`（`submit_verdict` を題材にしているテストの題材差し替え）
-  - `server/src/app.ts`（`createDecisionsRouter` の引数から進言用の `env` / `llmBackend` が不要になる場合）
+  - `server/src/app.ts`（`createDecisionsRouter` のシグネチャ縮小に伴う呼び出しの更新）
   - `web/src/DecisionLog.tsx` / `DecisionLog.css` / `decision.ts` / `decisions-api.ts` / `use-decisions.ts` と各テスト
-  - `web/src/AppLayout.tsx`（画面名を変えない決定のため変更なし。判断 4 参照）
+- **`web/src/AppLayout.tsx` は変更しない**（画面名を変えないため。判断 4）。
+- **`createDecisionsRouter` は `createDecisionsRouter(db)` へ縮小する。** `decisions-routes.ts` の `env` / `llmBackend` は `registerAppealsRoute` へ渡すためだけに存在しており、進言の削除後は他に用途が無い（実コードで確認済み）。`app.ts` の呼び出しも合わせて縮める。
+- **`server/src/reports/render-work-log.ts` の `DECISION_LABELS`（`revised` → 「決定（改訂済み）」／ `withdrawn` → 「決定（撤回）」）は残す。** 進言の削除でこの 2 分岐は到達不能になるが、`decisions.status` の CHECK 制約を変えない決定（Issue #358 の所与）により `DecisionStatus` は 3 値のままであり、`Record<DecisionStatus, string>` の網羅性を保つには両ラベルが要る。分岐を落とすには型を狭める必要があり、それは「CHECK 制約を変えない」という決定と矛盾する。**作業ログの出力は本 Issue で変わらない**。
 - **`requestVerdict`（`server/src/llm/claude-client.ts`）は削除しない。** 名前に反して「ツール 1 本を強制する 1 往復の汎用ヘルパー」であり、**日報生成の値抽出（`server/src/reports/extract-evening-summary.ts`）が現に使っている**。削除対象は `submit_verdict` **ツール**であって、このヘルパーではない。名前だけを頼りに消すと日報生成が壊れる。
 - 検知エンジン・通知・日報・作業ログには触れない。
 - テストの時刻固定はローカル日付基準で組む（[ADR 0007](../adr/0007-local-calendar-day-basis.md) 決定 5）。本 Issue は暦日境界に依存する変更を含まないため、`created_at` の並び順を固定するテストでは相対的な前後関係のみを検証する。
@@ -194,7 +202,8 @@
 | 対象 | 扱い |
 |---|---|
 | `server/src/decisions/appeals-route.ts` / `appeals-repository.ts` / `appeals-validation.ts` / `appeal.ts` / `verdict-tool.ts` | ファイルごと削除（各 `*.test.ts` も） |
-| `server/src/decisions/decisions-routes.ts` の `registerAppealsRoute` 呼び出し・`listAppealsGroupedByDecisionId` | 削除 |
+| `server/src/decisions/decisions-routes.ts` の `registerAppealsRoute` 呼び出し・`listAppealsGroupedByDecisionId` | 削除。`createDecisionsRouter` は `(db)` のみを取る形へ縮小 |
+| `server/src/decisions/decisions-repository.ts` の `updateDecisionStatus` | 削除（`decisions-repository.test.ts` の対応する `describe` ブロックも）。呼び出し元は `appeals-route.ts` の 1 箇所だけで、進言の削除後は呼び出し元を失う。`status` を書き換える経路はアプリから無くなる |
 | `server/src/llm/backends/claude-code-backend.ts` の `submitVerdictShape` / `TOOL_ZOD_SHAPES.submit_verdict` / `NON_EXECUTING_TOOL_NAMES` の `submit_verdict` / `buildSubmitVerdictTool` / `buildMcpServer` の分岐 | 削除。`submit_evening_summary` 側は残す |
 | `server/src/llm/backends/api-backend.test.ts` の `submit_verdict` を題材にしたテスト | 題材を `submit_evening_summary` へ差し替える（テストが検証しているのは「ツールを 1 本強制する経路」であって進言ではない） |
 | `server/src/llm/claude-client.ts` の `requestVerdict` | **残す**（日報生成が使用中）。進言に言及するコメントのみ整理する |
@@ -230,6 +239,8 @@
 - [ ] `POST /api/decisions/:id/appeals` が 404 を返す
 - [ ] 全マイグレーション適用後のテーブル一覧に `appeals` が含まれない
 - [ ] `TOOL_ZOD_SHAPES` に `submit_verdict` が含まれない
+- [ ] `web/src/decision.ts` に `Appeal` / `AppealVerdict` / `APPEAL_VERDICTS` / `AppealSubmitResult` / `DecisionWithAppeals` の定義が存在しない
+- [ ] `server/src/decisions/decisions-repository.ts` に `updateDecisionStatus` の定義が存在しない
 - [ ] `submit_evening_summary` を強制する 1 往復の呼び出し（日報の値抽出）が従来どおり動作する
 - [ ] `decisions.status` の CHECK 制約が `active` / `revised` / `withdrawn` の 3 値を受理する（変更されていない）
 - [ ] 決定ログ画面にステータスバッジ（「有効」等）が表示されない
