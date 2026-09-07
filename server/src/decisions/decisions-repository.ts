@@ -94,6 +94,10 @@ export function listDecisions(db: Database.Database): DecisionListItem[] {
  *
  * Read-only helper for chat context building (#27). Writing decisions
  * (recording a boss decision) is out of scope here — see Issue #6.
+ *
+ * Excludes `kind = 'mentoring'` rows at the SQL level (#408 AC-42): a JS-side
+ * filter after the `LIMIT` would let mentoring rows eat into the limited
+ * window and shrink the number of actual decisions returned.
  */
 export function listRecentDecisions(
   db: Database.Database,
@@ -101,7 +105,7 @@ export function listRecentDecisions(
 ): RecentDecision[] {
   const rows = db
     .prepare(
-      "SELECT content, created_at FROM decisions ORDER BY created_at DESC LIMIT ?",
+      "SELECT content, created_at FROM decisions WHERE kind = 'decision' ORDER BY created_at DESC LIMIT ?",
     )
     .all(limit) as DecisionRow[];
 
