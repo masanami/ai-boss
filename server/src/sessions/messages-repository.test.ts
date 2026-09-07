@@ -4,6 +4,7 @@ import { openDatabase } from "../db/connection.js";
 import { runMigrations } from "../db/migrate.js";
 import { insertSession } from "./sessions-repository.js";
 import {
+  countUserMessagesBySessionId,
   deleteMessagesFrom,
   findMessageInSession,
   insertMessage,
@@ -473,6 +474,42 @@ describe("messages repository", () => {
       const result = listTodaysAdhocMessages(db, now);
 
       expect(result.map((m) => m.id)).toEqual([lastMoment.id]);
+    });
+  });
+
+  // #276 判断3: 朝会終了ゲート（mentoring-gate.ts）が読む「対象セッションの
+  // role='user' 件数」。判定に使う純粋関数 isMentoringComplete への入力を
+  // 用意する側の責務であり、boss のメッセージや他セッションのメッセージは
+  // 数えない。
+  describe("countUserMessagesBySessionId", () => {
+    it("returns 0 when the session has no messages at all", () => {
+      const session = insertSession(db, { type: "morning" });
+
+      expect(countUserMessagesBySessionId(db, session.id)).toBe(0);
+    });
+
+    it("counts only role='user' messages, excluding role='boss' messages in the same session", () => {
+      const session = insertSession(db, { type: "morning" });
+      insertMessage(db, { session_id: session.id, role: "boss", content: "おはよう" });
+      insertMessage(db, { session_id: session.id, role: "user", content: "報告します" });
+
+      expect(countUserMessagesBySessionId(db, session.id)).toBe(1);
+    });
+
+    it("excludes role='user' messages that belong to a different session", () => {
+      const target = insertSession(db, { type: "morning" });
+      const other = insertSession(db, { type: "morning" });
+      insertMessage(db, { session_id: other.id, role: "user", content: "他セッションの発言" });
+
+      expect(countUserMessagesBySessionId(db, target.id)).toBe(0);
+    });
+
+    it("counts multiple user messages in the same session", () => {
+      const session = insertSession(db, { type: "morning" });
+      insertMessage(db, { session_id: session.id, role: "user", content: "発言1" });
+      insertMessage(db, { session_id: session.id, role: "user", content: "発言2" });
+
+      expect(countUserMessagesBySessionId(db, session.id)).toBe(2);
     });
   });
 

@@ -3,6 +3,7 @@ import type Database from "better-sqlite3";
 import { openDatabase } from "../db/connection.js";
 import { runMigrations } from "../db/migrate.js";
 import { createApp } from "../app.js";
+import { setSettingValue } from "../settings/settings-repository.js";
 import type { Session } from "./session.js";
 import type { SessionType } from "./session.js";
 
@@ -177,6 +178,34 @@ describe("evening session end -> daily report generation hook", () => {
     expect(reportRowCount(db)).toBe(1);
   });
 
+  // #276 AC-24/AC-25: 朝会メンタリングの前提条件ゲート（#410）を足しても、
+  // 夕会終了時の要約生成と日報生成フックが従来どおり動くこと。ゲートは
+  // `before.type !== "morning"` で抜けるため夕会経路には触れないが、
+  // 「触れていないつもり」を実行で固定する非退行テストとして明示的に置く。
+  // 強制設定を明示的にオン（既定と同じ）にしたうえで、メンタリング記録が
+  // 1 件も無い夕会でも両方の副作用が走ることを確かめる。
+  it("AC-24/AC-25: still saves the summary and generates the daily report for an evening session with no mentoring record, even with the morning gate forced on", async () => {
+    setSettingValue(db, "morning_mentoring_required", "true");
+    const app = createApp(db, env);
+    const session = await readJson<Session>(await postSession(app, "evening"));
+    insertUserMessage(db, session.id, "報告です");
+
+    const mentoringRows = db
+      .prepare("SELECT COUNT(*) AS count FROM decisions WHERE kind = 'mentoring'")
+      .get() as { count: number };
+    expect(mentoringRows.count).toBe(0);
+
+    const res = await app.request(`/api/sessions/${session.id}/end`, { method: "POST" });
+
+    expect(res.status).toBe(200);
+    // AC-24: 要約生成が従来どおり実行される
+    expect(generateSessionSummaryMock).toHaveBeenCalledTimes(1);
+    expect(await readJson<Session>(res)).toMatchObject({ summary: "夕会の要約" });
+    // AC-25: 日報生成フックが従来どおり実行される
+    expect(generateDailyReportMock).toHaveBeenCalledTimes(1);
+    expect(reportRowCount(db)).toBe(1);
+  });
+
   // 2 つのガードは別条件であり、片方を流用して他方を壊してはならない。
   // 要約済み（summary あり）の未終了夕会を終了すると、要約は再生成されないが
   // ended_at は初回遷移なので日報は生成される。
@@ -238,6 +267,10 @@ describe("evening session end -> daily report generation hook", () => {
     "does not invoke generateDailyReport when a %s session ends (test 9)",
     async (type) => {
       const app = createApp(db, env);
+      // #276: 朝会終了ゲートに巻き込まれないよう強制設定をオフにする —
+      // このテストの主題は日報生成フックが朝会/随時では発火しないことで
+      // あり、メンタリング完了とは無関係。
+      setSettingValue(db, "morning_mentoring_required", "false");
       const session = await readJson<Session>(await postSession(app, type));
 
       const res = await app.request(`/api/sessions/${session.id}/end`, { method: "POST" });

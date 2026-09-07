@@ -11,12 +11,19 @@ import {
   updateSessionSummary,
 } from "./sessions-repository.js";
 import { validateCreateSessionInput } from "./sessions-validation.js";
-import { insertMessage, listMessagesBySessionId } from "./messages-repository.js";
+import {
+  countUserMessagesBySessionId,
+  insertMessage,
+  listMessagesBySessionId,
+} from "./messages-repository.js";
 import { registerChatMessageRoute } from "./chat-messages-route.js";
 import { generateSessionSummary } from "./session-summary.js";
 import { generateMeetingOpening, shouldGenerateMeetingOpening } from "./meeting-opening.js";
 import type { LlmBackend } from "../config.js";
 import { generateDailyReport } from "../reports/generate-daily-report.js";
+import { countMentoringDecisionsBySessionId } from "../decisions/decisions-repository.js";
+import { isMentoringComplete } from "./mentoring-gate.js";
+import { resolveMorningMentoringRequired } from "../settings/mentoring-settings.js";
 
 function isValidSessionType(value: string): value is SessionType {
   return SESSION_TYPES.includes(value as SessionType);
@@ -98,6 +105,45 @@ async function triggerMeetingOpening(
       err instanceof Error ? err.name : typeof err,
     );
   }
+}
+
+/**
+ * #276 判断2/3: 朝会終了の前提条件ゲート
+ * (docs/features/work-approach-mentoring.md 判断2). Evaluated against
+ * `before` — the row read by the caller *before* calling `endSession` —
+ * because only that snapshot can distinguish "not yet ended" from
+ * "already ended" (`endSession` is idempotent and returns the row
+ * unchanged on a re-end, so its return value cannot be used to tell the
+ * two apart; same reasoning as this file's existing `isFirstEnding`
+ * check).
+ *
+ * Blocks (returns `true`) only when all of the following hold:
+ * - `before` exists and has not been ended yet (`ended_at === null`,
+ *   guaranteeing re-ending an already-ended session is never blocked —
+ *   AC-22)
+ * - `before.type === "morning"` (evening/adhoc sessions are never
+ *   evaluated — AC-23, and this function never touches the evening
+ *   summary/daily-report hook)
+ * - the `morning_mentoring_required` setting resolves to true
+ *   (`resolveMorningMentoringRequired`, defaults to on — AC-20 escape
+ *   hatch is the setting being off)
+ * - `isMentoringComplete` (mentoring-gate.ts, a pure function) says the
+ *   session's mentoring record/user-message counts are incomplete
+ */
+function isBlockedByMentoringGate(db: Database.Database, before: Session | undefined): boolean {
+  if (before === undefined || before.ended_at !== null) {
+    return false;
+  }
+  if (before.type !== "morning") {
+    return false;
+  }
+  if (!resolveMorningMentoringRequired(db)) {
+    return false;
+  }
+
+  const mentoringRecordCount = countMentoringDecisionsBySessionId(db, before.id);
+  const userMessageCount = countUserMessagesBySessionId(db, before.id);
+  return !isMentoringComplete({ mentoringRecordCount, userMessageCount });
 }
 
 /**
@@ -186,6 +232,19 @@ export function createSessionsRouter(
     // `ended_at` 遷移でのみ発火する). Only the first transition triggers
     // report generation.
     const before = findSessionById(db, id);
+
+    // #276 判断2 (AC-16〜22): must be evaluated against `before`, and before
+    // calling `endSession` below — see isBlockedByMentoringGate's doc
+    // comment for why.
+    if (isBlockedByMentoringGate(db, before)) {
+      return c.json(
+        {
+          error: "仕事の進め方のメンタリングを終えると朝会を終了できます（設定でオフにもできます）",
+          code: "mentoring_required",
+        },
+        409,
+      );
+    }
 
     const session = endSession(db, id);
     if (!session) {
