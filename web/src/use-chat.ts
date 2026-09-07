@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
+  ChatApiError,
   createSession,
   endSession as endSessionRequest,
   fetchSessionMessages,
@@ -23,6 +24,17 @@ export interface UseChatResult {
   streamingText: string;
   error: string | null;
   /**
+   * `true` while the active (morning) session's end request is blocked by
+   * the mentoring gate (Issue #411, 親 #276 判断2): `endSession` rejected
+   * with a `ChatApiError` whose `code` is `"mentoring_required"`. Branching
+   * on `code` — not on `error`'s message text — is what lets `ChatView`
+   * distinguish this from every other end failure (ADR 0008 決定2 と同じ
+   * 作法). Reset to `false` at the start of every `endSession`/`startSession`
+   * call, so a later, successful end (or leaving the session entirely)
+   * clears the blocked state instead of leaving a stale notice on screen.
+   */
+  mentoringRequired: boolean;
+  /**
    * The id of the session `send`/`rewrite` post to, or `null` before any
    * session exists yet (Issue #378, AC-31). Mirrors the internal
    * `sessionIdRef` as public state — kept in sync everywhere that ref is
@@ -44,7 +56,15 @@ export interface UseChatResult {
    */
   draft: string;
   setDraft: (value: string) => void;
-  send: (content: string) => Promise<void>;
+  /**
+   * `mentoring` requests 随時メンタリング (Issue #411, 親 #276 判断6): `true`
+   * makes the sent message add `mentoring: true` to the request body, which
+   * queues `MENTORING_FLOW_INSTRUCTION` for this turn server-side regardless
+   * of session type or the 強制 setting. Only `ChatView`'s dedicated
+   * "進め方を点検してもらう" button passes `true` — the plain send path
+   * (submitting the draft input) omits it, unchanged from before this issue.
+   */
+  send: (content: string, mentoring?: boolean) => Promise<void>;
   /**
    * Rewrites a past message (Issue #378, #255 決定6): the server truncates
    * `activeSessionId` from `messageId` onward, then generates a fresh reply
@@ -208,6 +228,7 @@ export function useChat(): UseChatResult {
   const [switching, setSwitching] = useState(false);
   const [streamingText, setStreamingText] = useState("");
   const [error, setError] = useState<string | null>(null);
+  const [mentoringRequired, setMentoringRequired] = useState(false);
   const [draft, setDraft] = useState("");
   const [activeSessionId, setActiveSessionIdState] = useState<number | null>(
     null,
@@ -302,7 +323,7 @@ export function useChat(): UseChatResult {
   }, []);
 
   const send = useCallback(
-    async (content: string) => {
+    async (content: string, mentoring?: boolean) => {
       if (sendingRef.current || switchingRef.current) {
         return;
       }
@@ -383,6 +404,8 @@ export function useChat(): UseChatResult {
           },
           },
           controller.signal,
+          undefined,
+          mentoring,
         );
       } catch (err) {
         // Keyed on our own controller rather than on the error's name: this
@@ -590,6 +613,10 @@ export function useChat(): UseChatResult {
       switchingRef.current = true;
       setSwitching(true);
       setError(null);
+      // Leaving adhoc means leaving whatever meeting was previously blocked
+      // too (Issue #411) — starting fresh must not carry a stale "メンタリ
+      // ングを終えると..." notice into the new session.
+      setMentoringRequired(false);
       try {
         const now = new Date();
         const sessions = await fetchSessions();
@@ -638,6 +665,11 @@ export function useChat(): UseChatResult {
     switchingRef.current = true;
     setSwitching(true);
     setError(null);
+    // Reset before the attempt (mirrors `setError(null)` above), not only in
+    // the success branch below: a second attempt that succeeds after a first
+    // one was blocked must clear the notice even though nothing here ever
+    // sets it back to `false` on success otherwise (Issue #411).
+    setMentoringRequired(false);
     try {
       await endSessionRequest(id);
 
@@ -663,11 +695,22 @@ export function useChat(): UseChatResult {
         setEntries(timeline);
       });
     } catch (err) {
-      ifMounted(() =>
-        setError(
-          err instanceof Error ? err.message : "セッションの終了に失敗しました",
-        ),
-      );
+      // #276 判断2 (AC-39): branch on the stable `code`, not on the message
+      // text, so the UI keeps working if the server's Japanese wording ever
+      // changes (ADR 0008 決定2 と同じ作法). A blocked end is not a generic
+      // failure — `error` stays null and `mentoringRequired` carries the
+      // state instead, so `ChatView` can render its own status text (which
+      // must mention the settings escape hatch, AC-40) instead of the
+      // server's raw message.
+      if (err instanceof ChatApiError && err.code === "mentoring_required") {
+        ifMounted(() => setMentoringRequired(true));
+      } else {
+        ifMounted(() =>
+          setError(
+            err instanceof Error ? err.message : "セッションの終了に失敗しました",
+          ),
+        );
+      }
     } finally {
       switchingRef.current = false;
       ifMounted(() => setSwitching(false));
@@ -682,6 +725,7 @@ export function useChat(): UseChatResult {
     switching,
     streamingText,
     error,
+    mentoringRequired,
     activeSessionId,
     draft,
     setDraft,

@@ -2778,3 +2778,180 @@ describe("useChat reload after rewrite (Issue #378, AC-54)", () => {
     ]);
   });
 });
+
+// Issue #411 (親 #276 判断2・判断6): 朝会終了ブロックの UI 分岐と随時
+// メンタリングの導線。`ChatApiError`（chat-api.ts）の `code` で分岐する
+// （ADR 0008 決定2 と同じ作法）。
+describe("useChat mentoring (Issue #411)", () => {
+  it("posts mentoring: true when send is called with the mentoring flag", async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(jsonResponse([SESSION]))
+      .mockResolvedValueOnce(jsonResponse(HISTORY))
+      .mockResolvedValueOnce(
+        sseResponse([`event: done\ndata: ${JSON.stringify(BOSS_REPLY)}\n\n`]),
+      );
+    vi.stubGlobal("fetch", fetchMock);
+
+    const { result } = renderHook(() => useChat());
+    await waitFor(() => expect(result.current.status).toBe("ready"));
+
+    await act(async () => {
+      await result.current.send("今の進め方を見てほしい", true);
+    });
+
+    expect(fetchMock).toHaveBeenNthCalledWith(3, "/api/sessions/1/messages", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        content: "今の進め方を見てほしい",
+        mentoring: true,
+      }),
+      signal: expect.any(AbortSignal),
+    });
+  });
+
+  it("does not post a mentoring key for a plain send (existing contract unchanged)", async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(jsonResponse([SESSION]))
+      .mockResolvedValueOnce(jsonResponse(HISTORY))
+      .mockResolvedValueOnce(
+        sseResponse([`event: done\ndata: ${JSON.stringify(BOSS_REPLY)}\n\n`]),
+      );
+    vi.stubGlobal("fetch", fetchMock);
+
+    const { result } = renderHook(() => useChat());
+    await waitFor(() => expect(result.current.status).toBe("ready"));
+
+    await act(async () => {
+      await result.current.send("続きの相談です");
+    });
+
+    const body = JSON.parse(
+      fetchMock.mock.calls[2][1].body as string,
+    ) as Record<string, unknown>;
+    expect("mentoring" in body).toBe(false);
+  });
+
+  it("blocks ending the session with mentoringRequired instead of a generic error on a 409 mentoring_required response", async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(jsonResponse([MORNING_SESSION_TODAY]))
+      .mockResolvedValueOnce(jsonResponse(MORNING_HISTORY))
+      .mockResolvedValueOnce({
+        ok: false,
+        status: 409,
+        json: () =>
+          Promise.resolve({
+            error:
+              "仕事の進め方のメンタリングを終えると朝会を終了できます（設定でオフにもできます）",
+            code: "mentoring_required",
+          }),
+      });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const { result } = renderHook(() => useChat());
+    await waitFor(() => expect(result.current.status).toBe("ready"));
+    expect(result.current.sessionType).toBe("morning");
+
+    await act(async () => {
+      await result.current.endSession();
+    });
+
+    expect(result.current.mentoringRequired).toBe(true);
+    expect(result.current.error).toBeNull();
+    // Blocked: the session stays active rather than switching back to adhoc.
+    expect(result.current.sessionType).toBe("morning");
+    expect(result.current.switching).toBe(false);
+  });
+
+  it("still sets the generic error (not mentoringRequired) for a failure without that code", async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(jsonResponse([MORNING_SESSION_TODAY]))
+      .mockResolvedValueOnce(jsonResponse(MORNING_HISTORY))
+      .mockRejectedValueOnce(new Error("network error"));
+    vi.stubGlobal("fetch", fetchMock);
+
+    const { result } = renderHook(() => useChat());
+    await waitFor(() => expect(result.current.status).toBe("ready"));
+
+    await act(async () => {
+      await result.current.endSession();
+    });
+
+    expect(result.current.error).toBe("network error");
+    expect(result.current.mentoringRequired).toBe(false);
+  });
+
+  // Distinct from the previous test: this failure *is* a ChatApiError (so a
+  // mutation that drops the `code === "mentoring_required"` check and blocks
+  // on `err instanceof ChatApiError` alone would still treat it as blocked
+  // and pass the plain-Error test above) but carries an unrelated `code`,
+  // pinning that the comparison is a full-string match on `code`, not just
+  // "is this a ChatApiError at all".
+  it("still sets the generic error for a ChatApiError carrying a different code", async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(jsonResponse([MORNING_SESSION_TODAY]))
+      .mockResolvedValueOnce(jsonResponse(MORNING_HISTORY))
+      .mockResolvedValueOnce({
+        ok: false,
+        status: 404,
+        json: () =>
+          Promise.resolve({
+            error: "session 20 not found",
+            code: "session_not_found",
+          }),
+      });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const { result } = renderHook(() => useChat());
+    await waitFor(() => expect(result.current.status).toBe("ready"));
+
+    await act(async () => {
+      await result.current.endSession();
+    });
+
+    expect(result.current.error).toBe("session 20 not found");
+    expect(result.current.mentoringRequired).toBe(false);
+  });
+
+  it("clears mentoringRequired once the session can actually be ended", async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(jsonResponse([MORNING_SESSION_TODAY]))
+      .mockResolvedValueOnce(jsonResponse(MORNING_HISTORY))
+      .mockResolvedValueOnce({
+        ok: false,
+        status: 409,
+        json: () =>
+          Promise.resolve({
+            error:
+              "仕事の進め方のメンタリングを終えると朝会を終了できます（設定でオフにもできます）",
+            code: "mentoring_required",
+          }),
+      })
+      .mockResolvedValueOnce(
+        jsonResponse({ ...MORNING_SESSION_TODAY, ended_at: localIso(5, 13) }),
+      )
+      .mockResolvedValueOnce(jsonResponse([MORNING_SESSION_TODAY]))
+      .mockResolvedValueOnce(jsonResponse(MORNING_HISTORY));
+    vi.stubGlobal("fetch", fetchMock);
+
+    const { result } = renderHook(() => useChat());
+    await waitFor(() => expect(result.current.status).toBe("ready"));
+
+    await act(async () => {
+      await result.current.endSession();
+    });
+    expect(result.current.mentoringRequired).toBe(true);
+
+    await act(async () => {
+      await result.current.endSession();
+    });
+    expect(result.current.mentoringRequired).toBe(false);
+    expect(result.current.sessionType).toBe("adhoc");
+  });
+});
