@@ -867,6 +867,139 @@ describe("buildPersonaPrompt", () => {
     });
   });
 
+  // Issue #409（親 #276）: 仕事の進め方のメンタリング。context.mentoring は
+  // 呼び出し側（チャットルート）が「朝会 かつ 強制オン」または「リクエストの
+  // mentoring」を評価して渡す単一の boolean（buildPersonaPrompt は純粋関数の
+  // まま、設定の読み取りも条件合成も行わない）。テストが固定するのは「指示が
+  // 含まれる条件」までで、ボスが実際に何を指摘したかは対象外（機能仕様 判断4）。
+  describe("メンタリングのフロー指示（mentoring, Issue #409）", () => {
+    it("mentoring: true のとき、メンタリングの指示（record_mentoring での記録）を含む（AC-1/AC-26）", () => {
+      const prompt = buildPersonaPrompt(DEFAULT_PERSONA_SETTINGS, {
+        tasks: [],
+        recentDecisions: [],
+        now,
+        mentoring: true,
+      });
+
+      expect(prompt).toContain("record_mentoring");
+    });
+
+    it("mentoring 省略時、メンタリングの指示を含まない（AC-2/AC-27）", () => {
+      const prompt = buildPersonaPrompt(DEFAULT_PERSONA_SETTINGS, {
+        tasks: [],
+        recentDecisions: [],
+        now,
+      });
+
+      expect(prompt).not.toContain("record_mentoring");
+    });
+
+    it("mentoring: false のとき、メンタリングの指示を含まない（AC-2/AC-27）", () => {
+      const prompt = buildPersonaPrompt(DEFAULT_PERSONA_SETTINGS, {
+        tasks: [],
+        recentDecisions: [],
+        now,
+        mentoring: false,
+      });
+
+      expect(prompt).not.toContain("record_mentoring");
+    });
+
+    it("mentoring: true かつ sessionType: 'morning' のとき、既存の朝会フロー指示（優先順位・ノルマ・record_decision）も含まれる（AC-3）", () => {
+      const prompt = buildPersonaPrompt(DEFAULT_PERSONA_SETTINGS, {
+        tasks: [],
+        recentDecisions: [],
+        now,
+        mentoring: true,
+        sessionType: "morning",
+      });
+
+      expect(prompt).toContain("record_mentoring");
+      expect(prompt).toContain("朝会（計画セッション）");
+      expect(prompt).toContain("優先順位");
+      expect(prompt).toContain("ノルマ");
+      expect(prompt).toContain("record_decision");
+    });
+
+    it("mentoring: false かつ sessionType: 'morning' のとき、既存の朝会フロー指示は含まれるがメンタリングの指示は含まれない（AC-4）", () => {
+      const prompt = buildPersonaPrompt(DEFAULT_PERSONA_SETTINGS, {
+        tasks: [],
+        recentDecisions: [],
+        now,
+        mentoring: false,
+        sessionType: "morning",
+      });
+
+      expect(prompt).toContain("朝会（計画セッション）");
+      expect(prompt).toContain("優先順位");
+      expect(prompt).not.toContain("record_mentoring");
+    });
+
+    it("メンタリングの指示に、観点が限定列挙ではない旨が含まれる（AC-5）", () => {
+      const prompt = buildPersonaPrompt(DEFAULT_PERSONA_SETTINGS, {
+        tasks: [],
+        recentDecisions: [],
+        now,
+        mentoring: true,
+      });
+
+      expect(prompt).toContain("限定");
+    });
+
+    it("メンタリングの指示が、扱った観点を rationale に書くよう求める（AC-7）", () => {
+      const prompt = buildPersonaPrompt(DEFAULT_PERSONA_SETTINGS, {
+        tasks: [],
+        recentDecisions: [],
+        now,
+        mentoring: true,
+      });
+
+      expect(prompt).toContain("rationale");
+      expect(prompt).toContain("扱った観点");
+    });
+
+    it("メンタリングの指示が、外部への連絡はアプリが行わず洗い出しと促しにとどめる旨を含む（AC-8）", () => {
+      const prompt = buildPersonaPrompt(DEFAULT_PERSONA_SETTINGS, {
+        tasks: [],
+        recentDecisions: [],
+        now,
+        mentoring: true,
+      });
+
+      expect(prompt).toContain("実際の連絡");
+      expect(prompt).toContain("促す");
+    });
+
+    it("mentoring: true かつ sessionType: 'morning' のとき、メンタリングの指示が既存の朝会フロー指示より前に出現する（判断8）", () => {
+      const prompt = buildPersonaPrompt(DEFAULT_PERSONA_SETTINGS, {
+        tasks: [],
+        recentDecisions: [],
+        now,
+        mentoring: true,
+        sessionType: "morning",
+      });
+
+      const mentoringIndex = prompt.indexOf("record_mentoring");
+      const morningIndex = prompt.indexOf("朝会（計画セッション）");
+      expect(mentoringIndex).toBeGreaterThanOrEqual(0);
+      expect(morningIndex).toBeGreaterThan(mentoringIndex);
+    });
+
+    it("mentoring: true かつ sessionType: 'adhoc' のとき、メンタリングの指示のみを含む（随時メンタリング）", () => {
+      const prompt = buildPersonaPrompt(DEFAULT_PERSONA_SETTINGS, {
+        tasks: [],
+        recentDecisions: [],
+        now,
+        mentoring: true,
+        sessionType: "adhoc",
+      });
+
+      expect(prompt).toContain("record_mentoring");
+      expect(prompt).not.toContain("朝会（計画セッション）");
+      expect(prompt).not.toContain("夕会（報告セッション）");
+    });
+  });
+
   // Issue #288。固定時刻はローカル日付から導出し、TZ 非依存に組む
   // （ADR 0007 決定 5）。オフセットの期待値も "+09:00" のような固定値を
   // 書かず、プロンプトから取り出した ISO を parse し直して照合する。

@@ -138,4 +138,72 @@ describe("validateChatMessageInput", () => {
       error: "replaceFromMessageId must be a positive integer",
     });
   });
+
+  // Issue #409（親 #276）AC-26〜AC-28: 随時メンタリングの mentoring フラグ。
+  describe("mentoring", () => {
+    it("accepts mentoring: true and carries it through to data (AC-26)", () => {
+      const result = validateChatMessageInput({
+        content: "進め方を見てほしい",
+        mentoring: true,
+      });
+
+      expect(result).toEqual({
+        valid: true,
+        data: { content: "進め方を見てほしい", mentoring: true },
+      });
+    });
+
+    // AC-27 の非回帰: mentoring を省略した body は、mentoring が無かった頃と
+    // 完全に同じ shape のままであることを toStrictEqual で証明する
+    // （replaceFromMessageId と同じ undefined-as-absent の作法）。
+    it("accepts a body without mentoring (defaults to false, key omitted from data) (AC-27)", () => {
+      const result = validateChatMessageInput({ content: "資料作成から始めます" });
+
+      expect(result).toStrictEqual({
+        valid: true,
+        data: { content: "資料作成から始めます" },
+      });
+    });
+
+    it("accepts mentoring: false explicitly, omitting the key from data (same as omitted)", () => {
+      const result = validateChatMessageInput({
+        content: "資料作成から始めます",
+        mentoring: false,
+      });
+
+      expect(result).toStrictEqual({
+        valid: true,
+        data: { content: "資料作成から始めます" },
+      });
+    });
+
+    it.each([
+      ["a string", "true"],
+      ["a number", 1],
+      ["null", null],
+    ])("rejects mentoring that is %s (AC-28)", (_label, value) => {
+      const result = validateChatMessageInput({
+        content: "進め方を見てほしい",
+        mentoring: value,
+      });
+
+      expect(result).toEqual({
+        valid: false,
+        error: "mentoring must be a boolean",
+      });
+    });
+
+    it("carries mentoring: true through alongside replaceFromMessageId", () => {
+      const result = validateChatMessageInput({
+        content: "書き直した内容",
+        replaceFromMessageId: 42,
+        mentoring: true,
+      });
+
+      expect(result).toEqual({
+        valid: true,
+        data: { content: "書き直した内容", replaceFromMessageId: 42, mentoring: true },
+      });
+    });
+  });
 });
