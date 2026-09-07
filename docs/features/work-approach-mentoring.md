@@ -221,7 +221,8 @@
 
 - **採用案**: **キー名 `morning_mentoring_required`。DB には既存の全 TEXT の慣習どおり `"true"` / `"false"` で保存する。API は boolean で入出力する。未設定はオン（`true`）として解決する。初期投入（マイグレーションでの INSERT）は行わない。**
 - **理由**:
-  - **`settings` は全 TEXT の KV**（`key TEXT PRIMARY KEY, value TEXT`）であり、boolean の設定キーは本件が第 1 号になる。保存形式を TEXT に合わせるのは既存構造との整合。
+  - **`settings` は全 TEXT の KV**（`key TEXT PRIMARY KEY, value TEXT`）である。保存形式を TEXT に合わせるのは既存構造との整合。
+    - **訂正（実装フェーズ・2026-09-08）**: 仕様策定時は「boolean の設定キーは本件が第 1 号」と書いていたが、その後 #256（`evidence_enforcement_enabled`）が `main` に入り、**汎用の `validateBoolean(key)` が既に存在する**。本件はそれを再利用する（新設しない）。既定値の向きは逆であることに注意——`evidence_enforcement_enabled` は未設定・不正値でオフ、本キーは**オン**（下記の安全側の理由による）。
   - **API を boolean にするのは既存の作法と揃うため。** `boss_strictness` は API では number で受け取り `String(value)` で保存しており（`settings-validation.ts`）、「API は素の型・保存は TEXT」という形が既にある。文字列 `"true"` を API で受け付けると、型の揺れ（`"True"` / `"1"` など）を検証する分岐が増える。
   - **「未設定＝オン」で表現するのは、既定値の解決が読み手側にある既存構造にそのまま乗るため**（`resolveBossSettings` / `loadDetectionSettings` はいずれも「未設定または不正なら既定値」で解決する）。マイグレーションで初期値を INSERT すると、既定値の在り処が DB とコードの 2 箇所に分かれる。
   - **不正な値（例: `"yes"`）は既定値（オン）へフォールバックする。** 「読めない値なら既定値」は既存リーダーの一貫した作法であり、**フォールバック先をオンにするのは、壊れた値で強制が黙って無効化されるのを防ぐため**（安全側に倒す）。
