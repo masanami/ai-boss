@@ -14,18 +14,21 @@ import {
 
 /** Raw-SQL helper for tests that need explicit control over `created_at`
  * (ordering assertions) — distinct from the `insertDecision` repository
- * function under test, which manages `created_at` itself. */
+ * function under test, which manages `created_at` itself. `kind` defaults to
+ * `'decision'` (the column's own DEFAULT) so existing callers are unaffected;
+ * #408 tests pass `kind: "mentoring"` explicitly to build mixed fixtures. */
 function insertRawDecision(
   db: Database.Database,
   sessionId: number,
   content: string,
   createdAt: string,
   taskId: number | null = null,
+  kind: "decision" | "mentoring" = "decision",
 ): void {
   db.prepare(
-    `INSERT INTO decisions (session_id, task_id, content, rationale, status, created_at)
-     VALUES (?, ?, ?, NULL, 'active', ?)`,
-  ).run(sessionId, taskId, content, createdAt);
+    `INSERT INTO decisions (session_id, task_id, content, rationale, kind, status, created_at)
+     VALUES (?, ?, ?, NULL, ?, 'active', ?)`,
+  ).run(sessionId, taskId, content, kind, createdAt);
 }
 
 /** Minimal task fixture — only `title` matters to the decision log, the rest
@@ -100,6 +103,30 @@ describe("listRecentDecisions", () => {
       "決定3",
       "決定2",
     ]);
+  });
+
+  it("excludes kind='mentoring' rows, keeping only kind='decision' ones (#408 AC-42 — chat context must not surface mentoring as a decision)", () => {
+    const session = insertSession(db, { type: "adhoc" });
+    insertRawDecision(
+      db,
+      session.id,
+      "メンタリングの結論",
+      "2026-07-05T00:00:00.000Z",
+      null,
+      "mentoring",
+    );
+    insertRawDecision(
+      db,
+      session.id,
+      "通常の決定",
+      "2026-07-01T00:00:00.000Z",
+      null,
+      "decision",
+    );
+
+    const result = listRecentDecisions(db, 5);
+
+    expect(result.map((decision) => decision.content)).toEqual(["通常の決定"]);
   });
 });
 
@@ -309,5 +336,33 @@ describe("listDecisions", () => {
     const [decision] = listDecisions(db);
 
     expect(decision.kind).toBe("decision");
+  });
+
+  it("includes kind='mentoring' rows alongside kind='decision' rows (#408 AC-45 — the decision log is the reference screen and must not filter by kind)", () => {
+    const session = insertSession(db, { type: "adhoc" });
+    insertRawDecision(
+      db,
+      session.id,
+      "メンタリングの結論",
+      localIso(2026, 7, 5, 9),
+      null,
+      "mentoring",
+    );
+    insertRawDecision(
+      db,
+      session.id,
+      "通常の決定",
+      localIso(2026, 7, 5, 10),
+      null,
+      "decision",
+    );
+
+    const result = listDecisions(db);
+
+    expect(result.map((decision) => decision.content)).toEqual([
+      "通常の決定",
+      "メンタリングの結論",
+    ]);
+    expect(result.map((decision) => decision.kind)).toEqual(["decision", "mentoring"]);
   });
 });

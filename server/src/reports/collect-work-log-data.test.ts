@@ -36,13 +36,16 @@ function insertRawDecision(
     content: string;
     status: "active" | "revised" | "withdrawn";
     createdAt: string;
+    /** #408: defaults to 'decision' (the column's own DEFAULT); pass
+     * 'mentoring' to build fixtures that mix both kinds. */
+    kind?: "decision" | "mentoring";
   },
 ): number {
   const result = db
     .prepare(
-      `INSERT INTO decisions (session_id, content, status, created_at) VALUES (?, ?, ?, ?)`,
+      `INSERT INTO decisions (session_id, content, status, kind, created_at) VALUES (?, ?, ?, ?, ?)`,
     )
-    .run(opts.sessionId, opts.content, opts.status, opts.createdAt);
+    .run(opts.sessionId, opts.content, opts.status, opts.kind ?? "decision", opts.createdAt);
   return Number(result.lastInsertRowid);
 }
 
@@ -131,6 +134,28 @@ describe("collectWorkLogData", () => {
         ]);
       },
     );
+
+    it("excludes kind='mentoring' decisions, keeping kind='decision' ones on the same day (#408 AC-44 — mentoring must not appear as a decision in the work log)", () => {
+      const sessionId = insertRawSession(db, iso(2026, 8, 14, 9, 0));
+      insertRawDecision(db, {
+        sessionId,
+        content: "メンタリングの結論",
+        status: "active",
+        createdAt: iso(2026, 8, 14, 9, 0),
+        kind: "mentoring",
+      });
+      insertRawDecision(db, {
+        sessionId,
+        content: "通常の決定",
+        status: "active",
+        createdAt: iso(2026, 8, 14, 10, 0),
+        kind: "decision",
+      });
+
+      const result = collectWorkLogData(db, new Date(2026, 7, 14));
+
+      expect(result.decisions.map((d) => d.content)).toEqual(["通常の決定"]);
+    });
 
     it("orders decisions by created_at ascending, then id ascending", () => {
       const sessionId = insertRawSession(db, iso(2026, 8, 14, 9, 0));

@@ -64,13 +64,16 @@ function insertRawDecision(
     content: string;
     status: "active" | "revised" | "withdrawn";
     createdAt: string;
+    /** #408: defaults to 'decision' (the column's own DEFAULT); pass
+     * 'mentoring' to build fixtures that mix both kinds. */
+    kind?: "decision" | "mentoring";
   },
 ): number {
   const result = db
     .prepare(
-      `INSERT INTO decisions (session_id, content, status, created_at) VALUES (?, ?, ?, ?)`,
+      `INSERT INTO decisions (session_id, content, status, kind, created_at) VALUES (?, ?, ?, ?, ?)`,
     )
-    .run(opts.sessionId, opts.content, opts.status, opts.createdAt);
+    .run(opts.sessionId, opts.content, opts.status, opts.kind ?? "decision", opts.createdAt);
   return Number(result.lastInsertRowid);
 }
 
@@ -333,6 +336,28 @@ describe("collectDailyReportData", () => {
         expect(result.decisions).toEqual([]);
       },
     );
+
+    it("excludes kind='mentoring' decisions, keeping kind='decision' ones on the same day (#408 AC-43 — mentoring must not appear as a decision in the daily report)", () => {
+      const session = insertRawSession(db, "evening", iso(2026, 8, 14, 19, 0), iso(2026, 8, 14, 19, 30));
+      insertRawDecision(db, {
+        sessionId: session.id,
+        content: "メンタリングの結論",
+        status: "active",
+        createdAt: iso(2026, 8, 14, 9, 0),
+        kind: "mentoring",
+      });
+      insertRawDecision(db, {
+        sessionId: session.id,
+        content: "通常の決定",
+        status: "active",
+        createdAt: iso(2026, 8, 14, 10, 0),
+        kind: "decision",
+      });
+
+      const result = collectDailyReportData(db, session);
+
+      expect(result.decisions).toEqual(["通常の決定"]);
+    });
 
     it("excludes a decision created on a different day", () => {
       const session = insertRawSession(db, "evening", iso(2026, 8, 14, 19, 0), iso(2026, 8, 14, 19, 30));
