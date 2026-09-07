@@ -1,6 +1,6 @@
 import type Database from "better-sqlite3";
 import type { RecentDecision } from "../boss/persona-prompt.js";
-import type { Decision, DecisionListItem } from "./decision.js";
+import type { Decision, DecisionKind, DecisionListItem } from "./decision.js";
 
 interface DecisionRow {
   content: string;
@@ -12,6 +12,10 @@ export interface NewDecisionRecord {
   task_id?: number | null;
   content: string;
   rationale?: string | null;
+  /** #276: 'mentoring' 行はこの引数を明示して書く。省略時は列の
+   * DEFAULT 'decision' に委ね、既存呼び出し（`record_decision`）の
+   * 挙動は変えない。 */
+  kind?: DecisionKind;
 }
 
 export function findDecisionById(
@@ -25,10 +29,11 @@ export function findDecisionById(
 
 /**
  * Inserts a new decision with a server-managed `created_at` and `status`
- * fixed to `'active'`. `task_id`/`rationale` default to `null` when omitted;
- * `kind` is left to the column's `'decision'` default (see Issue #358/#397 —
- * `'mentoring'` rows are written by #276, not here). Returns the persisted
- * row (all columns, as read back from the database).
+ * fixed to `'active'`. `task_id`/`rationale` default to `null` when omitted.
+ * `kind` defaults to `'decision'` when omitted, matching the column's
+ * `DEFAULT 'decision'` (see Issue #358/#397); `record_mentoring` (#276)
+ * passes `kind: 'mentoring'` explicitly. Returns the persisted row (all
+ * columns, as read back from the database).
  */
 export function insertDecision(
   db: Database.Database,
@@ -38,14 +43,15 @@ export function insertDecision(
 
   const result = db
     .prepare(
-      `INSERT INTO decisions (session_id, task_id, content, rationale, status, created_at)
-       VALUES (?, ?, ?, ?, 'active', ?)`,
+      `INSERT INTO decisions (session_id, task_id, content, rationale, kind, status, created_at)
+       VALUES (?, ?, ?, ?, ?, 'active', ?)`,
     )
     .run(
       record.session_id,
       record.task_id ?? null,
       record.content,
       record.rationale ?? null,
+      record.kind ?? "decision",
       now,
     );
 

@@ -348,6 +348,7 @@ describe("streamClaudeCodeMessage", () => {
         "mcp__ai-boss__create_task",
         "mcp__ai-boss__update_task",
         "mcp__ai-boss__record_decision",
+        "mcp__ai-boss__record_mentoring",
         "mcp__ai-boss__get_activity_log",
       ];
       expect(BOSS_TOOLS.map((toolDef) => `mcp__ai-boss__${toolDef.name}`)).toEqual(expectedAllowed);

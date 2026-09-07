@@ -172,6 +172,18 @@ describe("insertDecision", () => {
     expect(decision.kind).toBe("decision");
   });
 
+  it("persists kind = 'mentoring' when explicitly passed (#276)", () => {
+    const session = insertSession(db, { type: "adhoc" });
+
+    const decision = insertDecision(db, {
+      session_id: session.id,
+      content: "進め方の点検結果",
+      kind: "mentoring",
+    });
+
+    expect(decision.kind).toBe("mentoring");
+  });
+
   it("persists the decision so it can be read back from the database", () => {
     const session = insertSession(db, { type: "adhoc" });
 

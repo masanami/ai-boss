@@ -480,6 +480,32 @@ describe("settings routes", () => {
         expect(row?.value).toBe("false");
       });
 
+      // AC-36 のもう一方の側。false 側だけを DB で確かめると、値を
+      // 書き分けず常に "false" を書く実装でも通ってしまう。
+      it('PUT true stores the string "true" in the settings table (AC-36)', async () => {
+        const app = createApp(db);
+
+        // いったん false にしてから true へ戻す（未設定のままだと行が
+        // 作られず、"true" が書かれたことを確かめられないため）。
+        await app.request("/api/settings", {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ morning_mentoring_required: false }),
+        });
+
+        const res = await app.request("/api/settings", {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ morning_mentoring_required: true }),
+        });
+
+        expect(res.status).toBe(200);
+        const row = db
+          .prepare("SELECT value FROM settings WHERE key = ?")
+          .get("morning_mentoring_required") as { value: string } | undefined;
+        expect(row?.value).toBe("true");
+      });
+
       it("GET reflects false immediately after PUT false", async () => {
         const app = createApp(db);
 
