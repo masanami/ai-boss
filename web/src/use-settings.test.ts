@@ -20,6 +20,7 @@ const SAMPLE_SETTINGS: Settings = {
   escalation_repeat_minutes: 10,
   model: "claude-sonnet-5",
   evidence_enforcement_enabled: false,
+  morning_mentoring_required: true,
 };
 
 describe("useSettings", () => {

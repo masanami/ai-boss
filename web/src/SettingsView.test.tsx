@@ -20,6 +20,7 @@ const SAMPLE_SETTINGS: Settings = {
   escalation_repeat_minutes: 10,
   model: "claude-sonnet-5",
   evidence_enforcement_enabled: false,
+  morning_mentoring_required: true,
 };
 
 /**
@@ -212,6 +213,7 @@ describe("SettingsView", () => {
           escalation_repeat_minutes: 10,
           model: "claude-sonnet-5",
           evidence_enforcement_enabled: false,
+          morning_mentoring_required: true,
         }),
       }),
     );
@@ -362,6 +364,70 @@ describe("SettingsView", () => {
       unknown
     >;
     expect(sentBody.evidence_enforcement_enabled).toBe(true);
+  });
+
+  it("shows the mentoring-required checkbox checked when unset (server returns true) (AC-38)", async () => {
+    vi.stubGlobal(
+      "fetch",
+      stubGet({ ...SAMPLE_SETTINGS, morning_mentoring_required: true }),
+    );
+
+    render(<SettingsView />);
+
+    await waitFor(() =>
+      expect(
+        screen.getByLabelText("朝会でメンタリングを必須にする"),
+      ).toBeChecked(),
+    );
+  });
+
+  it("shows the mentoring-required checkbox unchecked when the loaded value is false (AC-38)", async () => {
+    vi.stubGlobal(
+      "fetch",
+      stubGet({ ...SAMPLE_SETTINGS, morning_mentoring_required: false }),
+    );
+
+    render(<SettingsView />);
+
+    await waitFor(() =>
+      expect(
+        screen.getByLabelText("朝会でメンタリングを必須にする"),
+      ).not.toBeChecked(),
+    );
+  });
+
+  it("submits morning_mentoring_required: false after the checkbox is toggled off (AC-38)", async () => {
+    const fetchMock = stubGet();
+    fetchMock.mockResolvedValueOnce({
+      ok: true,
+      status: 200,
+      json: () =>
+        Promise.resolve({
+          ...SAMPLE_SETTINGS,
+          morning_mentoring_required: false,
+        }),
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(<SettingsView />);
+    await waitFor(() =>
+      expect(
+        screen.getByLabelText("朝会でメンタリングを必須にする"),
+      ).toBeChecked(),
+    );
+
+    fireEvent.click(
+      screen.getByLabelText("朝会でメンタリングを必須にする"),
+    );
+    fireEvent.click(screen.getByRole("button", { name: "保存" }));
+
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2));
+    const [, options] = fetchMock.mock.calls[1] as [string, RequestInit];
+    const sentBody = JSON.parse(options.body as string) as Record<
+      string,
+      unknown
+    >;
+    expect(sentBody.morning_mentoring_required).toBe(false);
   });
 
   it("disables the save button while saving", async () => {
