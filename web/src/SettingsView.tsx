@@ -34,6 +34,7 @@ interface FormState {
   escalation_repeat_minutes: number;
   model: string;
   evidence_enforcement_enabled: boolean;
+  morning_mentoring_required: boolean;
 }
 
 function toFormState(settings: Settings): FormState {
@@ -177,6 +178,23 @@ function SettingsView() {
                 setForm({
                   ...form,
                   evening_meeting_time: event.target.value,
+                })
+              }
+            />
+          </label>
+        </fieldset>
+
+        <fieldset disabled={isSaving}>
+          <legend>メンタリング</legend>
+          <label>
+            朝会でメンタリングを必須にする
+            <input
+              type="checkbox"
+              checked={form.morning_mentoring_required}
+              onChange={(event) =>
+                setForm({
+                  ...form,
+                  morning_mentoring_required: event.target.checked,
                 })
               }
             />
