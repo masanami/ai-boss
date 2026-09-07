@@ -6,6 +6,7 @@ import { insertSession } from "../sessions/sessions-repository.js";
 import { insertTask } from "../tasks/tasks-repository.js";
 import type { NewTaskRecord } from "../tasks/tasks-repository.js";
 import {
+  countMentoringDecisionsBySessionId,
   findDecisionById,
   insertDecision,
   listDecisions,
@@ -364,5 +365,65 @@ describe("listDecisions", () => {
       "メンタリングの結論",
     ]);
     expect(result.map((decision) => decision.kind)).toEqual(["decision", "mentoring"]);
+  });
+});
+
+// #276 判断3: 朝会終了ゲート（mentoring-gate.ts）が読む「対象セッションの
+// kind='mentoring' 件数」。判定に使う純粋関数 isMentoringComplete への入力を
+// 用意する側の責務であり、'decision' 行や他セッションの行を混ぜない。
+describe("countMentoringDecisionsBySessionId", () => {
+  let db: Database.Database;
+
+  beforeEach(() => {
+    db = openDatabase(":memory:");
+    runMigrations(db);
+  });
+
+  afterEach(() => {
+    db.close();
+  });
+
+  it("returns 0 when the session has no decisions at all", () => {
+    const session = insertSession(db, { type: "morning" });
+
+    expect(countMentoringDecisionsBySessionId(db, session.id)).toBe(0);
+  });
+
+  it("counts only kind='mentoring' rows, excluding kind='decision' rows in the same session", () => {
+    const session = insertSession(db, { type: "morning" });
+    insertRawDecision(db, session.id, "通常の決定", localIso(2026, 7, 5, 9), null, "decision");
+    insertRawDecision(
+      db,
+      session.id,
+      "メンタリングの結論",
+      localIso(2026, 7, 5, 10),
+      null,
+      "mentoring",
+    );
+
+    expect(countMentoringDecisionsBySessionId(db, session.id)).toBe(1);
+  });
+
+  it("excludes kind='mentoring' rows that belong to a different session", () => {
+    const target = insertSession(db, { type: "morning" });
+    const other = insertSession(db, { type: "morning" });
+    insertRawDecision(
+      db,
+      other.id,
+      "他セッションのメンタリング結論",
+      localIso(2026, 7, 5, 9),
+      null,
+      "mentoring",
+    );
+
+    expect(countMentoringDecisionsBySessionId(db, target.id)).toBe(0);
+  });
+
+  it("counts multiple mentoring rows in the same session", () => {
+    const session = insertSession(db, { type: "morning" });
+    insertRawDecision(db, session.id, "結論1", localIso(2026, 7, 5, 9), null, "mentoring");
+    insertRawDecision(db, session.id, "結論2", localIso(2026, 7, 5, 10), null, "mentoring");
+
+    expect(countMentoringDecisionsBySessionId(db, session.id)).toBe(2);
   });
 });

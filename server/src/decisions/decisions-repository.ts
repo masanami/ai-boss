@@ -114,3 +114,22 @@ export function listRecentDecisions(
     decidedAt: row.created_at,
   }));
 }
+
+/**
+ * Returns the number of `kind = 'mentoring'` decisions recorded for
+ * `sessionId` — one of the two counts `mentoring-gate.ts`'s
+ * `isMentoringComplete` (a pure function that never touches the DB) needs
+ * from its caller (#276 判断3). Scoped to `session_id` so a mentoring
+ * conclusion recorded in another session never counts toward this one.
+ */
+export function countMentoringDecisionsBySessionId(
+  db: Database.Database,
+  sessionId: number,
+): number {
+  const row = db
+    .prepare(
+      "SELECT COUNT(*) AS count FROM decisions WHERE session_id = ? AND kind = 'mentoring'",
+    )
+    .get(sessionId) as { count: number };
+  return row.count;
+}

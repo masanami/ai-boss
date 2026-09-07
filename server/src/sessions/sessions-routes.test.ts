@@ -4,6 +4,8 @@ import type Anthropic from "@anthropic-ai/sdk";
 import { openDatabase } from "../db/connection.js";
 import { runMigrations } from "../db/migrate.js";
 import { insertMessage } from "./messages-repository.js";
+import { insertDecision } from "../decisions/decisions-repository.js";
+import { setSettingValue } from "../settings/settings-repository.js";
 import type { Session } from "./session.js";
 import type { Message } from "./message.js";
 
@@ -504,6 +506,9 @@ describe("sessions routes", () => {
           body: JSON.stringify({ type: "morning" }),
         }),
       );
+      // #276: このテストの主題は ended_at の記録であり、メンタリング完了とは
+      // 無関係 — 朝会終了ゲートに巻き込まれないよう強制設定をオフにする。
+      setSettingValue(db, "morning_mentoring_required", "false");
       vi.useFakeTimers();
       vi.setSystemTime(new Date("2026-07-06T09:30:00+09:00"));
 
@@ -576,6 +581,9 @@ describe("sessions routes", () => {
         role: "boss",
         content: "資料作成を最優先にしろ",
       });
+      // #276: このテストの主題は要約生成であり、メンタリング完了とは無関係
+      // — 朝会終了ゲートに巻き込まれないよう強制設定をオフにする。
+      setSettingValue(db, "morning_mentoring_required", "false");
       createBossMessageMock.mockResolvedValue(
         fakeTextMessage("資料作成を最優先にすることを決定した。"),
       );
@@ -651,6 +659,9 @@ describe("sessions routes", () => {
         }),
       );
       insertMessage(db, { session_id: session.id, role: "user", content: "報告します" });
+      // #276: このテストの主題は要約の非再生成であり、メンタリング完了とは
+      // 無関係 — 朝会終了ゲートに巻き込まれないよう強制設定をオフにする。
+      setSettingValue(db, "morning_mentoring_required", "false");
       // Issue #271: session creation above already invoked createBossMessage
       // once for the (unconfigured, fallback-triggering) meeting-opening
       // generation. Clear the call count here so this test's assertion below
@@ -673,6 +684,143 @@ describe("sessions routes", () => {
       const body = await readJson<Session>(res);
       expect(body.summary).toBe("最初の要約");
       expect(createBossMessageMock).toHaveBeenCalledTimes(1);
+    });
+
+    // #276 判断2/3: 朝会終了の前提条件ゲート（AC-16〜25）。ゲートは
+    // `endSession` を呼ぶ前に評価し、`before`（`findSessionById` の戻り値）
+    // から type と「初回の終了遷移か」を読む。判定に使う2つの件数
+    // （kind='mentoring' の decisions 件数・role='user' の messages 件数）は
+    // `isMentoringComplete`（mentoring-gate.ts）へ渡す。
+    describe("mentoring gate (#276 判断2/3, AC-16〜25)", () => {
+      async function postMorningSession(app: ReturnType<typeof createApp>) {
+        return readJson<Session>(await postSession(app, "morning"));
+      }
+
+      function recordMentoringConclusion(db: Database.Database, sessionId: number): void {
+        insertDecision(db, {
+          session_id: sessionId,
+          content: "このまま進める",
+          rationale: "優先度の付け方を確認した",
+          kind: "mentoring",
+        });
+      }
+
+      it("AC-16/AC-17: blocks ending a morning session with no mentoring record (forced on by default) — 409 + code mentoring_required", async () => {
+        const app = createApp(db);
+        const session = await postMorningSession(app);
+
+        const res = await app.request(`/api/sessions/${session.id}/end`, {
+          method: "POST",
+        });
+
+        expect(res.status).toBe(409);
+        const body = await readJson<ErrorBodyWithCode>(res);
+        expect(body.code).toBe("mentoring_required");
+        expect(typeof body.error).toBe("string");
+      });
+
+      it("AC-18: blocks ending a morning session with a mentoring record but zero user messages", async () => {
+        const app = createApp(db);
+        const session = await postMorningSession(app);
+        recordMentoringConclusion(db, session.id);
+
+        const res = await app.request(`/api/sessions/${session.id}/end`, {
+          method: "POST",
+        });
+
+        expect(res.status).toBe(409);
+        const body = await readJson<ErrorBodyWithCode>(res);
+        expect(body.code).toBe("mentoring_required");
+      });
+
+      it("AC-19: allows ending a morning session with a mentoring record and at least one user message", async () => {
+        const env = { ANTHROPIC_API_KEY: "sk-ant-test-key" };
+        const app = createApp(db, env);
+        const session = await postMorningSession(app);
+        insertMessage(db, { session_id: session.id, role: "user", content: "今日の進め方です" });
+        recordMentoringConclusion(db, session.id);
+
+        const res = await app.request(`/api/sessions/${session.id}/end`, {
+          method: "POST",
+        });
+
+        expect(res.status).toBe(200);
+        const body = await readJson<Session>(res);
+        expect(typeof body.ended_at).toBe("string");
+      });
+
+      it("AC-20: allows ending a morning session with no mentoring record when the setting is forced off", async () => {
+        const app = createApp(db);
+        setSettingValue(db, "morning_mentoring_required", "false");
+        const session = await postMorningSession(app);
+
+        const res = await app.request(`/api/sessions/${session.id}/end`, {
+          method: "POST",
+        });
+
+        expect(res.status).toBe(200);
+        const body = await readJson<Session>(res);
+        expect(typeof body.ended_at).toBe("string");
+      });
+
+      it("AC-21: a blocked morning session's ended_at stays NULL", async () => {
+        const app = createApp(db);
+        const session = await postMorningSession(app);
+
+        const res = await app.request(`/api/sessions/${session.id}/end`, {
+          method: "POST",
+        });
+        expect(res.status).toBe(409);
+
+        const stored = db
+          .prepare("SELECT ended_at FROM sessions WHERE id = ?")
+          .get(session.id) as { ended_at: string | null };
+        expect(stored.ended_at).toBeNull();
+      });
+
+      it("AC-22: re-ending an already-ended morning session returns 200 regardless of mentoring record state", async () => {
+        const app = createApp(db);
+        setSettingValue(db, "morning_mentoring_required", "false");
+        const session = await postMorningSession(app);
+        const first = await app.request(`/api/sessions/${session.id}/end`, {
+          method: "POST",
+        });
+        expect(first.status).toBe(200);
+
+        // Flip the setting back on (default) with no mentoring record present
+        // — if the gate were re-evaluated on re-end, this would 409.
+        setSettingValue(db, "morning_mentoring_required", "true");
+        const res = await app.request(`/api/sessions/${session.id}/end`, {
+          method: "POST",
+        });
+
+        expect(res.status).toBe(200);
+      });
+
+      it("AC-23: never blocks ending an evening session, regardless of mentoring record state", async () => {
+        const env = { ANTHROPIC_API_KEY: "sk-ant-test-key" };
+        const app = createApp(db, env);
+        const session = await readJson<Session>(await postSession(app, "evening"));
+
+        const res = await app.request(`/api/sessions/${session.id}/end`, {
+          method: "POST",
+        });
+
+        expect(res.status).toBe(200);
+        const body = await readJson<Session>(res);
+        expect(body.type).toBe("evening");
+      });
+
+      it("never blocks ending an adhoc session, regardless of mentoring record state", async () => {
+        const app = createApp(db);
+        const session = await readJson<Session>(await postSession(app, "adhoc"));
+
+        const res = await app.request(`/api/sessions/${session.id}/end`, {
+          method: "POST",
+        });
+
+        expect(res.status).toBe(200);
+      });
     });
   });
 });

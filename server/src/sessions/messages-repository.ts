@@ -127,6 +127,26 @@ export function deleteMessagesFrom(
 }
 
 /**
+ * Returns the number of `role = 'user'` messages recorded for `sessionId` —
+ * the other of the two counts `mentoring-gate.ts`'s `isMentoringComplete` (a
+ * pure function that never touches the DB) needs from its caller (#276
+ * 判断3). Scoped to `session_id` so a user message in another session never
+ * counts toward this one, and `role = 'boss'` rows (including the meeting
+ * opening line, `meeting-opening.ts`) are excluded.
+ */
+export function countUserMessagesBySessionId(
+  db: Database.Database,
+  sessionId: number,
+): number {
+  const row = db
+    .prepare(
+      "SELECT COUNT(*) AS count FROM messages WHERE session_id = ? AND role = 'user'",
+    )
+    .get(sessionId) as { count: number };
+  return row.count;
+}
+
+/**
  * Returns messages belonging to `adhoc` sessions whose `created_at` falls on
  * `now`'s local calendar day, ordered by `created_at` ascending with `id`
  * ascending as a tie-breaker (same deterministic ordering as
