@@ -42,6 +42,7 @@ interface SettingsBody {
   escalation_repeat_minutes: number;
   model: string;
   evidence_enforcement_enabled: boolean;
+  morning_mentoring_required: boolean;
 }
 
 async function readJson<T>(res: Response): Promise<T> {
@@ -85,6 +86,7 @@ describe("settings routes", () => {
         escalation_repeat_minutes: 10,
         model: DEFAULT_MODEL,
         evidence_enforcement_enabled: false,
+        morning_mentoring_required: true,
       });
     });
 
@@ -445,6 +447,88 @@ describe("settings routes", () => {
         const body = await readJson<SettingsBody>(getRes);
         expect(body.boss_name).toBe("ボス");
         expect(body.evidence_enforcement_enabled).toBe(false);
+      });
+    });
+
+    // 朝会メンタリング必須設定（#406）。AC-31〜AC-37。既定値の向きが
+    // evidence_enforcement_enabled とは逆（未設定・不正値は true）である点に
+    // 注意。
+    describe("morning_mentoring_required", () => {
+      it("GET includes the key and returns true by default when unset (AC-31, AC-32)", async () => {
+        const app = createApp(db);
+
+        const res = await app.request("/api/settings");
+
+        const body = await readJson<SettingsBody>(res);
+        expect(body).toHaveProperty("morning_mentoring_required");
+        expect(body.morning_mentoring_required).toBe(true);
+      });
+
+      it('PUT false stores the string "false" in the settings table (AC-33, AC-36)', async () => {
+        const app = createApp(db);
+
+        const res = await app.request("/api/settings", {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ morning_mentoring_required: false }),
+        });
+
+        expect(res.status).toBe(200);
+        const row = db
+          .prepare("SELECT value FROM settings WHERE key = ?")
+          .get("morning_mentoring_required") as { value: string } | undefined;
+        expect(row?.value).toBe("false");
+      });
+
+      it("GET reflects false immediately after PUT false", async () => {
+        const app = createApp(db);
+
+        await app.request("/api/settings", {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ morning_mentoring_required: false }),
+        });
+
+        const getRes = await app.request("/api/settings");
+        const body = await readJson<SettingsBody>(getRes);
+        expect(body.morning_mentoring_required).toBe(false);
+      });
+
+      it('PUT rejects the string "true" with 400 (AC-34)', async () => {
+        const app = createApp(db);
+
+        const res = await app.request("/api/settings", {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ morning_mentoring_required: "true" }),
+        });
+
+        expect(res.status).toBe(400);
+      });
+
+      it("PUT rejects null with 400 (AC-35)", async () => {
+        const app = createApp(db);
+
+        const res = await app.request("/api/settings", {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ morning_mentoring_required: null }),
+        });
+
+        expect(res.status).toBe(400);
+      });
+
+      it("GET returns true when the stored value is not \"true\"/\"false\" (AC-37)", async () => {
+        db.prepare("INSERT INTO settings (key, value) VALUES (?, ?)").run(
+          "morning_mentoring_required",
+          "yes",
+        );
+        const app = createApp(db);
+
+        const res = await app.request("/api/settings");
+
+        const body = await readJson<SettingsBody>(res);
+        expect(body.morning_mentoring_required).toBe(true);
       });
     });
 

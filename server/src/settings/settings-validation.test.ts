@@ -267,6 +267,53 @@ describe("validatePutSettingsInput", () => {
     });
   });
 
+  // 朝会メンタリング必須設定（#406）。判断7: settings KV における boolean
+  // キーの第1号。evidence_enforcement_enabled と同じ validateBoolean を
+  // 再利用する（既定値の向きが異なるのは読み手側 resolveMorningMentoringRequired
+  // の責務であり、ここでの受理・拒否の形は同一）。
+  describe("morning_mentoring_required", () => {
+    it('accepts true and normalizes it to the string "true"', () => {
+      const result = validatePutSettingsInput({
+        morning_mentoring_required: true,
+      });
+      expect(result).toEqual({
+        valid: true,
+        data: { morning_mentoring_required: "true" },
+      });
+    });
+
+    it('accepts false and normalizes it to the string "false"', () => {
+      const result = validatePutSettingsInput({
+        morning_mentoring_required: false,
+      });
+      expect(result).toEqual({
+        valid: true,
+        data: { morning_mentoring_required: "false" },
+      });
+    });
+
+    it('rejects the string "true" (must be a JSON boolean, not a string) (AC-34)', () => {
+      const result = validatePutSettingsInput({
+        morning_mentoring_required: "true",
+      });
+      expect(result.valid).toBe(false);
+    });
+
+    it("rejects null (AC-35)", () => {
+      const result = validatePutSettingsInput({
+        morning_mentoring_required: null,
+      });
+      expect(result.valid).toBe(false);
+    });
+
+    it("rejects the number 1", () => {
+      const result = validatePutSettingsInput({
+        morning_mentoring_required: 1,
+      });
+      expect(result.valid).toBe(false);
+    });
+  });
+
   it("accepts multiple valid keys together", () => {
     const result = validatePutSettingsInput({
       boss_name: "鬼上司",

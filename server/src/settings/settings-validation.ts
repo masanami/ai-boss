@@ -25,6 +25,7 @@ export const SETTINGS_KEYS = [
   "escalation_repeat_minutes",
   "model",
   "evidence_enforcement_enabled",
+  "morning_mentoring_required",
 ] as const;
 
 export type SettingKey = (typeof SETTINGS_KEYS)[number];
@@ -169,6 +170,11 @@ const VALIDATORS: Record<SettingKey, FieldValidator> = {
   ),
   model: validateNonEmptyString("model"),
   evidence_enforcement_enabled: validateBoolean("evidence_enforcement_enabled"),
+  // settings KV における boolean キーの第1号は evidence_enforcement_enabled
+  // (#386) であり、本キーは同じ validateBoolean を再利用する
+  // （機能仕様 docs/features/work-approach-mentoring.md 判断7）。既定値の
+  // 向き（未設定・不正値はオン）は読み手側 mentoring-settings.ts の責務。
+  morning_mentoring_required: validateBoolean("morning_mentoring_required"),
 };
 
 function isSettingKey(key: string): key is SettingKey {
