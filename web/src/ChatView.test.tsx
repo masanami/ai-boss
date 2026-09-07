@@ -155,6 +155,7 @@ function makeChatState(overrides: Partial<UseChatResult> = {}): UseChatResult {
     switching: false,
     streamingText: "",
     error: null,
+    mentoringRequired: false,
     activeSessionId: null,
     draft: "",
     setDraft: vi.fn(),
@@ -1579,5 +1580,138 @@ describe("ChatView auto-scroll (Issue #130)", () => {
       />,
     );
     expect(timelineOf(container).scrollTop).toBe(1100);
+  });
+});
+
+// Issue #411 (親 #276 判断2・判断6): 朝会終了ブロックの UI 分岐と随時
+// メンタリングの導線。`makeChatState` で chatState を直接与える形で書く
+// （ChatView rewrite UI の describe と同じ理由: 検証するのは「画面が
+// chatState をどう読み、どうボタンを呼ぶか」であり、`send`/`endSession`
+// 自身の中身は use-chat.test.ts が持つ）。
+describe("ChatView mentoring (Issue #411)", () => {
+  const MENTORING_BUTTON_NAME = "進め方を点検してもらう";
+
+  it("shows the ad-hoc mentoring button during the ad-hoc chat (AC-29)", () => {
+    render(<ChatView chatState={makeChatState({ sessionType: "adhoc" })} />);
+
+    expect(
+      screen.getByRole("button", { name: MENTORING_BUTTON_NAME }),
+    ).toBeInTheDocument();
+  });
+
+  // 変異確認の対になるテスト: 表示条件を「常に表示」に壊すとこの2件
+  // （morning/evening）が落ち、「常に非表示」に壊すと AC-29 側が落ちる。
+  it("does not show the mentoring button during a morning meeting (AC-30)", () => {
+    render(<ChatView chatState={makeChatState({ sessionType: "morning" })} />);
+
+    expect(
+      screen.queryByRole("button", { name: MENTORING_BUTTON_NAME }),
+    ).not.toBeInTheDocument();
+  });
+
+  it("does not show the mentoring button during an evening meeting (AC-30)", () => {
+    render(<ChatView chatState={makeChatState({ sessionType: "evening" })} />);
+
+    expect(
+      screen.queryByRole("button", { name: MENTORING_BUTTON_NAME }),
+    ).not.toBeInTheDocument();
+  });
+
+  it("sends a fixed message with the mentoring flag when the button is pressed", () => {
+    const send = vi.fn();
+    render(
+      <ChatView chatState={makeChatState({ sessionType: "adhoc", send })} />,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: MENTORING_BUTTON_NAME }));
+
+    expect(send).toHaveBeenCalledTimes(1);
+    // The flag is what makes the server queue MENTORING_FLOW_INSTRUCTION
+    // (親 #276 判断6) — a plain send without it would leave 随時メンタリング
+    // without a record (`record_mentoring` never gets called).
+    const [, mentoringFlag] = send.mock.calls[0] as [string, boolean];
+    expect(mentoringFlag).toBe(true);
+  });
+
+  it("disables the mentoring button while sending or switching", () => {
+    const { rerender } = render(
+      <ChatView
+        chatState={makeChatState({ sessionType: "adhoc", sending: true })}
+      />,
+    );
+    expect(
+      screen.getByRole("button", { name: MENTORING_BUTTON_NAME }),
+    ).toBeDisabled();
+
+    rerender(
+      <ChatView
+        chatState={makeChatState({ sessionType: "adhoc", switching: true })}
+      />,
+    );
+    expect(
+      screen.getByRole("button", { name: MENTORING_BUTTON_NAME }),
+    ).toBeDisabled();
+  });
+
+  it("disables the mentoring button while an inline edit is open", () => {
+    const activeSessionId = 1;
+    render(
+      <ChatView
+        chatState={makeChatState({
+          sessionType: "adhoc",
+          activeSessionId,
+          entries: [
+            {
+              kind: "message",
+              key: "message-10",
+              role: "user",
+              content: "相談です",
+              messageId: 10,
+              sessionId: activeSessionId,
+            },
+          ],
+        })}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "発言を編集" }));
+
+    expect(
+      screen.getByRole("button", { name: MENTORING_BUTTON_NAME }),
+    ).toBeDisabled();
+  });
+
+  // AC-39: 分岐は `code` 由来の `mentoringRequired` で行い、`error`（文言）
+  // では行わない — この状態表示は `error` が null のままでも出る。
+  // AC-40: 設定でオフにできる旨を必ず含む(これを欠くと、ボスが記録を残さ
+  // なかった場合にユーザーが朝会から抜ける手段を画面から見つけられない)。
+  it("shows a status notice mentioning the settings escape hatch when blocked (AC-39, AC-40)", () => {
+    render(
+      <ChatView
+        chatState={makeChatState({
+          sessionType: "morning",
+          mentoringRequired: true,
+          error: null,
+        })}
+      />,
+    );
+
+    const notice = screen.getByRole("status");
+    expect(notice).toHaveTextContent("メンタリング");
+    expect(notice).toHaveTextContent("設定");
+    expect(notice).toHaveTextContent(/オフ/);
+  });
+
+  it("does not show the blocked status notice when not blocked", () => {
+    render(
+      <ChatView
+        chatState={makeChatState({
+          sessionType: "morning",
+          mentoringRequired: false,
+        })}
+      />,
+    );
+
+    expect(screen.queryByRole("status")).not.toBeInTheDocument();
   });
 });

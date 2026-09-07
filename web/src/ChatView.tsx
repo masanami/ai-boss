@@ -13,6 +13,20 @@ const SESSION_END_LABELS = {
   evening: "夕会を終了",
 } as const;
 
+// Issue #411 (親 #276 判断6): 随時メンタリングのボタンが送る定型のユーザー
+// 発言。`mentoring: true` を必ず伴わせる（`send` の第2引数）— フラグ無しの
+// 定型文だけでは MENTORING_FLOW_INSTRUCTION が積まれず、随時メンタリングだ
+// け記録（`record_mentoring`）が残らない（機能仕様「画面・API設計」）。
+const MENTORING_MESSAGE_CONTENT = "今の進め方を見てほしい";
+const MENTORING_BUTTON_LABEL = "進め方を点検してもらう";
+
+// AC-39/AC-40: `code` 一致（`mentoringRequired`）で分岐する状態表示。
+// エラー文言をそのまま出さず、逃げ道（設定でオフ）を必ず併記する — これを
+// 欠くと、ボスがメンタリングの記録を残さなかった場合にユーザーが朝会から
+// 抜ける手段を画面から見つけられなくなる（ADR 0008 決定2 と同じ作法）。
+const MENTORING_BLOCKED_MESSAGE =
+  "仕事の進め方のメンタリングを終えると朝会を終了できます（設定でメンタリングの強制をオフにすることもできます）";
+
 // Only tools that actually create/update a task get the task-specific
 // "作成/更新" notice below. Every other BOSS_TOOLS entry (record_decision,
 // get_activity_log, ...) used to fall through to the "更新" branch by
@@ -237,6 +251,7 @@ function ChatView({ chatState }: ChatViewProps) {
     switching,
     streamingText,
     error,
+    mentoringRequired,
     activeSessionId,
     draft,
     setDraft,
@@ -494,6 +509,17 @@ function ChatView({ chatState }: ChatViewProps) {
             >
               夕会を開始
             </button>
+            {/* 随時メンタリングの導線（Issue #411, 親 #276 判断6）。`adhoc`
+                （会でない区間）のときだけ表示する — 朝会・夕会の会中は、その
+                会のフロー指示が既に会話を主導しているため、ここに置かない
+                （「画面・API設計」）。 */}
+            <button
+              type="button"
+              onClick={() => void send(MENTORING_MESSAGE_CONTENT, true)}
+              disabled={switching || sending || editingMessageId !== null}
+            >
+              {MENTORING_BUTTON_LABEL}
+            </button>
           </>
         ) : (
           <>
@@ -510,6 +536,16 @@ function ChatView({ chatState }: ChatViewProps) {
           </>
         )}
       </div>
+      {/* AC-39/AC-40: `code` から導出された `mentoringRequired` だけで出す
+          （`error` の文言は使わない）。逃げ道（設定でオフ）を必ず併記する
+          文言は上の定数側で固定している。`role="status"` は非侵入的な通知
+          （`chat-error` の `role="alert"` ほど強く割り込まない）にするため
+          — ブロックは失敗ではなく、次に何をすればいいかを示す状態である。 */}
+      {mentoringRequired && (
+        <p className="chat-mentoring-blocked" role="status">
+          {MENTORING_BLOCKED_MESSAGE}
+        </p>
+      )}
       <ul className="chat-timeline" aria-label="会話履歴" ref={timelineRef}>
         {entries.map((entry) => {
           // 編集操作を出す条件（画面の仕様、すべて満たすときだけ）: 自分の
