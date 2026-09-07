@@ -8,11 +8,12 @@ import { listTasks } from "../tasks/tasks-repository.js";
 import { BOSS_TOOLS, executeBossTool } from "./boss-tools.js";
 
 describe("BOSS_TOOLS", () => {
-  it("defines create_task, update_task, record_decision, and get_activity_log", () => {
+  it("defines create_task, update_task, record_decision, record_mentoring, and get_activity_log", () => {
     expect(BOSS_TOOLS.map((tool) => tool.name)).toEqual([
       "create_task",
       "update_task",
       "record_decision",
+      "record_mentoring",
       "get_activity_log",
     ]);
   });
@@ -47,7 +48,18 @@ describe("executeBossTool", () => {
     expect(result.isError).toBe(false);
     const decisions = listDecisions(db);
     expect(decisions).toHaveLength(1);
-    expect(decisions[0]).toMatchObject({ session_id: sessionId });
+    expect(decisions[0]).toMatchObject({ session_id: sessionId, kind: "decision" });
+  });
+
+  it("dispatches record_mentoring to the mentoring tool, using the given session id", () => {
+    const result = executeBossTool(db, sessionId, "record_mentoring", {
+      content: "見積もりの前提を再確認してから着手する",
+    });
+
+    expect(result.isError).toBe(false);
+    const decisions = listDecisions(db);
+    expect(decisions).toHaveLength(1);
+    expect(decisions[0]).toMatchObject({ session_id: sessionId, kind: "mentoring" });
   });
 
   it("returns an error result for an unknown tool name", () => {
