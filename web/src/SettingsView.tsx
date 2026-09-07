@@ -33,6 +33,7 @@ interface FormState {
   escalation_l3_after_minutes: number;
   escalation_repeat_minutes: number;
   model: string;
+  evidence_enforcement_enabled: boolean;
 }
 
 function toFormState(settings: Settings): FormState {
@@ -308,6 +309,23 @@ function SettingsView() {
               value={form.model}
               onChange={(event) =>
                 setForm({ ...form, model: event.target.value })
+              }
+            />
+          </label>
+        </fieldset>
+
+        <fieldset disabled={isSaving}>
+          <legend>エビデンス</legend>
+          <label>
+            完了報告にエビデンスを必須にする
+            <input
+              type="checkbox"
+              checked={form.evidence_enforcement_enabled}
+              onChange={(event) =>
+                setForm({
+                  ...form,
+                  evidence_enforcement_enabled: event.target.checked,
+                })
               }
             />
           </label>

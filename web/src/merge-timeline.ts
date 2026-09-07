@@ -131,6 +131,13 @@ export function buildTimeline(loaded: LoadedSession[]): ChatEntry[] {
           // the exception, and entries are compared by deep equality in
           // this module's tests.
           ...(message.interrupted === 1 ? { interrupted: true } : {}),
+          // Issue #377 AC-38: always set (never conditionally), since every
+          // message `buildTimeline` sees is already persisted — unlike
+          // `interrupted`, there is no "shape before this field existed" to
+          // preserve here. `selectRewriteRange` depends on both being
+          // present on every entry it scans.
+          messageId: message.id,
+          sessionId: message.session_id,
         },
       });
     }

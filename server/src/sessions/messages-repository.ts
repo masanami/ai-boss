@@ -66,6 +66,67 @@ export function listMessagesBySessionId(
 }
 
 /**
+ * Returns the message with `messageId`, but only when it belongs to
+ * `sessionId`. Returns `undefined` both when no such message exists at all
+ * and when it exists but belongs to a different session — the caller cannot
+ * tell the two apart, which is intentional: this is the single place that
+ * rejects cross-session references (#375, chat-message-rewrite decision 3).
+ */
+export function findMessageInSession(
+  db: Database.Database,
+  sessionId: number,
+  messageId: number,
+): Message | undefined {
+  return db
+    .prepare("SELECT * FROM messages WHERE id = ? AND session_id = ?")
+    .get(messageId, sessionId) as Message | undefined;
+}
+
+/**
+ * Deletes `fromMessageId` and every message after it, within the same
+ * session, using the same `created_at ASC, id ASC` order as
+ * `listMessagesBySessionId` — the "rewrite" (truncate-and-resend) primitive
+ * behind Issue #255's edit-and-redo feature
+ * (docs/features/chat-message-rewrite.md decisions 1 and 2).
+ *
+ * The range condition deliberately does not use `id >= ?` alone:
+ * `created_at` is a millisecond-precision ISO string and two rows can share
+ * the same value, so the tie-break has to mirror `listMessagesBySessionId`'s
+ * `id ASC` exactly, or "what you see is what gets deleted" would not hold.
+ *
+ * Returns 0 without deleting anything when `fromMessageId` does not belong
+ * to `sessionId` (including when it does not exist at all) — same
+ * cross-session rejection as `findMessageInSession`, reused here to look up
+ * the anchor row's `created_at`.
+ *
+ * **Opens no transaction of its own.** The rewrite flow must not leave a
+ * state where the history was truncated but the rewritten message never
+ * landed, so the caller (`chat-messages-route.ts`) wraps this call and the
+ * following `insertMessage` in a single `db.transaction`
+ * (ADR 0005 決定 5 / chat-message-rewrite「機能全体の設計」).
+ */
+export function deleteMessagesFrom(
+  db: Database.Database,
+  sessionId: number,
+  fromMessageId: number,
+): number {
+  const anchor = findMessageInSession(db, sessionId, fromMessageId);
+  if (!anchor) {
+    return 0;
+  }
+
+  const result = db
+    .prepare(
+      `DELETE FROM messages
+       WHERE session_id = ?
+         AND (created_at > ? OR (created_at = ? AND id >= ?))`,
+    )
+    .run(sessionId, anchor.created_at, anchor.created_at, fromMessageId);
+
+  return result.changes;
+}
+
+/**
  * Returns messages belonging to `adhoc` sessions whose `created_at` falls on
  * `now`'s local calendar day, ordered by `created_at` ascending with `id`
  * ascending as a tie-breaker (same deterministic ordering as
@@ -76,6 +137,14 @@ export function listMessagesBySessionId(
  * `calculateTodayMaxEscalationLevel`: both boundaries are derived from the
  * same `now` so a future-dated row (clock/timezone rolled back) cannot widen
  * the window.
+ *
+ * Reads the `messages` table live on every call, so a message truncated by a
+ * rewrite (`deleteMessagesFrom` above, Issue #255) can never surface here:
+ * the row is physically gone by the time this runs. That is what keeps
+ * 「書き直した後、元の発言はボスの文脈に含まれない」 true for *this* context
+ * path too, not just the session's own conversation history — see
+ * `chat-messages-route.ts`, where the truncation transaction is ordered
+ * ahead of both context reads.
  */
 export function listTodaysAdhocMessages(
   db: Database.Database,

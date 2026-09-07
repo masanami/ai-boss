@@ -45,6 +45,15 @@ describe("executeRecordDecisionTool", () => {
     expect(decisions).toHaveLength(1);
   });
 
+  it("records a decision with kind 'decision' by default (#358/#397)", () => {
+    const result = executeRecordDecisionTool(db, sessionId, {
+      content: "資料作成を最優先にする",
+    });
+
+    const recorded = JSON.parse(result.content);
+    expect(recorded).toMatchObject({ kind: "decision" });
+  });
+
   it("returns an error result when content is missing", () => {
     const result = executeRecordDecisionTool(db, sessionId, {});
 

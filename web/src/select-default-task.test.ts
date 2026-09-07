@@ -15,6 +15,7 @@ function makeTask(overrides: Partial<Task> & { id: number }): Task {
     created_at: "2026-07-05T00:00:00.000Z",
     updated_at: "2026-07-05T00:00:00.000Z",
     completed_at: null,
+    evidence_required: false,
     ...overrides,
   };
 }

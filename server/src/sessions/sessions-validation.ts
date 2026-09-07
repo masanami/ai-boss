@@ -38,6 +38,15 @@ export function validateCreateSessionInput(
 
 export interface ChatMessageInput {
   content: string;
+  /**
+   * 未指定なら通常送信。指定するとやりなおし（この id 以降を切り捨てる）
+   * （Issue #376, docs/features/chat-message-rewrite.md「IF / API」）。
+   */
+  replaceFromMessageId?: number;
+}
+
+function isPositiveInteger(value: unknown): value is number {
+  return typeof value === "number" && Number.isInteger(value) && value > 0;
 }
 
 /**
@@ -69,5 +78,26 @@ export function validateChatMessageInput(
     };
   }
 
-  return { valid: true, data: { content: body.content } };
+  // 未指定ならここで確定する（早期 return）: `replaceFromMessageId` キーを
+  // 一切持たない従来どおりの形を保つ（型アサーションに頼らず、`data` の
+  // 実際の形も変えない — レビュー指摘: 以前は常にキーを持たせ `toEqual` の
+  // undefined-as-absent 挙動で非回帰テストを通していたが、それはテストの
+  // 緩さに実装を合わせる向きが逆だった）。
+  if (body.replaceFromMessageId === undefined) {
+    return { valid: true, data: { content: body.content } };
+  }
+
+  if (!isPositiveInteger(body.replaceFromMessageId)) {
+    return {
+      valid: false,
+      error: "replaceFromMessageId must be a positive integer",
+    };
+  }
+
+  // `isPositiveInteger` は型ガードなので、ここでは `body.replaceFromMessageId`
+  // が `number` に絞り込み済みでキャストは不要。
+  return {
+    valid: true,
+    data: { content: body.content, replaceFromMessageId: body.replaceFromMessageId },
+  };
 }

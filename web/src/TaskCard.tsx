@@ -1,8 +1,10 @@
 import { useState } from "react";
-import type { DragEvent, FormEvent } from "react";
+import type { ChangeEvent, DragEvent, FormEvent, KeyboardEvent } from "react";
 import { TASK_STATUSES } from "./task";
 import type { Task, TaskPatchInput, TaskPriority, TaskStatus } from "./task";
 import { TASK_DRAG_DATA_TYPE } from "./task-dnd";
+import type { TaskEvidence } from "./task-evidence";
+import { useTaskEvidences } from "./use-task-evidences";
 
 interface TaskCardProps {
   task: Task;
@@ -36,6 +38,15 @@ function toDateInputValue(dueAt: string | null): string {
   return (dueAt ?? "").slice(0, 10);
 }
 
+/** エビデンス一覧の表示ラベル（決定 1-c-ii の画像・PDF がプレビュー、それ以外は
+ * ダウンロードになる旨は個々のブラウザ挙動に委ねる。明示的な仮定9: 独自
+ * ビューアは作らず、常に遷移させる）。 */
+function evidenceLabel(evidence: TaskEvidence): string {
+  return evidence.kind === "file"
+    ? (evidence.original_filename ?? "")
+    : (evidence.url ?? "");
+}
+
 function TaskCard({
   task,
   onStatusChange,
@@ -49,12 +60,34 @@ function TaskCard({
     task.priority ?? "",
   );
   const [dueAt, setDueAt] = useState(toDateInputValue(task.due_at));
+  const [evidenceRequired, setEvidenceRequired] = useState(
+    task.evidence_required,
+  );
+
+  const [linkUrl, setLinkUrl] = useState("");
+
+  // タスク詳細（編集 UI）のエビデンス一覧・追加・削除（AC-67〜71）。IO は
+  // フックが所有し、このコンポーネントは表示に徹する（この web/ の既存規約）。
+  // 編集モードに入っている間だけ取得する（タスク一覧の各行が常時取得すると
+  // N+1 になるため）。
+  const {
+    evidences,
+    status: evidencesStatus,
+    actionError: evidenceActionError,
+    isMutating,
+    addFile,
+    addLink,
+    remove: removeEvidence,
+    contentUrl,
+  } = useTaskEvidences(task.id, isEditing);
 
   const startEditing = () => {
     setTitle(task.title);
     setDescription(task.description ?? "");
     setPriority(task.priority ?? "");
     setDueAt(toDateInputValue(task.due_at));
+    setEvidenceRequired(task.evidence_required);
+    setLinkUrl("");
     setIsEditing(true);
   };
 
@@ -83,16 +116,60 @@ function TaskCard({
     if (title.trim() === "") {
       return;
     }
-    void onEdit(task.id, {
+    const patch: TaskPatchInput = {
       title: title.trim(),
       description: description.trim() === "" ? null : description.trim(),
       priority: priority === "" ? null : priority,
       due_at: dueAt === "" ? null : dueAt,
-    }).then((updated) => {
+    };
+    // evidence_required はトグルされたときだけ送る（AC-71）。既存の title 等
+    // だけを編集する既存フローの送信内容を変えないための軽微な判断。
+    if (evidenceRequired !== task.evidence_required) {
+      patch.evidence_required = evidenceRequired;
+    }
+    void onEdit(task.id, patch).then((updated) => {
       if (updated) {
         setIsEditing(false);
       }
     });
+  };
+
+  const handleFileSelected = (event: ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    // 同じファイルを選び直しても change が再発火するようにリセットする。
+    event.target.value = "";
+    if (!file) {
+      return;
+    }
+    void addFile(file);
+  };
+
+  const handleAddLink = () => {
+    const url = linkUrl.trim();
+    if (url === "") {
+      return;
+    }
+    // 失敗時に入力を消さない（消すと再入力を強いる）。成功したときだけ空にする。
+    void addLink(url).then((added) => {
+      if (added) {
+        setLinkUrl("");
+      }
+    });
+  };
+
+  // URL 入力はタスク編集フォーム（送信ボタン「保存」を持つ）の内側にあるため、
+  // Enter を捕まえないと HTML の暗黙送信でタスク編集が保存され、編集モードが
+  // 閉じて入力中の URL が捨てられる。Enter は「URLを追加」と同じ動作にする。
+  const handleLinkUrlKeyDown = (event: KeyboardEvent<HTMLInputElement>) => {
+    if (event.key !== "Enter") {
+      return;
+    }
+    event.preventDefault();
+    handleAddLink();
+  };
+
+  const handleDeleteEvidence = (evidenceId: number) => {
+    void removeEvidence(evidenceId);
   };
 
   if (isEditing) {
@@ -138,6 +215,78 @@ function TaskCard({
             onChange={(event) => setDueAt(event.target.value)}
           />
         </label>
+        <label>
+          エビデンスを必須にする
+          <input
+            type="checkbox"
+            checked={evidenceRequired}
+            onChange={(event) => setEvidenceRequired(event.target.checked)}
+          />
+        </label>
+
+        <div className="task-card-evidences">
+          <h4>エビデンス</h4>
+          {evidencesStatus === "loading" && <p>読み込み中…</p>}
+          {evidencesStatus === "error" && (
+            <p role="alert">エビデンスの取得に失敗しました</p>
+          )}
+          {evidencesStatus === "ready" && (
+            <ul>
+              {evidences.length === 0 && <li>まだエビデンスはありません</li>}
+              {evidences.map((evidence) => (
+                <li key={evidence.id}>
+                  {evidence.kind === "file" ? (
+                    <a
+                      href={contentUrl(evidence.id)}
+                      target="_blank"
+                      rel="noreferrer"
+                    >
+                      {evidenceLabel(evidence)}
+                    </a>
+                  ) : (
+                    <a
+                      href={evidence.url ?? undefined}
+                      target="_blank"
+                      rel="noreferrer"
+                    >
+                      {evidenceLabel(evidence)}
+                    </a>
+                  )}
+                  <button
+                    type="button"
+                    disabled={isMutating}
+                    onClick={() => handleDeleteEvidence(evidence.id)}
+                  >
+                    削除
+                  </button>
+                </li>
+              ))}
+            </ul>
+          )}
+          <label>
+            エビデンスファイル
+            <input
+              type="file"
+              disabled={isMutating}
+              onChange={handleFileSelected}
+            />
+          </label>
+          <label>
+            エビデンスURL
+            <input
+              value={linkUrl}
+              onChange={(event) => setLinkUrl(event.target.value)}
+              onKeyDown={handleLinkUrlKeyDown}
+            />
+          </label>
+          <button type="button" disabled={isMutating} onClick={handleAddLink}>
+            URLを追加
+          </button>
+          {evidenceActionError !== null && (
+            <p role="alert">{evidenceActionError}</p>
+          )}
+        </div>
+
         <div className="task-card-actions">
           <button type="submit">保存</button>
           <button type="button" onClick={() => setIsEditing(false)}>

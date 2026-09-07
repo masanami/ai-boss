@@ -168,8 +168,13 @@ describe("runMigrations", () => {
     expect(tableNames(db)).toContain("decisions");
   });
 
-  it("creates the appeals table", () => {
-    expect(tableNames(db)).toContain("appeals");
+  // #358 判断3・#397（v8）: 進言（appeals）機能は未使用のため一括削除された。
+  it("does not create the appeals table (dropped by v8)", () => {
+    expect(tableNames(db)).not.toContain("appeals");
+  });
+
+  it("advances user_version to the latest known version (8: appeals dropped, decisions.kind added)", () => {
+    expect(db.pragma("user_version", { simple: true })).toBe(8);
   });
 
   it("creates the settings table", () => {
@@ -210,19 +215,6 @@ describe("runMigrations", () => {
     expect(row.category).toBe("work");
   });
 
-  it("gives appeals a nullable response column (v2)", () => {
-    expect(columnNames(db, "appeals")).toContain("response");
-
-    const decisionId = insertDecision(db, insertSession(db));
-    expect(() =>
-      db
-        .prepare(
-          "INSERT INTO appeals (decision_id, content, verdict, response, created_at) VALUES (?, ?, ?, NULL, ?)",
-        )
-        .run(decisionId, "進言内容", "upheld", NOW),
-    ).not.toThrow();
-  });
-
   it("is idempotent: running migrations twice does not raise an error", () => {
     expect(() => runMigrations(db)).not.toThrow();
     expect(tableNames(db).sort()).toEqual(
@@ -231,11 +223,11 @@ describe("runMigrations", () => {
         "sessions",
         "messages",
         "decisions",
-        "appeals",
         "settings",
         "notifications",
         "activity_events",
         "daily_reports",
+        "task_evidences",
         "sqlite_sequence",
       ].sort(),
     );
@@ -394,8 +386,8 @@ describe("runMigrations", () => {
 
     expect(tableNames(v2Db)).toContain("daily_reports");
     // runMigrations always advances to the latest known version (v3 adds
-    // daily_reports on the way; v4 then rebuilds tasks/activity_events).
-    expect(v2Db.pragma("user_version", { simple: true })).toBe(6);
+    // daily_reports on the way; later versions add further schema changes).
+    expect(v2Db.pragma("user_version", { simple: true })).toBe(8);
     // existing tables/rows are untouched
     expect(tableNames(v2Db)).toContain("tasks");
 
@@ -422,7 +414,7 @@ describe("runMigrations", () => {
 
     runMigrations(v3Db);
 
-    expect(v3Db.pragma("user_version", { simple: true })).toBe(6);
+    expect(v3Db.pragma("user_version", { simple: true })).toBe(8);
     expect(tableNames(v3Db)).toContain("tasks");
     expect(tableNames(v3Db)).toContain("activity_events");
 
@@ -526,7 +518,7 @@ describe("runMigrations", () => {
 
     runMigrations(v4Db);
 
-    expect(v4Db.pragma("user_version", { simple: true })).toBe(6);
+    expect(v4Db.pragma("user_version", { simple: true })).toBe(8);
     const message = v4Db
       .prepare("SELECT role, content, interrupted FROM messages WHERE id = ?")
       .get(messageId) as { role: string; content: string; interrupted: number };
@@ -583,7 +575,7 @@ describe("runMigrations", () => {
 
     runMigrations(v5Db);
 
-    expect(v5Db.pragma("user_version", { simple: true })).toBe(6);
+    expect(v5Db.pragma("user_version", { simple: true })).toBe(8);
     const notification = v5Db
       .prepare(
         "SELECT type, rule_key, escalation_level, body, sent_at, delivered, channel FROM notifications WHERE id = ?",
@@ -656,6 +648,209 @@ describe("runMigrations", () => {
         )
         .run(9999, "user", "hello", NOW),
     ).toThrow();
+  });
+
+  // エビデンス強制（#256 / #386）: task_evidences テーブルと
+  // tasks.evidence_required 列（マイグレーション v7）。受入基準 AC-1〜AC-6。
+  describe("task_evidences and tasks.evidence_required (v7, #386)", () => {
+    function insertTask(status = "todo"): number {
+      return Number(
+        db
+          .prepare(
+            "INSERT INTO tasks (title, status, created_at, updated_at) VALUES (?, ?, ?, ?)",
+          )
+          .run("タスク", status, NOW, NOW).lastInsertRowid,
+      );
+    }
+
+    it("creates the task_evidences table (AC-1)", () => {
+      expect(tableNames(db)).toContain("task_evidences");
+    });
+
+    it("gives tasks an evidence_required column (AC-2)", () => {
+      expect(columnNames(db, "tasks")).toContain("evidence_required");
+    });
+
+    it("defaults evidence_required to 0 for a newly inserted task", () => {
+      const taskId = insertTask();
+      const task = db
+        .prepare("SELECT evidence_required FROM tasks WHERE id = ?")
+        .get(taskId) as { evidence_required: number };
+      expect(task.evidence_required).toBe(0);
+    });
+
+    it("upgrades a v6 database to v7, defaulting pre-existing tasks' evidence_required to 0 (AC-3)", () => {
+      // v1〜v3 のスキーマ（evidence_required 列が無い）を土台に、既存タスクを
+      // 1 件作ってから完全なマイグレーションを走らせる。v4〜v6 は
+      // evidence_required に触れないため、この経路で v7 到達時点の遡及有無
+      // （決定 4: 遡及しない）を確認できる。
+      const v6Db = openDatabase(":memory:");
+      v6Db.exec(V1_THROUGH_V3_SQL);
+      v6Db.pragma("user_version = 3");
+
+      const taskId = Number(
+        v6Db
+          .prepare(
+            "INSERT INTO tasks (title, status, created_at, updated_at) VALUES (?, ?, ?, ?)",
+          )
+          .run("v7以前からのタスク", "todo", NOW, NOW).lastInsertRowid,
+      );
+      expect(columnNames(v6Db, "tasks")).not.toContain("evidence_required");
+      expect(tableNames(v6Db)).not.toContain("task_evidences");
+
+      runMigrations(v6Db);
+
+      expect(v6Db.pragma("user_version", { simple: true })).toBe(8);
+      expect(tableNames(v6Db)).toContain("task_evidences");
+      expect(columnNames(v6Db, "tasks")).toContain("evidence_required");
+
+      const task = v6Db
+        .prepare("SELECT evidence_required FROM tasks WHERE id = ?")
+        .get(taskId) as { evidence_required: number };
+      expect(task.evidence_required).toBe(0);
+
+      v6Db.close();
+    });
+
+    it("rejects a task_evidences.kind outside 'file' / 'link' (AC-4)", () => {
+      const taskId = insertTask();
+
+      expect(() =>
+        db
+          .prepare(
+            "INSERT INTO task_evidences (task_id, kind, created_at) VALUES (?, ?, ?)",
+          )
+          .run(taskId, "screenshot", NOW),
+      ).toThrow();
+    });
+
+    it.each([["file"], ["link"]])(
+      "accepts task_evidences.kind = %s",
+      (kind) => {
+        const taskId = insertTask();
+
+        expect(() =>
+          db
+            .prepare(
+              "INSERT INTO task_evidences (task_id, kind, created_at) VALUES (?, ?, ?)",
+            )
+            .run(taskId, kind, NOW),
+        ).not.toThrow();
+      },
+    );
+
+    it("rejects a task_evidences.task_id that does not reference an existing task (AC-5)", () => {
+      expect(() =>
+        db
+          .prepare(
+            "INSERT INTO task_evidences (task_id, kind, created_at) VALUES (?, ?, ?)",
+          )
+          .run(9999, "link", NOW),
+      ).toThrow();
+    });
+  });
+
+  // 進言（appeals）の削除とタスク軸ログ（#358 判断3・#397、マイグレーション
+  // v8）: appeals テーブルの DROP と decisions.kind 列の追加。
+  describe("decisions.kind and the removal of appeals (v8, #358/#397)", () => {
+    it("gives decisions a kind column", () => {
+      expect(columnNames(db, "decisions")).toContain("kind");
+    });
+
+    it("defaults kind to 'decision' for a newly inserted decision", () => {
+      const decisionId = insertDecision(db, insertSession(db));
+
+      const row = db
+        .prepare("SELECT kind FROM decisions WHERE id = ?")
+        .get(decisionId) as { kind: string };
+      expect(row.kind).toBe("decision");
+    });
+
+    it.each([["decision"], ["mentoring"]])("accepts decisions.kind = %s", (kind) => {
+      const sessionId = insertSession(db);
+
+      expect(() =>
+        db
+          .prepare(
+            "INSERT INTO decisions (session_id, content, kind, created_at) VALUES (?, ?, ?, ?)",
+          )
+          .run(sessionId, "決定内容", kind, NOW),
+      ).not.toThrow();
+    });
+
+    it("rejects an invalid decisions.kind", () => {
+      const sessionId = insertSession(db);
+
+      expect(() =>
+        db
+          .prepare(
+            "INSERT INTO decisions (session_id, content, kind, created_at) VALUES (?, ?, ?, ?)",
+          )
+          .run(sessionId, "決定内容", "invalid", NOW),
+      ).toThrow();
+    });
+
+    it("backfills kind = 'decision' for decisions rows that existed before v8", () => {
+      // Pre-v8 database: v1〜v3 のスキーマ（kind 列が無い）を土台に、appeals
+      // 削除前・kind 追加前の既存決定を1件作ってからフルマイグレーションする。
+      const preV8Db = openDatabase(":memory:");
+      preV8Db.exec(V1_THROUGH_V3_SQL);
+      preV8Db.pragma("user_version = 3");
+      const sessionId = insertSession(preV8Db);
+      const decisionId = insertDecision(preV8Db, sessionId);
+      expect(columnNames(preV8Db, "decisions")).not.toContain("kind");
+
+      runMigrations(preV8Db);
+
+      expect(preV8Db.pragma("user_version", { simple: true })).toBe(8);
+      const row = preV8Db
+        .prepare("SELECT kind FROM decisions WHERE id = ?")
+        .get(decisionId) as { kind: string };
+      expect(row.kind).toBe("decision");
+
+      preV8Db.close();
+    });
+
+    it("drops the appeals table when upgrading a pre-v8 database", () => {
+      const preV8Db = openDatabase(":memory:");
+      preV8Db.exec(V1_THROUGH_V3_SQL);
+      preV8Db.pragma("user_version = 3");
+      expect(tableNames(preV8Db)).toContain("appeals");
+
+      runMigrations(preV8Db);
+
+      expect(tableNames(preV8Db)).not.toContain("appeals");
+
+      preV8Db.close();
+    });
+
+    // `DROP TABLE` under `PRAGMA foreign_keys = ON` implicitly deletes the
+    // table's rows first (SQLite's documented behavior), which is a distinct
+    // code path from dropping an already-empty table — this pins that a
+    // non-empty appeals table is dropped successfully too, not just an empty
+    // one (self-review: code-reviewer).
+    it("drops the appeals table even when it holds rows", () => {
+      const preV8Db = openDatabase(":memory:");
+      preV8Db.exec(V1_THROUGH_V3_SQL);
+      preV8Db.pragma("user_version = 3");
+      const sessionId = insertSession(preV8Db);
+      const decisionId = insertDecision(preV8Db, sessionId);
+      preV8Db
+        .prepare(
+          "INSERT INTO appeals (decision_id, content, verdict, created_at) VALUES (?, ?, ?, ?)",
+        )
+        .run(decisionId, "進言内容", "upheld", NOW);
+      expect(
+        (preV8Db.prepare("SELECT COUNT(*) AS n FROM appeals").get() as { n: number }).n,
+      ).toBe(1);
+
+      expect(() => runMigrations(preV8Db)).not.toThrow();
+
+      expect(tableNames(preV8Db)).not.toContain("appeals");
+      expect(preV8Db.pragma("user_version", { simple: true })).toBe(8);
+
+      preV8Db.close();
+    });
   });
 
   describe("CHECK constraints", () => {
@@ -741,33 +936,6 @@ describe("runMigrations", () => {
             "INSERT INTO decisions (session_id, content, status, created_at) VALUES (?, ?, ?, ?)",
           )
           .run(sessionId, "決定内容", "invalid", NOW),
-      ).toThrow();
-    });
-
-    it.each([["upheld"], ["revised"]])(
-      "accepts appeals.verdict = %s",
-      (verdict) => {
-        const decisionId = insertDecision(db, insertSession(db));
-
-        expect(() =>
-          db
-            .prepare(
-              "INSERT INTO appeals (decision_id, content, verdict, created_at) VALUES (?, ?, ?, ?)",
-            )
-            .run(decisionId, "進言内容", verdict, NOW),
-        ).not.toThrow();
-      },
-    );
-
-    it("rejects an invalid appeals.verdict", () => {
-      const decisionId = insertDecision(db, insertSession(db));
-
-      expect(() =>
-        db
-          .prepare(
-            "INSERT INTO appeals (decision_id, content, verdict, created_at) VALUES (?, ?, ?, ?)",
-          )
-          .run(decisionId, "進言内容", "invalid", NOW),
       ).toThrow();
     });
 

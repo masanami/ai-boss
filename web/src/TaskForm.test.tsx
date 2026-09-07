@@ -17,9 +17,45 @@ describe("TaskForm", () => {
       description: null,
       priority: null,
       due_at: null,
+      evidence_required: false,
     });
     await waitFor(() =>
       expect(screen.getByLabelText("タイトル")).toHaveValue(""),
+    );
+  });
+
+  it("has the evidence-required checkbox unchecked by default (AC-66)", () => {
+    render(<TaskForm onCreate={vi.fn()} />);
+
+    expect(screen.getByLabelText("エビデンスを必須にする")).not.toBeChecked();
+  });
+
+  it("calls onCreate with evidence_required: true when the checkbox is checked (AC-66)", async () => {
+    const onCreate = vi.fn().mockResolvedValue(true);
+    render(<TaskForm onCreate={onCreate} />);
+
+    fireEvent.change(screen.getByLabelText("タイトル"), {
+      target: { value: "資料を作る" },
+    });
+    fireEvent.click(screen.getByLabelText("エビデンスを必須にする"));
+    fireEvent.click(screen.getByRole("button", { name: "追加" }));
+
+    expect(onCreate).toHaveBeenCalledWith(
+      expect.objectContaining({ evidence_required: true }),
+    );
+  });
+
+  it("resets the evidence-required checkbox to unchecked after a successful submit", async () => {
+    render(<TaskForm onCreate={vi.fn().mockResolvedValue(true)} />);
+
+    fireEvent.change(screen.getByLabelText("タイトル"), {
+      target: { value: "資料を作る" },
+    });
+    fireEvent.click(screen.getByLabelText("エビデンスを必須にする"));
+    fireEvent.click(screen.getByRole("button", { name: "追加" }));
+
+    await waitFor(() =>
+      expect(screen.getByLabelText("エビデンスを必須にする")).not.toBeChecked(),
     );
   });
 
@@ -46,6 +82,7 @@ describe("TaskForm", () => {
       description: "月次報告資料",
       priority: "high",
       due_at: "2026-07-10",
+      evidence_required: false,
     });
     await waitFor(() =>
       expect(screen.getByLabelText("タイトル")).toHaveValue(""),

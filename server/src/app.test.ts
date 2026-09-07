@@ -45,6 +45,19 @@ describe("createApp", () => {
     expect(await res.json()).toEqual({ status: "ok", db: false });
   });
 
+  // エビデンス強制（#256 決定 1-a / #387）: `CreateAppOptions` に保管ディレ
+  // クトリを渡す口を足す（既存の `staticRoot` と同じ作法）。この時点では
+  // どのルーターも読まないため、受け取ってもアプリの既存の振る舞いに影響が
+  // 無いことだけを確認する（実際の配線・利用は後続チケット #388）。
+  it("accepts an evidenceDir option without changing existing behavior", async () => {
+    const app = createApp(db, process.env, { evidenceDir: "/tmp/ai-boss-evidence-unused" });
+
+    const res = await app.request("/api/health");
+
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ status: "ok", db: true });
+  });
+
   describe("static serving (staticRoot option)", () => {
     const staticRoot = mkdtempSync(join(tmpdir(), "ai-boss-web-dist-"));
 

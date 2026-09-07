@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { loadConfig, resolveLlmBackend } from "./config.js";
+import { loadConfig, resolveEvidenceDir, resolveLlmBackend } from "./config.js";
 
 describe("loadConfig", () => {
   beforeEach(() => {
@@ -177,5 +177,21 @@ describe("resolveLlmBackend", () => {
     expect(() => resolveLlmBackend({ LLM_BACKEND: "invalid-value" })).toThrow(
       /api.*claude-code|claude-code.*api/,
     );
+  });
+});
+
+// エビデンス強制（#256 決定 1-a / #387）: 保管ディレクトリは既存の DB パス
+// 解決から導出する純粋関数。新しい環境変数は発明しない。
+describe("resolveEvidenceDir", () => {
+  it("derives the evidence directory as the sibling 'evidence' directory of the db file (absolute path)", () => {
+    expect(resolveEvidenceDir("/data/ai-boss.db")).toBe("/data/evidence");
+  });
+
+  it("derives the evidence directory for a relative db path (server's default DB_PATH)", () => {
+    expect(resolveEvidenceDir("./data/ai-boss.db")).toBe("data/evidence");
+  });
+
+  it("derives the evidence directory for a db path nested under multiple directories", () => {
+    expect(resolveEvidenceDir("/a/b/c/ai-boss.db")).toBe("/a/b/c/evidence");
   });
 });

@@ -1,6 +1,6 @@
 import type Database from "better-sqlite3";
 import type { RecentDecision } from "../boss/persona-prompt.js";
-import type { Decision, DecisionStatus } from "./decision.js";
+import type { Decision, DecisionListItem } from "./decision.js";
 
 interface DecisionRow {
   content: string;
@@ -25,10 +25,10 @@ export function findDecisionById(
 
 /**
  * Inserts a new decision with a server-managed `created_at` and `status`
- * fixed to `'active'` (transitions to `'revised'`/`'withdrawn'` are the
- * appeals flow's responsibility — out of scope here, see Issue #46).
- * `task_id`/`rationale` default to `null` when omitted. Returns the
- * persisted row (all columns, as read back from the database).
+ * fixed to `'active'`. `task_id`/`rationale` default to `null` when omitted;
+ * `kind` is left to the column's `'decision'` default (see Issue #358/#397 —
+ * `'mentoring'` rows are written by #276, not here). Returns the persisted
+ * row (all columns, as read back from the database).
  */
 export function insertDecision(
   db: Database.Database,
@@ -57,34 +57,29 @@ export function insertDecision(
 }
 
 /**
- * Updates a decision's `status` (used by the appeals flow to move an
- * appealed decision to `'revised'` — see Issue #48). Returns the updated
- * row, or `undefined` if no decision with the given id exists.
- */
-export function updateDecisionStatus(
-  db: Database.Database,
-  id: number,
-  status: DecisionStatus,
-): Decision | undefined {
-  const result = db
-    .prepare("UPDATE decisions SET status = ? WHERE id = ?")
-    .run(status, id);
-
-  if (result.changes === 0) {
-    return undefined;
-  }
-  return findDecisionById(db, id);
-}
-
-/**
  * Returns all decisions ordered by `created_at` descending (`id` as a
  * tie-breaker), for the decision log screen (`GET /api/decisions`, MVP:
  * no pagination — see the ticket's explicit assumption).
+ *
+ * Each row carries the related task's title as `task_title` (`null` when
+ * `task_id` is `null`, or when the referenced task no longer exists), so the
+ * screen can head each task section with a name instead of a raw id. The
+ * join lives here rather than in the client because `DecisionLog` holds no
+ * task list, and wiring one in would make the decision log's rendering
+ * depend on whether the task fetch succeeded (#358 判断5).
+ *
+ * Rows are returned flat, in `created_at` order — grouping into task
+ * sections is the renderer's job (#358 判断5・ADR 0006 決定1).
  */
-export function listDecisions(db: Database.Database): Decision[] {
+export function listDecisions(db: Database.Database): DecisionListItem[] {
   return db
-    .prepare("SELECT * FROM decisions ORDER BY created_at DESC, id DESC")
-    .all() as Decision[];
+    .prepare(
+      `SELECT decisions.*, tasks.title AS task_title
+       FROM decisions
+       LEFT JOIN tasks ON tasks.id = decisions.task_id
+       ORDER BY decisions.created_at DESC, decisions.id DESC`,
+    )
+    .all() as DecisionListItem[];
 }
 
 /**

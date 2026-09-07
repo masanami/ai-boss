@@ -19,6 +19,7 @@ const SAMPLE_SETTINGS: Settings = {
   escalation_l3_after_minutes: 10,
   escalation_repeat_minutes: 10,
   model: "claude-sonnet-5",
+  evidence_enforcement_enabled: false,
 };
 
 /**
@@ -210,6 +211,7 @@ describe("SettingsView", () => {
           escalation_l3_after_minutes: 10,
           escalation_repeat_minutes: 10,
           model: "claude-sonnet-5",
+          evidence_enforcement_enabled: false,
         }),
       }),
     );
@@ -314,6 +316,52 @@ describe("SettingsView", () => {
       ),
     );
     expect(screen.getByLabelText("ボスの名前")).toHaveValue("鬼上司");
+  });
+
+  it("shows the evidence-enforcement checkbox reflecting the loaded value (AC-65)", async () => {
+    vi.stubGlobal(
+      "fetch",
+      stubGet({ ...SAMPLE_SETTINGS, evidence_enforcement_enabled: true }),
+    );
+
+    render(<SettingsView />);
+
+    await waitFor(() =>
+      expect(
+        screen.getByLabelText("完了報告にエビデンスを必須にする"),
+      ).toBeChecked(),
+    );
+  });
+
+  it("submits evidence_enforcement_enabled: true after the checkbox is toggled (AC-65)", async () => {
+    const fetchMock = stubGet();
+    fetchMock.mockResolvedValueOnce({
+      ok: true,
+      status: 200,
+      json: () =>
+        Promise.resolve({ ...SAMPLE_SETTINGS, evidence_enforcement_enabled: true }),
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(<SettingsView />);
+    await waitFor(() =>
+      expect(
+        screen.getByLabelText("完了報告にエビデンスを必須にする"),
+      ).not.toBeChecked(),
+    );
+
+    fireEvent.click(
+      screen.getByLabelText("完了報告にエビデンスを必須にする"),
+    );
+    fireEvent.click(screen.getByRole("button", { name: "保存" }));
+
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2));
+    const [, options] = fetchMock.mock.calls[1] as [string, RequestInit];
+    const sentBody = JSON.parse(options.body as string) as Record<
+      string,
+      unknown
+    >;
+    expect(sentBody.evidence_enforcement_enabled).toBe(true);
   });
 
   it("disables the save button while saving", async () => {

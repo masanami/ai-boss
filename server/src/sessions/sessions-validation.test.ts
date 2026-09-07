@@ -90,4 +90,52 @@ describe("validateChatMessageInput", () => {
       expect(result.error).toContain("content");
     }
   });
+
+  // Issue #376: replaceFromMessageId is optional — omitting it must keep the
+  // pre-existing shape/behavior exactly (AC-8 の非回帰の一部). `toStrictEqual`
+  // (not `toEqual`) on purpose: `toEqual` treats an explicit `undefined`
+  // value the same as an absent key, so it would pass even if `data` grew a
+  // `replaceFromMessageId: undefined` key — this test needs to prove the
+  // *shape* is unchanged, not merely that present keys match.
+  it("accepts a body without replaceFromMessageId (unchanged from before #376)", () => {
+    const result = validateChatMessageInput({ content: "資料作成から始めます" });
+
+    expect(result).toStrictEqual({
+      valid: true,
+      data: { content: "資料作成から始めます" },
+    });
+  });
+
+  it("accepts a positive integer replaceFromMessageId and carries it through to data", () => {
+    const result = validateChatMessageInput({
+      content: "書き直した内容",
+      replaceFromMessageId: 42,
+    });
+
+    expect(result).toEqual({
+      valid: true,
+      data: { content: "書き直した内容", replaceFromMessageId: 42 },
+    });
+  });
+
+  // AC-9: a non-positive-integer replaceFromMessageId (string / 0 / negative
+  // / decimal) must be rejected with the exact error message docs/features/
+  // chat-message-rewrite.md's API table specifies (UI 側は code で分岐する
+  // 400 応答なので、実装側でボディの error 文言まで固定する).
+  it.each([
+    ["a numeric string", "42"],
+    ["zero", 0],
+    ["a negative integer", -1],
+    ["a decimal", 1.5],
+  ])("rejects replaceFromMessageId that is %s (AC-9)", (_label, value) => {
+    const result = validateChatMessageInput({
+      content: "書き直した内容",
+      replaceFromMessageId: value,
+    });
+
+    expect(result).toEqual({
+      valid: false,
+      error: "replaceFromMessageId must be a positive integer",
+    });
+  });
 });

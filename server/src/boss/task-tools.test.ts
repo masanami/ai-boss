@@ -3,8 +3,13 @@ import type Database from "better-sqlite3";
 import { openDatabase } from "../db/connection.js";
 import { runMigrations } from "../db/migrate.js";
 import { insertTask } from "../tasks/tasks-repository.js";
+import { setSettingValue } from "../settings/settings-repository.js";
 import type { ActivityEvent } from "../activity/activity-event.js";
 import { TASK_TOOLS, executeTaskTool } from "./task-tools.js";
+
+function enableEnforcement(db: Database.Database): void {
+  setSettingValue(db, "evidence_enforcement_enabled", "true");
+}
 
 describe("TASK_TOOLS", () => {
   it("defines exactly create_task and update_task", () => {
@@ -72,6 +77,24 @@ describe("executeTaskTool", () => {
         estimated_minutes: 30,
         boss_comment: "最優先で進めろ",
       });
+    });
+
+    // 機能仕様 docs/features/completion-evidence-enforcement.md 決定3
+    it("sets evidence_required: true when passed explicitly (AC-15)", () => {
+      const result = executeTaskTool(db, "create_task", {
+        title: "資料作成",
+        evidence_required: true,
+      });
+
+      const created = JSON.parse(result.content);
+      expect(created.evidence_required).toBe(true);
+    });
+
+    it("defaults evidence_required to false when omitted (AC-16)", () => {
+      const result = executeTaskTool(db, "create_task", { title: "資料作成" });
+
+      const created = JSON.parse(result.content);
+      expect(created.evidence_required).toBe(false);
     });
   });
 
@@ -213,6 +236,75 @@ describe("executeTaskTool", () => {
         .all() as ActivityEvent[];
       expect(updateEvents).toHaveLength(1);
       expect(updateEvents[0]).toMatchObject({ type: "task_update", task_id: task.id });
+    });
+
+    // 機能仕様 docs/features/completion-evidence-enforcement.md 決定2-e
+    describe("evidence_required の完了ゲート（Issue #389）", () => {
+      it("returns isError: true when evidence is required, enforcement is on, and there is no evidence (AC-32)", () => {
+        const task = insertTask(db, {
+          title: "資料作成",
+          description: null,
+          category: "work",
+          priority: null,
+          due_at: null,
+          status: "todo",
+          boss_comment: null,
+          estimated_minutes: null,
+          evidence_required: true,
+        });
+        enableEnforcement(db);
+
+        const result = executeTaskTool(db, "update_task", {
+          id: task.id,
+          status: "done",
+        });
+
+        expect(result.isError).toBe(true);
+      });
+
+      it("the error result text mentions the evidence shortfall (AC-33)", () => {
+        const task = insertTask(db, {
+          title: "資料作成",
+          description: null,
+          category: "work",
+          priority: null,
+          due_at: null,
+          status: "todo",
+          boss_comment: null,
+          estimated_minutes: null,
+          evidence_required: true,
+        });
+        enableEnforcement(db);
+
+        const result = executeTaskTool(db, "update_task", {
+          id: task.id,
+          status: "done",
+        });
+
+        expect(result.content).toContain("エビデンス");
+      });
+
+      it("does not record a task_update event when the gate rejects the update", () => {
+        const task = insertTask(db, {
+          title: "資料作成",
+          description: null,
+          category: "work",
+          priority: null,
+          due_at: null,
+          status: "todo",
+          boss_comment: null,
+          estimated_minutes: null,
+          evidence_required: true,
+        });
+        enableEnforcement(db);
+
+        executeTaskTool(db, "update_task", { id: task.id, status: "done" });
+
+        const events = db
+          .prepare("SELECT * FROM activity_events WHERE type = 'task_update'")
+          .all() as ActivityEvent[];
+        expect(events).toHaveLength(0);
+      });
     });
   });
 

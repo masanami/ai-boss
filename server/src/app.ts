@@ -52,6 +52,17 @@ export interface CreateAppOptions {
    * `createApp` option.
    */
   llmBackend?: LlmBackend;
+  /**
+   * Directory where task evidence files (attachments) are stored on disk
+   * (機能仕様 docs/features/completion-evidence-enforcement.md 決定 1-a).
+   * Threaded through the same way as `staticRoot`: `index.ts` passes
+   * `resolveEvidenceDir(config.dbPath)` (`config.ts`), while tests pass a
+   * temp directory directly — `dbPath` may be `:memory:` in tests, from
+   * which no directory can be derived. Consumed by the evidence HTTP
+   * endpoints (`tasks/task-evidences-routes.ts`, #388) via
+   * `createTasksRouter`.
+   */
+  evidenceDir?: string;
 }
 
 /**
@@ -74,11 +85,11 @@ export function createApp(
     return c.json({ status: "ok", db: checkDatabaseConnection(db) });
   });
 
-  api.route("/tasks", createTasksRouter(db));
+  api.route("/tasks", createTasksRouter(db, options.evidenceDir));
   api.route("/sessions", createSessionsRouter(db, env, llmBackend));
   api.route("/checkins", createCheckinsRouter(db));
   api.route("/activity", createActivityRouter(db));
-  api.route("/decisions", createDecisionsRouter(db, env, llmBackend));
+  api.route("/decisions", createDecisionsRouter(db));
   api.route("/dashboard", createDashboardRouter(db, env));
   api.route("/reports", createReportsRouter(db, env));
   api.route("/work-logs", createWorkLogsRouter(db));

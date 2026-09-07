@@ -3,10 +3,16 @@ import type Database from "better-sqlite3";
 import { openDatabase } from "../db/connection.js";
 import { runMigrations } from "../db/migrate.js";
 import { createApp } from "../app.js";
+import { setSettingValue } from "../settings/settings-repository.js";
 import type { Task } from "./task.js";
 
 interface ErrorBody {
   error: string;
+  code?: string;
+}
+
+function enableEnforcement(db: Database.Database): void {
+  setSettingValue(db, "evidence_enforcement_enabled", "true");
 }
 
 async function readJson<T>(res: Response): Promise<T> {
@@ -313,6 +319,121 @@ describe("tasks routes", () => {
       const body = await readJson<ErrorBody>(res);
       expect(typeof body.error).toBe("string");
     });
+
+    // 機能仕様 docs/features/completion-evidence-enforcement.md 決定2・決定3
+    describe("evidence_required（Issue #389）", () => {
+      it("defaults evidence_required to false when omitted (AC-12)", async () => {
+        const app = createApp(db);
+
+        const res = await app.request("/api/tasks", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ title: "タスク" }),
+        });
+
+        expect(res.status).toBe(201);
+        const body = await readJson<Task>(res);
+        expect(body.evidence_required).toBe(false);
+      });
+
+      it("accepts evidence_required: true (AC-13)", async () => {
+        const app = createApp(db);
+
+        const res = await app.request("/api/tasks", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ title: "タスク", evidence_required: true }),
+        });
+
+        expect(res.status).toBe(201);
+        const body = await readJson<Task>(res);
+        expect(body.evidence_required).toBe(true);
+      });
+
+      it("returns 400 when evidence_required is not a boolean (AC-14)", async () => {
+        const app = createApp(db);
+
+        for (const invalid of [1, "true"]) {
+          const res = await app.request("/api/tasks", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ title: "タスク", evidence_required: invalid }),
+          });
+
+          expect(res.status, JSON.stringify(invalid)).toBe(400);
+          const body = await readJson<ErrorBody>(res);
+          expect(typeof body.error).toBe("string");
+        }
+      });
+
+      // GET /api/tasks の各要素の evidence_required は boolean である（AC-18）
+      it("evidence_required round-trips as boolean through GET /api/tasks (AC-18)", async () => {
+        const app = createApp(db);
+        await app.request("/api/tasks", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ title: "タスク", evidence_required: true }),
+        });
+
+        const res = await app.request("/api/tasks");
+        const body = await readJson<Task[]>(res);
+
+        expect(body).toHaveLength(1);
+        expect(body[0].evidence_required).toBe(true);
+        expect(typeof body[0].evidence_required).toBe("boolean");
+      });
+
+      // 決定 2-h: POST /api/tasks が status: "done" を直接指定する「第5の経路」
+      it("returns 409 with code evidence_required for a direct-done create when enforcement is on, evidence is required, and there is no evidence (AC-34)", async () => {
+        enableEnforcement(db);
+        const app = createApp(db);
+
+        const res = await app.request("/api/tasks", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            title: "タスク",
+            status: "done",
+            evidence_required: true,
+          }),
+        });
+
+        expect(res.status).toBe(409);
+        const body = await readJson<ErrorBody>(res);
+        expect(body.code).toBe("evidence_required");
+      });
+
+      it("does not create a task row when the direct-done create is rejected (AC-34)", async () => {
+        enableEnforcement(db);
+        const app = createApp(db);
+
+        await app.request("/api/tasks", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            title: "タスク",
+            status: "done",
+            evidence_required: true,
+          }),
+        });
+
+        const res = await app.request("/api/tasks");
+        expect(await readJson<Task[]>(res)).toEqual([]);
+      });
+
+      it("allows a direct-done create when enforcement is on but evidence_required is false", async () => {
+        enableEnforcement(db);
+        const app = createApp(db);
+
+        const res = await app.request("/api/tasks", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ title: "タスク", status: "done" }),
+        });
+
+        expect(res.status).toBe(201);
+      });
+    });
   });
 
   describe("PATCH /api/tasks/:id", () => {
@@ -610,6 +731,172 @@ describe("tasks routes", () => {
       const body = await readJson<Task>(res);
       expect(body.status).toBe("in_progress");
       expect(body.completed_at).toBeNull();
+    });
+
+    // 機能仕様 docs/features/completion-evidence-enforcement.md 決定2
+    describe("evidence_required の完了ゲート（Issue #389）", () => {
+      async function createTask(app: ReturnType<typeof createApp>, evidenceRequired: boolean) {
+        const res = await app.request("/api/tasks", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ title: "タスク", evidence_required: evidenceRequired }),
+        });
+        return readJson<Task>(res);
+      }
+
+      it("returns 409 with code evidence_required when enforcement is on, evidence is required, and there is no evidence (AC-23/AC-24)", async () => {
+        enableEnforcement(db);
+        const app = createApp(db);
+        const created = await createTask(app, true);
+
+        const res = await app.request(`/api/tasks/${created.id}`, {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ status: "done" }),
+        });
+
+        expect(res.status).toBe(409);
+        const body = await readJson<ErrorBody>(res);
+        expect(body.code).toBe("evidence_required");
+      });
+
+      it("leaves status and completed_at unchanged after a 409 (AC-25/AC-26)", async () => {
+        enableEnforcement(db);
+        const app = createApp(db);
+        const created = await createTask(app, true);
+
+        await app.request(`/api/tasks/${created.id}`, {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ status: "done" }),
+        });
+
+        const res = await app.request("/api/tasks");
+        const [task] = await readJson<Task[]>(res);
+        expect(task.status).toBe("todo");
+        expect(task.completed_at).toBeNull();
+      });
+
+      it("allows completion when enforcement is off (AC-28)", async () => {
+        const app = createApp(db);
+        const created = await createTask(app, true);
+
+        const res = await app.request(`/api/tasks/${created.id}`, {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ status: "done" }),
+        });
+
+        expect(res.status).toBe(200);
+      });
+
+      it("allows completion when evidence_required is false (AC-29)", async () => {
+        enableEnforcement(db);
+        const app = createApp(db);
+        const created = await createTask(app, false);
+
+        const res = await app.request(`/api/tasks/${created.id}`, {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ status: "done" }),
+        });
+
+        expect(res.status).toBe(200);
+      });
+
+      // 決定 2-a（AC-35）: 遡及しない — 既に done のタスクへの他フィールドの
+      // PATCH はゲートを通らない
+      it("does not retroactively block a title-only patch on an already-done task (AC-35)", async () => {
+        enableEnforcement(db);
+        const app = createApp(db);
+        const created = await createTask(app, true);
+        // 一旦 enforcement を切って done にする（このテストの前提を作るため）
+        setSettingValue(db, "evidence_enforcement_enabled", "false");
+        await app.request(`/api/tasks/${created.id}`, {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ status: "done" }),
+        });
+        enableEnforcement(db);
+
+        const res = await app.request(`/api/tasks/${created.id}`, {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ title: "更新後のタイトル" }),
+        });
+
+        expect(res.status).toBe(200);
+        const body = await readJson<Task>(res);
+        expect(body.title).toBe("更新後のタイトル");
+        expect(body.status).toBe("done");
+      });
+
+      // 決定 2-c（AC-36/AC-37）: 関門はパッチ適用後の値を見る
+      it("allows { evidence_required: false, status: 'done' } in a single patch (AC-36)", async () => {
+        enableEnforcement(db);
+        const app = createApp(db);
+        const created = await createTask(app, true);
+
+        const res = await app.request(`/api/tasks/${created.id}`, {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ evidence_required: false, status: "done" }),
+        });
+
+        expect(res.status).toBe(200);
+        const body = await readJson<Task>(res);
+        expect(body.status).toBe("done");
+        expect(body.evidence_required).toBe(false);
+      });
+
+      it("changing evidence_required: true -> false records a task_update note (AC-19)", async () => {
+        const app = createApp(db);
+        const created = await createTask(app, true);
+
+        await app.request(`/api/tasks/${created.id}`, {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ evidence_required: false }),
+        });
+
+        const events = db
+          .prepare("SELECT note FROM activity_events WHERE type = 'task_update'")
+          .all() as { note: string | null }[];
+        expect(events).toHaveLength(1);
+        expect(events[0].note).not.toBeNull();
+      });
+
+      it("a patch that does not include evidence_required leaves the task_update note null (AC-20)", async () => {
+        const app = createApp(db);
+        const created = await createTask(app, false);
+
+        await app.request(`/api/tasks/${created.id}`, {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ title: "タイトルだけ" }),
+        });
+
+        const events = db
+          .prepare("SELECT note FROM activity_events WHERE type = 'task_update'")
+          .all() as { note: string | null }[];
+        expect(events).toHaveLength(1);
+        expect(events[0].note).toBeNull();
+      });
+
+      it("PATCH evidence_required from true to false updates the value (AC-17)", async () => {
+        const app = createApp(db);
+        const created = await createTask(app, true);
+
+        const res = await app.request(`/api/tasks/${created.id}`, {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ evidence_required: false }),
+        });
+
+        expect(res.status).toBe(200);
+        const body = await readJson<Task>(res);
+        expect(body.evidence_required).toBe(false);
+      });
     });
   });
 });

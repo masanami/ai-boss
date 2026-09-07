@@ -255,6 +255,59 @@ const MIGRATIONS: Record<number, MigrationEntry> = {
     ALTER TABLE notifications ADD COLUMN delivered INTEGER;
     ALTER TABLE notifications ADD COLUMN channel TEXT;
   `,
+  // エビデンス強制（#256 決定 1-b / #386）: 完了報告のファイル添付・リンクを
+  // 保持する task_evidences テーブルと、タスクごとの要否フラグ
+  // tasks.evidence_required を追加する。
+  //
+  // - `task_evidences.kind` ごとにどの列が非 null かは DB の CHECK では縛らな
+  //   い（ADR 0005 決定 5）。整合はサーバ側の検証層 1 箇所で担保する
+  //   （機能仕様 docs/features/completion-evidence-enforcement.md 決定 1-b）
+  // - `task_evidences.task_id` は `tasks(id)` を参照する外部キー。
+  //   `connection.ts` の `openDatabase` が `PRAGMA foreign_keys = ON` を常時
+  //   有効にしているため、存在しない `task_id` への INSERT は失敗する
+  // - `evidence_required` は真偽値だが SQLite に真偽型は無いため、既存慣習
+  //   （`messages.interrupted`）に合わせて INTEGER + `DEFAULT 0` を使う。
+  //   `DEFAULT 0` により既存行はすべて「不要」になり、設定 OFF→ON の遡及を
+  //   しない（決定 4）という方針と自然に整合する
+  //
+  // 既存 version は書き換えず新しい version として追加する
+  // （docs/adr/0005-sqlite-schema-policy.md 決定 4）。
+  7: `
+    CREATE TABLE IF NOT EXISTS task_evidences (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      task_id INTEGER NOT NULL REFERENCES tasks(id),
+      kind TEXT NOT NULL CHECK (kind IN ('file', 'link')),
+      stored_filename TEXT,
+      original_filename TEXT,
+      mime_type TEXT,
+      size_bytes INTEGER,
+      url TEXT,
+      created_at TEXT NOT NULL
+    );
+
+    ALTER TABLE tasks ADD COLUMN evidence_required INTEGER NOT NULL DEFAULT 0;
+  `,
+  // 進言（appeals）の削除とタスク軸ログ（#358 判断3・#397）: 使われていない
+  // appeals テーブルを削除し、後続 #276（メンタリング）が記録先として使う
+  // decisions.kind 列を同じマイグレーションで追加する。
+  //
+  // - `DROP TABLE appeals` は子テーブルの削除（appeals を参照する表は無い）で
+  //   あり、`ALTER TABLE ... ADD COLUMN` も表の再構築ではないため、v4
+  //   （`migrateToV4`）と異なり `PRAGMA foreign_keys` のトグルを必要としない。
+  //   よって文字列エントリのまま、既存の「version 単位の単一トランザクショ
+  //   ン」で原子適用できる（docs/features/decision-log-task-axis.md 判断3）。
+  // - `kind` は DEFAULT 'decision' なので、v8 適用前に存在した行はすべて
+  //   'decision' になる。#276 がメンタリング用の書き込み経路を足すときに
+  //   'mentoring' を明示する（`insertDecision` は今後も `kind` を明示せず
+  //   DEFAULT に委ねる）。
+  //
+  // 既存 version は書き換えず新しい version として追加する
+  // （docs/adr/0005-sqlite-schema-policy.md 決定 4）。
+  8: `
+    DROP TABLE appeals;
+    ALTER TABLE decisions ADD COLUMN kind TEXT NOT NULL DEFAULT 'decision'
+      CHECK (kind IN ('decision', 'mentoring'));
+  `,
 };
 
 /**

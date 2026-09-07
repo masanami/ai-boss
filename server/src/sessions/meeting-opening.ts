@@ -9,6 +9,7 @@ import {
   type BossTextBlock,
 } from "../llm/claude-client.js";
 import { listTasks } from "../tasks/tasks-repository.js";
+import { countTaskEvidencesByTaskIds } from "../tasks/task-evidences-repository.js";
 import type { SessionType } from "./session.js";
 
 /**
@@ -134,6 +135,9 @@ export async function generateMeetingOpening(
     // "chat" のときだけ効く — 判断1）。
     const system = buildPersonaPrompt(persona, {
       tasks,
+      // 決定 3-a: 朝会/夕会の開始ひとこともボスチャットと同じ会話の一部
+      // なので、実件数を渡す（notification 用途の呼び出し元とは異なる）。
+      taskEvidenceCounts: countTaskEvidencesByTaskIds(db, tasks.map((task) => task.id)),
       recentDecisions: [],
       now,
       sessionType,
