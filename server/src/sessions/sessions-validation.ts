@@ -43,6 +43,17 @@ export interface ChatMessageInput {
    * （Issue #376, docs/features/chat-message-rewrite.md「IF / API」）。
    */
   replaceFromMessageId?: number;
+  /**
+   * 随時メンタリングの明示的な要求（Issue #409, 親 #276, 機能仕様
+   * docs/features/work-approach-mentoring.md「画面・API設計 / チャット」）。
+   * `true` のとき、そのターンのシステムプロンプトへメンタリングの指示を積む
+   * （強制設定に関わらず）。任意・boolean のみ・既定 false。
+   *
+   * `replaceFromMessageId` と同じ undefined-as-absent の作法を踏襲し、
+   * `false` 相当（省略または明示的な `false`）のときは `data` にキー自体を
+   * 持たせない — `true` のときだけ明示的にキーを持つ。
+   */
+  mentoring?: boolean;
 }
 
 function isPositiveInteger(value: unknown): value is number {
@@ -78,13 +89,20 @@ export function validateChatMessageInput(
     };
   }
 
+  if (body.mentoring !== undefined && typeof body.mentoring !== "boolean") {
+    return { valid: false, error: "mentoring must be a boolean" };
+  }
+  // `mentoring` は `true` のときだけキーを持つ（`ChatMessageInput` の JSDoc
+  // が定める undefined-as-absent の作法。既定 false は「キーが無い」で表す）。
+  const mentoringField = body.mentoring === true ? { mentoring: true as const } : {};
+
   // 未指定ならここで確定する（早期 return）: `replaceFromMessageId` キーを
   // 一切持たない従来どおりの形を保つ（型アサーションに頼らず、`data` の
   // 実際の形も変えない — レビュー指摘: 以前は常にキーを持たせ `toEqual` の
   // undefined-as-absent 挙動で非回帰テストを通していたが、それはテストの
   // 緩さに実装を合わせる向きが逆だった）。
   if (body.replaceFromMessageId === undefined) {
-    return { valid: true, data: { content: body.content } };
+    return { valid: true, data: { content: body.content, ...mentoringField } };
   }
 
   if (!isPositiveInteger(body.replaceFromMessageId)) {
@@ -98,6 +116,10 @@ export function validateChatMessageInput(
   // が `number` に絞り込み済みでキャストは不要。
   return {
     valid: true,
-    data: { content: body.content, replaceFromMessageId: body.replaceFromMessageId },
+    data: {
+      content: body.content,
+      replaceFromMessageId: body.replaceFromMessageId,
+      ...mentoringField,
+    },
   };
 }

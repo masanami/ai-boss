@@ -480,6 +480,178 @@ describe("POST /api/sessions/:id/messages", () => {
     );
   });
 
+  // Issue #409（親 #276）: 「朝会 かつ 強制オン」または「リクエストの
+  // mentoring」を 1 つの boolean に合成して buildPersonaPrompt へ渡す
+  // （機能仕様「IF（境界となる契約）」）。合成そのものはこのルートの責務で、
+  // buildPersonaPrompt 自体は純粋関数のまま（persona-prompt.test.ts で
+  // 個別に担保済み）。
+  describe("メンタリングの指示を積む条件の合成（Issue #409）", () => {
+    async function createSessionOfType(
+      type: "morning" | "evening" | "adhoc",
+    ): Promise<Session> {
+      const app = createApp(db, env);
+      return readJson<Session>(
+        await app.request("/api/sessions", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ type }),
+        }),
+      );
+    }
+
+    it("朝会・強制オン（既定）のとき、mentoring を指定しなくてもシステムプロンプトにメンタリングの指示が含まれる（AC-1）", async () => {
+      const session = await createSessionOfType("morning");
+      streamBossMessageMock.mockResolvedValue(fakeTextMessage("了解した"));
+      const app = createApp(db, env);
+
+      const res = await app.request(`/api/sessions/${session.id}/messages`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ content: "今日の予定を報告します" }),
+      });
+      await res.text();
+
+      expect(streamBossMessageMock).toHaveBeenCalledWith(
+        expect.anything(),
+        expect.objectContaining({
+          system: expect.stringContaining("record_mentoring"),
+        }),
+        expect.anything(),
+        expect.anything(),
+      );
+    });
+
+    it("朝会・強制オフに設定したとき、mentoring を指定しなければシステムプロンプトにメンタリングの指示が含まれない（AC-2）", async () => {
+      const settingsApp = createApp(db, env);
+      await settingsApp.request("/api/settings", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ morning_mentoring_required: false }),
+      });
+      const session = await createSessionOfType("morning");
+      streamBossMessageMock.mockResolvedValue(fakeTextMessage("了解した"));
+      const app = createApp(db, env);
+
+      const res = await app.request(`/api/sessions/${session.id}/messages`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ content: "今日の予定を報告します" }),
+      });
+      await res.text();
+
+      expect(streamBossMessageMock).toHaveBeenCalledWith(
+        expect.anything(),
+        expect.objectContaining({
+          system: expect.not.stringContaining("record_mentoring"),
+        }),
+        expect.anything(),
+        expect.anything(),
+      );
+    });
+
+    it("adhoc セッションで mentoring: true を送ると、システムプロンプトにメンタリングの指示が含まれる（AC-26）", async () => {
+      const session = await createSessionOfType("adhoc");
+      streamBossMessageMock.mockResolvedValue(fakeTextMessage("了解した"));
+      const app = createApp(db, env);
+
+      const res = await app.request(`/api/sessions/${session.id}/messages`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ content: "進め方を見てほしい", mentoring: true }),
+      });
+      await res.text();
+
+      expect(streamBossMessageMock).toHaveBeenCalledWith(
+        expect.anything(),
+        expect.objectContaining({
+          system: expect.stringContaining("record_mentoring"),
+        }),
+        expect.anything(),
+        expect.anything(),
+      );
+    });
+
+    it("adhoc セッションで mentoring を省略すると、システムプロンプトにメンタリングの指示が含まれない（AC-27）", async () => {
+      const session = await createSessionOfType("adhoc");
+      streamBossMessageMock.mockResolvedValue(fakeTextMessage("了解した"));
+      const app = createApp(db, env);
+
+      const res = await app.request(`/api/sessions/${session.id}/messages`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ content: "資料作成から始めます" }),
+      });
+      await res.text();
+
+      expect(streamBossMessageMock).toHaveBeenCalledWith(
+        expect.anything(),
+        expect.objectContaining({
+          system: expect.not.stringContaining("record_mentoring"),
+        }),
+        expect.anything(),
+        expect.anything(),
+      );
+    });
+
+    it("mentoring に boolean 以外を渡すと 400 が返り、streamBossMessage は呼ばれない（AC-28）", async () => {
+      const session = await createSessionOfType("adhoc");
+      const app = createApp(db, env);
+
+      const res = await app.request(`/api/sessions/${session.id}/messages`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ content: "進め方を見てほしい", mentoring: "true" }),
+      });
+
+      expect(res.status).toBe(400);
+      const body = await readJson<ErrorBody>(res);
+      expect(body.error).toContain("mentoring");
+      expect(streamBossMessageMock).not.toHaveBeenCalled();
+    });
+
+    it("朝会・強制オフのセッションでも mentoring: true を明示すればメンタリングの指示が含まれる（OR 合成）", async () => {
+      const settingsApp = createApp(db, env);
+      await settingsApp.request("/api/settings", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ morning_mentoring_required: false }),
+      });
+      const session = await createSessionOfType("morning");
+      streamBossMessageMock.mockResolvedValue(fakeTextMessage("了解した"));
+      const app = createApp(db, env);
+
+      const res = await app.request(`/api/sessions/${session.id}/messages`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ content: "進め方を見てほしい", mentoring: true }),
+      });
+      await res.text();
+
+      expect(streamBossMessageMock).toHaveBeenCalledWith(
+        expect.anything(),
+        expect.objectContaining({
+          system: expect.stringContaining("record_mentoring"),
+        }),
+        expect.anything(),
+        expect.anything(),
+      );
+    });
+
+    it("adhoc セッションで mentoring: true を送っても 400/404 にならない（判断1・6: サーバーはセッション種別で拒否しない）", async () => {
+      const session = await createSessionOfType("adhoc");
+      streamBossMessageMock.mockResolvedValue(fakeTextMessage("了解した"));
+      const app = createApp(db, env);
+
+      const res = await app.request(`/api/sessions/${session.id}/messages`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ content: "進め方を見てほしい", mentoring: true }),
+      });
+
+      expect(res.status).toBe(200);
+    });
+  });
+
   it("AC-2: includes a saved session summary in the system prompt so the boss can refer to recent reports without re-explanation", async () => {
     const app = createApp(db, env);
     const priorSession = await readJson<Session>(
