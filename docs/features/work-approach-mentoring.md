@@ -313,6 +313,7 @@ export interface PersonaPromptContext {
 
 1. **サーバー: 設定キー `morning_mentoring_required`** — `SETTINGS_KEYS` / boolean バリデータ / 実効設定への追加 / 読み手（未設定・不正値はオン）。
 2. **サーバー: `record_mentoring` ツールと `insertDecision` の `kind` 対応** — ツール定義・実行関数・`BOSS_TOOLS` への追加・ディスパッチ。
+2.5. **サーバー: 決定の読み出し面での `kind` 絞り込み** — `listRecentDecisions` / `collect-daily-report-data` / `collect-work-log-data` から `kind = 'mentoring'` を除外し、`listDecisions`（決定ログ＝参照面）は含めたままにする。**本機能が `kind='mentoring'` の書き手になることで初めて実害が出るため、書き手を足す本機能の責務**（受入基準「決定の読み出し面での `kind` の絞り込み」）。
 3. **サーバー: メンタリングのプロンプト指示** — `MENTORING_FLOW_INSTRUCTION` の追加と、朝会（強制オン）／`mentoring: true` の 2 条件での積み方。`sessions-validation.ts` の `mentoring` 検証。
 4. **サーバー: 朝会終了の前提条件ゲート** — `mentoring-gate.ts` の純粋関数と `POST /:id/end` への組み込み（409 ＋ `code`）。夕会経路の非退行テストを含む。
 5. **web: ブロックの UI 分岐と随時メンタリングの導線** — `code` を保持するエラー型（`daily-reports-api.ts` の `ReportApiError` と同じ形）・`use-chat` の分岐・ボタン追加。
@@ -378,6 +379,15 @@ export interface PersonaPromptContext {
 
 - [ ] 朝会の終了が `mentoring_required` でブロックされたとき、UI がエラーメッセージの文言ではなく `code` で分岐する
 - [ ] ブロック時の表示に、設定でメンタリングの強制をオフにできる旨が含まれる
+
+### 決定の読み出し面での `kind` の絞り込み
+
+> **追加の経緯（実装フェーズ・2026-09-08）**: #358 は `decisions.kind` 列を足したが、**読み出し側に `kind` の絞り込みが無い**。#358 の時点では `kind = 'mentoring'` の書き手が存在しなかったため実害が無かったが、本機能がメンタリング記録を書き始めた時点で、メンタリングが「決定」として日報・作業ログ・チャット文脈へ混入する。**書き手を足す本機能の責務**として絞り込みを入れる。
+
+- [ ] チャット文脈へ渡す直近の決定（`listRecentDecisions`）に `kind = 'mentoring'` の行が含まれない
+- [ ] 日報のデータ収集（`collect-daily-report-data`）の決定一覧に `kind = 'mentoring'` の行が含まれない
+- [ ] 作業ログのデータ収集（`collect-work-log-data`）の決定一覧に `kind = 'mentoring'` の行が含まれない
+- [ ] 決定ログ一覧（`listDecisions`）には `kind = 'mentoring'` の行が**含まれる**（判断 5 の参照面であるため。ここだけは除外しない）
 
 ### 品質ゲート
 
