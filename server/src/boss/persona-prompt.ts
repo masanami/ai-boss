@@ -328,13 +328,57 @@ function resolveSessionTypeLabel(type: SessionType): string {
   return SESSION_TYPE_LABELS[type] ?? "セッション";
 }
 
-// 日時は formatDecisionLine と同じくローカル整形して出す（Issue #289）。
-// 保存値は toISOString() 由来の UTC なので、そのまま出すとプロンプト内で
-// 「今」だけローカル・他は UTC の混在になり、モデルが後者をローカル時刻と
-// 誤読すればオフセット分ずれた解釈になる。先頭10文字への切り詰めも同じ理由で
-// 不可（UTC 基準の日付になり、JST 午前9時より前のセッションが前日になる）。
-function formatSessionSummaryLine(summary: RecentSessionSummary): string {
-  return `- ${formatStoredDateTime(summary.reportedAt)} ${resolveSessionTypeLabel(summary.type)}: ${summary.content}`;
+const ZERO_WIDTH_SPACE = "​";
+
+/**
+ * デリミタ文字列を可視表示は変えずに文字列一致だけ崩した形へ変換する
+ * （中央にゼロ幅スペースを1文字挟む）。
+ */
+function breakDelimiterMatch(marker: string): string {
+  const mid = Math.floor(marker.length / 2);
+  return `${marker.slice(0, mid)}${ZERO_WIDTH_SPACE}${marker.slice(mid)}`;
+}
+
+/**
+ * `content` 内に出現するマーカーを、それ以上マーカーが残らなくなるまで
+ * 繰り返し無害化する（self-review 指摘）。1回の `split().join()` だけでは、
+ * `breakDelimiterMatch` が壊さずに残すマーカー末尾の断片と、その直後に続く
+ * 未処理の残り本文とが連結されて、元のマーカーがそのまま再構成されてしまう
+ * 入力が存在する（例: マーカー同士が3文字重なるように連結された本文）。
+ * 各パスは本文の長さを ZWS 1文字分だけ伸ばすので、伸び続けられる回数は
+ * 元の本文長に比例して有限であり、上限（`content.length + 1`）に達したら
+ * 打ち切って安全側（無限ループ回避）に倒す。
+ */
+function neutralizeMarker(content: string, marker: string): string {
+  let result = content;
+  const maxPasses = content.length + 1;
+  for (let pass = 0; pass < maxPasses && result.includes(marker); pass++) {
+    result = result.split(marker).join(breakDelimiterMatch(marker));
+  }
+  return result;
+}
+
+/**
+ * 本文（過去の会話・チャットに由来するユーザーの生データ）に、これから
+ * 埋め込むブロックのデリミタと同一の文字列がそのまま含まれていると、モデルが
+ * そこでデータ境界が終わった（または新しいブロックが始まった）と誤読し、
+ * それ以降の本文をガードの外側（システム指示と同格）として読む余地が生まれる
+ * （self-review 指摘）。埋め込み前に、渡された対象マーカーそれぞれの一致だけを
+ * 崩して無害化する（表示上はほぼ同一）。
+ *
+ * 対象マーカーは呼び出し側が指定する — 報告履歴セクション・当日の随時チャット
+ * セクションはそれぞれ自分の2本のマーカーのみを渡し、互いのマーカーへは
+ * 無害化を及ぼさない（対称性）。両セクションはこの関数を共有することで、
+ * 同じ無害化の作法を2か所に書き分けない（Issue #423）。
+ */
+function neutralizeDelimiterLookalikes(
+  content: string,
+  markers: readonly string[],
+): string {
+  return markers.reduce(
+    (acc, marker) => neutralizeMarker(acc, marker),
+    content,
+  );
 }
 
 /**
@@ -352,6 +396,21 @@ const NON_INSTRUCTION_DATA_GUARD =
 
 const SESSION_SUMMARY_START = "---REPORT-HISTORY-START---";
 const SESSION_SUMMARY_END = "---REPORT-HISTORY-END---";
+
+// 日時は formatDecisionLine と同じくローカル整形して出す（Issue #289）。
+// 保存値は toISOString() 由来の UTC なので、そのまま出すとプロンプト内で
+// 「今」だけローカル・他は UTC の混在になり、モデルが後者をローカル時刻と
+// 誤読すればオフセット分ずれた解釈になる。先頭10文字への切り詰めも同じ理由で
+// 不可（UTC 基準の日付になり、JST 午前9時より前のセッションが前日になる）。
+// content は neutralizeDelimiterLookalikes でこのセクション自身の2本の
+// マーカー（SESSION_SUMMARY_START/END）に対してのみ無害化する（Issue #423）。
+function formatSessionSummaryLine(summary: RecentSessionSummary): string {
+  const content = neutralizeDelimiterLookalikes(summary.content, [
+    SESSION_SUMMARY_START,
+    SESSION_SUMMARY_END,
+  ]);
+  return `- ${formatStoredDateTime(summary.reportedAt)} ${resolveSessionTypeLabel(summary.type)}: ${content}`;
+}
 
 function formatSessionSummarySection(summaries: RecentSessionSummary[]): string {
   if (summaries.length === 0) {
@@ -371,39 +430,21 @@ const ADHOC_ROLE_LABELS: Record<MessageRole, string> = {
   boss: "ボス",
 };
 
-// 日時は formatSessionSummaryLine と同じくローカル整形して出す（Issue #289）。
-function formatTodaysAdhocMessageLine(message: TodaysAdhocMessage): string {
-  return `- ${formatStoredDateTime(message.sentAt)} ${ADHOC_ROLE_LABELS[message.role]}: ${neutralizeAdhocDelimiterLookalikes(message.content)}`;
-}
-
 /** 当日の随時チャットを囲むデータ境界（報告履歴と同じ書式・同じガード文） */
 const ADHOC_CHAT_START = "---ADHOC-CHAT-START---";
 const ADHOC_CHAT_END = "---ADHOC-CHAT-END---";
 
-const ZERO_WIDTH_SPACE = "​";
-
-/**
- * デリミタ文字列を可視表示は変えずに文字列一致だけ崩した形へ変換する
- * （中央にゼロ幅スペースを1文字挟む）。
- */
-function breakDelimiterMatch(marker: string): string {
-  const mid = Math.floor(marker.length / 2);
-  return `${marker.slice(0, mid)}${ZERO_WIDTH_SPACE}${marker.slice(mid)}`;
-}
-
-/**
- * 本文（ユーザーの生入力）に開始・終了デリミタと同一の文字列がそのまま
- * 含まれていると、モデルがそこでデータ境界が終わったと誤読し、それ以降の
- * 本文をガードの外側（システム指示と同格）として読む余地が生まれる
- * （self-review 指摘）。要約とは異なり本ブロックは逐語のユーザー入力を運ぶ
- * ため、埋め込み前に一致だけを崩して無害化する（表示上はほぼ同一）。
- */
-function neutralizeAdhocDelimiterLookalikes(content: string): string {
-  return content
-    .split(ADHOC_CHAT_START)
-    .join(breakDelimiterMatch(ADHOC_CHAT_START))
-    .split(ADHOC_CHAT_END)
-    .join(breakDelimiterMatch(ADHOC_CHAT_END));
+// 日時は formatSessionSummaryLine と同じくローカル整形して出す（Issue #289）。
+// content は neutralizeDelimiterLookalikes でこのセクション自身の2本の
+// マーカー（ADHOC_CHAT_START/END）に対してのみ無害化する（従来どおりの
+// 挙動。Issue #423 で報告履歴側と共有する形へ汎用化したが、対象マーカーは
+// 変えていない）。
+function formatTodaysAdhocMessageLine(message: TodaysAdhocMessage): string {
+  const content = neutralizeDelimiterLookalikes(message.content, [
+    ADHOC_CHAT_START,
+    ADHOC_CHAT_END,
+  ]);
+  return `- ${formatStoredDateTime(message.sentAt)} ${ADHOC_ROLE_LABELS[message.role]}: ${content}`;
 }
 
 /**
