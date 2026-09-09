@@ -44,12 +44,14 @@ Issue #258 は 2026-08-31 起票で、本文のコード記述は当時の観察
 
 - [ ] 当日の朝会の時刻を、恒常設定とは別に指定できる
 - [ ] 当日の夕会の時刻を、恒常設定とは別に指定できる
-- [ ] 指定した当日の時刻が、朝会・夕会の定時催促の発火判定（`isMeetingDue`）に反映される
+- [ ] 指定した当日の朝会の時刻が、朝会の定時催促の発火判定（`isMeetingDue`）に反映される
+- [ ] 指定した当日の夕会の時刻が、夕会の定時催促の発火判定（`isMeetingDue`）に反映される
 - [ ] 指定した当日の時刻は翌日には効かず、翌日は恒常設定の時刻で発火する
 - [ ] 指定した当日の時刻を取り消して、その日のうちに恒常設定へ戻せる
-- [ ] 恒常設定の時刻より一定幅を超えて遅らせることはできない
-- [ ] 恒常設定の時刻より早める指定に下限は無い
-- [ ] ダッシュボードに今日の朝会・夕会の予定時刻が表示される
+- [ ] 恒常設定の時刻より 180 分（`MAX_MEETING_DELAY_MINUTES`。決定 7）を超えて遅らせることはできない
+- [ ] 恒常設定の時刻より早い時刻（`00:00` を含む）を指定できる
+- [ ] ダッシュボードに今日の朝会の予定時刻が表示される
+- [ ] ダッシュボードに今日の夕会の予定時刻が表示される
 - [ ] ダッシュボードの表示で、予定時刻が恒常設定と違う場合はその旨が分かる
 - [ ] 当日の時刻を変更しても、恒常設定（`GET /api/settings` が返す値）は変わらない
 - [ ] 当日の時刻を変更しても、勤務時間帯ゲート（`work_start` / `work_end`）は変わらない
@@ -61,6 +63,7 @@ Issue #258 は 2026-08-31 起票で、本文のコード記述は当時の観察
 - **変更しない**: `server/src/settings/` 配下すべて（`settings-validation.ts` の `SETTINGS_KEYS` に新キーを足さない）、`web/src/SettingsView.tsx`、`server/src/detection/time-utils.ts` の `isWithinWorkingHours`、`server/src/detection/detection-types.ts` の `DetectionInput`、`server/src/dashboard/` 配下、`migrate.ts` の version 1〜8
 - **`DetectionInput` を広げない**。ADR 0004 の帰結「検知エンジンに新しい入力経路を足さない」と字面で衝突するため、当日値は `settings.morningMeetingTime` / `settings.eveningMeetingTime` に**合成済みの実効時刻**として載せる（決定 2）
 - **時刻の書式・検証は既存の `TIME_PATTERN`（`detection-types.ts:77`）を再利用する**。新しい正規表現を作らない
+- **`:date` の形式検証と実在暦日チェックは既存の `parseDateKey`（`detection/time-utils.ts`）を再利用する**。新しい日付検証ロジックを書かない（`server/src/reports/work-logs-routes.ts` / `server/src/reports/reports-routes.ts` が同じ用途で使っている）
 - **日付キーは `toDateKey`（`detection/time-utils.ts:68`）を使う**（[ADR 0007](../adr/0007-local-calendar-day-basis.md) 決定 2）。新たな日付整形ロジックを書かない
 - **日付境界に触る変更であるため `npm run test:tz`（非 UTC タイムゾーンでの追加実行）も通す**（ADR 0007 決定 6）。新規テストの固定時刻は `new Date(y, m, d, h, m)` 由来で組み、UTC 文字列リテラルで固定しない（同 決定 5）
 - **エラー応答は既存の `{ error, code }` 形式に揃える**（`server/src/reports/reports-routes.ts:62,74,105` の作法）。`code` は snake_case
@@ -89,7 +92,7 @@ Issue #258 は 2026-08-31 起票で、本文のコード記述は当時の観察
 |---|---|
 | `time` | その日の**実効時刻**（上書きがあれば上書き時刻、無ければ `defaultTime`） |
 | `defaultTime` | 恒常設定の時刻（`loadDetectionSettings` が返す値） |
-| `overridden` | その日の上書き行が存在し、かつ採用されているか |
+| `overridden` | `time !== defaultTime`（実効時刻が恒常設定と違うか）。行の存在ではなく**値の比較**で決める |
 | `latestAllowedTime` | 指定できる最も遅い時刻（決定 7）。UI は時刻入力の `max` に使う |
 
 PUT のリクエストボディ。`null` は「その種別の上書きを削除して既定へ戻す」を意味する。指定しなかった種別は変更しない。
@@ -97,6 +100,8 @@ PUT のリクエストボディ。`null` は「その種別の上書きを削除
 ```json
 { "morning": "10:00", "evening": null }
 ```
+
+**恒常設定と同じ時刻が指定された場合は、上書き行を保存せず削除する**（`null` と同じ扱い）。実効時刻は同じであり、行を残すと「上書きされているのに `overridden` が `false`」という状態が生まれて「既定に戻す」操作が消えるため。これにより、書き込み経路を通る限り「上書き行が存在する ⇔ 実効時刻が既定と異なる」が保たれる（合成規則 2・3 のフォールバックが効いた行だけがこの同値から外れ、そのときも `overridden` は値比較により正しく `false` になる）。
 
 エラー応答（すべて 400・`{ error, code }`）:
 
@@ -109,6 +114,49 @@ PUT のリクエストボディ。`null` は「その種別の上書きを削除
 | `delay_limit_exceeded` | 値が `latestAllowedTime` より遅い |
 
 PUT は**全項目を検証してから書く**（all-or-nothing）。`settings-routes.ts:58-80` の既存作法（検証を全通ししてから 1 トランザクションで書く）をそのまま踏襲する。
+
+### IF（層間の境界となる契約）
+
+実装計画の A（保存層）・B（純粋関数）・C（API）・D（スケジューラ結合）が共有する境界であるため、シグネチャをここで固定する。層ごとに別チケットへ分かれても食い違わないようにするためであり、関数の中身は実装者の裁量とする。
+
+```ts
+// server/src/meeting-schedule/meeting-schedule.ts（純粋関数。DB にも現在時刻にも触れない）
+
+/** 恒常設定からの最大遅延（分）。設定へは露出しない（決定 7） */
+export const MAX_MEETING_DELAY_MINUTES = 180;
+
+export type MeetingType = "morning" | "evening";
+
+/** 種別ごとの恒常設定の時刻（"HH:mm"） */
+export type MeetingTimeDefaults = Record<MeetingType, string>;
+
+/** その日に保存されている上書き。行が無い種別はキーを持たない */
+export type MeetingTimeOverrides = Partial<Record<MeetingType, string>>;
+
+/** 指定できる最も遅い時刻。min(既定 + MAX_MEETING_DELAY_MINUTES, "23:59") */
+export function latestAllowedMeetingTime(defaultTime: string): string;
+
+/** requestedTime が latestAllowedMeetingTime(defaultTime) 以下か */
+export function isAllowedMeetingTime(defaultTime: string, requestedTime: string): boolean;
+
+/** 種別ごとの実効時刻。決定 2 の合成規則 1〜4 に従う */
+export function resolveEffectiveMeetingTimes(
+  defaults: MeetingTimeDefaults,
+  overrides: MeetingTimeOverrides,
+): Record<MeetingType, string>;
+```
+
+```ts
+// server/src/meeting-schedule/meeting-schedule-repository.ts
+
+export function findOverridesByDate(db: Database.Database, date: string): MeetingTimeOverrides;
+export function upsertOverride(db: Database.Database, date: string, type: MeetingType, time: string): void;
+export function deleteOverride(db: Database.Database, date: string, type: MeetingType): void;
+```
+
+`overridden` は純粋関数の返り値ではなく、**API 層が `time !== defaultTime` で導出する**（純粋関数は実効時刻だけを返し、表示上の派生値を持たない）。
+
+`created_at` / `updated_at` はリポジトリ内で `new Date().toISOString()` を呼んで埋める（`tasks-repository.ts:77` / `daily-reports-repository.ts:35` / `decisions-repository.ts:42` と同じ既存の作法。呼び出し元から `now` を渡す形にしない）。この 2 列は監査用であり、実効時刻の判定にも当日判定にも使われない——当日判定は `date` 列と `toDateKey(now)` の比較で行う——ため、テストの時刻固定性には影響しない。
 
 ### 画面（ダッシュボード）
 
@@ -163,7 +211,7 @@ CREATE TABLE IF NOT EXISTS meeting_time_overrides (
 - **採用案**: **`scheduler-tick.ts` の `buildTickInput` で合成する**。合成そのものは純粋関数 `resolveEffectiveMeetingTimes` に切り出し、`buildTickInput` は「DB から既定と上書きを読む → 純粋関数へ渡す → `settings.morningMeetingTime` / `settings.eveningMeetingTime` を実効時刻で置き換えて `evaluateRules` へ渡す」だけを行う。`DetectionInput` の型・`evaluateRules`・`isMeetingDue` は無改変
 - **理由**: 合成点をここに置くと、(1) `GET /api/settings` は恒常設定を返したままになる、(2) 検知エンジンの入力形が変わらない、(3) 合成規則は純粋関数として単体で網羅テストでき、発火まで含めた結合は `scheduler-tick.test.ts` で検証できる——という 3 点が同時に満たせる
 - **代替案**:
-  - `loadDetectionSettings(db, now)` の中で合成する — **却下**。`settings-routes.ts:19` が同じ関数を `GET /api/settings` の応答生成に使っており、上書き値が設定画面に表示される。そして `SettingsView` は取得値をフォームへ流し込み保存時に全項目を PUT で返すため（`SettingsView.tsx:39-68`）、**ユーザーが設定画面を開いて保存した瞬間に、その日限りの値が恒常設定として恒久的に焼き付く**
+  - `loadDetectionSettings`（現在のシグネチャは `loadDetectionSettings(db)`）の中で合成する — **却下**。`settings-routes.ts:19` が同じ関数を `GET /api/settings` の応答生成に使っており、上書き値が設定画面に表示される。そして `SettingsView` は取得値をフォームへ流し込み保存時に全項目を PUT で返すため（`SettingsView.tsx:39-68`）、**ユーザーが設定画面を開いて保存した瞬間に、その日限りの値が恒常設定として恒久的に焼き付く**
   - `DetectionInput` に上書き用フィールドを足し `isMeetingDue` 側で合成する — 却下。純粋関数側で優先順位を固定できる利点はあるが、ADR 0004 の帰結「検知エンジンに新しい入力経路を足さない」と字面で衝突する。合成規則は独立した純粋関数として同等にテストできるため、衝突を避ける側を採る
 - **影響範囲**: `scheduler-tick.ts` の `buildTickInput`（`scheduler-tick.ts:56-66`）と、新設の `server/src/meeting-schedule/meeting-schedule.ts`。`detection/` 配下は `meeting.ts` の `buildMeetingRuleKey`（決定 6）以外は無改変
 
@@ -316,8 +364,10 @@ C と D は A・B が揃えば並列に進められる（触るファイルが�
 - [ ] GET は、上書きが無い種別の `time` に恒常設定の時刻を返す
 - [ ] GET は、上書きがある種別の `time` に上書きの時刻を返す
 - [ ] GET は、上書きの有無によらず `defaultTime` に恒常設定の時刻を返す
-- [ ] GET は、上書きがある種別の `overridden` に `true` を返す
+- [ ] GET は、実効時刻が恒常設定の時刻と異なる種別の `overridden` に `true` を返す
 - [ ] GET は、上書きが無い種別の `overridden` に `false` を返す
+- [ ] GET は、上書き行はあるが実効時刻が恒常設定の時刻と一致する種別の `overridden` に `false` を返す
+- [ ] PUT で恒常設定と同じ時刻を指定すると、当該種別の上書き行が `meeting_time_overrides` に残らない
 - [ ] GET は、`latestAllowedTime` に `latestAllowedMeetingTime(defaultTime)` と同じ値を返す
 - [ ] PUT で時刻を指定すると、応答の当該種別の `time` が指定値と一致する
 - [ ] PUT で指定した時刻は、その後の GET でも `time` として返る（永続化されている）
