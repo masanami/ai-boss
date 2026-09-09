@@ -8,6 +8,7 @@ import { listTasks } from "../tasks/tasks-repository.js";
 import { countTaskEvidencesByTaskIds } from "../tasks/task-evidences-repository.js";
 import { listRecentDecisions } from "../decisions/decisions-repository.js";
 import { resolveBossSettings } from "../boss/boss-settings.js";
+import { resolveMorningMentoringRequired } from "../settings/mentoring-settings.js";
 import {
   buildPersonaPrompt,
   type TodaysAdhocMessage,
@@ -164,7 +165,7 @@ export function registerChatMessageRoute(
     if (!validation.valid) {
       return c.json({ error: validation.error }, 400);
     }
-    const { content, replaceFromMessageId } = validation.data;
+    const { content, replaceFromMessageId, mentoring: requestedMentoring } = validation.data;
 
     // やりなおし経路（replaceFromMessageId 指定時）にだけ足すガード
     // （Issue #376, docs/features/chat-message-rewrite.md 決定3・決定1）。
@@ -269,6 +270,15 @@ export function registerChatMessageRoute(
     // `now` と読みが割れると真夜中をまたいで窓が壊れる（`local-day.ts` の
     // `startOfNextLocalDayIso` の JSDoc が同じ理由で引数を必須にしている）。
     const now = new Date();
+    // Issue #409（親 #276）: 「朝会 かつ 強制オン」または「リクエストの
+    // mentoring」を 1 つの boolean へ合成してから渡す。設定の読み取りと
+    // 条件の合成はこのルート（呼び出し側）の責務であり、buildPersonaPrompt
+    // は受け取った boolean で分岐するだけの純粋関数のまま
+    // （機能仕様「IF（境界となる契約）」・`PersonaPromptContext.mentoring`
+    // の JSDoc）。
+    const mentoring =
+      (session.type === "morning" && resolveMorningMentoringRequired(db)) ||
+      requestedMentoring === true;
     const system = buildPersonaPrompt(persona, {
       tasks,
       // 決定 3-a: ボスが自分の裁定（要否）と現状（添付件数）を参照できる
@@ -280,6 +290,7 @@ export function registerChatMessageRoute(
       todaysAdhocMessages: collectTodaysAdhocContext(db, session.type, now),
       now,
       sessionType: session.type,
+      mentoring,
       // 「今何時か」「締切まであと何時間か」の主経路（Issue #288）
       includeCurrentDateTime: true,
     });

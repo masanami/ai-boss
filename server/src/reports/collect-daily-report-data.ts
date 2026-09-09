@@ -122,11 +122,14 @@ export function collectDailyReportData(
     sessionEndedAt: sessionEndedAtIso,
   });
 
+  // kind = 'mentoring' 行は除外する（#408 AC-43）。メンタリングの結論は
+  // #358 のタスク軸ログ（listDecisions）から参照する記録であり、日報の
+  // 「決定事項」として混入させない。
   const decisions = (
     db
       .prepare(
         `SELECT content FROM decisions
-         WHERE status = 'active' AND created_at >= ? AND created_at < ?
+         WHERE status = 'active' AND kind = 'decision' AND created_at >= ? AND created_at < ?
          ORDER BY created_at ASC, id ASC`,
       )
       .all(dayStartIso, nextDayStartIso) as { content: string }[]

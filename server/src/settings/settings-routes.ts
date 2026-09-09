@@ -6,6 +6,7 @@ import { validatePutSettingsInput } from "./settings-validation.js";
 import { resolveBossSettings } from "../boss/boss-settings.js";
 import { loadDetectionSettings } from "../scheduler/detection-settings.js";
 import { resolveEvidenceSettings } from "./evidence-settings.js";
+import { resolveMorningMentoringRequired } from "./mentoring-settings.js";
 
 /**
  * Flat, key-named view of the effective settings, as returned by
@@ -17,6 +18,7 @@ function readEffectiveSettings(db: Database.Database) {
   const { model, persona } = resolveBossSettings(db);
   const detection = loadDetectionSettings(db);
   const evidence = resolveEvidenceSettings(db);
+  const morningMentoringRequired = resolveMorningMentoringRequired(db);
 
   return {
     boss_name: persona.name,
@@ -35,6 +37,7 @@ function readEffectiveSettings(db: Database.Database) {
     escalation_repeat_minutes: detection.escalation.level3RepeatMinutes,
     model,
     evidence_enforcement_enabled: evidence.enforcementEnabled,
+    morning_mentoring_required: morningMentoringRequired,
   };
 }
 

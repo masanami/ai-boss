@@ -6,6 +6,7 @@ import { insertSession } from "../sessions/sessions-repository.js";
 import { insertTask } from "../tasks/tasks-repository.js";
 import type { NewTaskRecord } from "../tasks/tasks-repository.js";
 import {
+  countMentoringDecisionsBySessionId,
   findDecisionById,
   insertDecision,
   listDecisions,
@@ -14,18 +15,21 @@ import {
 
 /** Raw-SQL helper for tests that need explicit control over `created_at`
  * (ordering assertions) — distinct from the `insertDecision` repository
- * function under test, which manages `created_at` itself. */
+ * function under test, which manages `created_at` itself. `kind` defaults to
+ * `'decision'` (the column's own DEFAULT) so existing callers are unaffected;
+ * #408 tests pass `kind: "mentoring"` explicitly to build mixed fixtures. */
 function insertRawDecision(
   db: Database.Database,
   sessionId: number,
   content: string,
   createdAt: string,
   taskId: number | null = null,
+  kind: "decision" | "mentoring" = "decision",
 ): void {
   db.prepare(
-    `INSERT INTO decisions (session_id, task_id, content, rationale, status, created_at)
-     VALUES (?, ?, ?, NULL, 'active', ?)`,
-  ).run(sessionId, taskId, content, createdAt);
+    `INSERT INTO decisions (session_id, task_id, content, rationale, kind, status, created_at)
+     VALUES (?, ?, ?, NULL, ?, 'active', ?)`,
+  ).run(sessionId, taskId, content, kind, createdAt);
 }
 
 /** Minimal task fixture — only `title` matters to the decision log, the rest
@@ -101,6 +105,30 @@ describe("listRecentDecisions", () => {
       "決定2",
     ]);
   });
+
+  it("excludes kind='mentoring' rows, keeping only kind='decision' ones (#408 AC-42 — chat context must not surface mentoring as a decision)", () => {
+    const session = insertSession(db, { type: "adhoc" });
+    insertRawDecision(
+      db,
+      session.id,
+      "メンタリングの結論",
+      "2026-07-05T00:00:00.000Z",
+      null,
+      "mentoring",
+    );
+    insertRawDecision(
+      db,
+      session.id,
+      "通常の決定",
+      "2026-07-01T00:00:00.000Z",
+      null,
+      "decision",
+    );
+
+    const result = listRecentDecisions(db, 5);
+
+    expect(result.map((decision) => decision.content)).toEqual(["通常の決定"]);
+  });
 });
 
 describe("insertDecision", () => {
@@ -170,6 +198,18 @@ describe("insertDecision", () => {
     });
 
     expect(decision.kind).toBe("decision");
+  });
+
+  it("persists kind = 'mentoring' when explicitly passed (#276)", () => {
+    const session = insertSession(db, { type: "adhoc" });
+
+    const decision = insertDecision(db, {
+      session_id: session.id,
+      content: "進め方の点検結果",
+      kind: "mentoring",
+    });
+
+    expect(decision.kind).toBe("mentoring");
   });
 
   it("persists the decision so it can be read back from the database", () => {
@@ -297,5 +337,93 @@ describe("listDecisions", () => {
     const [decision] = listDecisions(db);
 
     expect(decision.kind).toBe("decision");
+  });
+
+  it("includes kind='mentoring' rows alongside kind='decision' rows (#408 AC-45 — the decision log is the reference screen and must not filter by kind)", () => {
+    const session = insertSession(db, { type: "adhoc" });
+    insertRawDecision(
+      db,
+      session.id,
+      "メンタリングの結論",
+      localIso(2026, 7, 5, 9),
+      null,
+      "mentoring",
+    );
+    insertRawDecision(
+      db,
+      session.id,
+      "通常の決定",
+      localIso(2026, 7, 5, 10),
+      null,
+      "decision",
+    );
+
+    const result = listDecisions(db);
+
+    expect(result.map((decision) => decision.content)).toEqual([
+      "通常の決定",
+      "メンタリングの結論",
+    ]);
+    expect(result.map((decision) => decision.kind)).toEqual(["decision", "mentoring"]);
+  });
+});
+
+// #276 判断3: 朝会終了ゲート（mentoring-gate.ts）が読む「対象セッションの
+// kind='mentoring' 件数」。判定に使う純粋関数 isMentoringComplete への入力を
+// 用意する側の責務であり、'decision' 行や他セッションの行を混ぜない。
+describe("countMentoringDecisionsBySessionId", () => {
+  let db: Database.Database;
+
+  beforeEach(() => {
+    db = openDatabase(":memory:");
+    runMigrations(db);
+  });
+
+  afterEach(() => {
+    db.close();
+  });
+
+  it("returns 0 when the session has no decisions at all", () => {
+    const session = insertSession(db, { type: "morning" });
+
+    expect(countMentoringDecisionsBySessionId(db, session.id)).toBe(0);
+  });
+
+  it("counts only kind='mentoring' rows, excluding kind='decision' rows in the same session", () => {
+    const session = insertSession(db, { type: "morning" });
+    insertRawDecision(db, session.id, "通常の決定", localIso(2026, 7, 5, 9), null, "decision");
+    insertRawDecision(
+      db,
+      session.id,
+      "メンタリングの結論",
+      localIso(2026, 7, 5, 10),
+      null,
+      "mentoring",
+    );
+
+    expect(countMentoringDecisionsBySessionId(db, session.id)).toBe(1);
+  });
+
+  it("excludes kind='mentoring' rows that belong to a different session", () => {
+    const target = insertSession(db, { type: "morning" });
+    const other = insertSession(db, { type: "morning" });
+    insertRawDecision(
+      db,
+      other.id,
+      "他セッションのメンタリング結論",
+      localIso(2026, 7, 5, 9),
+      null,
+      "mentoring",
+    );
+
+    expect(countMentoringDecisionsBySessionId(db, target.id)).toBe(0);
+  });
+
+  it("counts multiple mentoring rows in the same session", () => {
+    const session = insertSession(db, { type: "morning" });
+    insertRawDecision(db, session.id, "結論1", localIso(2026, 7, 5, 9), null, "mentoring");
+    insertRawDecision(db, session.id, "結論2", localIso(2026, 7, 5, 10), null, "mentoring");
+
+    expect(countMentoringDecisionsBySessionId(db, session.id)).toBe(2);
   });
 });

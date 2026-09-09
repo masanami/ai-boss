@@ -25,6 +25,7 @@ export const SETTINGS_KEYS = [
   "escalation_repeat_minutes",
   "model",
   "evidence_enforcement_enabled",
+  "morning_mentoring_required",
 ] as const;
 
 export type SettingKey = (typeof SETTINGS_KEYS)[number];
@@ -124,9 +125,13 @@ function validatePositiveIntegerMinutes(key: SettingKey): FieldValidator {
   };
 }
 
-// boolean 設定キーの唯一のバリデータ（現状 evidence_enforcement_enabled の
-// み）。JSON では boolean、保存は "true" / "false" の文字列
-// （機能仕様 docs/features/completion-evidence-enforcement.md 決定 7）。
+// boolean 設定キー共通のバリデータ。JSON では boolean、保存は
+// "true" / "false" の文字列
+// （機能仕様 docs/features/completion-evidence-enforcement.md 決定 7・
+// docs/features/work-approach-mentoring.md 判断 7）。
+// 既定値の向き（未設定・不正値をオンに倒すかオフに倒すか）はキーごとに
+// 異なり、ここではなく読み手側（evidence-settings.ts / mentoring-settings.ts）
+// が持つ。バリデータは「JSON boolean 以外を拒否する」ことだけを担う。
 // "1" / "0" は既存の数値設定と見た目が区別できなくなるため使わない。
 // JSON の boolean のみを受け付け、"true" のような文字列や 1 / 0 の数値は
 // 拒否する（呼び出し元が GET のレスポンスをそのまま PUT に送り返せるよう、
@@ -169,6 +174,7 @@ const VALIDATORS: Record<SettingKey, FieldValidator> = {
   ),
   model: validateNonEmptyString("model"),
   evidence_enforcement_enabled: validateBoolean("evidence_enforcement_enabled"),
+  morning_mentoring_required: validateBoolean("morning_mentoring_required"),
 };
 
 function isSettingKey(key: string): key is SettingKey {

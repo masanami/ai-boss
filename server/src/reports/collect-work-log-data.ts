@@ -81,10 +81,13 @@ export function collectWorkLogData(db: Database.Database, targetDate: Date): Col
   const dayStartIso = startOfLocalDayIso(targetDate);
   const nextDayStartIso = startOfNextLocalDayIso(targetDate);
 
+  // kind = 'mentoring' 行は除外する（#408 AC-44）。メンタリングの結論は
+  // #358 のタスク軸ログ（listDecisions）から参照する記録であり、作業ログの
+  // 「決定ログ」として混入させない。
   const decisionRows = db
     .prepare(
       `SELECT id, status, content, created_at FROM decisions
-       WHERE created_at >= ? AND created_at < ?
+       WHERE kind = 'decision' AND created_at >= ? AND created_at < ?
        ORDER BY created_at ASC, id ASC`,
     )
     .all(dayStartIso, nextDayStartIso) as DecisionRow[];

@@ -1,6 +1,6 @@
 import type Database from "better-sqlite3";
 import type { RecentDecision } from "../boss/persona-prompt.js";
-import type { Decision, DecisionListItem } from "./decision.js";
+import type { Decision, DecisionKind, DecisionListItem } from "./decision.js";
 
 interface DecisionRow {
   content: string;
@@ -12,6 +12,10 @@ export interface NewDecisionRecord {
   task_id?: number | null;
   content: string;
   rationale?: string | null;
+  /** #276: 'mentoring' 行はこの引数を明示して書く。省略時は列の
+   * DEFAULT 'decision' に委ね、既存呼び出し（`record_decision`）の
+   * 挙動は変えない。 */
+  kind?: DecisionKind;
 }
 
 export function findDecisionById(
@@ -25,10 +29,11 @@ export function findDecisionById(
 
 /**
  * Inserts a new decision with a server-managed `created_at` and `status`
- * fixed to `'active'`. `task_id`/`rationale` default to `null` when omitted;
- * `kind` is left to the column's `'decision'` default (see Issue #358/#397 —
- * `'mentoring'` rows are written by #276, not here). Returns the persisted
- * row (all columns, as read back from the database).
+ * fixed to `'active'`. `task_id`/`rationale` default to `null` when omitted.
+ * `kind` defaults to `'decision'` when omitted, matching the column's
+ * `DEFAULT 'decision'` (see Issue #358/#397); `record_mentoring` (#276)
+ * passes `kind: 'mentoring'` explicitly. Returns the persisted row (all
+ * columns, as read back from the database).
  */
 export function insertDecision(
   db: Database.Database,
@@ -38,14 +43,15 @@ export function insertDecision(
 
   const result = db
     .prepare(
-      `INSERT INTO decisions (session_id, task_id, content, rationale, status, created_at)
-       VALUES (?, ?, ?, ?, 'active', ?)`,
+      `INSERT INTO decisions (session_id, task_id, content, rationale, kind, status, created_at)
+       VALUES (?, ?, ?, ?, ?, 'active', ?)`,
     )
     .run(
       record.session_id,
       record.task_id ?? null,
       record.content,
       record.rationale ?? null,
+      record.kind ?? "decision",
       now,
     );
 
@@ -88,6 +94,10 @@ export function listDecisions(db: Database.Database): DecisionListItem[] {
  *
  * Read-only helper for chat context building (#27). Writing decisions
  * (recording a boss decision) is out of scope here — see Issue #6.
+ *
+ * Excludes `kind = 'mentoring'` rows at the SQL level (#408 AC-42): a JS-side
+ * filter after the `LIMIT` would let mentoring rows eat into the limited
+ * window and shrink the number of actual decisions returned.
  */
 export function listRecentDecisions(
   db: Database.Database,
@@ -95,7 +105,7 @@ export function listRecentDecisions(
 ): RecentDecision[] {
   const rows = db
     .prepare(
-      "SELECT content, created_at FROM decisions ORDER BY created_at DESC LIMIT ?",
+      "SELECT content, created_at FROM decisions WHERE kind = 'decision' ORDER BY created_at DESC LIMIT ?",
     )
     .all(limit) as DecisionRow[];
 
@@ -103,4 +113,23 @@ export function listRecentDecisions(
     content: row.content,
     decidedAt: row.created_at,
   }));
+}
+
+/**
+ * Returns the number of `kind = 'mentoring'` decisions recorded for
+ * `sessionId` — one of the two counts `mentoring-gate.ts`'s
+ * `isMentoringComplete` (a pure function that never touches the DB) needs
+ * from its caller (#276 判断3). Scoped to `session_id` so a mentoring
+ * conclusion recorded in another session never counts toward this one.
+ */
+export function countMentoringDecisionsBySessionId(
+  db: Database.Database,
+  sessionId: number,
+): number {
+  const row = db
+    .prepare(
+      "SELECT COUNT(*) AS count FROM decisions WHERE session_id = ? AND kind = 'mentoring'",
+    )
+    .get(sessionId) as { count: number };
+  return row.count;
 }

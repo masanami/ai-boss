@@ -125,6 +125,15 @@ export interface PersonaPromptContext {
    * adhoc または省略時は追加指示なし（従来どおり）。
    */
   sessionType?: SessionType;
+  /**
+   * このターンでメンタリング（仕事の進め方の点検）の指示を積むか（Issue #409,
+   * 親 #276）。**呼び出し側（チャットルート）が「朝会 かつ 強制オン」または
+   * 「リクエストの mentoring」を評価して 1 つの boolean にしてから渡す**
+   * （機能仕様 docs/features/work-approach-mentoring.md「IF（境界となる契約）」）。
+   * `buildPersonaPrompt` はこの値を受け取って積むかどうかを分岐するだけで、
+   * 設定の読み取りも条件の合成も行わない（純粋関数のまま）。省略時は false。
+   */
+  mentoring?: boolean;
 }
 
 const TONE_DESCRIPTIONS: Record<TonePreset, string> = {
@@ -495,6 +504,26 @@ function formatTodaysAdhocMessageSection(messages: TodaysAdhocMessage[]): string
 
 // 朝会/夕会のガイドはシステムプロンプトによる誘導のみで実現し、ステップ管理の
 // 状態機械はサーバーに持たない（Issue #47 明示的な仮定）。
+// 仕事の進め方のメンタリング（Issue #409, 親 #276, 機能仕様 判断4・8・9）。
+// 固定するのは「点検の骨組み（手順）」だけで、「観点（何を見るか）」は固定しない
+// （判断4・ハイブリッド）: 1. 進め方の申告を受ける → 2. 危うい点を具体的に
+// 指摘する（無ければ問題なしと明言する） → 3. 結論を record_mentoring で
+// 記録する。3例（優先順位付け・仕様考慮漏れ・関連部署連絡）は例示として渡すが
+// 限定列挙ではない旨を明記する（AC-5）。外部への連絡はアプリが実行せず、
+// 洗い出しと促しにとどめる（判断9・ADR 0001 のローカル完結。実行できないこと
+// を約束させない）。差し込み位置は既存の MORNING_FLOW_INSTRUCTION の前段
+// （判断8）— buildPersonaPrompt 側で MORNING_FLOW_INSTRUCTION より先に push
+// することで満たす。
+const MENTORING_FLOW_INSTRUCTION =
+  "仕事の進め方のメンタリング: ユーザーから今日の仕事の進め方（何を・どの順で・どう進めるつもりか）の申告を受けたら、" +
+  "その進め方について危ういと判断した点を具体的に指摘すること。指摘が無ければ「問題なし」と明示的に断定すること。" +
+  "どの観点を見るかは、その日のタスク・活動記録・直近の決定からそのつど選ぶこと" +
+  "（優先順位付け・事前に決めるべき仕様の考慮漏れ・関連部署への連絡は観点の例であり、これらに限定される固定のチェック項目ではない。他の観点も自由に扱ってよい）。" +
+  "関連部署・関係者への連絡が必要と判断した場合、連絡すべき相手と内容を洗い出してユーザーに促すところまでとし、" +
+  "実際の連絡（メール・チャット送信等）はこのアプリでは実行できないため、実行を約束したり自分が連絡したかのように述べたりしないこと。" +
+  "点検の結論（進め方をどう変えるか、または変えないか）を record_mentoring ツールで1件以上記録すること。" +
+  "content には結論を、rationale にはどの点をどう危ういと判断したか（扱った観点）を書くこと。";
+
 const MORNING_FLOW_INSTRUCTION =
   "これは朝会（計画セッション）。ユーザーから今日の予定の報告を受けたら、タスクの優先順位と今日のノルマを決定の形で提示し、" +
   "create_task / update_task でタスクへ反映すること。各タスクの所要時間はざっくり見積もって提案し、ユーザーが同意または修正した" +
@@ -582,6 +611,12 @@ export function buildPersonaPrompt(
   } else if (purpose === "daily-report") {
     sections.push(DAILY_REPORT_INSTRUCTION);
   } else {
+    // 判断8: 既存の朝会フローの前段に差し込む。ここで
+    // sessionFlowInstruction より先に push することで、両方が積まれる
+    // ケース（朝会・強制オン）でも常にメンタリングの指示が先に出現する。
+    if (context.mentoring ?? false) {
+      sections.push(MENTORING_FLOW_INSTRUCTION);
+    }
     const sessionFlowInstruction = resolveSessionFlowInstruction(
       context.sessionType,
     );

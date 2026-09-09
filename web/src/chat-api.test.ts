@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
+  ChatApiError,
   createSession,
   endSession,
   fetchLatestSession,
@@ -206,6 +207,48 @@ describe("endSession", () => {
 
     await expect(endSession(99)).rejects.toThrow("session 99 not found");
   });
+
+  // Issue #411 (親 #276 判断2, ADR 0008 決定2と同じ作法): 朝会終了が
+  // メンタリング未完了でブロックされたとき、UI は文言ではなく `code` の完全
+  // 一致で分岐する必要がある。`ReportApiError`（daily-reports-api.ts）と同じ
+  // 形で `code` を保持する `ChatApiError` を投げる。
+  it("rejects with a ChatApiError exposing the mentoring_required code on a 409 block", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue({
+        ok: false,
+        status: 409,
+        json: () =>
+          Promise.resolve({
+            error:
+              "仕事の進め方のメンタリングを終えると朝会を終了できます（設定でオフにもできます）",
+            code: "mentoring_required",
+          }),
+      }),
+    );
+
+    const error = await endSession(20).catch((err: unknown) => err);
+    expect(error).toBeInstanceOf(ChatApiError);
+    expect((error as ChatApiError).code).toBe("mentoring_required");
+    expect((error as ChatApiError).message).toBe(
+      "仕事の進め方のメンタリングを終えると朝会を終了できます（設定でオフにもできます）",
+    );
+  });
+
+  it("exposes code as undefined when the server response has none", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue({
+        ok: false,
+        status: 500,
+        json: () => Promise.resolve({ error: "internal error" }),
+      }),
+    );
+
+    const error = await endSession(1).catch((err: unknown) => err);
+    expect(error).toBeInstanceOf(ChatApiError);
+    expect((error as ChatApiError).code).toBeUndefined();
+  });
 });
 
 describe("fetchSessionMessages", () => {
@@ -401,5 +444,66 @@ describe("sendChatMessage", () => {
     >;
     expect(body).toEqual({ content: "テスト" });
     expect("replaceFromMessageId" in body).toBe(false);
+  });
+
+  // Issue #411 (親 #276 判断6): 随時メンタリングのボタンは `mentoring: true`
+  // を付けたチャット送信で開始する。サーバー側の undefined-as-absent の作法
+  // （sessions-validation.ts の ChatMessageInput JSDoc）に揃え、既定値
+  // (false/未指定) のときはキー自体を持たせない。
+  it("includes mentoring: true in the body when requested", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(sseResponse([]));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await sendChatMessage(
+      1,
+      "今の進め方を見てほしい",
+      collectHandlers(),
+      undefined,
+      undefined,
+      true,
+    );
+
+    expect(fetchMock).toHaveBeenCalledWith("/api/sessions/1/messages", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        content: "今の進め方を見てほしい",
+        mentoring: true,
+      }),
+      signal: undefined,
+    });
+  });
+
+  it("omits mentoring from the body when not given (existing contract unchanged)", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(sseResponse([]));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await sendChatMessage(1, "テスト", collectHandlers());
+
+    const body = JSON.parse(fetchMock.mock.calls[0][1].body as string) as Record<
+      string,
+      unknown
+    >;
+    expect("mentoring" in body).toBe(false);
+  });
+
+  it("omits mentoring from the body when explicitly false", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(sseResponse([]));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await sendChatMessage(
+      1,
+      "テスト",
+      collectHandlers(),
+      undefined,
+      undefined,
+      false,
+    );
+
+    const body = JSON.parse(fetchMock.mock.calls[0][1].body as string) as Record<
+      string,
+      unknown
+    >;
+    expect("mentoring" in body).toBe(false);
   });
 });

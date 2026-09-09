@@ -59,6 +59,7 @@ export interface Settings {
   escalation_repeat_minutes: number;
   model: string;
   evidence_enforcement_enabled: boolean;
+  morning_mentoring_required: boolean;
 }
 
 /** `PUT /api/settings` accepts a partial update; this app always sends the full form. */

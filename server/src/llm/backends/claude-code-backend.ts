@@ -126,6 +126,17 @@ const recordDecisionShape = {
   task_id: z.number().int().describe("関連するタスクの id").optional(),
 };
 
+/** #276/#407: `record_mentoring`（`mentoring-tool.ts`）の Zod 対応。
+ * `recordDecisionShape` と形は同じだが、`content`/`rationale` の
+ * description がメンタリング固有の文言（結論／扱った観点）のため
+ * 別定義にする（`TOOL_ZOD_SHAPES` の記述と JSON Schema の記述文言まで
+ * 一致することをテストが検証している）。 */
+const recordMentoringShape = {
+  content: z.string().describe("点検の結論（必須）"),
+  rationale: z.string().describe("扱った観点（どの点をどう危ういと判断したか）").optional(),
+  task_id: z.number().int().describe("関連するタスクの id").optional(),
+};
+
 const getActivityLogShape = {
   task_id: z.number().int().describe("絞り込み対象のタスクの id").optional(),
   since: z
@@ -170,6 +181,7 @@ export const TOOL_ZOD_SHAPES = {
   create_task: createTaskShape,
   update_task: updateTaskShape,
   record_decision: recordDecisionShape,
+  record_mentoring: recordMentoringShape,
   get_activity_log: getActivityLogShape,
   submit_evening_summary: submitEveningSummaryShape,
 } as const;

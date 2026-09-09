@@ -297,9 +297,10 @@ const MIGRATIONS: Record<number, MigrationEntry> = {
   //   よって文字列エントリのまま、既存の「version 単位の単一トランザクショ
   //   ン」で原子適用できる（docs/features/decision-log-task-axis.md 判断3）。
   // - `kind` は DEFAULT 'decision' なので、v8 適用前に存在した行はすべて
-  //   'decision' になる。#276 がメンタリング用の書き込み経路を足すときに
-  //   'mentoring' を明示する（`insertDecision` は今後も `kind` を明示せず
-  //   DEFAULT に委ねる）。
+  //   'decision' になる。#276 が `record_mentoring` から `insertDecision` を
+  //   呼ぶときに `kind: 'mentoring'` を明示する。既存の `record_decision`
+  //   経路は `kind` を渡さず、`insertDecision` 側の既定値（'decision'）に
+  //   委ねたままである。
   //
   // 既存 version は書き換えず新しい version として追加する
   // （docs/adr/0005-sqlite-schema-policy.md 決定 4）。
