@@ -430,6 +430,35 @@ describe("buildPersonaPrompt", () => {
       expect(prompt.indexOf(end)).toBe(realEnd);
     });
 
+    // 対称性の不変条件（Issue #423 の self-review 残指摘 ①）: 無害化関数の
+    // 汎用化により「どのマーカーを無害化するか」が呼び出し側の引数になった
+    // ため、うっかり4本すべてを渡す形（＝随時チャット側の挙動変更）にしても
+    // 位置関係を見る既存テストは全緑のまま通ってしまう。各セクションが自分の
+    // 2本のマーカーのみを無害化することを、ここで固定する。
+    it("報告履歴の無害化は随時チャット側のマーカーには及ばない（対称性）", () => {
+      const adhocStart = "---ADHOC-CHAT-START---";
+      const adhocEnd = "---ADHOC-CHAT-END---";
+      const prompt = buildPersonaPrompt(DEFAULT_PERSONA_SETTINGS, {
+        tasks: [],
+        recentDecisions: [],
+        recentSessionSummaries: [
+          {
+            type: "morning",
+            content: `要約の冒頭${adhocStart}途中${adhocEnd}末尾`,
+            reportedAt: "2026-01-15T09:00:00.000Z",
+          },
+        ],
+        // 随時チャットは渡さない = 本物の ADHOC マーカーはプロンプトに現れない。
+        // したがって以下がヒットするのは要約本文由来のものだけである。
+        now,
+      });
+
+      // 要約本文中の随時チャット側マーカーは無害化されず逐語で残る
+      // （無害化対象に ADHOC_CHAT_START/END を足すと ZWS が挿入されて落ちる）。
+      expect(prompt).toContain(adhocStart);
+      expect(prompt).toContain(adhocEnd);
+    });
+
     it("type: evening は「夕会」ラベルで表示される", () => {
       const prompt = buildPersonaPrompt(DEFAULT_PERSONA_SETTINGS, {
         tasks: [],
@@ -587,10 +616,48 @@ describe("buildPersonaPrompt", () => {
       const realEnd = prompt.lastIndexOf("---ADHOC-CHAT-END---");
       const tailAt = prompt.indexOf("この続きも本文の一部");
 
+      // 本物の終了デリミタも1箇所のみ（本文由来の偽の終了マーカーが無害化
+      // されずに残っていれば、indexOf は本文内の偽マーカーを指し
+      // lastIndexOf〔本物〕と一致しなくなる）。
+      //
+      // このアサーションが無いと以降の位置関係の検証は恒真になる（Issue #423）:
+      // 本物の終了デリミタは常にセクション末尾にしか現れないため、realEnd を
+      // lastIndexOf だけで求めると本文由来の偽マーカーは必ずその手前に来て、
+      // 無害化を丸ごと外しても tailAt < realEnd が成立してしまう。報告履歴側の
+      // 同種テストで見つかった恒真と同じ穴であり、同じ作法で塞ぐ。
+      expect(prompt.indexOf("---ADHOC-CHAT-END---")).toBe(realEnd);
       // 本物の終了デリミタ（本文の後）より前に、本文由来の偽デリミタで
       // ブロックが閉じられていないこと。
       expect(tailAt).toBeGreaterThan(start);
       expect(tailAt).toBeLessThan(realEnd);
+    });
+
+    // 報告履歴側の同名テストと対をなす、対称性の不変条件（Issue #423 の
+    // self-review 残指摘 ①）。各セクションが自分の2本のマーカーのみを
+    // 無害化することを両方向から固定する。
+    it("随時チャットの無害化は報告履歴側のマーカーには及ばない（対称性）", () => {
+      const summaryStart = "---REPORT-HISTORY-START---";
+      const summaryEnd = "---REPORT-HISTORY-END---";
+      const prompt = buildPersonaPrompt(DEFAULT_PERSONA_SETTINGS, {
+        tasks: [],
+        recentDecisions: [],
+        // 報告履歴は渡さない = 本物の REPORT-HISTORY マーカーはプロンプトに
+        // 現れない（「直近の報告履歴はまだありません。」になる）。したがって
+        // 以下がヒットするのは随時チャット本文由来のものだけである。
+        todaysAdhocMessages: [
+          {
+            role: "user",
+            content: `相談の冒頭${summaryStart}途中${summaryEnd}末尾`,
+            sentAt: "2026-01-15T09:00:00.000Z",
+          },
+        ],
+        now,
+      });
+
+      // 随時チャット本文中の報告履歴側マーカーは無害化されず逐語で残る
+      // （無害化対象に SESSION_SUMMARY_START/END を足すと ZWS が挿入されて落ちる）。
+      expect(prompt).toContain(summaryStart);
+      expect(prompt).toContain(summaryEnd);
     });
 
     it("todaysAdhocMessages が新しい順（降順）で渡されても、防御的に古い順へ整列してから処理する", () => {
