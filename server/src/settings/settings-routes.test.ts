@@ -666,6 +666,204 @@ describe("settings routes", () => {
       });
     });
 
+    // 部分更新時の相関チェック配線（#481, 親要件 #448 決定1・6）。片方だけ
+    // を送る更新でも、送られなかった側の「保存後に実際に DB へ入る生の
+    // 値」（未設定なら既定値 09:00/18:00）との組み合わせで
+    // work_start >= work_end になる場合は拒否する。除外側・包含側の両方向
+    // と、既に不正な生値が保存されているケースでの基準（フォールバック
+    // 適用後の値ではなく生値）、および相関チェックが patch に触れていない
+    // ときは発火しないスコープをそれぞれ担保する。
+    describe("work_start / work_end partial-update correlation (AC-3, AC-4)", () => {
+      it("returns 400 when work_start alone is pushed past the currently-effective (default) work_end (AC-3, exclusion side)", async () => {
+        const app = createApp(db);
+
+        const res = await app.request("/api/settings", {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ work_start: "20:00" }),
+        });
+
+        expect(res.status).toBe(400);
+        const body = await readJson<ErrorBody>(res);
+        expect(body.error).toContain("work_start");
+        expect(body.error).toContain("work_end");
+
+        const row = db
+          .prepare("SELECT value FROM settings WHERE key = ?")
+          .get("work_start") as { value: string } | undefined;
+        expect(row).toBeUndefined();
+      });
+
+      it("returns 200 and saves work_start alone when it stays before the default work_end (AC-3, inclusion side)", async () => {
+        const app = createApp(db);
+
+        const res = await app.request("/api/settings", {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ work_start: "07:00" }),
+        });
+
+        expect(res.status).toBe(200);
+        const body = await readJson<SettingsBody>(res);
+        expect(body.work_start).toBe("07:00");
+        expect(body.work_end).toBe("18:00");
+      });
+
+      it("returns 400 for work_end alone when work_start is unset and the default work_start would be >= it (AC-4)", async () => {
+        // Issue #481 の完了条件に挙げられている具体例そのもの:
+        // work_start 未設定の DB への { work_end: "02:00" } のみの更新は
+        // 既定値 09:00 と突き合わされ拒否される。
+        const app = createApp(db);
+
+        const res = await app.request("/api/settings", {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ work_end: "02:00" }),
+        });
+
+        expect(res.status).toBe(400);
+        const body = await readJson<ErrorBody>(res);
+        expect(body.error).toContain("work_start");
+        expect(body.error).toContain("work_end");
+
+        const row = db
+          .prepare("SELECT value FROM settings WHERE key = ?")
+          .get("work_end") as { value: string } | undefined;
+        expect(row).toBeUndefined();
+      });
+
+      it("returns 200 and saves work_end alone when it stays after the default work_start (AC-4, inclusion side)", async () => {
+        const app = createApp(db);
+
+        const res = await app.request("/api/settings", {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ work_end: "20:00" }),
+        });
+
+        expect(res.status).toBe(200);
+        const body = await readJson<SettingsBody>(res);
+        expect(body.work_start).toBe("09:00");
+        expect(body.work_end).toBe("20:00");
+      });
+
+      it("rejects the whole patch (also leaving boss_name unsaved) when a partial update fails the correlation check, even alongside other valid keys (all-or-nothing)", async () => {
+        const app = createApp(db);
+
+        const res = await app.request("/api/settings", {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ boss_name: "鬼上司", work_start: "20:00" }),
+        });
+
+        expect(res.status).toBe(400);
+
+        const getRes = await app.request("/api/settings");
+        const body = await readJson<SettingsBody>(getRes);
+        expect(body.boss_name).toBe("ボス");
+      });
+
+      // self-review 指摘: このテストの入力（work_end="02:00"）は TIME_PATTERN
+      // に一致する書式のため、現行の loadDetectionSettings はこの値を
+      // フォールバックせずそのまま返す（フォールバックは書式不正なときの
+      // み発生する）。そのため本テストは「getSettingValue の生値を基準に
+      // している」ことと「loadDetectionSettings 由来の実効値を基準にして
+      // いる」ことを挙動レベルで判別できない（#448 決定1で要求される
+      // Issue #481 記載の具体シナリオを固定する回帰テストではあるが、
+      // 実装の読み出し先を取り違えても緑のままになりうる）。誤解を招く
+      // 名前を避け、実際に担保している内容（この具体シナリオでの拒否）
+      // に即した説明へ改めた。
+      it("rejects work_start alone against the other key's already-saved raw value, per the concrete scenario in Issue #481's completion criteria (work_start=22:00 / work_end=02:00 stored, PUT work_start=10:00)", async () => {
+        // #480 のバリデータを経由せず直接 INSERT して、PUT 単体では作れない
+        // 「既に不正な組み合わせ（work_start=22:00 / work_end=02:00）が
+        // 保存された」状態を作る。work_start=10:00 は work_end の既定値
+        // 18:00 と比べれば正当に見えるが、実際に保存されている生の
+        // work_end (02:00) と比べると 10:00 >= 02:00 のため不正。
+        db.prepare("INSERT INTO settings (key, value) VALUES (?, ?)").run(
+          "work_start",
+          "22:00",
+        );
+        db.prepare("INSERT INTO settings (key, value) VALUES (?, ?)").run(
+          "work_end",
+          "02:00",
+        );
+        const app = createApp(db);
+
+        const res = await app.request("/api/settings", {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ work_start: "10:00" }),
+        });
+
+        expect(res.status).toBe(400);
+        const body = await readJson<ErrorBody>(res);
+        expect(body.error).toContain("work_start");
+        expect(body.error).toContain("work_end");
+
+        // all-or-nothing: 既存の生値も 10:00 で上書きされず、22:00 のまま
+        const row = db
+          .prepare("SELECT value FROM settings WHERE key = ?")
+          .get("work_start") as { value: string } | undefined;
+        expect(row?.value).toBe("22:00");
+      });
+
+      // self-review 指摘: 送られなかった側の生値が「書式不正」（DB 直接
+      // 操作でのみ到達可能。PUT 経由では validateTime が弾くため作れない）
+      // だと、isValidWorkingHoursRange は仕様どおり fail-open（true）を
+      // 返すため、相関チェックが無条件で素通りしていた。既定値へ倒す
+      // ことで、書式不正な生値を「未設定」と同じ扱いにし、fail-open に
+      // よって保存後に実効的な空区間（例: 10:00〜"25:99" 相当の未定義な
+      // 区間ではなく、実際には既定 09:00/18:00 側にフォールバックされる
+      // ため 20:00〜18:00 のような空区間）が書き込まれることを防ぐ。
+      it("falls back to the default when the other key's raw stored value is not a valid \"HH:mm\" (format-invalid, DB-direct-write-only scenario)", async () => {
+        db.prepare("INSERT INTO settings (key, value) VALUES (?, ?)").run(
+          "work_end",
+          "25:99",
+        );
+        const app = createApp(db);
+
+        const res = await app.request("/api/settings", {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ work_start: "20:00" }),
+        });
+
+        // work_end の生値 "25:99" は書式不正なので既定値 18:00 として扱う。
+        // 20:00 >= 18:00 のため拒否される（fail-open で無条件通過しない）。
+        expect(res.status).toBe(400);
+        const body = await readJson<ErrorBody>(res);
+        expect(body.error).toContain("work_start");
+        expect(body.error).toContain("work_end");
+
+        const row = db
+          .prepare("SELECT value FROM settings WHERE key = ?")
+          .get("work_start") as { value: string } | undefined;
+        expect(row).toBeUndefined();
+      });
+
+      it("does not run the correlation check when the patch touches neither work_start nor work_end, even if an invalid raw pair is already stored", async () => {
+        db.prepare("INSERT INTO settings (key, value) VALUES (?, ?)").run(
+          "work_start",
+          "22:00",
+        );
+        db.prepare("INSERT INTO settings (key, value) VALUES (?, ?)").run(
+          "work_end",
+          "02:00",
+        );
+        const app = createApp(db);
+
+        const res = await app.request("/api/settings", {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ boss_name: "鬼上司" }),
+        });
+
+        expect(res.status).toBe(200);
+        const body = await readJson<SettingsBody>(res);
+        expect(body.boss_name).toBe("鬼上司");
+      });
+    });
+
     describe.each(MINUTE_KEYS)("%s boundary", (key) => {
       it("returns 400 for 0", async () => {
         const app = createApp(db);

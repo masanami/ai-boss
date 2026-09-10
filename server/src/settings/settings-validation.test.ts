@@ -343,9 +343,13 @@ describe("validatePutSettingsInput", () => {
 
   // work_start / work_end 相関チェック（#480, 親要件 #448 決定1・2）。
   // 本チケットが担うのは「全量更新（両キーが同時に送られる更新）」の拒否
-  // まで。部分更新（片方だけ送る更新）の相関チェック配線は #481 の範囲な
-  // ので、ここでは「片方だけ送られたときは拒否しない」ことも合わせて
-  // 確認し、越権していないことを担保する。
+  // まで。部分更新（片方だけ送る更新）の相関チェックは、この純粋関数
+  // （DB アクセスを持たない）ではなく #481 が `settings-routes.ts`
+  // （DB から現在の保存値を読める層）に配線する設計であり、この関数は
+  // 片方だけ送られたときは意図的に関知しない。#481 実装後もこの関数
+  // レベルの契約は変わらないため、ここでは「片方だけ送られたときは拒否
+  // しない」ことも合わせて確認し、越権していないことを担保する
+  // （HTTP レベルの部分更新拒否の担保は `settings-routes.test.ts` 側）。
   describe("work_start / work_end correlation (AC-1, AC-2, AC-5, AC-6)", () => {
     it("accepts a valid range (work_start=09:00, work_end=18:00) (AC-5)", () => {
       const result = validatePutSettingsInput({
@@ -386,7 +390,7 @@ describe("validatePutSettingsInput", () => {
       }
     });
 
-    it("does not reject when only work_start is sent (partial update wiring is #481's scope)", () => {
+    it("does not reject when only work_start is sent (partial-update correlation is wired in settings-routes.ts by #481, not here)", () => {
       const result = validatePutSettingsInput({ work_start: "23:00" });
       expect(result).toEqual({
         valid: true,
@@ -394,7 +398,7 @@ describe("validatePutSettingsInput", () => {
       });
     });
 
-    it("does not reject when only work_end is sent (partial update wiring is #481's scope)", () => {
+    it("does not reject when only work_end is sent (partial-update correlation is wired in settings-routes.ts by #481, not here)", () => {
       const result = validatePutSettingsInput({ work_end: "01:00" });
       expect(result).toEqual({
         valid: true,
