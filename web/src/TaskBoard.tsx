@@ -53,9 +53,15 @@ function columnHeading(column: BoardColumn): string {
 interface TaskBoardProps {
   /** AppLayout にリフトアップされた共有 tasks 状態（Issue #70）。 */
   tasksState: UseTasksResult;
+  /**
+   * タスクカードからのメンタリング起動（Issue #470, 親 #444 決定1）。
+   * `TaskCard` へそのまま渡すだけで、判断には関与しない（adhoc 区間かどうか
+   * の判定は `AppLayout` が持つ）。
+   */
+  onStartMentoring?: ((taskId: number) => void) | null;
 }
 
-function TaskBoard({ tasksState }: TaskBoardProps) {
+function TaskBoard({ tasksState, onStartMentoring }: TaskBoardProps) {
   const { tasks, status, addTask, editTask, refresh } = tasksState;
   const [actionError, setActionError] = useState<string | null>(null);
   // ドラッグ中にハイライトすべきドロップ先カラム（Issue #122）。
@@ -195,6 +201,7 @@ function TaskBoard({ tasksState }: TaskBoardProps) {
                       }
                       onEdit={(id, patch) => runAction(editTask(id, patch))}
                       onDraggingChange={setDraggingTaskId}
+                      onStartMentoring={onStartMentoring}
                     />
                   </li>
                 ))}
