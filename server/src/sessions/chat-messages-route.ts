@@ -487,12 +487,26 @@ export function registerChatMessageRoute(
         // A reply cut short by a failed or timed-out LLM call is just as
         // incomplete as one the user stopped, and the reader wants the same
         // thing signalled in both cases — that the text stops mid-thought.
-        if (fullText !== "") {
+        //
+        // Codex 指摘（PR #467）: 永続化するのは **配信済みに対応する raw の
+        // 接頭辞**であって `fullText` 全体ではない。中断時は 424 行の
+        // フラッシュが走らないため、保留中の末尾（`"回答は x < 10"` の
+        // `"< 10"` のような未閉じ `<` 以降）はクライアントへ届いていない。
+        // `fullText` をそのまま保存すると、停止直後に web が保持している
+        // 配信済み接頭辞と、`GET /messages` の再読み込み結果が食い違う
+        // （未閉じ `<` は正規化で除去されないのでそのまま現れる）。
+        //
+        // `splitPendingTagTail` は純粋関数なので、ここで最終 `fullText` に
+        // 掛けた `committed` は、最後の delta 時点で送出判断に使った値と
+        // 同一になる。保存するのは**その raw の接頭辞**であり、正規化した
+        // 値ではない（「保存 content は非正規化」の決定を壊さない）。
+        const deliveredRawText = splitPendingTagTail(fullText).committed;
+        if (deliveredRawText !== "") {
           try {
             insertMessage(db, {
               session_id: id,
               role: "boss",
-              content: fullText,
+              content: deliveredRawText,
               interrupted: true,
             });
           } catch (persistErr) {

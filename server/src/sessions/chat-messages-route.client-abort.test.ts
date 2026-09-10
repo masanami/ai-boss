@@ -179,6 +179,43 @@ describe("POST /api/sessions/:id/messages — client disconnect over a real HTTP
     expect(messages[1].interrupted).toBe(1);
   });
 
+  // Codex 指摘（PR #467）: 中断時は正常完了時のフラッシュが走らないので、
+  // 保留中の末尾（未閉じ `<` 以降）はクライアントへ届いていない。`fullText`
+  // 全体を保存すると、停止直後に web が持つ配信済み接頭辞と、`GET /messages`
+  // の再読み込み結果が食い違う（未閉じ `<` は正規化で除去されないため）。
+  it("persists only the delivered raw prefix when the reply is cut off mid-'<'", async () => {
+    const session = await createSession();
+    // `"< 10"` は最後の `>` より後の `<` 以降＝保留され、配信されない。
+    const { firstDeltaSent, abortObserved } = respondThenWaitForAbort("回答は x < 10");
+
+    const controller = new AbortController();
+    const request = fetch(`${baseUrl}/api/sessions/${session.id}/messages`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ content: "しきい値は？" }),
+      signal: controller.signal,
+    }).then(async (res) => {
+      const reader = res.body!.getReader();
+      await reader.read();
+      return reader;
+    });
+
+    await firstDeltaSent;
+    await request.catch(() => undefined);
+    controller.abort();
+    await abortObserved;
+
+    await vi.waitFor(() => {
+      expect(messagesOf(session.id)).toHaveLength(2);
+    });
+
+    const messages = messagesOf(session.id);
+    // 配信済みの接頭辞だけが残る（保留された `"< 10"` は残らない）。
+    expect(messages[1].role).toBe("boss");
+    expect(messages[1].content).toBe("回答は x ");
+    expect(messages[1].interrupted).toBe(1);
+  });
+
   it("keeps the chat_message activity event when the client hangs up mid-stream", async () => {
     const session = await createSession();
     const { firstDeltaSent, abortObserved } = respondThenWaitForAbort("途中まで");
