@@ -114,6 +114,28 @@ describe("getOrGenerateBossComment", () => {
     expect(createBossMessageMock).not.toHaveBeenCalled();
   });
 
+  // Codex 指摘（PR #467）: 旧版が書いたキャッシュ行はタグだけを含みうる
+  // （旧コードでは valid だったので settings に残る）。キャッシュヒット枝が
+  // 正規化するだけだと `"\n\n"` を返し、生成側の空判定を迂回してしまう。
+  it("falls back to the template when a legacy cache entry normalizes to whitespace only", async () => {
+    const now = new Date(2026, 6, 6, 8, 0);
+    const { setCachedBossComment } = await import("./boss-comment-cache.js");
+    const { toDateKey } = await import("../detection/time-utils.js");
+    const { listTasks } = await import("../tasks/tasks-repository.js");
+    setCachedBossComment(
+      db,
+      toDateKey(now),
+      computeTaskFingerprint(listTasks(db)),
+      "<p></p>",
+    );
+
+    const comment = await getOrGenerateBossComment(db, env, now);
+
+    expect(comment).toBe("今日も決めたことを淡々とこなせ。");
+    // キャッシュヒットのままであること（再生成で「直った」のではない）。
+    expect(createBossMessageMock).not.toHaveBeenCalled();
+  });
+
   // 応答が許可リストのタグだけで構成される場合、正規化後は空白しか残らない。
   // 空白だけのひとことをその暦日いっぱいキャッシュしないよう、正規化後の
   // 空判定でフォールバックへ落ちることを固定する。

@@ -189,7 +189,13 @@ export async function getOrGenerateBossComment(
 
   const cached = getCachedBossComment(db, todayKey, fingerprint);
   if (cached !== undefined) {
-    return stripHtmlTags(cached);
+    // Codex 指摘（PR #467）: 正規化後の空判定は生成側にもあるが、**旧版が
+    // 書いたキャッシュ行**（`<p></p>` のようにタグだけを含む値。旧コードでは
+    // valid だったので `settings` に残っている）はその判定を通っていない。
+    // ここで同じ判定を掛けないと、日付かタスク fingerprint が変わるまで
+    // ダッシュボードのひとことが空白のままになる。
+    const normalizedCache = stripHtmlTags(cached);
+    return normalizedCache.trim() === "" ? FALLBACK_COMMENT : normalizedCache;
   }
 
   const result = await generateBossComment(db, env, now, tasks);
