@@ -135,6 +135,48 @@ describe("evaluateRules", () => {
     expect(result.map((r) => r.ruleType)).not.toContain("break_overrun");
   });
 
+  // AC-16: 暦日 D を締切とするタスクの deadline_overdue の**最初の発火が D+1 の
+  // 始業（09:00）**であること（ADR 0010 帰結）。締切超過の条件成立自体は D+1
+  // 00:00 だが、その時刻は勤務時間帯 [09:00, 18:00) の外で rule-engine のゲートが
+  // 閉じているため、実際に催促が出るのは始業から。時刻付き T18:00 だった現状の
+  // 実効挙動と同じであり、本変更が催促を前倒しして強めていないことを固定する。
+  //
+  // 固定時刻は new Date(y, m, d, h) 由来のローカル日時（ADR 0007 決定 5）。
+  // 勤務時間帯ゲートもローカル時刻基準なので、これで TZ 非依存になる。
+  describe("first deadline_overdue firing for a calendar-day due date (AC-16)", () => {
+    const DUE_DATE_KEY = "2026-07-05"; // 暦日 D
+    const overdueTask = makeTask({ id: 1, status: "todo", due_at: DUE_DATE_KEY });
+
+    function deadlineFirings(now: Date) {
+      return evaluateRules(baseInput({ now, tasks: [overdueTask] })).filter(
+        (r) => r.ruleType === "deadline_overdue",
+      );
+    }
+
+    // (a) 本変更の**変異検出点**。旧解釈（暦日の始まりを締切とみなす／UTC 0 時
+    // として解釈する）だと締切当日の日中に発火してしまう。
+    it("does not fire during the due date itself, inside working hours", () => {
+      expect(deadlineFirings(new Date(2026, 6, 5, 17))).toEqual([]);
+    });
+
+    // (b) 締切超過は成立しているが、始業前で勤務時間帯ゲートが閉じている。
+    it("does not fire after the deadline lapses but before working hours begin", () => {
+      expect(deadlineFirings(new Date(2026, 6, 6, 8))).toEqual([]);
+    });
+
+    // (c) 最初の発火。
+    it("fires at the start of business on the day after the due date", () => {
+      expect(deadlineFirings(new Date(2026, 6, 6, 9))).toEqual([
+        {
+          ruleType: "deadline_overdue",
+          ruleKey: "deadline_overdue:1",
+          escalationLevel: 1,
+          taskId: 1,
+        },
+      ]);
+    });
+  });
+
   it("fires deadline_overdue notifications for every overdue task independently", () => {
     // 締切はローカル暦日で、超過は翌暦日 00:00 から。now は 7/5 12:00 なので
     // 両方を 7/5 より前の暦日にする（7/5 締切はこの時点ではまだ超過ではない）。
