@@ -1,4 +1,5 @@
 import type { Task } from "../tasks/task.js";
+import { toDueAtInstant } from "../tasks/due-at.js";
 
 const PRIORITY_RANK: Record<NonNullable<Task["priority"]>, number> = {
   high: 0,
@@ -13,8 +14,14 @@ function priorityRank(priority: Task["priority"]): number {
 
 // Number.MAX_SAFE_INTEGER を「締切なし」の代替値に使う。POSITIVE_INFINITY だと
 // due_at が両方 null のとき Infinity - Infinity = NaN になり比較が壊れるため避ける。
+//
+// due_at はローカル暦日であり、その解釈は tasks/due-at.ts に集約されている
+// （ADR 0010 決定 5。ここで new Date(due_at) を直接呼ばない）。暦として解釈
+// できない値は toDueAtInstant が null を返すため、締切なしと同順（最後尾）に
+// なる（決定 6）。従来は NaN が並び順へ混入し比較が壊れていた。
 function dueAtRank(dueAt: Task["due_at"]): number {
-  return dueAt === null ? Number.MAX_SAFE_INTEGER : new Date(dueAt).getTime();
+  const dueInstant = toDueAtInstant(dueAt);
+  return dueInstant === null ? Number.MAX_SAFE_INTEGER : dueInstant;
 }
 
 /**

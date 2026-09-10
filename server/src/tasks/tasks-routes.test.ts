@@ -5,6 +5,7 @@ import { runMigrations } from "../db/migrate.js";
 import { createApp } from "../app.js";
 import { setSettingValue } from "../settings/settings-repository.js";
 import type { Task } from "./task.js";
+import { toDateKey } from "../detection/time-utils.js";
 
 interface ErrorBody {
   error: string;
@@ -103,7 +104,7 @@ describe("tasks routes", () => {
           description: "月次報告資料",
           category: "work",
           priority: "high",
-          due_at: "2026-07-10T09:00:00.000Z",
+          due_at: "2026-07-10",
           status: "in_progress",
           boss_comment: "先にこれをやれ",
           estimated_minutes: 90,
@@ -117,7 +118,7 @@ describe("tasks routes", () => {
         description: "月次報告資料",
         category: "work",
         priority: "high",
-        due_at: "2026-07-10T09:00:00.000Z",
+        due_at: "2026-07-10",
         status: "in_progress",
         boss_comment: "先にこれをやれ",
         estimated_minutes: 90,
@@ -270,7 +271,54 @@ describe("tasks routes", () => {
       }
     });
 
-    it("accepts the due_at shapes the web date input and the boss tool actually produce", async () => {
+    // Codex 指摘（PR #458 P2）: 受理と解釈の非対称。`isValidIsoDateOrDateTime`
+    // は 0000〜0099 の 4 桁年を**実在の暦日として受理する**（`lib/iso-date.ts` は
+    // `daysInMonth` で意図的にこの範囲を正しく扱っている）が、暦日ユーティリティ
+    // 側は多引数 `Date` コンストラクタの 1900 年代への写像に阻まれて解釈できない。
+    // その結果 201 が返るのに `due_at` は `null` として保存され、**利用者の締切が
+    // 黙って消えていた**（ADR 0010 決定 6 が避けようとした事象そのもの）。
+    //
+    // 「受理するなら解釈する／解釈しないなら受理側で弾く」に揃え、後者を採る。
+    it("returns 400 when due_at cannot be interpreted as a local calendar day", async () => {
+      const app = createApp(db);
+
+      for (const unsupported of [
+        "0099-12-31",
+        "0001-01-01",
+        "0000-02-29",
+        "0099-12-31T10:00:00Z",
+      ]) {
+        const res = await app.request("/api/tasks", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ title: "タスク", due_at: unsupported }),
+        });
+
+        expect(res.status, unsupported).toBe(400);
+      }
+    });
+
+    // 上の裏返し。「解釈できない値は弾く」を入れたことで、**解釈できる値まで
+    // 巻き込んで弾いていない**ことを確かめる（弾きすぎの検出）。
+    it("still accepts due_at values that can be interpreted", async () => {
+      const app = createApp(db);
+
+      for (const supported of ["2026-09-05", "0100-01-01", "1970-01-01"]) {
+        const res = await app.request("/api/tasks", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ title: "タスク", due_at: supported }),
+        });
+
+        expect(res.status, supported).toBe(201);
+        const body = await readJson<{ due_at: string | null }>(res);
+        expect(body.due_at, supported).toBe(supported);
+      }
+    });
+
+    // AC-14: 時刻付きの旧形式は**拒否せず**受理し、その瞬時のローカル暦日へ
+    // 正規化して保存する（ADR 0010 決定 3・4）。保存形式は "YYYY-MM-DD" の 1 つ。
+    it("normalizes the due_at shapes the web date input and the boss tool produce to a local calendar day", async () => {
       const app = createApp(db);
 
       for (const valid of [
@@ -287,7 +335,17 @@ describe("tasks routes", () => {
 
         expect(res.status, valid).toBe(201);
         const body = await readJson<{ due_at: string | null }>(res);
-        expect(body.due_at).toBe(valid);
+
+        // 期待値はハードコードしない。オフセット付きの値は実行 TZ によって
+        // ローカル暦日が変わるため（"2026-09-05T09:30:00+09:00" は UTC 00:30 で、
+        // America/New_York では 9/4 になる）。日付のみの値は既に暦日キーそのもの
+        // なので Date を経由させない（経由すると UTC 0 時解釈で前日になる）。
+        const expected = /^\d{4}-\d{2}-\d{2}$/.test(valid)
+          ? valid
+          : toDateKey(new Date(valid));
+
+        expect(body.due_at, valid).toBe(expected);
+        expect(body.due_at, valid).toMatch(/^\d{4}-\d{2}-\d{2}$/);
       }
     });
 

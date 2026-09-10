@@ -1,6 +1,6 @@
 import { TASK_PRIORITIES, TASK_STATUSES } from "./task.js";
 import type { NewTaskRecord, TaskPatch } from "./tasks-repository.js";
-import { isValidIsoDateOrDateTime } from "../lib/iso-date.js";
+import { normalizeDueAtToDateKey } from "./due-at.js";
 
 export type ValidationResult<T> =
   | { valid: true; data: T }
@@ -64,15 +64,27 @@ function validateOptionalFieldTypes(
       return `${field} must be a string or null`;
     }
   }
-  // due_at は型が string でも、暦として解釈できない値を保存すると下流で実害に
-  // なる: `detection/deadline-overdue.ts` が `new Date(due_at).getTime()` を
-  // NaN にして期限超過を永久に検知せず、`detection/priority.ts` の `dueAtRank`
-  // も NaN を並び順へ混入させる（#199 / GAP-34・Codex 指摘 CODE-001）。
+  // due_at は型が string でも、暦として解釈できない値は保存させない
+  // （#199 / GAP-34・Codex 指摘 CODE-001）。
   // POST・PATCH の両経路がこの関数を通るため、ここ 1 箇所で両方を塞ぐ。
+  //
+  // 読み出し側（`tasks/due-at.ts`）も不正値を「締切なし」へ倒すようになった
+  // が（ADR 0010 決定 6・#442）、それは既に DB にある値を吸収するための措置で
+  // あり、入口の検査を省いてよい理由にはならない（2 形式の混在をこれ以上
+  // 増やさないため、書き込み時に弾くほうを正とする）。
+  //
+  // 判定は `isValidIsoDateOrDateTime` ではなく **`normalizeDueAtToDateKey` が
+  // 暦日を返せるか**で行う（PR #458 の Codex 指摘 P2）。前者は「暦として実在
+  // するか」しか見ないため、`0099-12-31` のように**受理はされるが暦日ユーティ
+  // リティ側が解釈できない**値が素通りし、201 を返しながら `due_at` は `null`
+  // として保存されて**利用者の締切が黙って消えて**いた。
+  //
+  // 書き込みの可否を読み出しと同じ関数に委ねることで、「受理する値」と「解釈
+  // できる値」が構造的に一致する（2 つの述語が将来ずれる余地を残さない）。
   if (
     "due_at" in body &&
     typeof body.due_at === "string" &&
-    !isValidIsoDateOrDateTime(body.due_at)
+    normalizeDueAtToDateKey(body.due_at) === null
   ) {
     return DUE_AT_FORMAT_ERROR;
   }
@@ -131,7 +143,14 @@ export function validateCreateTaskInput(
       description: (body.description as string | null | undefined) ?? null,
       category: (body.category as string | undefined) ?? "work",
       priority,
-      due_at: (body.due_at as string | null | undefined) ?? null,
+      // 保存形式はローカル暦日に一本化する（ADR 0010 決定 1）。時刻付きの旧形式
+      // は**拒否せず**受理して暦日へ落とす（決定 4。書き手がボス（LLM）であり
+      // 説明文への追従は確率的で、拒否するとツール失敗が利用者の会話に出るため）。
+      // 妥当性検査は上の validateOptionalFieldTypes が済ませているので、ここへ
+      // 来る値は null か暦として解釈できる文字列のいずれか。
+      due_at: normalizeDueAtToDateKey(
+        (body.due_at as string | null | undefined) ?? null,
+      ),
       status,
       boss_comment: (body.boss_comment as string | null | undefined) ?? null,
       estimated_minutes:
@@ -206,6 +225,14 @@ export function validatePatchTaskInput(
     if (field in body) {
       (patch as Record<string, unknown>)[field] = body[field];
     }
+  }
+  // POST と同じく、PATCH でも暦日へ正規化してから保存する（ADR 0010 決定 4）。
+  // ここで正規化しないと、web の日付編集は暦日を送るのにボス経由の更新だけが
+  // 時刻付きのまま残り、2 形式が DB に混在し続ける。
+  if ("due_at" in body) {
+    patch.due_at = normalizeDueAtToDateKey(
+      (body.due_at as string | null | undefined) ?? null,
+    );
   }
 
   return { valid: true, data: patch };

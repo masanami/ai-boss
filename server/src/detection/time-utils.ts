@@ -64,10 +64,16 @@ export function isWithinWorkingHours(
  * `Intl.DateTimeFormat.formatToParts` で年月日を個別に取り出して組み立てる
  * （`format()` 1発の文字列をロケール依存の区切り文字ごと信用しない、
  * `toISOString()` は使わない＝UTC 固定になり本関数の目的そのものに反するため）。
+ *
+ * **年は 4 桁へゼロ詰めする**。西暦 1000 年未満で桁が落ちると `YYYY-MM-DD` を
+ * 名乗りながら `100-01-01` のような 3 桁キーを返し、同形式を要求する
+ * {@link parseDateKey}（`^(\d{4})-`）に拒否されて往復しなくなる（PR #458 の
+ * Codex 指摘 P2）。1000 年以上では出力が変わらないため、既存の呼び出し側への
+ * 影響は無い。
  */
 export function toDateKey(date: Date, timeZone?: string): string {
   if (timeZone === undefined) {
-    const year = date.getFullYear();
+    const year = String(date.getFullYear()).padStart(4, "0");
     const month = String(date.getMonth() + 1).padStart(2, "0");
     const day = String(date.getDate()).padStart(2, "0");
     return `${year}-${month}-${day}`;
@@ -80,7 +86,7 @@ export function toDateKey(date: Date, timeZone?: string): string {
   }).formatToParts(date);
   const part = (type: "year" | "month" | "day"): string =>
     parts.find((p) => p.type === type)?.value ?? "";
-  return `${part("year")}-${part("month")}-${part("day")}`;
+  return `${part("year").padStart(4, "0")}-${part("month")}-${part("day")}`;
 }
 
 const DATE_KEY_PATTERN = /^(\d{4})-(\d{2})-(\d{2})$/;
