@@ -65,11 +65,14 @@ function validateOptionalFieldTypes(
       return `${field} must be a string or null`;
     }
   }
-  // due_at は型が string でも、暦として解釈できない値を保存すると下流で実害に
-  // なる: `detection/deadline-overdue.ts` が `new Date(due_at).getTime()` を
-  // NaN にして期限超過を永久に検知せず、`detection/priority.ts` の `dueAtRank`
-  // も NaN を並び順へ混入させる（#199 / GAP-34・Codex 指摘 CODE-001）。
+  // due_at は型が string でも、暦として解釈できない値は保存させない
+  // （#199 / GAP-34・Codex 指摘 CODE-001）。
   // POST・PATCH の両経路がこの関数を通るため、ここ 1 箇所で両方を塞ぐ。
+  //
+  // 読み出し側（`tasks/due-at.ts`）も不正値を「締切なし」へ倒すようになった
+  // が（ADR 0010 決定 6・#442）、それは既に DB にある値を吸収するための措置で
+  // あり、入口の検査を省いてよい理由にはならない（2 形式の混在をこれ以上
+  // 増やさないため、書き込み時に弾くほうを正とする）。
   if (
     "due_at" in body &&
     typeof body.due_at === "string" &&
