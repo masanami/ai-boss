@@ -3,6 +3,7 @@ import {
   CHAT_PLAIN_TEXT_INSTRUCTION,
   DEFAULT_PERSONA_SETTINGS,
   MAX_TODAYS_ADHOC_MESSAGES_TOTAL_LENGTH,
+  MENTORING_TARGET_TASK_INSTRUCTION,
   buildPersonaPrompt,
   type PersonaSettings,
 } from "./persona-prompt.js";
@@ -1212,6 +1213,117 @@ describe("buildPersonaPrompt", () => {
       expect(prompt).toContain("record_mentoring");
       expect(prompt).not.toContain("朝会（計画セッション）");
       expect(prompt).not.toContain("夕会（報告セッション）");
+    });
+  });
+
+  // Issue #468（親 #444 決定3・5）: タスク単位のメンタリングでボスへ
+  // 「対象タスク」を認識させるセクション。`mentoringTaskId` は呼び出し側
+  // （チャットルート）が合成して渡す任意プロパティで、対象タスクの解決は
+  // `context.tasks` から探すだけ（純粋関数のまま、DB を読まない）。
+  describe("対象タスクセクション（mentoringTaskId, Issue #468）", () => {
+    const targetTask = makeTask({
+      id: 7,
+      title: "設計レビュー",
+      status: "in_progress",
+      priority: "high",
+    });
+
+    it("mentoring: true かつ mentoringTaskId が tasks に存在するとき、対象タスクの1行（ステータス・#id・タイトル・優先度・エビデンス・締切）を含む「対象タスク」セクションが現れる（AC-17）", () => {
+      const prompt = buildPersonaPrompt(DEFAULT_PERSONA_SETTINGS, {
+        tasks: [targetTask],
+        recentDecisions: [],
+        now,
+        mentoring: true,
+        mentoringTaskId: 7,
+      });
+
+      expect(prompt).toContain("対象タスク");
+      expect(prompt).toContain("#7");
+      expect(prompt).toContain("設計レビュー");
+      expect(prompt).toContain("進行中");
+      expect(prompt).toContain("優先度");
+      expect(prompt).toContain("エビデンス");
+      expect(prompt).toContain("締切");
+    });
+
+    it("対象タスクのエビデンス件数は taskEvidenceCounts から反映される", () => {
+      const prompt = buildPersonaPrompt(DEFAULT_PERSONA_SETTINGS, {
+        tasks: [targetTask],
+        taskEvidenceCounts: { 7: 3 },
+        recentDecisions: [],
+        now,
+        mentoring: true,
+        mentoringTaskId: 7,
+      });
+
+      expect(prompt).toContain("添付3件");
+    });
+
+    it("mentoring: true かつ mentoringTaskId が指定されたとき、record_mentoring の task_id へ対象タスクの id を指定するよう促す指示が含まれる（AC-18）", () => {
+      const prompt = buildPersonaPrompt(DEFAULT_PERSONA_SETTINGS, {
+        tasks: [targetTask],
+        recentDecisions: [],
+        now,
+        mentoring: true,
+        mentoringTaskId: 7,
+      });
+
+      expect(prompt).toContain(MENTORING_TARGET_TASK_INSTRUCTION);
+      expect(MENTORING_TARGET_TASK_INSTRUCTION).toContain("task_id");
+      expect(MENTORING_TARGET_TASK_INSTRUCTION).toContain("record_mentoring");
+    });
+
+    it("mentoringTaskId が指定されていないメンタリングのターンでは、「対象タスク」セクションが現れない（AC-19）", () => {
+      const prompt = buildPersonaPrompt(DEFAULT_PERSONA_SETTINGS, {
+        tasks: [targetTask],
+        recentDecisions: [],
+        now,
+        mentoring: true,
+      });
+
+      expect(prompt).not.toContain("対象タスク");
+      expect(prompt).not.toContain(MENTORING_TARGET_TASK_INSTRUCTION);
+    });
+
+    it("mentoringTaskId が tasks に存在しない id のとき、「対象タスク」セクションが現れない（AC-20）", () => {
+      const prompt = buildPersonaPrompt(DEFAULT_PERSONA_SETTINGS, {
+        tasks: [targetTask],
+        recentDecisions: [],
+        now,
+        mentoring: true,
+        mentoringTaskId: 999,
+      });
+
+      expect(prompt).not.toContain("対象タスク");
+      expect(prompt).not.toContain(MENTORING_TARGET_TASK_INSTRUCTION);
+    });
+
+    it("mentoring が偽のターンでは、mentoringTaskId が渡されても「対象タスク」セクションが現れない（AC-21）", () => {
+      const prompt = buildPersonaPrompt(DEFAULT_PERSONA_SETTINGS, {
+        tasks: [targetTask],
+        recentDecisions: [],
+        now,
+        mentoring: false,
+        mentoringTaskId: 7,
+      });
+
+      expect(prompt).not.toContain("対象タスク");
+      expect(prompt).not.toContain(MENTORING_TARGET_TASK_INSTRUCTION);
+    });
+
+    it("mentoring: true かつ mentoringTaskId 指定時も、既存の MENTORING_FLOW_INSTRUCTION は従来どおり積まれる（AC-22）", () => {
+      const prompt = buildPersonaPrompt(DEFAULT_PERSONA_SETTINGS, {
+        tasks: [targetTask],
+        recentDecisions: [],
+        now,
+        mentoring: true,
+        mentoringTaskId: 7,
+      });
+
+      expect(prompt).toContain("record_mentoring");
+      expect(prompt).toContain("仕事の進め方のメンタリング");
+      expect(prompt).toContain("限定");
+      expect(prompt).toContain("実際の連絡");
     });
   });
 

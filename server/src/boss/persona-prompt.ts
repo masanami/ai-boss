@@ -134,6 +134,17 @@ export interface PersonaPromptContext {
    * 設定の読み取りも条件の合成も行わない（純粋関数のまま）。省略時は false。
    */
   mentoring?: boolean;
+  /**
+   * このターンのメンタリングの対象タスクの id（Issue #468, 親 #444 決定3）。
+   * **呼び出し側（チャットルート）が渡す**。`mentoringTaskId` は
+   * `mentoring: true` と同時にのみ指定される契約（API層のバリデーションが
+   * 担保。`docs/features/task-scoped-mentoring.md` IF）だが、この関数自身は
+   * その契約を検証しない（純粋関数のまま。DB 参照・設定読み取りを持ち込まない）。
+   * `mentoring` が偽のとき、または `context.tasks` に該当タスクが無いとき
+   * （id の不整合・タスク削除等）は、対象タスクセクションを出さず無視する
+   * （AC-20/AC-21）。省略時は undefined（対象タスクなしの従来どおりの挙動）。
+   */
+  mentoringTaskId?: number;
 }
 
 const TONE_DESCRIPTIONS: Record<TonePreset, string> = {
@@ -565,6 +576,43 @@ const MENTORING_FLOW_INSTRUCTION =
   "点検の結論（進め方をどう変えるか、または変えないか）を record_mentoring ツールで1件以上記録すること。" +
   "content には結論を、rationale にはどの点をどう危ういと判断したか（扱った観点）を書くこと。";
 
+/**
+ * メンタリングの対象タスクを解決する（Issue #468, 親 #444 決定3）。
+ * `mentoringTaskId` が未指定、または `tasks` に該当 id が無ければ
+ * `undefined` を返す（呼び出し側で「対象タスク」セクションを出さない判断に使う。
+ * AC-19/AC-20）。DB を読まない・純粋（`context.tasks` から探すだけ）。
+ */
+function resolveMentoringTargetTask(
+  tasks: Task[],
+  mentoringTaskId: number | undefined,
+): Task | undefined {
+  if (mentoringTaskId === undefined) {
+    return undefined;
+  }
+  return tasks.find((task) => task.id === mentoringTaskId);
+}
+
+/**
+ * 「対象タスク」セクションの見出し（Issue #468, 親 #444 決定3）。対象タスクの
+ * 1行は既存の `formatTaskLine` を再利用して組み立てる（書式の二重管理を
+ * 作らない）。`includeId` は常に真 — ボスが `record_mentoring` の `task_id` を
+ * 解決するための `#id` を必ず含める（決定3「確証(D)」と同じ作法）。
+ */
+function formatTargetTaskSection(task: Task, evidenceCount: number): string {
+  return `対象タスク:\n${formatTaskLine(task, true, evidenceCount)}`;
+}
+
+/**
+ * 対象タスクの id を `record_mentoring` の `task_id` に指定するよう促す指示
+ * （Issue #468, 親 #444 決定5）。**この指示だけでは `task_id` が必ず埋まる
+ * ことを担保しない** — 担保はサーバ側補完（#469、`executeBossTool` の
+ * `record_mentoring` 分岐）が持つ。本チケットの範囲はこの指示の追加まで。
+ * テストが文言を重複記述して恒真にならないよう export する。
+ */
+export const MENTORING_TARGET_TASK_INSTRUCTION =
+  "このメンタリングには対象タスクがある。上の「対象タスク」セクションに示したタスクについての相談として扱い、" +
+  "record_mentoring を呼ぶときは task_id にそのタスクの id（#の後の数字）を指定すること。";
+
 const MORNING_FLOW_INSTRUCTION =
   "これは朝会（計画セッション）。ユーザーから今日の予定の報告を受けたら、タスクの優先順位と今日のノルマを決定の形で提示し、" +
   "create_task / update_task でタスクへ反映すること。各タスクの所要時間はざっくり見積もって提案し、ユーザーが同意または修正した" +
@@ -682,6 +730,19 @@ export function buildPersonaPrompt(
     // ケース（朝会・強制オン）でも常にメンタリングの指示が先に出現する。
     if (context.mentoring ?? false) {
       sections.push(MENTORING_FLOW_INSTRUCTION);
+      // 対象タスク（Issue #468, 親 #444 決定3・5）: mentoring が真 かつ
+      // mentoringTaskId が tasks に存在するときだけ「対象タスク」セクションと
+      // task_id 指示を積む（AND 条件。AC-17/19/20/21）。
+      const targetTask = resolveMentoringTargetTask(
+        context.tasks,
+        context.mentoringTaskId,
+      );
+      if (targetTask) {
+        const evidenceCount =
+          context.taskEvidenceCounts?.[targetTask.id] ?? 0;
+        sections.push(formatTargetTaskSection(targetTask, evidenceCount));
+        sections.push(MENTORING_TARGET_TASK_INSTRUCTION);
+      }
     }
     const sessionFlowInstruction = resolveSessionFlowInstruction(
       context.sessionType,
