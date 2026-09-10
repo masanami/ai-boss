@@ -253,6 +253,39 @@ describe("POST /api/sessions/:id/messages", () => {
     expect(events.map((e) => e.type)).toContain("chat_message");
   });
 
+  // Issue #461（親 #446 S1）: docs/features/boss-reply-plain-text-output.md
+  // クリティカル設計決定「SSE 送出の制約」— `done` の payload を組み立てる
+  // 際に `content` を正規化した値へ差し替える。DB へ挿入する行は生のまま
+  // （「保存 content の扱い」決定と両立させる）。
+  it("AC-16/AC-13: normalizes the done event's content while leaving the persisted messages.content as the LLM's raw output", async () => {
+    const session = await createSession();
+    const rawFullText = "<p>今日は資料作成からだ</p><strong>優先しろ</strong>。";
+    streamBossMessageMock.mockImplementation(
+      async (_client, _request, callbacks: StreamBossMessageCallbacks) => {
+        callbacks.onTextDelta?.(rawFullText);
+        return fakeTextMessage(rawFullText);
+      },
+    );
+    const app = createApp(db, env);
+
+    const res = await app.request(`/api/sessions/${session.id}/messages`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ content: "何から始めればいい？" }),
+    });
+
+    const events = parseSseEvents(await res.text());
+    const doneEvent = events.find((e) => e.event === "done");
+    expect(doneEvent).toBeDefined();
+    const bossMessage = JSON.parse(doneEvent!.data) as Message;
+    expect(bossMessage.content).toBe("\n今日は資料作成からだ\n優先しろ。");
+
+    const messages = db
+      .prepare("SELECT * FROM messages WHERE session_id = ? ORDER BY id ASC")
+      .all(session.id) as Message[];
+    expect(messages[1]).toMatchObject({ role: "boss", content: rawFullText });
+  });
+
   it("streams text deltas and a final done event with the persisted boss message", async () => {
     const session = await createSession();
     streamBossMessageMock.mockImplementation(

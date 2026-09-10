@@ -2,6 +2,7 @@ import type Database from "better-sqlite3";
 import { resolveBossSettings } from "../boss/boss-settings.js";
 import { buildPersonaPrompt } from "../boss/persona-prompt.js";
 import { resolveLlmBackend, type LlmBackend } from "../config.js";
+import { stripHtmlTags } from "../lib/strip-html-tags.js";
 import {
   createClaudeClient,
   createBossMessage,
@@ -127,7 +128,21 @@ async function generateBossComment(
     if (backend === "claude-code" && zenkakuEquivalentLength(text) > DASHBOARD_COMMENT_MAX_ZENKAKU_LENGTH) {
       return { text: FALLBACK_COMMENT, succeeded: false };
     }
-    return { text, succeeded: true };
+    // Issue #461（親 #446 S1）: docs/features/boss-reply-plain-text-output.md
+    // クリティカル設計決定「適用面」— LLM 由来のテキストへ stripHtmlTags を
+    // 適用する。全角80字の長さ検証（FR-14）は正規化前の生テキストに対して
+    // 行う（タグ除去後は短くなりうるため、検証は保守的に生の長さで行う）。
+    //
+    // 正規化した値をここでキャッシュへ渡す（呼び出し元 getOrGenerateBossComment
+    // が succeeded: true のときそのまま setCachedBossComment する）。
+    // 意思決定: このキャッシュは messages.content と違い、次ターンの
+    // プロンプトへ再投入される経路を持たない単なる表示キャッシュであり、
+    // 「生出力を残して後から調べられるようにする」再現性の理由
+    // （docs/features/boss-reply-plain-text-output.md クリティカル設計決定
+    // 「保存 content の扱い」）が転用できない。正規化後の値を1箇所
+    // （ここ）だけで確定させることで、キャッシュヒット・ミスの両経路が
+    // 追加の変換なしに正規化済みの値を返す。
+    return { text: stripHtmlTags(text), succeeded: true };
   } catch (err) {
     // Claude API のエラーはリクエスト内部情報を含みうるため、クラス名のみ
     // ログに残す（chat-messages-route.ts / notification-body.ts と同じ規約）。

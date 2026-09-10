@@ -148,6 +148,23 @@ describe("generateNotificationBody", () => {
     expect(request.thinking).toEqual({ type: "disabled" });
   });
 
+  // Issue #461（親 #446 S1）: docs/features/boss-reply-plain-text-output.md
+  // クリティカル設計決定「適用面」— LLM 由来の戻り値へ stripHtmlTags を適用する。
+  it("AC-17: normalizes HTML tags in the Claude-generated text before returning", async () => {
+    streamBossMessageMock.mockResolvedValue(
+      fakeTextMessage("<p>資料作成に早く着手しろ。</p>"),
+    );
+
+    const body = await generateNotificationBody(db, env, {
+      ruleType: "todo_stall",
+      escalationLevel: 1,
+      task: makeTask(),
+      now,
+    });
+
+    expect(body).toBe("\n資料作成に早く着手しろ。\n");
+  });
+
   it("returns the trimmed Claude-generated text when the call succeeds", async () => {
     streamBossMessageMock.mockResolvedValue(
       fakeTextMessage("  資料作成に早く着手しろ。  "),

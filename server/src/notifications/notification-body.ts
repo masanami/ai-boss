@@ -2,6 +2,7 @@ import type Database from "better-sqlite3";
 import { resolveBossSettings } from "../boss/boss-settings.js";
 import { buildPersonaPrompt } from "../boss/persona-prompt.js";
 import { resolveLlmBackend } from "../config.js";
+import { stripHtmlTags } from "../lib/strip-html-tags.js";
 import {
   createClaudeClient,
   streamBossMessage,
@@ -210,7 +211,11 @@ export async function generateNotificationBody(
     if (text === "") {
       return buildFallbackBody(request);
     }
-    return text;
+    // Issue #461（親 #446 S1）: docs/features/boss-reply-plain-text-output.md
+    // クリティカル設計決定「適用面」— LLM 由来のテキストに stripHtmlTags を
+    // 適用する。フォールバック定型文（buildFallbackBody）は LLM 由来ではない
+    // ため適用しない。
+    return stripHtmlTags(text);
   } catch (err) {
     // Claude API errors may embed request internals in `message` — only log
     // the error's class name (same convention as chat-messages-route.ts).

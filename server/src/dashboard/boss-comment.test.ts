@@ -60,6 +60,37 @@ describe("getOrGenerateBossComment", () => {
     vi.useRealTimers();
   });
 
+  // Issue #461（親 #446 S1）: docs/features/boss-reply-plain-text-output.md
+  // クリティカル設計決定「適用面」— stripHtmlTags を適用する。キャッシュへ
+  // 正規化後の値を保存する設計（意思決定・理由は本チケットの完了報告参照）
+  // なので、キャッシュミス（初回生成）・キャッシュヒット（2回目）の両経路で
+  // 正規化された値が返ることを固定する。
+  it("AC-18: normalizes HTML tags in the generated comment on a cache miss", async () => {
+    const now = new Date(2026, 6, 6, 8, 0);
+    createBossMessageMock.mockResolvedValue(
+      fakeTextMessage("<p>今日も決めた通りにやれ</p>"),
+    );
+
+    const comment = await getOrGenerateBossComment(db, env, now);
+
+    expect(comment).toBe("\n今日も決めた通りにやれ\n");
+  });
+
+  it("AC-18: still returns the normalized comment on a cache hit (second same-day request)", async () => {
+    const first = new Date(2026, 6, 6, 8, 0);
+    const second = new Date(2026, 6, 6, 20, 0);
+    createBossMessageMock.mockResolvedValue(
+      fakeTextMessage("<p>今日も決めた通りにやれ</p>"),
+    );
+
+    const firstComment = await getOrGenerateBossComment(db, env, first);
+    const secondComment = await getOrGenerateBossComment(db, env, second);
+
+    expect(firstComment).toBe("\n今日も決めた通りにやれ\n");
+    expect(secondComment).toBe("\n今日も決めた通りにやれ\n");
+    expect(createBossMessageMock).toHaveBeenCalledTimes(1);
+  });
+
   it("calls the Claude API and returns the generated text on first request", async () => {
     const now = new Date(2026, 6, 6, 8, 0);
     createBossMessageMock.mockResolvedValue(fakeTextMessage("今日も一日決めた通りにやれ"));
