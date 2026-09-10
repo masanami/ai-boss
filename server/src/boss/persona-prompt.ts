@@ -574,6 +574,31 @@ const EVENING_FLOW_INSTRUCTION =
   "これは夕会（報告セッション）。ユーザーから進捗の報告を受けたら、タスクごとに達成/未達を評価すること。未達タスクは理由を確認した" +
   "うえで、持ち越し（締切変更・継続・取り下げ）を裁定し update_task で反映すること。裁定は record_decision で記録すること。";
 
+/**
+ * 通常チャット（`purpose: "chat"`）の出力形式指示（Issue #459 / 親 #446 S1・
+ * `docs/features/boss-reply-plain-text-output.md`）。
+ *
+ * チャットのボス応答は `white-space: pre-wrap` ＋ JSX 補間で描画される。React が
+ * エスケープするため HTML として解釈されることはなく、**タグや Markdown の記号が
+ * 文字としてそのまま画面に出る**。日報（`DAILY_REPORT_INSTRUCTION`）・夕会要約
+ * （`reports/evening-summary-tool.ts`）には同型の平文指示があるのに、通常チャット
+ * だけ形式が野放しだった。
+ *
+ * **HTML と Markdown で層の数が違う**（機能仕様「対策の層構成と LLM 依存範囲」）:
+ * HTML はこの指示＋`lib/strip-html-tags.ts` による表示側の除去の **2 層**、
+ * Markdown は**この指示の 1 層のみ**で覆う。Markdown を機械的に剥がすと正当な
+ * `**`・行頭 `- `・`1. ` を壊す——HTML タグと違い日常の文章と字面が区別できず、
+ * 表示側で判別できる約束にならないためである。したがって Markdown を出させない
+ * 責任はこの文字列だけが負っている。
+ *
+ * テストが文言を重複記述して恒真にならないよう export する。
+ */
+export const CHAT_PLAIN_TEXT_INSTRUCTION =
+  "出力形式: 応答は平文で書くこと。HTMLタグ（<p> <br> <strong> など）を使ってはならない。" +
+  "Markdownの装飾（**強調**、見出しの #、箇条書きの行頭 - や *、番号付きリストの行頭 1. 、" +
+  "コードブロックの ``` 、表記法）も使ってはならない。列挙が必要なときは記号を使わず、" +
+  "改行と句読点だけで区切った普通の文章にすること。";
+
 const TASK_ESTIMATE_CONFIRMATION_INSTRUCTION =
   "チャットからタスクを新規作成するときは、所要時間の見積もりを提案し、ユーザーが確認（同意または修正）した値だけを" +
   "estimated_minutes に保存すること（確認前に保存してはならない）。";
@@ -665,6 +690,9 @@ export function buildPersonaPrompt(
       sections.push(sessionFlowInstruction);
     }
     sections.push(TASK_ESTIMATE_CONFIRMATION_INSTRUCTION);
+    // Issue #459（親 #446 S1）: chat 分岐にのみ積む。notification /
+    // daily-report は本変更の対象外（それぞれ既存の指示を持つ）。
+    sections.push(CHAT_PLAIN_TEXT_INSTRUCTION);
   }
 
   return sections.join("\n\n");
