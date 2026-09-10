@@ -100,7 +100,9 @@ const createTaskShape = {
   title: z.string().describe("タスクのタイトル（必須）"),
   description: z.string().describe("詳細説明").optional(),
   priority: z.enum(TASK_PRIORITIES).describe("優先度").optional(),
-  due_at: z.string().describe("締切（ISO 8601 日時文字列）").optional(),
+  // 文言は boss/task-tools.ts の JSON Schema と一致させる（下のテストが両者の
+  // description 一致を検証している。定数の共有はその検証を恒真にするのでしない）
+  due_at: z.string().describe('締切（ローカル暦日 "YYYY-MM-DD"）').optional(),
   estimated_minutes: z.number().int().describe("所要時間見積もり（分）").optional(),
   boss_comment: z.string().describe("ボスの決定・コメント").optional(),
   evidence_required: z
@@ -114,7 +116,7 @@ const updateTaskShape = {
   title: z.string().optional(),
   description: z.string().optional(),
   priority: z.enum(TASK_PRIORITIES).optional(),
-  due_at: z.string().describe("締切（ISO 8601 日時文字列）").optional(),
+  due_at: z.string().describe('締切（ローカル暦日 "YYYY-MM-DD"）').optional(),
   status: z.enum(TASK_STATUSES).optional(),
   boss_comment: z.string().optional(),
   estimated_minutes: z.number().int().optional(),

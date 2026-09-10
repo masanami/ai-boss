@@ -5,9 +5,12 @@
  * `new Date()` は存在しない日付を黙ってロールオーバーさせ（`2026-02-30` →
  * 3/2）、`"0"` や `"12/31/2026"` のような非 ISO 文字列も受理する。
  * `Number.isNaN(getTime())` のガードだけでは不正値が保存され、下流で実害に
- * なる: `detection/deadline-overdue.ts` は `new Date(due_at).getTime()` を
- * `now` と比較するため `NaN` の締切は**永久に期限超過と判定されず**、
- * `detection/priority.ts` の `dueAtRank` も `NaN` を並び順へ混入させる。
+ * なる。かつては `detection/deadline-overdue.ts` が `new Date(due_at)` を
+ * `now` と直接比較しており、`"0"` が 2000-01-01 と解釈されて**常に期限超過**
+ * になり、`detection/priority.ts` の `dueAtRank` は `NaN` を並び順へ混入させて
+ * いた。現在 `due_at` の解釈は `tasks/due-at.ts` に集約され、不正値は「締切
+ * なし」へ倒れる（ADR 0010 決定 6・#442）。それでも本述語を入口に置くのは、
+ * 不正値をそもそも保存させないため（読み出し側の吸収は既存行のための措置）。
  *
  * 判定は `Date` を介さず文字列の構成要素に対して行う。parse 後のローカル成分と
  * 突き合わせる方式は、オフセット付きの値だと実行環境の TZ 次第で成分がずれる

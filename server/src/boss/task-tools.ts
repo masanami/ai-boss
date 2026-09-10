@@ -31,7 +31,15 @@ export const TASK_TOOLS: Anthropic.Tool[] = [
           enum: [...TASK_PRIORITIES],
           description: "優先度",
         },
-        due_at: { type: "string", description: "締切（ISO 8601 日時文字列）" },
+        // due_at はローカル暦日（ADR 0010 決定 1）。「その日の何時まで」を表現
+        // する手段は持たない。実測（ADR 0010 背景）では、ここが「ISO 8601 日時
+        // 文字列」だったために LLM が就業終わりの T18:00:00+09:00 を自分で補って
+        // いた。書き手が LLM である以上、求める形は説明文で明示する必要がある。
+        //
+        // claude-code-backend.ts の Zod shape と同じ文言を**あえて二重に**書く。
+        // 同ファイルのテストが両者の description 一致を検証しており、定数を共有
+        // するとその検証が恒真になるため（片方だけ変えたときに落ちる形を保つ）。
+        due_at: { type: "string", description: '締切（ローカル暦日 "YYYY-MM-DD"）' },
         estimated_minutes: {
           type: "integer",
           description: "所要時間見積もり（分）",
@@ -60,7 +68,7 @@ export const TASK_TOOLS: Anthropic.Tool[] = [
         title: { type: "string" },
         description: { type: "string" },
         priority: { type: "string", enum: [...TASK_PRIORITIES] },
-        due_at: { type: "string", description: "締切（ISO 8601 日時文字列）" },
+        due_at: { type: "string", description: '締切（ローカル暦日 "YYYY-MM-DD"）' },
         status: { type: "string", enum: [...TASK_STATUSES] },
         boss_comment: { type: "string" },
         estimated_minutes: { type: "integer" },

@@ -8,6 +8,7 @@ import { insertSession } from "../sessions/sessions-repository.js";
 import type { SessionType } from "../sessions/session.js";
 import { listNotificationsSince } from "../notifications/notifications-repository.js";
 import { DETECTION_RULE_TYPES, type DetectionRuleType } from "../detection/detection-types.js";
+import { toDateKey } from "../detection/time-utils.js";
 import { ACTIVITY_EVENT_TYPES, type ActivityEventType } from "../activity/activity-event.js";
 import { loadDetectionSettings } from "./detection-settings.js";
 import { toNotificationHistory } from "./notification-history.js";
@@ -274,8 +275,17 @@ const RULE_GATE_SCENARIOS: RuleGateScenario[] = [
     ruleType: "deadline_overdue",
     setup: (db, baseTime) => {
       vi.setSystemTime(baseTime);
-      // Absolute due_at computed relative to baseTime (TZ 非依存).
-      const dueAt = new Date(baseTime.getTime() - 60 * 60 * 1000).toISOString();
+      // due_at はローカル暦日で、超過が成立するのは翌暦日 00:00 から
+      // （ADR 0010 決定 2）。baseTime の**前日**の暦日キーにすることで、
+      // baseTime 以降のどの tick でも超過が成立する。暦日は baseTime の
+      // ローカル成分から導出するので TZ 非依存。
+      const dueAt = toDateKey(
+        new Date(
+          baseTime.getFullYear(),
+          baseTime.getMonth(),
+          baseTime.getDate() - 1,
+        ),
+      );
       const task = insertTask(db, {
         title: "資料作成",
         description: null,
@@ -287,10 +297,10 @@ const RULE_GATE_SCENARIOS: RuleGateScenario[] = [
         estimated_minutes: null,
       });
       markTodaysMeetingsDone(db);
-      // due_at is already 1h before baseTime, so any tick at/after baseTime
-      // clears findOverdueTasks's `due_at < now` check; unlike the other
-      // scenarios, this offset is not tied to a threshold — it just keeps
-      // the tick time consistent with the other scenarios' (0, 46] range.
+      // 締切は前日の暦日なので、その翌暦日 00:00（= baseTime の当日 00:00）を
+      // 過ぎた時点で超過が成立している。したがって baseTime 以降のどの tick でも
+      // findOverdueTasks を通る。他シナリオと違いこのオフセットは閾値に紐づかず、
+      // tick 時刻を他シナリオの (0, 46] の範囲に揃えるためだけのもの。
       vi.setSystemTime(addMinutes(baseTime, 31));
       return `deadline_overdue:${task.id}`;
     },
@@ -830,9 +840,16 @@ describe("createTicker().tick", () => {
     // 2 タスクとも締切超過 + 着手済み（task_start あり・直近活動あり）にして、
     // deadline_overdue が 2 件だけ発火する状態を作る。
     // 勤務時間帯ゲートはローカル時刻基準のためモック時刻はローカルのまま、
-    // due_at はモック時刻の 1 時間前（絶対時刻）にして TZ 非依存で「超過」を成立させる。
+    // due_at はモック時刻の**前日の暦日**にして「超過」を成立させる（due_at は
+    // ローカル暦日で、超過は翌暦日 00:00 から。ADR 0010 決定 2）。
     const mockedNow = new Date("2026-07-05T09:31:00.000");
-    const overdueDueAt = new Date(mockedNow.getTime() - 60 * 60 * 1000).toISOString();
+    const overdueDueAt = toDateKey(
+      new Date(
+        mockedNow.getFullYear(),
+        mockedNow.getMonth(),
+        mockedNow.getDate() - 1,
+      ),
+    );
     for (const title of ["資料A", "資料B"]) {
       const task = insertTask(db, {
         title,
