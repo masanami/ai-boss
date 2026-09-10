@@ -38,12 +38,20 @@ describe("TASK_TOOLS", () => {
     "asks for a YYYY-MM-DD due_at in the %s schema (AC-15)",
     (toolName) => {
       const tool = TASK_TOOLS.find((t) => t.name === toolName);
-      const dueAt = tool?.input_schema.properties?.due_at as
-        | { description?: string }
+      // `Anthropic.Tool` の `input_schema.properties` は型付けが緩く
+      // （`unknown` 相当）、そのままドットアクセスすると型エラーになる。
+      // キャストは**プロパティ袋そのもの**に当てる（`properties?.due_at` の
+      // 結果に当てても、アクセス時点で既に落ちるため通らない）。
+      const properties = tool?.input_schema.properties as
+        | Record<string, { description?: string } | undefined>
         | undefined;
+      const description = properties?.due_at?.description;
 
-      expect(dueAt?.description).toContain("YYYY-MM-DD");
-      expect(dueAt?.description).not.toContain("日時");
+      // description が未定義でも `toContain` が素通りしないよう、まず文字列で
+      // あることを確かめる（下 2 本が undefined 相手に空回りするのを防ぐ）。
+      expect(typeof description).toBe("string");
+      expect(description).toContain("YYYY-MM-DD");
+      expect(description).not.toContain("日時");
     },
   );
 });
