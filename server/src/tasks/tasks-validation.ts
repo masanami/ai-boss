@@ -1,6 +1,5 @@
 import { TASK_PRIORITIES, TASK_STATUSES } from "./task.js";
 import type { NewTaskRecord, TaskPatch } from "./tasks-repository.js";
-import { isValidIsoDateOrDateTime } from "../lib/iso-date.js";
 import { normalizeDueAtToDateKey } from "./due-at.js";
 
 export type ValidationResult<T> =
@@ -73,10 +72,19 @@ function validateOptionalFieldTypes(
   // が（ADR 0010 決定 6・#442）、それは既に DB にある値を吸収するための措置で
   // あり、入口の検査を省いてよい理由にはならない（2 形式の混在をこれ以上
   // 増やさないため、書き込み時に弾くほうを正とする）。
+  //
+  // 判定は `isValidIsoDateOrDateTime` ではなく **`normalizeDueAtToDateKey` が
+  // 暦日を返せるか**で行う（PR #458 の Codex 指摘 P2）。前者は「暦として実在
+  // するか」しか見ないため、`0099-12-31` のように**受理はされるが暦日ユーティ
+  // リティ側が解釈できない**値が素通りし、201 を返しながら `due_at` は `null`
+  // として保存されて**利用者の締切が黙って消えて**いた。
+  //
+  // 書き込みの可否を読み出しと同じ関数に委ねることで、「受理する値」と「解釈
+  // できる値」が構造的に一致する（2 つの述語が将来ずれる余地を残さない）。
   if (
     "due_at" in body &&
     typeof body.due_at === "string" &&
-    !isValidIsoDateOrDateTime(body.due_at)
+    normalizeDueAtToDateKey(body.due_at) === null
   ) {
     return DUE_AT_FORMAT_ERROR;
   }

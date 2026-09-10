@@ -3,6 +3,7 @@ import {
   clamp,
   diffInMinutes,
   isWithinWorkingHours,
+  parseDateKey,
   timeStringToMinutes,
   toDateKey,
   toLocalOffset,
@@ -111,6 +112,18 @@ describe("toDateKey", () => {
   it("zero-pads single-digit months and days", () => {
     const date = new Date(2026, 0, 2, 0, 0);
     expect(toDateKey(date)).toBe("2026-01-02");
+  });
+
+  // 年も 4 桁へゼロ詰めする（PR #458 の Codex 指摘 P2）。桁が落ちると
+  // `YYYY-MM-DD` を名乗りながら `100-01-02` のような 3 桁キーを返し、同形式を
+  // 要求する parseDateKey に拒否されて往復しなくなる。1000 年以上では出力が
+  // 変わらないため既存の呼び出し側への影響は無い。
+  it("zero-pads years below 1000 to four digits and round-trips through parseDateKey", () => {
+    const date = new Date(2026, 0, 2, 0, 0);
+    date.setFullYear(100);
+
+    expect(toDateKey(date)).toBe("0100-01-02");
+    expect(parseDateKey(toDateKey(date))).not.toBeNull();
   });
 
   // 以下は timeZone 引数（ADR 0007 決定6・#177）の契約を検証する。

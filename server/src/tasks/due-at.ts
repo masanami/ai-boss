@@ -32,6 +32,17 @@ const DATE_ONLY_PATTERN = /^\d{4}-\d{2}-\d{2}$/;
  * ここを非 null 断言で潰すと `startOfNextLocalDayIso(null)` が TypeError で
  * 落ちるため、`null` を素通しして呼び出し側で「締切なし」へ倒す（決定 6 と同じ
  * 倒し方に揃える）。
+ *
+ * **西暦 100 年未満は意図的に非対応**（`null` を返す。PR #458 の Codex 指摘 P2）。
+ * 多引数 `Date` コンストラクタが 0〜99 年を 1900 年代へ写すため、`parseDateKey`
+ * が往復検証で落とし、`startOfNextLocalDayIso`（`new Date(y, m, d + 1)`）に至って
+ * は `null` すら返さず**約 1900 年ずれた瞬時**を返す。対応するには ADR 0007 の
+ * 集約点 2 つ（`parseDateKey` の消費者 3 箇所・`startOfNextLocalDayIso` の消費者
+ * 8 箇所）を作り替える必要があり、個人用タスク管理アプリの締切としてこの年代は
+ * 使途が無い（YAGNI）。**書き込み側が同じ判定でこの範囲を弾く**ため（
+ * `tasks-validation.ts`）、締切が黙って消えることはない。
+ *
+ * 西暦 100〜999 年は `toDateKey` の年 4 桁ゼロ詰め（同指摘）で解釈できる。
  */
 function resolveDueAtLocalDay(dueAt: string): Date | null {
   if (DATE_ONLY_PATTERN.test(dueAt)) {
