@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import TaskBoard from "./TaskBoard";
 import type { Task } from "./task";
@@ -43,6 +43,34 @@ function makeTask(overrides: Partial<Task>): Task {
   };
 }
 
+/**
+ * 「完了」「中止」列の直近ウィンドウ（#428）を検証するための固定時刻。
+ * ローカル 2026-09-10 12:00。この now での包含範囲は 2026-09-04〜2026-09-10。
+ * UTC 文字列リテラルではなくローカル暦日から組む（ADR 0007 決定 5）。
+ */
+const NOW = new Date(2026, 8, 10, 12, 0, 0);
+
+/** ローカル暦日から ISO 文字列を組む（サーバが返す形に合わせる）。 */
+function localIso(
+  year: number,
+  monthIndex: number,
+  day: number,
+  hour = 0,
+  minute = 0,
+  second = 0,
+  millisecond = 0,
+): string {
+  return new Date(
+    year,
+    monthIndex,
+    day,
+    hour,
+    minute,
+    second,
+    millisecond,
+  ).toISOString();
+}
+
 // tasks 状態は AppLayout にリフトアップされたので、TaskBoard には
 // UseTasksResult 相当を props で渡す（Issue #70）。
 function makeTasksState(overrides: Partial<UseTasksResult> = {}): UseTasksResult {
@@ -57,12 +85,32 @@ function makeTasksState(overrides: Partial<UseTasksResult> = {}): UseTasksResult
 }
 
 describe("TaskBoard", () => {
-  it("distributes tasks into their status columns", () => {
+  // 直近ウィンドウのテストだけが Date を固定する。実タイマーのままの
+  // テストでは no-op なので、既存テストの挙動は変わらない。
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it("distributes tasks into their status columns, with 完了/中止 limited to the recent window (#428)", () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(NOW);
+
+    // done / dropped は範囲内の基準時刻を持たないと列に出ない（#428）。
     const tasks = [
       makeTask({ id: 1, title: "todoのタスク", status: "todo" }),
       makeTask({ id: 2, title: "進行中のタスク", status: "in_progress" }),
-      makeTask({ id: 3, title: "完了したタスク", status: "done" }),
-      makeTask({ id: 4, title: "中止したタスク", status: "dropped" }),
+      makeTask({
+        id: 3,
+        title: "完了したタスク",
+        status: "done",
+        completed_at: localIso(2026, 8, 10, 9),
+      }),
+      makeTask({
+        id: 4,
+        title: "中止したタスク",
+        status: "dropped",
+        updated_at: localIso(2026, 8, 10, 9),
+      }),
     ];
 
     render(<TaskBoard tasksState={makeTasksState({ tasks })} />);
@@ -442,5 +490,408 @@ describe("TaskBoard", () => {
     // タブ切替（再マウント）のたびに再取得していた従来挙動の維持。
     // チャットでボスが tool use で作成・更新したタスクをボード表示時に拾う。
     expect(tasksState.refresh).toHaveBeenCalledTimes(1);
+  });
+
+  // 「完了」「中止」列をローカル暦日で直近 7 日に絞る（Issue #428 / #437）。
+  // now = 2026-09-10 のとき包含範囲は 2026-09-04〜2026-09-10。
+  describe("完了/中止 列の直近ウィンドウ (#428)", () => {
+    beforeEach(() => {
+      vi.useFakeTimers({ toFake: ["Date"] });
+      vi.setSystemTime(NOW);
+    });
+
+    it("does not show 完了/中止 tasks whose reference falls on the day before the lower bound (AC-1, AC-3)", () => {
+      const tasks = [
+        makeTask({
+          id: 1,
+          title: "境界の1日前に完了したタスク",
+          status: "done",
+          completed_at: localIso(2026, 8, 3, 23, 59, 59),
+        }),
+        makeTask({
+          id: 2,
+          title: "境界の1日前に中止したタスク",
+          status: "dropped",
+          updated_at: localIso(2026, 8, 3, 23, 59, 59),
+        }),
+      ];
+
+      render(<TaskBoard tasksState={makeTasksState({ tasks })} />);
+
+      expect(
+        screen.queryByText("境界の1日前に完了したタスク"),
+      ).not.toBeInTheDocument();
+      expect(
+        screen.queryByText("境界の1日前に中止したタスク"),
+      ).not.toBeInTheDocument();
+    });
+
+    it("does not show a 完了 task completed well before the window (AC-2)", () => {
+      const tasks = [
+        makeTask({
+          id: 1,
+          title: "先月完了したタスク",
+          status: "done",
+          completed_at: localIso(2026, 7, 1, 10),
+        }),
+      ];
+
+      render(<TaskBoard tasksState={makeTasksState({ tasks })} />);
+
+      expect(screen.queryByText("先月完了したタスク")).not.toBeInTheDocument();
+    });
+
+    it("does not show a done task whose completed_at is null (AC-4)", () => {
+      // 決定 4: 基準時刻が取れないものは範囲外へ倒す（fail-open にしない）。
+      const tasks = [
+        makeTask({
+          id: 1,
+          title: "完了時刻が無いタスク",
+          status: "done",
+          completed_at: null,
+          updated_at: localIso(2026, 8, 10, 9),
+        }),
+      ];
+
+      render(<TaskBoard tasksState={makeTasksState({ tasks })} />);
+
+      expect(screen.queryByText("完了時刻が無いタスク")).not.toBeInTheDocument();
+    });
+
+    it("does not use updated_at for the 完了 column (AC-5)", () => {
+      const tasks = [
+        makeTask({
+          id: 1,
+          title: "古く完了して今日触ったタスク",
+          status: "done",
+          completed_at: localIso(2026, 8, 2, 10),
+          updated_at: localIso(2026, 8, 10, 9),
+        }),
+      ];
+
+      render(<TaskBoard tasksState={makeTasksState({ tasks })} />);
+
+      expect(
+        screen.queryByText("古く完了して今日触ったタスク"),
+      ).not.toBeInTheDocument();
+    });
+
+    it("shows a 完了 task completed today (AC-6)", () => {
+      const tasks = [
+        makeTask({
+          id: 1,
+          title: "今日完了したタスク",
+          status: "done",
+          completed_at: localIso(2026, 8, 10, 9),
+        }),
+      ];
+
+      render(<TaskBoard tasksState={makeTasksState({ tasks })} />);
+
+      const doneColumn = screen.getByRole("region", { name: "完了" });
+      expect(
+        within(doneColumn).getByText("今日完了したタスク"),
+      ).toBeInTheDocument();
+    });
+
+    it("shows 完了/中止 tasks at the first moment of the lower-bound calendar day (AC-7, AC-8)", () => {
+      const tasks = [
+        makeTask({
+          id: 1,
+          title: "下限ちょうどに完了したタスク",
+          status: "done",
+          completed_at: localIso(2026, 8, 4, 0, 0, 0, 0),
+        }),
+        makeTask({
+          id: 2,
+          title: "下限ちょうどに中止したタスク",
+          status: "dropped",
+          updated_at: localIso(2026, 8, 4, 0, 0, 0, 0),
+        }),
+      ];
+
+      render(<TaskBoard tasksState={makeTasksState({ tasks })} />);
+
+      const doneColumn = screen.getByRole("region", { name: "完了" });
+      expect(
+        within(doneColumn).getByText("下限ちょうどに完了したタスク"),
+      ).toBeInTheDocument();
+
+      const droppedColumn = screen.getByRole("region", { name: "中止" });
+      expect(
+        within(droppedColumn).getByText("下限ちょうどに中止したタスク"),
+      ).toBeInTheDocument();
+    });
+
+    it("shows a 中止 task updated today (AC-9)", () => {
+      const tasks = [
+        makeTask({
+          id: 1,
+          title: "今日中止したタスク",
+          status: "dropped",
+          updated_at: localIso(2026, 8, 10, 9),
+        }),
+      ];
+
+      render(<TaskBoard tasksState={makeTasksState({ tasks })} />);
+
+      const droppedColumn = screen.getByRole("region", { name: "中止" });
+      expect(
+        within(droppedColumn).getByText("今日中止したタスク"),
+      ).toBeInTheDocument();
+    });
+
+    it("does not use completed_at for the 中止 column (AC-10)", () => {
+      // dropped の completed_at は updateTask が null にするため、これを基準に
+      // すると中止列は常に空になる（決定 3）。
+      const tasks = [
+        makeTask({
+          id: 1,
+          title: "完了時刻が古い中止タスク",
+          status: "dropped",
+          completed_at: localIso(2026, 8, 1, 10),
+          updated_at: localIso(2026, 8, 10, 9),
+        }),
+      ];
+
+      render(<TaskBoard tasksState={makeTasksState({ tasks })} />);
+
+      const droppedColumn = screen.getByRole("region", { name: "中止" });
+      expect(
+        within(droppedColumn).getByText("完了時刻が古い中止タスク"),
+      ).toBeInTheDocument();
+    });
+
+    it("brings a stale 中止 task back once its updated_at moves into the window (AC-11)", () => {
+      // updated_at を基準に採った帰結であり、バグではない（決定 3 の
+      // 「意図した振る舞い」）。
+      const stale = makeTask({
+        id: 1,
+        title: "古い中止タスク",
+        status: "dropped",
+        updated_at: localIso(2026, 8, 1, 10),
+      });
+
+      const { rerender } = render(
+        <TaskBoard tasksState={makeTasksState({ tasks: [stale] })} />,
+      );
+      expect(screen.queryByText("古い中止タスク")).not.toBeInTheDocument();
+
+      rerender(
+        <TaskBoard
+          tasksState={makeTasksState({
+            tasks: [{ ...stale, updated_at: localIso(2026, 8, 10, 9) }],
+          })}
+        />,
+      );
+
+      const droppedColumn = screen.getByRole("region", { name: "中止" });
+      expect(
+        within(droppedColumn).getByText("古い中止タスク"),
+      ).toBeInTheDocument();
+    });
+
+    it("keeps 未着手/進行中/一時停止 tasks visible regardless of their timestamps (AC-12)", () => {
+      const tasks = [
+        makeTask({
+          id: 1,
+          title: "古い未着手タスク",
+          status: "todo",
+          updated_at: localIso(2026, 0, 1, 10),
+        }),
+        makeTask({
+          id: 2,
+          title: "古い進行中タスク",
+          status: "in_progress",
+          updated_at: localIso(2026, 0, 1, 10),
+        }),
+        makeTask({
+          id: 3,
+          title: "古い一時停止タスク",
+          status: "paused",
+          updated_at: localIso(2026, 0, 1, 10),
+        }),
+      ];
+
+      render(<TaskBoard tasksState={makeTasksState({ tasks })} />);
+
+      expect(
+        within(screen.getByRole("region", { name: "未着手" })).getByText(
+          "古い未着手タスク",
+        ),
+      ).toBeInTheDocument();
+      expect(
+        within(screen.getByRole("region", { name: "進行中" })).getByText(
+          "古い進行中タスク",
+        ),
+      ).toBeInTheDocument();
+      expect(
+        within(screen.getByRole("region", { name: "一時停止" })).getByText(
+          "古い一時停止タスク",
+        ),
+      ).toBeInTheDocument();
+    });
+
+    it("shows a card in the 完了 column right after it is dropped there (AC-13)", async () => {
+      const task = makeTask({ id: 1, title: "todoのタスク", status: "todo" });
+      const tasksState = makeTasksState({ tasks: [task] });
+
+      const { rerender } = render(<TaskBoard tasksState={tasksState} />);
+
+      const dataTransfer = makeDataTransfer(1);
+      const doneColumn = screen.getByRole("region", { name: "完了" });
+      fireEvent.dragOver(doneColumn, { dataTransfer });
+      fireEvent.drop(doneColumn, { dataTransfer });
+
+      await waitFor(() =>
+        expect(tasksState.editTask).toHaveBeenCalledWith(1, { status: "done" }),
+      );
+
+      // サーバ反映後の再取得結果で再描画する（完了時刻は当日になる）。
+      rerender(
+        <TaskBoard
+          tasksState={makeTasksState({
+            tasks: [
+              {
+                ...task,
+                status: "done",
+                completed_at: localIso(2026, 8, 10, 12),
+                updated_at: localIso(2026, 8, 10, 12),
+              },
+            ],
+          })}
+        />,
+      );
+
+      expect(
+        within(screen.getByRole("region", { name: "完了" })).getByText(
+          "todoのタスク",
+        ),
+      ).toBeInTheDocument();
+    });
+
+    it("keeps the server's order for the tasks left in the 完了 column (AC-14)", () => {
+      // サーバは created_at ASC, id ASC で返す。絞り込みは並びを変えない。
+      const tasks = [
+        makeTask({
+          id: 1,
+          title: "先に完了したタスク",
+          status: "done",
+          completed_at: localIso(2026, 8, 5, 9),
+        }),
+        makeTask({
+          id: 2,
+          title: "範囲外で完了したタスク",
+          status: "done",
+          completed_at: localIso(2026, 8, 1, 9),
+        }),
+        makeTask({
+          id: 3,
+          title: "後に完了したタスク",
+          status: "done",
+          completed_at: localIso(2026, 8, 9, 9),
+        }),
+      ];
+
+      render(<TaskBoard tasksState={makeTasksState({ tasks })} />);
+
+      const doneColumn = screen.getByRole("region", { name: "完了" });
+      const titles = within(doneColumn)
+        .getAllByRole("listitem")
+        .map(
+          (item) => within(item).getByRole("heading", { level: 3 }).textContent,
+        );
+      expect(titles).toEqual(["先に完了したタスク", "後に完了したタスク"]);
+    });
+
+    it("renders only the in-window 完了 tasks (AC-15)", () => {
+      const tasks = [
+        makeTask({
+          id: 1,
+          title: "範囲内1",
+          status: "done",
+          completed_at: localIso(2026, 8, 10, 9),
+        }),
+        makeTask({
+          id: 2,
+          title: "範囲外1",
+          status: "done",
+          completed_at: localIso(2026, 8, 1, 9),
+        }),
+        makeTask({
+          id: 3,
+          title: "範囲内2",
+          status: "done",
+          completed_at: localIso(2026, 8, 6, 9),
+        }),
+        makeTask({
+          id: 4,
+          title: "範囲外2",
+          status: "done",
+          completed_at: localIso(2026, 7, 20, 9),
+        }),
+        makeTask({
+          id: 5,
+          title: "範囲外3",
+          status: "done",
+          completed_at: null,
+        }),
+      ];
+
+      render(<TaskBoard tasksState={makeTasksState({ tasks })} />);
+
+      const doneColumn = screen.getByRole("region", { name: "完了" });
+      expect(within(doneColumn).getAllByRole("listitem")).toHaveLength(2);
+    });
+
+    it("labels the 完了 heading with the window length (AC-16)", () => {
+      render(<TaskBoard tasksState={makeTasksState()} />);
+
+      const doneColumn = screen.getByRole("region", { name: "完了" });
+      // 定数を import せずリテラルで固定する（AC-38 の変異確認を成立させる）。
+      // アンカー付きで完全一致にし、件数表示等の後付け（決定 6 の却下事項）が
+      // 素通りしないようにする。
+      expect(
+        within(doneColumn).getByRole("heading", { level: 2 }),
+      ).toHaveTextContent(/^完了（直近 7 日）$/);
+    });
+
+    it("labels the 中止 heading with the window length (AC-17)", () => {
+      render(<TaskBoard tasksState={makeTasksState()} />);
+
+      const droppedColumn = screen.getByRole("region", { name: "中止" });
+      expect(
+        within(droppedColumn).getByRole("heading", { level: 2 }),
+      ).toHaveTextContent(/^中止（直近 7 日）$/);
+    });
+
+    it("leaves the headings of the non-terminal columns unchanged (AC-18)", () => {
+      render(<TaskBoard tasksState={makeTasksState()} />);
+
+      for (const label of ["未着手", "進行中", "一時停止"]) {
+        const column = screen.getByRole("region", { name: label });
+        expect(
+          within(column).getByRole("heading", { level: 2 }),
+        ).toHaveTextContent(new RegExp(`^${label}$`));
+      }
+    });
+
+    it("leaves the column aria-labels unchanged (AC-19)", () => {
+      render(<TaskBoard tasksState={makeTasksState()} />);
+
+      const columnLabels = screen
+        .getAllByRole("region")
+        .map((region) => region.getAttribute("aria-label"));
+      expect(columnLabels).toEqual([
+        "未着手",
+        "進行中",
+        "一時停止",
+        "完了",
+        "中止",
+      ]);
+      // 完全一致で引けること（見出しの文言変更が波及していないこと）。
+      expect(screen.getByRole("region", { name: "完了" })).toBeInTheDocument();
+      expect(screen.getByRole("region", { name: "中止" })).toBeInTheDocument();
+    });
   });
 });

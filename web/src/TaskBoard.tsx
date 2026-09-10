@@ -6,15 +6,49 @@ import type { TaskStatus } from "./task";
 import type { UseTasksResult } from "./use-tasks";
 import { TASK_DRAG_DATA_TYPE } from "./task-dnd";
 import { describeTasksApiError } from "./tasks-api";
+import {
+  isWithinRecentLocalDays,
+  terminalReferenceAt,
+} from "./recent-terminal-tasks";
 import "./TaskBoard.css";
 
-const COLUMNS: { status: TaskStatus; label: string }[] = [
+/**
+ * 「完了」「中止」列に残す期間（当日を含むローカル暦日の日数。Issue #428）。
+ * 終端ステータスの 2 列だけはタスクが出ていかないため、絞らないと使用期間に
+ * 比例して伸び続ける。設定 UI は作らずコード内定数で固定する（決定 2。前例:
+ * `CheckinPanel.tsx` の `DEFAULT_BREAK_MINUTES`）。
+ */
+const RECENT_TERMINAL_WINDOW_DAYS = 7;
+
+interface BoardColumn {
+  status: TaskStatus;
+  /**
+   * 列の `aria-label`。見出しの表示ラベルとは分離してあり、絞り込みの表示
+   * （決定 6）を入れても**変えない**（支援技術・既存テストの参照先）。
+   */
+  label: string;
+  /** 直近 `RECENT_TERMINAL_WINDOW_DAYS` 日に絞る列か（done / dropped）。 */
+  limitedToRecentWindow?: boolean;
+}
+
+const COLUMNS: BoardColumn[] = [
   { status: "todo", label: "未着手" },
   { status: "in_progress", label: "進行中" },
   { status: "paused", label: "一時停止" },
-  { status: "done", label: "完了" },
-  { status: "dropped", label: "中止" },
+  { status: "done", label: "完了", limitedToRecentWindow: true },
+  { status: "dropped", label: "中止", limitedToRecentWindow: true },
 ];
+
+/**
+ * 見出しの文言。絞り込み中の列はその範囲を示す（決定 6: 何も示さないと
+ * 「昨日完了したはずのカードが無い」理由が UI のどこにも無い）。日数は
+ * 定数から導出し、テンプレートに直書きして二重管理にしない。
+ */
+function columnHeading(column: BoardColumn): string {
+  return column.limitedToRecentWindow === true
+    ? `${column.label}（直近 ${RECENT_TERMINAL_WINDOW_DAYS} 日）`
+    : column.label;
+}
 
 interface TaskBoardProps {
   /** AppLayout にリフトアップされた共有 tasks 状態（Issue #70）。 */
@@ -113,6 +147,10 @@ function TaskBoard({ tasksState }: TaskBoardProps) {
     void runAction(editTask(id, { status: columnStatus }));
   };
 
+  // 「今」はレンダリングのたびに 1 回取得する（明示的な仮定 5・前例:
+  // TodaySummary.tsx。clock prop や時計監視タイマーは新設しない）。
+  const now = new Date();
+
   return (
     <div className="task-board">
       <TaskForm onCreate={(input) => runAction(addTask(input))} />
@@ -135,10 +173,19 @@ function TaskBoard({ tasksState }: TaskBoardProps) {
             onDragLeave={(event) => handleDragLeave(event, column.status)}
             onDrop={(event) => handleDrop(event, column.status)}
           >
-            <h2>{column.label}</h2>
+            <h2>{columnHeading(column)}</h2>
             <ul>
               {tasks
-                .filter((task) => task.status === column.status)
+                .filter(
+                  (task) =>
+                    task.status === column.status &&
+                    (column.limitedToRecentWindow !== true ||
+                      isWithinRecentLocalDays(
+                        terminalReferenceAt(task),
+                        now,
+                        RECENT_TERMINAL_WINDOW_DAYS,
+                      )),
+                )
                 .map((task) => (
                   <li key={task.id}>
                     <TaskCard
