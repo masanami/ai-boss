@@ -5,6 +5,7 @@ import { runMigrations } from "../db/migrate.js";
 import { createApp } from "../app.js";
 import { setSettingValue } from "../settings/settings-repository.js";
 import type { Task } from "./task.js";
+import { toDateKey } from "../detection/time-utils.js";
 
 interface ErrorBody {
   error: string;
@@ -103,7 +104,7 @@ describe("tasks routes", () => {
           description: "月次報告資料",
           category: "work",
           priority: "high",
-          due_at: "2026-07-10T09:00:00.000Z",
+          due_at: "2026-07-10",
           status: "in_progress",
           boss_comment: "先にこれをやれ",
           estimated_minutes: 90,
@@ -117,7 +118,7 @@ describe("tasks routes", () => {
         description: "月次報告資料",
         category: "work",
         priority: "high",
-        due_at: "2026-07-10T09:00:00.000Z",
+        due_at: "2026-07-10",
         status: "in_progress",
         boss_comment: "先にこれをやれ",
         estimated_minutes: 90,
@@ -270,7 +271,9 @@ describe("tasks routes", () => {
       }
     });
 
-    it("accepts the due_at shapes the web date input and the boss tool actually produce", async () => {
+    // AC-14: 時刻付きの旧形式は**拒否せず**受理し、その瞬時のローカル暦日へ
+    // 正規化して保存する（ADR 0010 決定 3・4）。保存形式は "YYYY-MM-DD" の 1 つ。
+    it("normalizes the due_at shapes the web date input and the boss tool produce to a local calendar day", async () => {
       const app = createApp(db);
 
       for (const valid of [
@@ -287,7 +290,17 @@ describe("tasks routes", () => {
 
         expect(res.status, valid).toBe(201);
         const body = await readJson<{ due_at: string | null }>(res);
-        expect(body.due_at).toBe(valid);
+
+        // 期待値はハードコードしない。オフセット付きの値は実行 TZ によって
+        // ローカル暦日が変わるため（"2026-09-05T09:30:00+09:00" は UTC 00:30 で、
+        // America/New_York では 9/4 になる）。日付のみの値は既に暦日キーそのもの
+        // なので Date を経由させない（経由すると UTC 0 時解釈で前日になる）。
+        const expected = /^\d{4}-\d{2}-\d{2}$/.test(valid)
+          ? valid
+          : toDateKey(new Date(valid));
+
+        expect(body.due_at, valid).toBe(expected);
+        expect(body.due_at, valid).toMatch(/^\d{4}-\d{2}-\d{2}$/);
       }
     });
 
