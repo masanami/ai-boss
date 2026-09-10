@@ -195,18 +195,22 @@ function isSettingKey(key: string): key is SettingKey {
  * 共有ヘルパーとしてエクスポートする（DRY: 述語を複数箇所へ重複実装
  * しない）。
  *
- * **配置について**: 書き込み側バリデータであるこのファイルに置くのは、
- * #480（本チケット）の唯一の呼び出し元が `validatePutSettingsInput`
- * だからである（YAGNI: 呼び出し元が1つのうちに独立モジュールへの切り
- * 出しを先取りしない）。**中立な置き場（例: `detection/time-utils.ts`）
- * へ最初から置く選択肢が閉じているわけではない** — 本ファイルは既に
- * `detection/time-utils.ts` を import しており（`timeStringToMinutes`）、
- * `detection/` 側から `settings/` への import は無いため、そちらへ
- * 置いても新たなパッケージ間の辺は増えない。むしろ現状のまま将来
- * #482（`scheduler/detection-settings.ts`）がこの関数を import すると、
- * 既存の `settings-routes.ts` → `scheduler/detection-settings.ts` の
- * 辺と合わせて settings↔scheduler の結合が深まる。#481/#482 で呼び出し元
- * が増えた時点で、中立モジュールへの切り出しを改めて検討すること。
+ * **配置について**: 呼び出し元は既に3箇所（`validatePutSettingsInput`
+ * 〔本ファイル、#480〕・`settings-routes.ts` の部分更新相関チェック
+ * 〔#481〕・`scheduler/detection-settings.ts` の読み出し側ガード
+ * 〔#482〕）に増えている。#482 により `scheduler/detection-settings.ts`
+ * が本ファイル（`SETTINGS_KEYS` / `VALIDATORS` / `validatePutSettingsInput`
+ * を抱える PUT 書き込み側バリデータ本体。`boss/persona-prompt.js` も
+ * 推移的に import する）に依存するようになった。中立な置き場（例:
+ * `detection/time-utils.ts`。`settings/` も `scheduler/` も既にそちらへ
+ * 依存しているため、そちらへ移せば新たな辺を増やさずこの依存を消せる）
+ * へ切り出せばこの結合は解消できるが、それには `settings-routes.ts`
+ * の import 先変更も伴う。#482 のチケット範囲は `settings-routes.ts` を
+ * 変更しないことを明示しており、本チケットではこの切り出しを行わず
+ * 現状の配置のまま `scheduler/` からの import を追加するに留めている。
+ * **中立モジュールへの切り出しは #448 の後続スライスで改めて検討する
+ * こと**（本段落はその判断を先送りした記録であり、「検討の結果ここに
+ * 置き続けると決めた」という結論ではない）。
  *
  * **形式が不正な入力への挙動（fail-open）**: `timeStringToMinutes` が
  * `null` を返す場合（形式不正）、この関数は `true`（相関エラーなし）を
