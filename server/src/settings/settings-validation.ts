@@ -1,5 +1,6 @@
 import { TONE_PRESETS, MIN_STRICTNESS, MAX_STRICTNESS } from "../boss/persona-prompt.js";
 import { TIME_PATTERN } from "../detection/detection-types.js";
+import { timeStringToMinutes } from "../detection/time-utils.js";
 
 /**
  * The full set of keys the settings API (GET/PUT /api/settings) recognizes.
@@ -182,6 +183,50 @@ function isSettingKey(key: string): key is SettingKey {
 }
 
 /**
+ * Shared `work_start` / `work_end` correlation predicate (親要件 #448 決定
+ * 1・2）。`start` と `end` はいずれも "HH:mm" 形式（`TIME_PATTERN` 準拠）を
+ * 前提とする — 書式検証はこの関数の責務ではなく、呼び出し側が別途
+ * 行う（本ファイルでは `validateTime`）。`start >= end`（区間が空になる。
+ * 日またぎの `22:00`-`02:00` も同時刻の `09:00`-`09:00` も含む）のときのみ
+ * `false` を返す。
+ *
+ * この関数はこのチケット（#480: 全量更新の拒否）に閉じず、部分更新の
+ * 相関チェック配線（#481）と読み出し側ガード（#482）からも再利用される
+ * 共有ヘルパーとしてエクスポートする（DRY: 述語を複数箇所へ重複実装
+ * しない）。
+ *
+ * **配置について**: 書き込み側バリデータであるこのファイルに置くのは、
+ * #480（本チケット）の唯一の呼び出し元が `validatePutSettingsInput`
+ * だからである（YAGNI: 呼び出し元が1つのうちに独立モジュールへの切り
+ * 出しを先取りしない）。**中立な置き場（例: `detection/time-utils.ts`）
+ * へ最初から置く選択肢が閉じているわけではない** — 本ファイルは既に
+ * `detection/time-utils.ts` を import しており（`timeStringToMinutes`）、
+ * `detection/` 側から `settings/` への import は無いため、そちらへ
+ * 置いても新たなパッケージ間の辺は増えない。むしろ現状のまま将来
+ * #482（`scheduler/detection-settings.ts`）がこの関数を import すると、
+ * 既存の `settings-routes.ts` → `scheduler/detection-settings.ts` の
+ * 辺と合わせて settings↔scheduler の結合が深まる。#481/#482 で呼び出し元
+ * が増えた時点で、中立モジュールへの切り出しを改めて検討すること。
+ *
+ * **形式が不正な入力への挙動（fail-open）**: `timeStringToMinutes` が
+ * `null` を返す場合（形式不正）、この関数は `true`（相関エラーなし）を
+ * 返す — 形式検証は呼び出し側の責務であり、ここで二重にガードしない
+ * ための意図的な設計判断である。**呼び出し元への注意**: `timeStringToMinutes`
+ * は不正な入力に対して `console.warn` を出す副作用を持つ
+ * （`detection/time-utils.ts`）。#482 のように DB の生値（書式検証を経て
+ * いない可能性がある値）をこの関数へ渡す呼び出し元は、この警告ログが
+ * 発生しうることを踏まえて設計すること。
+ */
+export function isValidWorkingHoursRange(start: string, end: string): boolean {
+  const startMinutes = timeStringToMinutes(start);
+  const endMinutes = timeStringToMinutes(end);
+  if (startMinutes === null || endMinutes === null) {
+    return true;
+  }
+  return startMinutes < endMinutes;
+}
+
+/**
  * Validates and normalizes a `PUT /api/settings` request body into a
  * {@link SettingsPatch} ready for persistence. Returns a descriptive error
  * on the first invalid key encountered (short-circuits — it does not
@@ -209,6 +254,18 @@ export function validatePutSettingsInput(
     }
 
     data[key] = result.value;
+  }
+
+  // work_start / work_end 相関チェック（#480: 全量更新の拒否まで。
+  // 部分更新——送られなかった側の現在の保存値・既定値との突き合わせ——
+  // の配線は #481 の範囲なので、ここでは両方が同時に送られた場合にのみ
+  // 検査する（片方だけの更新は関知しない）。
+  if (
+    typeof data.work_start === "string" &&
+    typeof data.work_end === "string" &&
+    !isValidWorkingHoursRange(data.work_start, data.work_end)
+  ) {
+    return err("work_start must be earlier than work_end");
   }
 
   return { valid: true, data };

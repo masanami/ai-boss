@@ -558,6 +558,114 @@ describe("settings routes", () => {
       });
     });
 
+    // work_start / work_end 相関チェック（#480, 親要件 #448 決定1・2）。
+    // settings-validation.test.ts が関数レベルで担保している境界を、実DB
+    // 経由の HTTP ルートでも確認する（GAP-13 と同じ狙い: readJsonBody ->
+    // validatePutSettingsInput -> setSettingValue の配線が壊れても検出
+    // できるように）。AC-6（拒否時は work_start/work_end のどちらも書き
+    // 込まれない）は GET のフォールバック値ではなく settings テーブルの
+    // 生の行を直接見て確認する。
+    describe("work_start / work_end correlation (AC-1, AC-2, AC-5, AC-6)", () => {
+      // 09:00/18:00 は既定値と一致するため、GET のフォールバック経由でも
+      // 同じレスポンスになり「実際に書き込まれた」ことの検出力が無い
+      // （self-review 指摘）。既定値と異なる 08:30/17:30 を使い、かつ
+      // settings テーブルの生の行を直接見て、書き込みそのものを確認する。
+      it("returns 200 and saves both keys for a valid range (work_start=08:30, work_end=17:30) (AC-5)", async () => {
+        const app = createApp(db);
+
+        const res = await app.request("/api/settings", {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ work_start: "08:30", work_end: "17:30" }),
+        });
+
+        expect(res.status).toBe(200);
+        const body = await readJson<SettingsBody>(res);
+        expect(body.work_start).toBe("08:30");
+        expect(body.work_end).toBe("17:30");
+
+        const workStartRow = db
+          .prepare("SELECT value FROM settings WHERE key = ?")
+          .get("work_start") as { value: string } | undefined;
+        const workEndRow = db
+          .prepare("SELECT value FROM settings WHERE key = ?")
+          .get("work_end") as { value: string } | undefined;
+        expect(workStartRow?.value).toBe("08:30");
+        expect(workEndRow?.value).toBe("17:30");
+      });
+
+      it("returns 400 for an overnight range (work_start=22:00, work_end=02:00) (AC-1)", async () => {
+        const app = createApp(db);
+
+        const res = await app.request("/api/settings", {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ work_start: "22:00", work_end: "02:00" }),
+        });
+
+        expect(res.status).toBe(400);
+        const body = await readJson<ErrorBody>(res);
+        expect(body.error).toContain("work_start");
+        expect(body.error).toContain("work_end");
+      });
+
+      it("returns 400 for an equal-time range (work_start=09:00, work_end=09:00) (AC-1, decision 2: >=)", async () => {
+        const app = createApp(db);
+
+        const res = await app.request("/api/settings", {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ work_start: "09:00", work_end: "09:00" }),
+        });
+
+        expect(res.status).toBe(400);
+      });
+
+      it("writes neither work_start nor work_end to the settings table when the range is rejected (AC-6)", async () => {
+        const app = createApp(db);
+
+        const res = await app.request("/api/settings", {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ work_start: "22:00", work_end: "02:00" }),
+        });
+        expect(res.status).toBe(400);
+
+        const workStartRow = db
+          .prepare("SELECT value FROM settings WHERE key = ?")
+          .get("work_start") as { value: string } | undefined;
+        const workEndRow = db
+          .prepare("SELECT value FROM settings WHERE key = ?")
+          .get("work_end") as { value: string } | undefined;
+        expect(workStartRow).toBeUndefined();
+        expect(workEndRow).toBeUndefined();
+
+        const getRes = await app.request("/api/settings");
+        const body = await readJson<SettingsBody>(getRes);
+        expect(body.work_start).toBe("09:00");
+        expect(body.work_end).toBe("18:00");
+      });
+
+      it("rejects the whole patch (also leaving boss_name unsaved) when the working-hours correlation is invalid, even alongside other valid keys (all-or-nothing)", async () => {
+        const app = createApp(db);
+
+        const res = await app.request("/api/settings", {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            boss_name: "鬼上司",
+            work_start: "22:00",
+            work_end: "02:00",
+          }),
+        });
+        expect(res.status).toBe(400);
+
+        const getRes = await app.request("/api/settings");
+        const body = await readJson<SettingsBody>(getRes);
+        expect(body.boss_name).toBe("ボス");
+      });
+    });
+
     describe.each(MINUTE_KEYS)("%s boundary", (key) => {
       it("returns 400 for 0", async () => {
         const app = createApp(db);
