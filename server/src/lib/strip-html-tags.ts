@@ -117,3 +117,35 @@ export function stripHtmlTags(text: string): string {
     BLOCK_TAG_NAME_SET.has(tagName) ? "\n" : "",
   );
 }
+
+/**
+ * ストリーミング送出のために、`text` を「もう `stripHtmlTags` の結果が確定して
+ * いる前半（`committed`）」と「これから届く文字次第でタグになりうる末尾
+ * （`pending`）」へ分ける純粋関数（Issue #462）。
+ *
+ * 送出済みの SSE は撤回できないため、per-delta の正規化は成立しない
+ * （`<`／`p`／`>` の順に届くと `<p` を送出してしまい、`>` でタグが確定しても
+ * 取り消せない）。呼び出し側は `committed` にだけ `stripHtmlTags` を掛け、
+ * まだ送っていない差分を送る。`pending` は応答の終了時にまとめて確定させる。
+ *
+ * **分割点は「最後の `>` より後にある最初の `<`」**である。素朴に「最後の `<`」
+ * で切ると壊れる——`"<a x <p"` の時点で最後の `<` は index 5 なので `"<a x "`
+ * を送出してしまうが、続いて `">"` が届くと全体が 1 個の `<a ...>` として
+ * 一致し正規化結果は `""` になり、送出済みの 5 文字を撤回できない。
+ * 最後の `>` より後の `<` はすべて未確定として保留する必要がある。
+ *
+ * この分割点の取り方により、`committed` 内のどの `<` も自分より後ろに `>` を
+ * `committed` 内に持つ。`TAG_PATTERN` の属性部は `>` と改行を含まないため、
+ * ある `<` から始まる一致の成否はその直後の `>` までで確定する。したがって
+ * `committed` の正規化結果は後続の入力で変化せず、
+ * 「`stripHtmlTags(committed)` は `stripHtmlTags(全体)` の接頭辞になる」
+ * という単調性が成り立つ（`stripHtmlTags` が位置ごとの局所変換のみで構成され、
+ * トリム・改行畳み込みのような大域的な加工をしないことが前提）。
+ */
+export function splitPendingTagTail(text: string): { committed: string; pending: string } {
+  const pendingStart = text.indexOf("<", text.lastIndexOf(">") + 1);
+  if (pendingStart === -1) {
+    return { committed: text, pending: "" };
+  }
+  return { committed: text.slice(0, pendingStart), pending: text.slice(pendingStart) };
+}

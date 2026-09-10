@@ -3,7 +3,7 @@ import type { Hono } from "hono";
 import type Database from "better-sqlite3";
 import type Anthropic from "@anthropic-ai/sdk";
 import { readJsonBody } from "../lib/read-json-body.js";
-import { stripHtmlTags } from "../lib/strip-html-tags.js";
+import { stripHtmlTags, splitPendingTagTail } from "../lib/strip-html-tags.js";
 import { recordActivityEvent } from "../activity/activity-events-repository.js";
 import { listTasks } from "../tasks/tasks-repository.js";
 import { countTaskEvidencesByTaskIds } from "../tasks/task-evidences-repository.js";
@@ -313,13 +313,42 @@ export function registerChatMessageRoute(
 
     return streamSSE(c, async (stream) => {
       let fullText = "";
+      // Issue #462（親 #446 S1）: 正規化済みテキストのうち、既に `text` イベント
+      // として送出した長さ。累積文字列を正規化した結果からこの位置以降を切り出す
+      // ことで、per-delta では成立しない正規化（`<`／`p`／`>` と分かれて届くと
+      // 撤回できない）を、送出済みの内容を撤回せずに実現する。
+      let sentNormalizedLength = 0;
       const toolSummaries: string[] = [];
       try {
+        /**
+         * `source` を正規化し、まだ送出していない差分を返す（無ければ `null`）。
+         * 呼び出しごとに `sentNormalizedLength` を進める。
+         *
+         * `splitPendingTagTail` の単調性により、正規化結果が縮むことはない。
+         * それでも `<=` で防いでいるのは、万一縮んだときに `slice` が末尾を
+         * 二重送出する形になるのを避けるため。
+         */
+        const takeUnsentNormalized = (source: string): string | null => {
+          const normalized = stripHtmlTags(source);
+          if (normalized.length <= sentNormalizedLength) {
+            return null;
+          }
+          const chunk = normalized.slice(sentNormalizedLength);
+          sentNormalizedLength = normalized.length;
+          return chunk;
+        };
+
         const onTextDelta = (delta: string) => {
           fullText += delta;
+          // タグの一部になりうる末尾（最後の `>` より後の `<` 以降）は送出を
+          // 保留し、タグが確定するか応答が終了した時点で確定させる。
+          const chunk = takeUnsentNormalized(splitPendingTagTail(fullText).committed);
+          if (chunk === null) {
+            return;
+          }
           void stream.writeSSE({
             event: "text",
-            data: JSON.stringify({ text: delta }),
+            data: JSON.stringify({ text: chunk }),
           });
         };
 
@@ -387,6 +416,19 @@ export function registerChatMessageRoute(
         // chunk landed. 完了が勝つ (#254 論点5): marking a fully generated
         // reply "interrupted" because a stop arrived a moment too late would
         // state something untrue about the text we are storing.
+        // Issue #462（親 #446 S1）: 生成が完了した時点で保留中のテキストが
+        // 残っていれば（`<` が閉じないまま応答が終わった場合など）、追加の
+        // `text` イベントとして 1 回送出してから `done` を送る。保留が無ければ
+        // このイベントは発生しない。`done` の `content` に反映するだけでは、
+        // `text` イベントの断片を連結した結果が確定読み出しと食い違う。
+        const pendingChunk = takeUnsentNormalized(fullText);
+        if (pendingChunk !== null) {
+          await stream.writeSSE({
+            event: "text",
+            data: JSON.stringify({ text: pendingChunk }),
+          });
+        }
+
         const bossMessage = insertMessage(db, {
           session_id: id,
           role: "boss",
