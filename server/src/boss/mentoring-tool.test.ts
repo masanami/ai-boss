@@ -108,4 +108,139 @@ describe("executeRecordMentoringTool", () => {
     expect(result.content).toContain("9999");
     expect(listDecisions(db)).toHaveLength(0);
   });
+
+  describe("mentoringTaskId fallback (Issue #469)", () => {
+    it("fills task_id from mentoringTaskId when task_id is omitted (AC-23)", () => {
+      const task = insertTask(db, {
+        title: "資料作成",
+        description: null,
+        category: "work",
+        priority: null,
+        due_at: null,
+        status: "todo",
+        boss_comment: null,
+        estimated_minutes: null,
+      });
+
+      const result = executeRecordMentoringTool(
+        db,
+        sessionId,
+        { content: "見積もりの前提を再確認してから着手する" },
+        task.id,
+      );
+
+      expect(result.isError).toBe(false);
+      const recorded = JSON.parse(result.content);
+      expect(recorded).toMatchObject({ task_id: task.id, kind: "mentoring" });
+
+      const decisions = listDecisions(db);
+      expect(decisions).toHaveLength(1);
+      expect(decisions[0].task_id).toBe(task.id);
+    });
+
+    it("keeps the explicit task_id when the boss specifies one, not overwritten by mentoringTaskId (AC-24)", () => {
+      const explicitTask = insertTask(db, {
+        title: "資料作成",
+        description: null,
+        category: "work",
+        priority: null,
+        due_at: null,
+        status: "todo",
+        boss_comment: null,
+        estimated_minutes: null,
+      });
+      const otherTask = insertTask(db, {
+        title: "別タスク",
+        description: null,
+        category: "work",
+        priority: null,
+        due_at: null,
+        status: "todo",
+        boss_comment: null,
+        estimated_minutes: null,
+      });
+
+      const result = executeRecordMentoringTool(
+        db,
+        sessionId,
+        { content: "見積もりの前提を再確認してから着手する", task_id: explicitTask.id },
+        otherTask.id,
+      );
+
+      expect(result.isError).toBe(false);
+      const recorded = JSON.parse(result.content);
+      expect(recorded).toMatchObject({ task_id: explicitTask.id });
+    });
+
+    it("errors on an explicit nonexistent task_id even when mentoringTaskId points to a valid task (explicit does not silently fall back)", () => {
+      const validTask = insertTask(db, {
+        title: "資料作成",
+        description: null,
+        category: "work",
+        priority: null,
+        due_at: null,
+        status: "todo",
+        boss_comment: null,
+        estimated_minutes: null,
+      });
+
+      const result = executeRecordMentoringTool(
+        db,
+        sessionId,
+        { content: "見積もりの前提を再確認してから着手する", task_id: 9999 },
+        validTask.id,
+      );
+
+      expect(result.isError).toBe(true);
+      expect(result.content).toContain("9999");
+      expect(listDecisions(db)).toHaveLength(0);
+    });
+
+    it("keeps task_id null when mentoringTaskId is not supplied and task_id is omitted (AC-25)", () => {
+      const result = executeRecordMentoringTool(db, sessionId, {
+        content: "見積もりの前提を再確認してから着手する",
+      });
+
+      expect(result.isError).toBe(false);
+      const recorded = JSON.parse(result.content);
+      expect(recorded).toMatchObject({ task_id: null });
+    });
+
+    it("applies mentoringTaskId when task_id is explicitly null (treated as omitted)", () => {
+      const task = insertTask(db, {
+        title: "資料作成",
+        description: null,
+        category: "work",
+        priority: null,
+        due_at: null,
+        status: "todo",
+        boss_comment: null,
+        estimated_minutes: null,
+      });
+
+      const result = executeRecordMentoringTool(
+        db,
+        sessionId,
+        { content: "見積もりの前提を再確認してから着手する", task_id: null },
+        task.id,
+      );
+
+      expect(result.isError).toBe(false);
+      const recorded = JSON.parse(result.content);
+      expect(recorded).toMatchObject({ task_id: task.id });
+    });
+
+    it("returns an error and does not persist when mentoringTaskId does not refer to an existing task", () => {
+      const result = executeRecordMentoringTool(
+        db,
+        sessionId,
+        { content: "見積もりの前提を再確認してから着手する" },
+        9999,
+      );
+
+      expect(result.isError).toBe(true);
+      expect(result.content).toContain("9999");
+      expect(listDecisions(db)).toHaveLength(0);
+    });
+  });
 });
