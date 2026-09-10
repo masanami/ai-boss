@@ -76,10 +76,13 @@ describe("evaluateRules", () => {
   });
 
   it("suppresses all rules except break_overrun while on break", () => {
+    // due_at はローカル暦日（ADR 0010 決定 1）。締切が切れるのは翌暦日 00:00 な
+    // ので、now（7/5 12:00）で超過させるには締切を 7/4 にする。7/5 のままだと
+    // そもそも超過せず、「休憩中は抑制される」ことのテストが恒真になる。
     const overdueTask = makeTask({
       id: 1,
       status: "todo",
-      due_at: "2026-07-05T00:00:00",
+      due_at: "2026-07-04",
     });
     const activeBreak = makeActivityEvent({
       type: "break_start",
@@ -133,8 +136,10 @@ describe("evaluateRules", () => {
   });
 
   it("fires deadline_overdue notifications for every overdue task independently", () => {
-    const first = makeTask({ id: 1, status: "todo", due_at: "2026-07-04T00:00:00" });
-    const second = makeTask({ id: 2, status: "todo", due_at: "2026-07-05T00:00:00" });
+    // 締切はローカル暦日で、超過は翌暦日 00:00 から。now は 7/5 12:00 なので
+    // 両方を 7/5 より前の暦日にする（7/5 締切はこの時点ではまだ超過ではない）。
+    const first = makeTask({ id: 1, status: "todo", due_at: "2026-07-03" });
+    const second = makeTask({ id: 2, status: "todo", due_at: "2026-07-04" });
 
     const result = evaluateRules(baseInput({ tasks: [first, second] }));
 
