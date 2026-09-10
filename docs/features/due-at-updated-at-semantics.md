@@ -259,6 +259,8 @@ export function normalizeDueAtToDateKey(dueAt: string | null): string | null;
 | **S1** | `due_at` を暦日へ一本化し、不正値を読み出し側でガードする（`server/src/tasks/due-at.ts` の新設・書き込み時の正規化・検知エンジン 2 本の切り替え・ボスのツール説明文の変更） | (2)(3) | AC-5〜AC-16 | なし |
 | **S2** | ダッシュボードのひとことのフィンガープリントを `Task` 全フィールドへ広げる | (1) | AC-1〜AC-4 | なし（S1 と独立・並列可） |
 
+実装対象: S1
+
 - **最小スライスは S1** とする。論点(2)(3) はどちらも `server/src/tasks/due-at.ts` の中身であり、(3) だけを先に出すと「旧解釈で `toDueAtInstant` を書いて直後に書き換える」手戻りになる。また本改訂の起点はオーナーの論点(2) 決定であり、価値の出方も S1 が先である。
 - S2 は S1 と共有ファイルが無く（`server/src/dashboard/task-fingerprint.ts` のみ）、並列で進めても衝突しない。
 - 各スライスは単独で出荷可能（S2 を出さずに S1 だけをマージしても、S1 だけをマージしても、振る舞いは一貫している）。
@@ -330,7 +332,7 @@ export function normalizeDueAtToDateKey(dueAt: string | null): string | null;
 - 移行の要否: **要る**。既存の時刻付き `due_at` を暦日へ落とすマイグレーション（またはそれと等価な読み出し側の吸収）。
 - 既存テストへの影響: `server/src/detection/deadline-overdue.test.ts`（`due_at` 参照 12 箇所）と `server/src/detection/priority.test.ts`（6 箇所）は現在すべて UTC 瞬時リテラル（`"2026-07-05T00:00:00.000Z"` など）を使っており、暦日へ書き換えたうえで ADR 0007 決定 5 に従いローカル由来の固定時刻へ組み直す必要がある。`server/src/boss/task-tools.test.ts`（11 箇所）・`server/src/tasks/tasks-routes.test.ts`（17 箇所）の一部も影響する。
 - UI の見え方: **変わらない**（`web` は既に `<input type="date">` と `slice(0, 10)` 表示のみ）。
-- 体験の変化: 締切当日いっぱいの猶予ができる＝**催促が実質 1 日弱遅くなる**。
+- 体験の変化: 締切当日いっぱいの猶予ができる＝**催促が実質 1 日弱遅くなる**（**これは初版の記述であり、実 DB の 5 件に対しては生じない**——date-only の値が 0 件だったため。決定 4 と本節末尾の「採用理由」を参照）。
 - pros: ADR 0007 と最も整合。実データの主な生成元（web の日付入力）と一致。編集ラウンドトリップで意味が変わる Issue の主症状が保存形式の一本化で構造的に消える。web の変更が不要。TZ に依存しない。
 - cons: 「今日の 15:00 まで」のような時刻締切を表現できなくなる。ボスが時刻付きの締切を置けなくなる。
 
