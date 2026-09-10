@@ -429,10 +429,19 @@ export function registerChatMessageRoute(
           });
         }
 
+        // Codex 指摘（PR #467）: フォールバックの判定は**正規化後の結果**で
+        // 行う。`fullText !== ""` だけで見ると、LLM が許可リストのマークアップ
+        // しか返さなかった場合（`<p></p>` 等）にその生の応答が選ばれてしまい、
+        // 正規化を経た `done`／再読み込みの内容が空白のみになる。空応答の
+        // フォールバックが既にあるのだから、同じ扱いに寄せる。
+        //
+        // 保存する `content` は**フォールバックしない限り生のまま**である
+        // （「保存 content の扱い」決定を壊さない）。
+        const hasVisibleText = stripHtmlTags(fullText).trim() !== "";
         const bossMessage = insertMessage(db, {
           session_id: id,
           role: "boss",
-          content: fullText !== "" ? fullText : buildFallbackText(toolSummaries),
+          content: hasVisibleText ? fullText : buildFallbackText(toolSummaries),
         });
         // Issue #461（親 #446 S1）: docs/features/boss-reply-plain-text-output.md
         // クリティカル設計決定「SSE 送出の制約」— `done` の payload だけ

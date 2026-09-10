@@ -367,6 +367,41 @@ describe("POST /api/sessions/:id/messages", () => {
     });
   });
 
+  // Codex 指摘（PR #467）: 許可リストのマークアップだけの応答は、正規化後に
+  // 空白しか残らない。`fullText !== ""` で判定していると生の応答が選ばれ、
+  // done も再読み込みも空白のみになる。判定を正規化後の結果に寄せる。
+  it("falls back to the no-reply text when the LLM returns only allowlisted markup", async () => {
+    const session = await createSession();
+    streamBossMessageMock.mockImplementation(
+      async (_client, _request, callbacks: StreamBossMessageCallbacks) => {
+        callbacks.onTextDelta?.("<p></p><strong></strong>");
+        return fakeTextMessage("<p></p><strong></strong>");
+      },
+    );
+    const app = createApp(db, env);
+
+    const res = await app.request(`/api/sessions/${session.id}/messages`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ content: "何から始めればいい？" }),
+    });
+
+    const events = parseSseEvents(await res.text());
+    const doneEvent = events.find((e) => e.event === "done");
+    expect(doneEvent).toBeDefined();
+    expect((JSON.parse(doneEvent!.data) as Message).content).toBe(
+      "応答を生成できなかった。もう一度送ってくれ。",
+    );
+
+    // 再読み込みでも同じ文面が出る（空白のみのメッセージが履歴に残らない）。
+    const readBack = await readJson<Message[]>(
+      await app.request(`/api/sessions/${session.id}/messages`),
+    );
+    expect(readBack.find((m) => m.role === "boss")!.content).toBe(
+      "応答を生成できなかった。もう一度送ってくれ。",
+    );
+  });
+
   it("streams text deltas and a final done event with the persisted boss message", async () => {
     const session = await createSession();
     streamBossMessageMock.mockImplementation(
