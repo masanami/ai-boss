@@ -20,7 +20,7 @@ vi.mock("../llm/claude-client.js", async (importOriginal) => {
   };
 });
 
-const { generateNotificationBody } = await import("./notification-body.js");
+const { generateNotificationBody, buildFallbackBody } = await import("./notification-body.js");
 const { MissingApiKeyError } = await import("../llm/claude-client.js");
 
 function putSetting(db: Database.Database, key: string, value: string): void {
@@ -163,6 +163,29 @@ describe("generateNotificationBody", () => {
     });
 
     expect(body).toBe("\n資料作成に早く着手しろ。\n");
+  });
+
+  // 応答が許可リストのタグだけで構成される場合、`text === ""` ガードはすり抜ける
+  // が正規化後は空白しか残らない。空白だけの通知を配送しないよう、正規化後の
+  // 空判定で定型文フォールバックへ落ちることを固定する。
+  it("falls back to the template when the Claude reply normalizes to whitespace only", async () => {
+    streamBossMessageMock.mockResolvedValue(fakeTextMessage("<p></p><br>"));
+
+    const body = await generateNotificationBody(db, env, {
+      ruleType: "todo_stall",
+      escalationLevel: 1,
+      task: makeTask(),
+      now,
+    });
+
+    expect(body).toBe(
+      buildFallbackBody({
+        ruleType: "todo_stall",
+        escalationLevel: 1,
+        task: makeTask(),
+        now,
+      }),
+    );
   });
 
   it("returns the trimmed Claude-generated text when the call succeeds", async () => {

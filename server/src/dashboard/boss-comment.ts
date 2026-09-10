@@ -125,24 +125,29 @@ async function generateBossComment(
     if (text === "") {
       return { text: FALLBACK_COMMENT, succeeded: false };
     }
+    // FR-14 の全角80字検証は**正規化前の生テキスト**に対して行う。タグ除去は
+    // 文字を減らす方向にしか働かないため、生の長さで通れば正規化後も必ず通る
+    // ＝表示値の上限として保守的に効く。この保守性は `stripHtmlTags` の置換先が
+    // 1 文字以下（ブロック境界タグ→改行1個、インラインタグ→空文字）であることに
+    // 依存している。置換先を 2 文字以上にする変更を入れるなら、この検証を
+    // 正規化後の値に対して行うよう変えること（Issue #461 レビュー指摘）。
     if (backend === "claude-code" && zenkakuEquivalentLength(text) > DASHBOARD_COMMENT_MAX_ZENKAKU_LENGTH) {
       return { text: FALLBACK_COMMENT, succeeded: false };
     }
-    // Issue #461（親 #446 S1）: docs/features/boss-reply-plain-text-output.md
-    // クリティカル設計決定「適用面」— LLM 由来のテキストへ stripHtmlTags を
-    // 適用する。全角80字の長さ検証（FR-14）は正規化前の生テキストに対して
-    // 行う（タグ除去後は短くなりうるため、検証は保守的に生の長さで行う）。
-    //
-    // 正規化した値をここでキャッシュへ渡す（呼び出し元 getOrGenerateBossComment
-    // が succeeded: true のときそのまま setCachedBossComment する）。
-    // 意思決定: このキャッシュは messages.content と違い、次ターンの
-    // プロンプトへ再投入される経路を持たない単なる表示キャッシュであり、
-    // 「生出力を残して後から調べられるようにする」再現性の理由
-    // （docs/features/boss-reply-plain-text-output.md クリティカル設計決定
-    // 「保存 content の扱い」）が転用できない。正規化後の値を1箇所
-    // （ここ）だけで確定させることで、キャッシュヒット・ミスの両経路が
-    // 追加の変換なしに正規化済みの値を返す。
-    return { text: stripHtmlTags(text), succeeded: true };
+    // Issue #461（親 #446 S1）: 応答が許可リストのタグだけで構成される場合
+    // （例: `<p></p>`）、上の `text === ""` ガードはすり抜けるが正規化後は
+    // 空白・改行しか残らない。素通しすると空白だけのひとことがその暦日いっぱい
+    // キャッシュされるため、**正規化後にも**空判定を行いフォールバックへ落とす
+    // （上の空応答ガードと同じ意図を、正規化を挟んだ後でも保つ）。
+    if (stripHtmlTags(text).trim() === "") {
+      return { text: FALLBACK_COMMENT, succeeded: false };
+    }
+    // キャッシュへは**生の値**を渡す（正規化は下の getOrGenerateBossComment＝
+    // 読み出し境界で行う）。機能仕様のクリティカル設計決定は「送出／読み出しの
+    // 境界でのみ正規化する」であり、書き込み側で正規化すると**本変更より前に
+    // 書かれたキャッシュ行**（`settings` テーブルに永続し、同一暦日＋同一タスク
+    // fingerprint の間ヒットし続ける）が生のまま返って AC-18 を満たさない。
+    return { text, succeeded: true };
   } catch (err) {
     // Claude API のエラーはリクエスト内部情報を含みうるため、クラス名のみ
     // ログに残す（chat-messages-route.ts / notification-body.ts と同じ規約）。
@@ -158,6 +163,12 @@ async function generateBossComment(
  * 今日のひとことをキャッシュから取得する。キャッシュが無ければ Claude で
  * 生成し、成功した場合のみキャッシュへ保存する（フォールバック文言は
  * キャッシュしない）。
+ *
+ * Issue #461（親 #446 S1）: **この関数が正規化（`stripHtmlTags`）の適用点**
+ * である。キャッシュヒット・ミスの両経路の合流点で掛けることで、キャッシュに
+ * 何が入っていても——本変更より前に書かれた生の値であっても——返る値は
+ * 正規化済みになる。正規化済みの文字列を再度通しても残存タグが無く恒等の
+ * ため、二重適用は無害。
  *
  * キャッシュキーは日付に加えてタスク状態のフィンガープリント（Issue #121）
  * も使う。この関数の内部では `listTasks(db)` を一度だけ読み、その結果を
@@ -178,12 +189,12 @@ export async function getOrGenerateBossComment(
 
   const cached = getCachedBossComment(db, todayKey, fingerprint);
   if (cached !== undefined) {
-    return cached;
+    return stripHtmlTags(cached);
   }
 
   const result = await generateBossComment(db, env, now, tasks);
   if (result.succeeded) {
     setCachedBossComment(db, todayKey, fingerprint, result.text);
   }
-  return result.text;
+  return stripHtmlTags(result.text);
 }

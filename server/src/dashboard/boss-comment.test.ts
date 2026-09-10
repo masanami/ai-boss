@@ -61,10 +61,11 @@ describe("getOrGenerateBossComment", () => {
   });
 
   // Issue #461（親 #446 S1）: docs/features/boss-reply-plain-text-output.md
-  // クリティカル設計決定「適用面」— stripHtmlTags を適用する。キャッシュへ
-  // 正規化後の値を保存する設計（意思決定・理由は本チケットの完了報告参照）
-  // なので、キャッシュミス（初回生成）・キャッシュヒット（2回目）の両経路で
-  // 正規化された値が返ることを固定する。
+  // クリティカル設計決定「適用面」— stripHtmlTags は**読み出し境界**
+  // （getOrGenerateBossComment）で適用する。キャッシュへは生の値を保存する
+  // ため、キャッシュミス（初回生成）・キャッシュヒット（2回目）・**本変更より
+  // 前に書かれた生のキャッシュ行**の 3 経路すべてで正規化された値が返ることを
+  // 固定する。
   it("AC-18: normalizes HTML tags in the generated comment on a cache miss", async () => {
     const now = new Date(2026, 6, 6, 8, 0);
     createBossMessageMock.mockResolvedValue(
@@ -89,6 +90,41 @@ describe("getOrGenerateBossComment", () => {
     expect(firstComment).toBe("\n今日も決めた通りにやれ\n");
     expect(secondComment).toBe("\n今日も決めた通りにやれ\n");
     expect(createBossMessageMock).toHaveBeenCalledTimes(1);
+  });
+
+  // 本変更より前に書かれたキャッシュ行（生の値）が残っている状態を再現する。
+  // 正規化を生成側（書き込み）に置くとこの経路は生のまま返るため、読み出し
+  // 境界に置いたことをここで固定する。キャッシュは settings テーブルに永続
+  // するので、同一暦日＋同一 fingerprint の間はアップグレード後もヒットする。
+  it("AC-18: normalizes a raw cache entry written before this change (cache hit, no regeneration)", async () => {
+    const now = new Date(2026, 6, 6, 8, 0);
+    const { setCachedBossComment } = await import("./boss-comment-cache.js");
+    const { toDateKey } = await import("../detection/time-utils.js");
+    const { listTasks } = await import("../tasks/tasks-repository.js");
+    setCachedBossComment(
+      db,
+      toDateKey(now),
+      computeTaskFingerprint(listTasks(db)),
+      "<p>先に書かれた生のひとこと</p>",
+    );
+
+    const comment = await getOrGenerateBossComment(db, env, now);
+
+    expect(comment).toBe("\n先に書かれた生のひとこと\n");
+    expect(createBossMessageMock).not.toHaveBeenCalled();
+  });
+
+  // 応答が許可リストのタグだけで構成される場合、正規化後は空白しか残らない。
+  // 空白だけのひとことをその暦日いっぱいキャッシュしないよう、正規化後の
+  // 空判定でフォールバックへ落ちることを固定する。
+  it("falls back to the template when the reply normalizes to whitespace only", async () => {
+    const now = new Date(2026, 6, 6, 8, 0);
+    createBossMessageMock.mockResolvedValue(fakeTextMessage("<p></p>"));
+
+    const comment = await getOrGenerateBossComment(db, env, now);
+
+    expect(comment).toBe("今日も決めたことを淡々とこなせ。");
+    expect(getCachedBossComment(db, "2026-07-06", computeTaskFingerprint([]))).toBeUndefined();
   });
 
   it("calls the Claude API and returns the generated text on first request", async () => {
