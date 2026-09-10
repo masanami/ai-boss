@@ -286,6 +286,87 @@ describe("POST /api/sessions/:id/messages", () => {
     expect(messages[1]).toMatchObject({ role: "boss", content: rawFullText });
   });
 
+  // Issue #462（親 #446 S1）: docs/features/boss-reply-plain-text-output.md
+  // クリティカル設計決定「SSE 送出の制約」— 正規化は累積文字列に対して行い、
+  // タグの一部になりうる末尾は送出を保留する。ここで固定するのは
+  // 「`text` 断片の連結 === `GET /api/sessions/:id/messages` の `content`」
+  // という一致であり、ストリーミング中に見えたものと確定後に読み出したものが
+  // 食い違わないことを意味する。
+  describe.each([
+    {
+      name: "AC-14: a tag arriving split across several deltas",
+      deltas: ["<", "p", ">", "今日は資料", "作成からだ", "</", "p", ">"],
+      expected: "\n今日は資料作成からだ\n",
+    },
+    {
+      name: "AC-14: an unclosed '<' that only later turns out to start a matching tag",
+      // `"<a x <p"` の時点で「最後の `<`」で切ると `"<a x "` を送出して
+      // しまうが、続く `">"` で全体が 1 個の `<a ...>` として一致し正規化
+      // 結果は `"後半だけが残る"` になる——送出済みの 5 文字は撤回できない。
+      // 保留の分割点が「最後の `<`」ではなく「最後の `>` より後の最初の `<`」
+      // であることを固定する（`<` が 2 つ無いと 2 つの規則が区別できない）。
+      deltas: ["<a x ", "<p", ">後半だけが残る"],
+      expected: "後半だけが残る",
+    },
+    {
+      name: "AC-15: a reply ending with an unclosed '<br'",
+      deltas: ["まず資料作成だ", "<br"],
+      expected: "まず資料作成だ<br",
+    },
+    {
+      name: 'AC-15: a reply ending with an unclosed \'<div class="x"\'',
+      deltas: ["<p>まず資料作成だ</p>", '<div class="x"'],
+      expected: '\nまず資料作成だ\n<div class="x"',
+    },
+    {
+      name: "AC-14: text containing '<' that never becomes a tag is streamed unchanged",
+      deltas: ["x ", "< 10 のとき", "は待て"],
+      expected: "x < 10 のときは待て",
+    },
+  ])("streaming/read consistency — $name", ({ deltas, expected }) => {
+    it("concatenated text events equal the content read back from GET /messages", async () => {
+      const session = await createSession();
+      const rawFullText = deltas.join("");
+      streamBossMessageMock.mockImplementation(
+        async (_client, _request, callbacks: StreamBossMessageCallbacks) => {
+          for (const delta of deltas) {
+            callbacks.onTextDelta?.(delta);
+          }
+          return fakeTextMessage(rawFullText);
+        },
+      );
+      const app = createApp(db, env);
+
+      const res = await app.request(`/api/sessions/${session.id}/messages`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ content: "何から始めればいい？" }),
+      });
+
+      const events = parseSseEvents(await res.text());
+      const streamed = events
+        .filter((e) => e.event === "text")
+        .map((e) => (JSON.parse(e.data) as { text: string }).text)
+        .join("");
+
+      const readBack = await readJson<Message[]>(
+        await app.request(`/api/sessions/${session.id}/messages`),
+      );
+      const bossMessage = readBack.find((m) => m.role === "boss");
+
+      expect(bossMessage).toBeDefined();
+      expect(streamed).toBe(bossMessage!.content);
+      // 恒真化の防止: 一致すべき値そのものも固定する（両辺が揃って壊れても
+      // 上の等値だけなら通ってしまうため）。
+      expect(streamed).toBe(expected);
+      // 保存値は LLM の生出力のまま（「保存 content の扱い」決定）。
+      const stored = db
+        .prepare("SELECT * FROM messages WHERE session_id = ? AND role = 'boss'")
+        .get(session.id) as Message;
+      expect(stored.content).toBe(rawFullText);
+    });
+  });
+
   it("streams text deltas and a final done event with the persisted boss message", async () => {
     const session = await createSession();
     streamBossMessageMock.mockImplementation(

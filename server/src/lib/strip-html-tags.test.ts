@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { stripHtmlTags } from "./strip-html-tags.js";
+import { stripHtmlTags, splitPendingTagTail } from "./strip-html-tags.js";
 
 const BLOCK_TAGS = [
   "br",
@@ -156,6 +156,49 @@ describe("stripHtmlTags", () => {
       expect(
         normalizedWhole.startsWith(normalizedPrefix),
         `split at ${splitPoint}: "${normalizedPrefix}" should prefix "${normalizedWhole}"`,
+      ).toBe(true);
+    }
+  });
+});
+
+describe("splitPendingTagTail", () => {
+  it.each([
+    { input: "", committed: "", pending: "" },
+    { input: "ただの文章", committed: "ただの文章", pending: "" },
+    // 閉じた `>` までは確定。以降の `<` から保留。
+    { input: "甲<p>乙<b", committed: "甲<p>乙", pending: "<b" },
+    { input: "<p>甲</p>", committed: "<p>甲</p>", pending: "" },
+    // `>` が 1 つも無ければ最初の `<` 以降がすべて保留。
+    { input: "x < 10", committed: "x ", pending: "< 10" },
+    { input: "<br", committed: "", pending: "<br" },
+    { input: '甲<div class="x"', committed: "甲", pending: '<div class="x"' },
+  ])("splits $input into committed/pending", ({ input, committed, pending }) => {
+    expect(splitPendingTagTail(input)).toEqual({ committed, pending });
+    // 分割は情報を落とさない（連結すると入力に戻る）。
+    expect(committed + pending).toBe(input);
+  });
+
+  // 「最後の `<`」で切ると壊れるケース。`"<a x "` を確定扱いにして送出すると、
+  // 続く `">"` で全体が 1 個の `<a ...>` として一致し正規化結果が空になるため、
+  // 送出済みの 5 文字を撤回できなくなる。最後の `>` より後の `<` は
+  // **すべて** 保留しなければならない。
+  it("holds back every '<' after the last '>', not just the last one", () => {
+    expect(splitPendingTagTail("<a x <p")).toEqual({ committed: "", pending: "<a x <p" });
+    expect(stripHtmlTags("<a x <p>")).toBe("");
+  });
+
+  // ストリーミングの不変条件そのもの: 任意の到着順で、確定部分を順に正規化して
+  // 連結した結果が、常に全体の正規化結果の接頭辞になっている。
+  it("keeps stripHtmlTags(committed) a prefix of stripHtmlTags(whole) at every arrival point", () => {
+    const whole = '<p>甲</p>乙<strong>丙</strong>。x < 10 のとき<a href="u">丁</a><br';
+    const normalizedWhole = stripHtmlTags(whole);
+
+    for (let i = 0; i <= whole.length; i += 1) {
+      const arrived = whole.slice(0, i);
+      const normalizedCommitted = stripHtmlTags(splitPendingTagTail(arrived).committed);
+      expect(
+        normalizedWhole.startsWith(normalizedCommitted),
+        `after ${i} chars: "${normalizedCommitted}" should prefix "${normalizedWhole}"`,
       ).toBe(true);
     }
   });
