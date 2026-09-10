@@ -44,6 +44,22 @@ function createRoutedFetchMock(options: {
   onCheckin?: (body: unknown, tasks: Task[]) => Task[];
   sessions?: ChatSession[];
   sessionMessages?: Record<number, ChatMessage[]>;
+  /**
+   * Issue #470: called when a chat message is POSTed (including the session
+   * lazily created by a task-origin mentoring send, since no session exists
+   * in `sessions` yet). Returns the boss reply persisted for the turn;
+   * defaults to a fixed reply when omitted.
+   */
+  onSendMessage?: (
+    sessionId: number,
+    body: { content: string; mentoring?: true; mentoringTaskId?: number },
+  ) => ChatMessage;
+  /**
+   * Issue #470 (AC-2 regression coverage): when true, `GET /api/sessions`
+   * never resolves, so `chatState.status` stays `"loading"` indefinitely —
+   * simulating the window before useChat's mount restore settles.
+   */
+  sessionsPending?: boolean;
 } = {}) {
   const {
     tasks: initialTasks = [],
@@ -52,8 +68,11 @@ function createRoutedFetchMock(options: {
     onCheckin,
     sessions = [],
     sessionMessages = {},
+    onSendMessage,
+    sessionsPending = false,
   } = options;
   let tasks = initialTasks;
+  let nextCreatedSessionId = 1000;
 
   const jsonResponse = (status: number, body: unknown) =>
     Promise.resolve({
@@ -123,11 +142,60 @@ function createRoutedFetchMock(options: {
     // chatState (Issue #93: useChat is lifted up to AppLayout, so it fetches
     // on mount regardless of which view is active).
     if (url === "/api/sessions" && method === "GET") {
+      if (sessionsPending) {
+        return new Promise(() => {});
+      }
       return jsonResponse(200, sessions);
+    }
+    // Issue #470: a task-origin mentoring send lazily creates an adhoc
+    // session (`useChat.send`'s existing behavior) when none is active yet.
+    if (url === "/api/sessions" && method === "POST") {
+      const body = JSON.parse(init?.body as string) as { type: string };
+      const created: ChatSession = {
+        id: nextCreatedSessionId++,
+        type: body.type as ChatSession["type"],
+        started_at: new Date().toISOString(),
+        ended_at: null,
+        summary: null,
+      };
+      return jsonResponse(201, created);
     }
     const messagesMatch = /^\/api\/sessions\/(\d+)\/messages$/.exec(url);
     if (messagesMatch && method === "GET") {
       return jsonResponse(200, sessionMessages[Number(messagesMatch[1])] ?? []);
+    }
+    if (messagesMatch && method === "POST") {
+      const sessionId = Number(messagesMatch[1]);
+      const body = JSON.parse(init?.body as string) as {
+        content: string;
+        mentoring?: true;
+        mentoringTaskId?: number;
+      };
+      const bossReply: ChatMessage = onSendMessage
+        ? onSendMessage(sessionId, body)
+        : {
+            id: 900,
+            session_id: sessionId,
+            role: "boss",
+            content: "了解した。",
+            interrupted: 0,
+            created_at: new Date().toISOString(),
+          };
+      const encoder = new TextEncoder();
+      return Promise.resolve({
+        ok: true,
+        status: 200,
+        body: new ReadableStream<Uint8Array>({
+          start(controller) {
+            controller.enqueue(
+              encoder.encode(
+                `event: done\ndata: ${JSON.stringify(bossReply)}\n\n`,
+              ),
+            );
+            controller.close();
+          },
+        }),
+      });
     }
     return Promise.reject(new Error(`unexpected fetch call: ${method} ${url}`));
   });
@@ -567,6 +635,148 @@ describe("AppLayout", () => {
     await waitFor(() =>
       expect(screen.getByLabelText("メッセージ")).toHaveValue("書きかけの相談"),
     );
+  });
+
+  // Issue #470 (親 #444): タスクカードからのメンタリング起動。判断
+  // （adhoc 区間かどうか）は AppLayout が持ち、TaskBoard/TaskCard はそのまま
+  // 配線するだけ（AC-1〜AC-4, AC-8, AC-9 の統合確認。単位レベルの確認は
+  // TaskCard.test.tsx / TaskBoard.test.tsx / use-chat.test.ts /
+  // chat-api.test.ts 側に持つ）。
+  describe("タスクカードからのメンタリング起動 (Issue #470)", () => {
+    it("shows a メンタリングする button on a task card during the adhoc period (AC-1)", async () => {
+      const task = makeTask({ id: 1, title: "資料を作る", status: "todo" });
+      vi.stubGlobal("fetch", createRoutedFetchMock({ tasks: [task] }));
+
+      render(<AppLayout />);
+      fireEvent.click(screen.getByRole("button", { name: "タスク" }));
+
+      await waitFor(() =>
+        expect(
+          screen.getByRole("region", { name: "未着手" }),
+        ).toBeInTheDocument(),
+      );
+      expect(
+        screen.getByRole("button", { name: "メンタリングする" }),
+      ).toBeInTheDocument();
+    });
+
+    // 変異確認の対になるテスト（AC-1 側と対）: 表示条件を「常に表示」に
+    // 壊すとこちらが落ち、「常に非表示」に壊すと AC-1 側が落ちる。
+    it("does not show a メンタリングする button on a task card during a meeting (AC-2)", async () => {
+      const task = makeTask({ id: 1, title: "資料を作る", status: "todo" });
+      const morningSession: ChatSession = {
+        id: 20,
+        type: "morning",
+        started_at: new Date().toISOString(),
+        ended_at: null,
+        summary: null,
+      };
+      vi.stubGlobal(
+        "fetch",
+        createRoutedFetchMock({ tasks: [task], sessions: [morningSession] }),
+      );
+
+      render(<AppLayout />);
+      fireEvent.click(screen.getByRole("button", { name: "タスク" }));
+
+      const todoColumn = await screen.findByRole("region", { name: "未着手" });
+      await waitFor(() =>
+        expect(within(todoColumn).getByText("資料を作る")).toBeInTheDocument(),
+      );
+      // sessionType が morning に確定する（chatState のマウント時取得と
+      // tasksState のそれは並行するため、どちらが先に片付くかに依存しない
+      // よう waitFor で待つ）。
+      await waitFor(() =>
+        expect(
+          screen.queryByRole("button", { name: "メンタリングする" }),
+        ).not.toBeInTheDocument(),
+      );
+    });
+
+    // レビュー指摘 (code-reviewer/design-reviewer, self-review 1周目):
+    // sessionType の初期値は "adhoc"（use-chat.ts）なので、chatState の
+    // マウント時復元（会が開いているかどうかの判定）が解決する前の一瞬は、
+    // 実際には会（朝会・夕会）の最中でもボタンが表示されてしまう窓がある。
+    // `chatState.status === "ready"` も併せてゲートすることで閉じる。
+    it("does not show a メンタリングする button while the chat session restore has not settled yet (AC-2, pre-restore window)", async () => {
+      const task = makeTask({ id: 1, title: "資料を作る", status: "todo" });
+      vi.stubGlobal(
+        "fetch",
+        createRoutedFetchMock({ tasks: [task], sessionsPending: true }),
+      );
+
+      render(<AppLayout />);
+      fireEvent.click(screen.getByRole("button", { name: "タスク" }));
+
+      // TaskBoard は tasksState に関わらず COLUMNS（空の region）を即座に
+      // 描画するため、region の存在だけではタスクカードがまだ描画されて
+      // いないことがある（self-review 2周目指摘）。カード自体の描画を
+      // 待ってから不在を主張しないと、ボタンが無いのが「まだカードが無い
+      // から」なのか「fix が効いているから」なのか区別が付かず、この
+      // アサーションはゲート条件を元に戻しても恒真になりうる。
+      const todoColumn = await screen.findByRole("region", { name: "未着手" });
+      await waitFor(() =>
+        expect(within(todoColumn).getByText("資料を作る")).toBeInTheDocument(),
+      );
+      // タスクカードは描画済みだが chat のセッション復元は永久に pending
+      // （sessionsPending）— この状態が続く限りボタンは出ない。
+      expect(
+        screen.queryByRole("button", { name: "メンタリングする" }),
+      ).not.toBeInTheDocument();
+    });
+
+    it("switches to chat and sends a message containing the task title, with mentoring: true and the matching mentoringTaskId, when メンタリングする is clicked (AC-3, AC-4, AC-8, AC-9)", async () => {
+      const task = makeTask({ id: 42, title: "資料を作る", status: "todo" });
+      let sentCount = 0;
+      let sentBody: {
+        content: string;
+        mentoring?: true;
+        mentoringTaskId?: number;
+      } | null = null;
+      vi.stubGlobal(
+        "fetch",
+        createRoutedFetchMock({
+          tasks: [task],
+          onSendMessage: (sessionId, body) => {
+            sentCount += 1;
+            sentBody = body;
+            return {
+              id: 900,
+              session_id: sessionId,
+              role: "boss",
+              content: "見といた。",
+              interrupted: 0,
+              created_at: new Date().toISOString(),
+            };
+          },
+        }),
+      );
+
+      render(<AppLayout />);
+      fireEvent.click(screen.getByRole("button", { name: "タスク" }));
+      await waitFor(() =>
+        expect(
+          screen.getByRole("region", { name: "未着手" }),
+        ).toBeInTheDocument(),
+      );
+
+      fireEvent.click(
+        screen.getByRole("button", { name: "メンタリングする" }),
+      );
+
+      await waitFor(() =>
+        expect(
+          screen.getByRole("main", { name: "ボスとの対話" }),
+        ).toBeInTheDocument(),
+      );
+      await waitFor(() => expect(sentBody).not.toBeNull());
+      expect(sentCount).toBe(1);
+      expect(sentBody).toEqual({
+        content: "「資料を作る」の進め方を見てほしい",
+        mentoring: true,
+        mentoringTaskId: 42,
+      });
+    });
   });
 
   it("switches the main area to the settings view when the settings nav item is clicked", () => {

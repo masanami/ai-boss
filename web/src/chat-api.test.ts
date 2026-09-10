@@ -449,8 +449,12 @@ describe("sendChatMessage", () => {
   // Issue #411 (親 #276 判断6): 随時メンタリングのボタンは `mentoring: true`
   // を付けたチャット送信で開始する。サーバー側の undefined-as-absent の作法
   // （sessions-validation.ts の ChatMessageInput JSDoc）に揃え、既定値
-  // (false/未指定) のときはキー自体を持たせない。
-  it("includes mentoring: true in the body when requested", async () => {
+  // (未指定) のときはキー自体を持たせない。
+  //
+  // Issue #470 (親 #444 決定4): 6番目の引数は末尾の位置引数ではなく
+  // `options` オブジェクト（`{ mentoring?: true; mentoringTaskId?: number }`）
+  // に置き換わった。中身の undefined-as-absent の作法は変わらない。
+  it("includes mentoring: true in the body when options.mentoring is true", async () => {
     const fetchMock = vi.fn().mockResolvedValue(sseResponse([]));
     vi.stubGlobal("fetch", fetchMock);
 
@@ -460,7 +464,7 @@ describe("sendChatMessage", () => {
       collectHandlers(),
       undefined,
       undefined,
-      true,
+      { mentoring: true },
     );
 
     expect(fetchMock).toHaveBeenCalledWith("/api/sessions/1/messages", {
@@ -487,23 +491,62 @@ describe("sendChatMessage", () => {
     expect("mentoring" in body).toBe(false);
   });
 
-  it("omits mentoring from the body when explicitly false", async () => {
+  // Issue #470 (親 #444 決定3): タスク起点の送信は対象タスクの id を
+  // mentoringTaskId として乗せる。
+  it("includes mentoringTaskId in the body when options.mentoringTaskId is given", async () => {
     const fetchMock = vi.fn().mockResolvedValue(sseResponse([]));
     vi.stubGlobal("fetch", fetchMock);
 
     await sendChatMessage(
       1,
-      "テスト",
+      "「資料を作る」の進め方を見てほしい",
       collectHandlers(),
       undefined,
       undefined,
-      false,
+      { mentoring: true, mentoringTaskId: 42 },
     );
+
+    expect(fetchMock).toHaveBeenCalledWith("/api/sessions/1/messages", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        content: "「資料を作る」の進め方を見てほしい",
+        mentoring: true,
+        mentoringTaskId: 42,
+      }),
+      signal: undefined,
+    });
+  });
+
+  // Issue #470 AC-10: チャット画面ヘッダの随時メンタリングボタンは
+  // mentoringTaskId を持たない（タスク起点ではないため）。
+  it("omits mentoringTaskId from the body when only mentoring is requested (header button case, AC-10)", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(sseResponse([]));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await sendChatMessage(1, "今の進め方を見てほしい", collectHandlers(), undefined, undefined, {
+      mentoring: true,
+    });
 
     const body = JSON.parse(fetchMock.mock.calls[0][1].body as string) as Record<
       string,
       unknown
     >;
-    expect("mentoring" in body).toBe(false);
+    expect("mentoringTaskId" in body).toBe(false);
+  });
+
+  // Issue #470 AC-11: メンタリングでない通常送信のボディは { content } と
+  // 完全一致する（mentoring/mentoringTaskId いずれのキーも持たない）。
+  it("omits mentoring and mentoringTaskId from the body when options is not given (AC-11)", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(sseResponse([]));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await sendChatMessage(1, "テスト", collectHandlers());
+
+    const body = JSON.parse(fetchMock.mock.calls[0][1].body as string) as Record<
+      string,
+      unknown
+    >;
+    expect(body).toEqual({ content: "テスト" });
   });
 });

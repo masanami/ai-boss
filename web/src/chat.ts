@@ -118,3 +118,22 @@ export interface ChatStreamHandlers {
   onDone: (message: ChatMessage) => void;
   onError: (message: string) => void;
 }
+
+/**
+ * Shared options for `useChat().send` and `sendChatMessage` (Issue #470,
+ * 親 #444 決定4): a single object used identically at both layers instead of
+ * a growing list of trailing positional booleans/numbers. Keys follow the
+ * existing undefined-as-absent contract (`replaceFromMessageId` before it) —
+ * omitting a key (or the whole options object) leaves the request body
+ * without that key at all (`mentoring` is typed `true`-only, so unlike
+ * `replaceFromMessageId` there is no falsy value to pass instead).
+ *
+ * `mentoring` requests 随時メンタリング (Issue #411, 親 #276 判断6).
+ * `mentoringTaskId` attributes the send to a specific task's card (Issue
+ * #470, 親 #444 決定3) — the id, not the message text, is what the server
+ * uses to associate the mentoring turn with a task.
+ */
+export interface SendMessageOptions {
+  mentoring?: true;
+  mentoringTaskId?: number;
+}

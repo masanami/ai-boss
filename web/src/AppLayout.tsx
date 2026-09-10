@@ -72,6 +72,34 @@ function AppLayout() {
   // 抑止できないため（コードレビュー指摘）。
   const [isDraggingSplitter, setIsDraggingSplitter] = useState(false);
 
+  // タスクカードからのメンタリング起動（Issue #470, 親 #444 決定1・決定2・
+  // 決定3）。`adhoc` 区間のときだけハンドラを TaskBoard/TaskCard へ渡し、会
+  // （朝会・夕会）の最中は `null` にして「メンタリングする」ボタン自体を出さ
+  // せない（AC-2）。ハンドラは表示を chat へ切り替え、対象タスクのタイトル
+  // を含む発言を `mentoring: true` ＋ `mentoringTaskId` 付きで 1 回送信する
+  // （決定6: 文面はタイトルを含む画面表示用で、紐づけの根拠は
+  // `mentoringTaskId` が持つ）。専用の対話面は作らず既存のチャット面へ寄せる
+  // （決定2）。
+  //
+  // `chatState.status === "ready"` も併せてゲートする（self-review 指摘）:
+  // `sessionType` の初期値は `"adhoc"`（`useChat` がマウント時に会の復元を
+  // 済ませるまでの既定値）なので、`status` を見ないと、実際には朝会・夕会が
+  // 開いているセッションの復元がまだ届いていない一瞬だけボタンが出てしまう
+  // （AC-2 の穴）。`status` が `"ready"` になるまではボタンを出さないことで
+  // 閉じる。
+  const startMentoringForTask = (taskId: number) => {
+    const task = tasksState.tasks.find((candidate) => candidate.id === taskId);
+    setActiveView("chat");
+    void chatState.send(`「${task?.title ?? ""}」の進め方を見てほしい`, {
+      mentoring: true,
+      mentoringTaskId: taskId,
+    });
+  };
+  const onStartMentoring =
+    chatState.status === "ready" && chatState.sessionType === "adhoc"
+      ? startMentoringForTask
+      : null;
+
   function handleSplitterPointerDown(event: PointerEvent<HTMLDivElement>) {
     // Defensive: jsdom (and, in principle, a very old browser) doesn't
     // implement pointer capture. Fall back to no-op rather than throwing so
@@ -176,7 +204,10 @@ function AppLayout() {
         )}
         {activeView === "tasks" && (
           <main className="app-main" aria-label="タスクボード">
-            <TaskBoard tasksState={tasksState} />
+            <TaskBoard
+              tasksState={tasksState}
+              onStartMentoring={onStartMentoring}
+            />
           </main>
         )}
         {activeView === "decisions" && (

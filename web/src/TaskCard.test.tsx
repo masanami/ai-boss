@@ -765,4 +765,104 @@ describe("TaskCard", () => {
       due_at: null,
     });
   });
+
+  // Issue #470 (親 #444 決定1): タスクカードからのメンタリング起動。
+  // 表示モードのアクション行に「メンタリングする」ボタンを置く。表示条件は
+  // `onStartMentoring` が null/undefined でないこと（呼び出し元 = AppLayout
+  // が adhoc 区間かどうかで渡す値を決める。判断はこのコンポーネントの外）。
+  describe("メンタリングする ボタン (Issue #470)", () => {
+    it("shows a メンタリングする button when onStartMentoring is provided (AC-1)", () => {
+      render(
+        <TaskCard
+          task={BASE_TASK}
+          onStatusChange={vi.fn()}
+          onEdit={vi.fn()}
+          onStartMentoring={vi.fn()}
+        />,
+      );
+
+      expect(
+        screen.getByRole("button", { name: "メンタリングする" }),
+      ).toBeInTheDocument();
+    });
+
+    // 変異確認の対になるテスト（表示条件を「常に表示」に壊すとこちらが落ち、
+    // 「常に非表示」に壊すと上の AC-1 側が落ちる）。
+    it("does not show the button when onStartMentoring is null (meeting in progress, AC-2)", () => {
+      render(
+        <TaskCard
+          task={BASE_TASK}
+          onStatusChange={vi.fn()}
+          onEdit={vi.fn()}
+          onStartMentoring={null}
+        />,
+      );
+
+      expect(
+        screen.queryByRole("button", { name: "メンタリングする" }),
+      ).not.toBeInTheDocument();
+    });
+
+    it("does not show the button when onStartMentoring is not provided at all", () => {
+      render(
+        <TaskCard task={BASE_TASK} onStatusChange={vi.fn()} onEdit={vi.fn()} />,
+      );
+
+      expect(
+        screen.queryByRole("button", { name: "メンタリングする" }),
+      ).not.toBeInTheDocument();
+    });
+
+    it("calls onStartMentoring with the task id when clicked", () => {
+      const onStartMentoring = vi.fn();
+      render(
+        <TaskCard
+          task={BASE_TASK}
+          onStatusChange={vi.fn()}
+          onEdit={vi.fn()}
+          onStartMentoring={onStartMentoring}
+        />,
+      );
+
+      fireEvent.click(screen.getByRole("button", { name: "メンタリングする" }));
+
+      expect(onStartMentoring).toHaveBeenCalledWith(1);
+    });
+
+    // 決定1: 未保存の編集を抱えたまま画面が切り替わる論点を避けるため、
+    // 編集モード内には置かない。
+    it("does not show the button in edit mode", () => {
+      render(
+        <TaskCard
+          task={BASE_TASK}
+          onStatusChange={vi.fn()}
+          onEdit={vi.fn()}
+          onStartMentoring={vi.fn()}
+        />,
+      );
+
+      fireEvent.click(screen.getByRole("button", { name: "編集" }));
+
+      expect(
+        screen.queryByRole("button", { name: "メンタリングする" }),
+      ).not.toBeInTheDocument();
+    });
+
+    // AC-5/AC-6/AC-7: 既存の表示テキスト・ボス決定表示・操作項目は変わらない。
+    it("does not change the existing view-mode actions (status select, edit button) (AC-7)", () => {
+      render(
+        <TaskCard
+          task={BASE_TASK}
+          onStatusChange={vi.fn()}
+          onEdit={vi.fn()}
+          onStartMentoring={vi.fn()}
+        />,
+      );
+
+      expect(screen.getByLabelText("ステータス")).toBeInTheDocument();
+      expect(
+        screen.getByRole("button", { name: "編集" }),
+      ).toBeInTheDocument();
+    });
+  });
 });

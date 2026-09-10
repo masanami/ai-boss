@@ -515,7 +515,9 @@ function ChatView({ chatState }: ChatViewProps) {
                 （「画面・API設計」）。 */}
             <button
               type="button"
-              onClick={() => void send(MENTORING_MESSAGE_CONTENT, true)}
+              onClick={() =>
+                void send(MENTORING_MESSAGE_CONTENT, { mentoring: true })
+              }
               disabled={switching || sending || editingMessageId !== null}
             >
               {MENTORING_BUTTON_LABEL}
