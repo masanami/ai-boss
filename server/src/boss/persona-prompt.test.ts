@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  CHAT_PLAIN_TEXT_INSTRUCTION,
   DEFAULT_PERSONA_SETTINGS,
   MAX_TODAYS_ADHOC_MESSAGES_TOTAL_LENGTH,
   buildPersonaPrompt,
@@ -851,6 +852,80 @@ describe("buildPersonaPrompt", () => {
     });
 
     expect(prompt).not.toContain("通知文面として使われる");
+  });
+
+  // Issue #459（親 #446 S1）: docs/features/boss-reply-plain-text-output.md
+  // 「対策の層構成と LLM 依存範囲」— HTML はこの指示＋表示側の除去の 2 層、
+  // Markdown は**この指示の 1 層のみ**で覆う。Markdown を出させない責任は
+  // この文字列だけが負っているため、HTML・Markdown の両方を個別に固定する。
+  describe("purpose が chat のときの平文出力指示（Issue #459）", () => {
+    it("AC-21: HTML タグを使わない旨の指示を含む", () => {
+      const prompt = buildPersonaPrompt(DEFAULT_PERSONA_SETTINGS, {
+        tasks: [],
+        recentDecisions: [],
+        now,
+      });
+
+      expect(prompt).toContain(CHAT_PLAIN_TEXT_INSTRUCTION);
+      expect(CHAT_PLAIN_TEXT_INSTRUCTION).toContain("HTMLタグ");
+      expect(CHAT_PLAIN_TEXT_INSTRUCTION).toContain("使ってはならない");
+    });
+
+    it("AC-22: Markdown の装飾を使わない旨の指示を含む", () => {
+      const prompt = buildPersonaPrompt(DEFAULT_PERSONA_SETTINGS, {
+        tasks: [],
+        recentDecisions: [],
+        now,
+      });
+
+      expect(prompt).toContain(CHAT_PLAIN_TEXT_INSTRUCTION);
+      expect(CHAT_PLAIN_TEXT_INSTRUCTION).toContain("Markdown");
+      // 実測で boss 発言に出ていた 3 種（**強調** / 行頭 - / 行頭 1.）を
+      // 名指ししていること。「Markdown を使うな」だけでは、どの記法が
+      // 禁止なのか LLM に伝わる保証が無い。
+      expect(CHAT_PLAIN_TEXT_INSTRUCTION).toContain("**強調**");
+      expect(CHAT_PLAIN_TEXT_INSTRUCTION).toContain("箇条書き");
+      expect(CHAT_PLAIN_TEXT_INSTRUCTION).toContain("番号付きリスト");
+    });
+
+    it("sessionType が morning / evening でも chat 分岐である限り含む", () => {
+      for (const sessionType of ["morning", "evening", "adhoc"] as const) {
+        const prompt = buildPersonaPrompt(DEFAULT_PERSONA_SETTINGS, {
+          tasks: [],
+          recentDecisions: [],
+          now,
+          sessionType,
+        });
+
+        expect(prompt).toContain(CHAT_PLAIN_TEXT_INSTRUCTION);
+      }
+    });
+
+    it("AC-23: purpose が notification のプロンプトには含まれない", () => {
+      const prompt = buildPersonaPrompt(DEFAULT_PERSONA_SETTINGS, {
+        tasks: [],
+        recentDecisions: [],
+        now,
+        purpose: "notification",
+      });
+
+      expect(prompt).not.toContain(CHAT_PLAIN_TEXT_INSTRUCTION);
+      // 既存の通知向け指示は変わらず積まれている（本変更が
+      // notification 分岐に何も足していないこと・奪っていないこと）。
+      expect(prompt).toContain("通知文面として使われる");
+    });
+
+    it("AC-24: purpose が daily-report のプロンプトには含まれない", () => {
+      const prompt = buildPersonaPrompt(DEFAULT_PERSONA_SETTINGS, {
+        tasks: [],
+        recentDecisions: [],
+        now,
+        purpose: "daily-report",
+      });
+
+      expect(prompt).not.toContain(CHAT_PLAIN_TEXT_INSTRUCTION);
+      expect(prompt).toContain("submit_evening_summary");
+    });
   });
 
   it("purpose が notification のとき、短文指示を含む", () => {
