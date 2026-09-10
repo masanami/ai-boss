@@ -3,6 +3,7 @@ import type { Hono } from "hono";
 import type Database from "better-sqlite3";
 import type Anthropic from "@anthropic-ai/sdk";
 import { readJsonBody } from "../lib/read-json-body.js";
+import { stripHtmlTags } from "../lib/strip-html-tags.js";
 import { recordActivityEvent } from "../activity/activity-events-repository.js";
 import { listTasks } from "../tasks/tasks-repository.js";
 import { countTaskEvidencesByTaskIds } from "../tasks/task-evidences-repository.js";
@@ -391,9 +392,14 @@ export function registerChatMessageRoute(
           role: "boss",
           content: fullText !== "" ? fullText : buildFallbackText(toolSummaries),
         });
+        // Issue #461（親 #446 S1）: docs/features/boss-reply-plain-text-output.md
+        // クリティカル設計決定「SSE 送出の制約」— `done` の payload だけ
+        // `content` を正規化した値へ差し替える。DB へ挿入した行
+        // （`bossMessage`、上の insertMessage の戻り値）自体は生のままで、
+        // 「保存 content の扱い」決定（書き換えない）と両立させる。
         await stream.writeSSE({
           event: "done",
-          data: JSON.stringify(bossMessage),
+          data: JSON.stringify({ ...bossMessage, content: stripHtmlTags(bossMessage.content) }),
         });
       } catch (err) {
         // Distinguishing a user-initiated stop from a genuine failure is the

@@ -473,6 +473,55 @@ describe("sessions routes", () => {
       expect(body.map((m) => m.id)).toEqual([first.id, second.id]);
     });
 
+    // Issue #461（親 #446 S1）: stripHtmlTags の非ストリーミング適用面のひとつ。
+    // docs/features/boss-reply-plain-text-output.md クリティカル設計決定
+    // 「適用面」— ボスの発言にのみ正規化を掛け、ユーザーの発言には掛けない。
+    it("AC-11: normalizes content for role: boss messages", async () => {
+      const app = createApp(db);
+      const session = await readJson<Session>(
+        await app.request("/api/sessions", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ type: "adhoc" }),
+        }),
+      );
+      insertMessage(db, {
+        session_id: session.id,
+        role: "boss",
+        content: "<p>資料作成を優先しろ</p><strong>今日中に</strong>。",
+      });
+
+      const res = await app.request(`/api/sessions/${session.id}/messages`);
+
+      expect(res.status).toBe(200);
+      const body = await readJson<Message[]>(res);
+      expect(body[0].content).toBe("\n資料作成を優先しろ\n今日中に。");
+    });
+
+    // AC-12: role: user の content は保存値のまま返る（正規化しない）。
+    it("AC-12: does not normalize content for role: user messages, even if it looks like HTML", async () => {
+      const app = createApp(db);
+      const session = await readJson<Session>(
+        await app.request("/api/sessions", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ type: "adhoc" }),
+        }),
+      );
+      const rawUserContent = "<p>資料作成を優先しろ</p>という指示を受けた";
+      insertMessage(db, {
+        session_id: session.id,
+        role: "user",
+        content: rawUserContent,
+      });
+
+      const res = await app.request(`/api/sessions/${session.id}/messages`);
+
+      expect(res.status).toBe(200);
+      const body = await readJson<Message[]>(res);
+      expect(body[0].content).toBe(rawUserContent);
+    });
+
     it("returns 404 for a non-existent session id", async () => {
       const app = createApp(db);
 

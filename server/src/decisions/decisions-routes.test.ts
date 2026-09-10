@@ -49,6 +49,22 @@ describe("GET /api/decisions", () => {
     expect(await readJson<DecisionListItem[]>(res)).toEqual([]);
   });
 
+  // Issue #461（親 #446 S1）: 決定ログは正規化の対象外（機能仕様「やらないこと」
+  // 「決定ログ（record_decision）・作業ログの表示への正規化の適用」）。
+  // 恒真テストにならないよう、正規化を適用すれば実際に変化する HTML タグ
+  // （<p> <strong>）を含む content で、保存値との一致を直接アサートする。
+  it("AC-19: returns the decision content exactly as stored, without applying HTML-tag normalization", async () => {
+    const app = createApp(db);
+    const session = insertSession(db, { type: "adhoc" });
+    const rawContent = "<p>資料作成を優先しろ</p><strong>今日中に</strong>。";
+    insertDecision(db, { session_id: session.id, content: rawContent });
+
+    const res = await app.request("/api/decisions");
+
+    const [decision] = await readJson<DecisionListItem[]>(res);
+    expect(decision.content).toBe(rawContent);
+  });
+
   it("returns decisions ordered by created_at descending", async () => {
     const app = createApp(db);
     const session = insertSession(db, { type: "adhoc" });

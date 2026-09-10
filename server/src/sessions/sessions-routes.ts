@@ -1,8 +1,10 @@
 import { Hono } from "hono";
 import type Database from "better-sqlite3";
 import { readJsonBody } from "../lib/read-json-body.js";
+import { stripHtmlTags } from "../lib/strip-html-tags.js";
 import { SESSION_TYPES } from "./session.js";
 import type { Session, SessionType } from "./session.js";
+import type { Message } from "./message.js";
 import {
   createSession,
   endSession,
@@ -27,6 +29,23 @@ import { resolveMorningMentoringRequired } from "../settings/mentoring-settings.
 
 function isValidSessionType(value: string): value is SessionType {
   return SESSION_TYPES.includes(value as SessionType);
+}
+
+/**
+ * Issue #461（親 #446 S1）: `stripHtmlTags` の非ストリーミング適用面のひとつ。
+ * `docs/features/boss-reply-plain-text-output.md` クリティカル設計決定
+ * 「適用面」に従い、`role: "boss"` の行だけ `content` を正規化し、
+ * `role: "user"` の行は DB の保存値のまま返す（オーナー自身が入力した
+ * 文字列を勝手に書き換えないため）。保存 `messages.content` 自体は
+ * 書き換えない（`messages-repository.ts` の書き込み経路には触れず、この
+ * 読み出し境界だけで正規化する）。
+ */
+function normalizeMessagesForResponse(messages: Message[]): Message[] {
+  return messages.map((message) =>
+    message.role === "boss"
+      ? { ...message, content: stripHtmlTags(message.content) }
+      : message,
+  );
 }
 
 /**
@@ -309,7 +328,7 @@ export function createSessionsRouter(
       return c.json({ error: `session ${c.req.param("id")} not found` }, 404);
     }
 
-    return c.json(listMessagesBySessionId(db, id));
+    return c.json(normalizeMessagesForResponse(listMessagesBySessionId(db, id)));
   });
 
   registerChatMessageRoute(sessions, db, env, llmBackend);
