@@ -206,4 +206,99 @@ describe("validateChatMessageInput", () => {
       });
     });
   });
+
+  // Issue #471（親 #444 決定7）: mentoringTaskId の受理・検証。
+  describe("mentoringTaskId", () => {
+    it("accepts a positive integer mentoringTaskId alongside mentoring: true and carries it through to data (AC-12 非回帰)", () => {
+      const result = validateChatMessageInput({
+        content: "進め方を見てほしい",
+        mentoring: true,
+        mentoringTaskId: 7,
+      });
+
+      expect(result).toEqual({
+        valid: true,
+        data: { content: "進め方を見てほしい", mentoring: true, mentoringTaskId: 7 },
+      });
+    });
+
+    // 非回帰: mentoringTaskId を省略した body は、mentoringTaskId が無かった
+    // 頃と完全に同じ shape のまま（undefined-as-absent の作法）。
+    it("accepts a body without mentoringTaskId, omitting the key from data (unchanged shape)", () => {
+      const result = validateChatMessageInput({
+        content: "進め方を見てほしい",
+        mentoring: true,
+      });
+
+      expect(result).toStrictEqual({
+        valid: true,
+        data: { content: "進め方を見てほしい", mentoring: true },
+      });
+    });
+
+    // AC-12: 0・負数・小数・文字列・真偽値はいずれも400（isPositiveInteger の再利用）。
+    it.each([
+      ["a numeric string", "7"],
+      ["zero", 0],
+      ["a negative integer", -1],
+      ["a decimal", 1.5],
+      ["a boolean", true],
+    ])("rejects mentoringTaskId that is %s, even with mentoring: true (AC-12)", (_label, value) => {
+      const result = validateChatMessageInput({
+        content: "進め方を見てほしい",
+        mentoring: true,
+        mentoringTaskId: value,
+      });
+
+      expect(result).toEqual({
+        valid: false,
+        error: "mentoringTaskId must be a positive integer",
+      });
+    });
+
+    // AC-13: mentoringTaskId があり mentoring: true が無いボディは400（無視しない）。
+    it("rejects mentoringTaskId when mentoring is omitted entirely (AC-13)", () => {
+      const result = validateChatMessageInput({
+        content: "進め方を見てほしい",
+        mentoringTaskId: 7,
+      });
+
+      expect(result).toEqual({
+        valid: false,
+        error: "mentoringTaskId requires mentoring: true",
+      });
+    });
+
+    it("rejects mentoringTaskId when mentoring is explicitly false (AC-13)", () => {
+      const result = validateChatMessageInput({
+        content: "進め方を見てほしい",
+        mentoring: false,
+        mentoringTaskId: 7,
+      });
+
+      expect(result).toEqual({
+        valid: false,
+        error: "mentoringTaskId requires mentoring: true",
+      });
+    });
+
+    it("carries mentoringTaskId through alongside replaceFromMessageId", () => {
+      const result = validateChatMessageInput({
+        content: "書き直した内容",
+        replaceFromMessageId: 42,
+        mentoring: true,
+        mentoringTaskId: 7,
+      });
+
+      expect(result).toEqual({
+        valid: true,
+        data: {
+          content: "書き直した内容",
+          replaceFromMessageId: 42,
+          mentoring: true,
+          mentoringTaskId: 7,
+        },
+      });
+    });
+  });
 });
