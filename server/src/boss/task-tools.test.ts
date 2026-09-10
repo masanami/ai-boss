@@ -6,6 +6,7 @@ import { insertTask } from "../tasks/tasks-repository.js";
 import { setSettingValue } from "../settings/settings-repository.js";
 import type { ActivityEvent } from "../activity/activity-event.js";
 import { TASK_TOOLS, executeTaskTool } from "./task-tools.js";
+import { toDateKey } from "../detection/time-utils.js";
 
 function enableEnforcement(db: Database.Database): void {
   setSettingValue(db, "evidence_enforcement_enabled", "true");
@@ -28,6 +29,23 @@ describe("TASK_TOOLS", () => {
     const updateTaskTool = TASK_TOOLS.find((tool) => tool.name === "update_task");
     expect(updateTaskTool?.input_schema.required).toEqual(["id"]);
   });
+
+  // AC-15: ボスに公開する due_at の説明文が "YYYY-MM-DD" を求める文言であること。
+  // 実測（ADR 0010 背景）では、ここが「ISO 8601 日時文字列」だったために LLM が
+  // 就業終わりの T18:00:00+09:00 を自分で補い、DB の締切 5 件すべてが時刻付きに
+  // なっていた。書き手が LLM である以上、求める形は説明文が決める。
+  it.each(["create_task", "update_task"])(
+    "asks for a YYYY-MM-DD due_at in the %s schema (AC-15)",
+    (toolName) => {
+      const tool = TASK_TOOLS.find((t) => t.name === toolName);
+      const dueAt = tool?.input_schema.properties?.due_at as
+        | { description?: string }
+        | undefined;
+
+      expect(dueAt?.description).toContain("YYYY-MM-DD");
+      expect(dueAt?.description).not.toContain("日時");
+    },
+  );
 });
 
 describe("executeTaskTool", () => {
@@ -65,7 +83,7 @@ describe("executeTaskTool", () => {
       const result = executeTaskTool(db, "create_task", {
         title: "資料作成",
         priority: "high",
-        due_at: "2026-07-10T00:00:00.000Z",
+        due_at: "2026-07-10",
         estimated_minutes: 30,
         boss_comment: "最優先で進めろ",
       });
@@ -73,10 +91,44 @@ describe("executeTaskTool", () => {
       const created = JSON.parse(result.content);
       expect(created).toMatchObject({
         priority: "high",
-        due_at: "2026-07-10T00:00:00.000Z",
+        due_at: "2026-07-10",
         estimated_minutes: 30,
         boss_comment: "最優先で進めろ",
       });
+    });
+
+    // AC-14（ボスのツール経路）: ボスが時刻付きの旧形式を送ってきても拒否せず
+    // 受理し、その瞬時のローカル暦日へ正規化して保存する（ADR 0010 決定 3・4）。
+    // 実測では、ボスは説明文に引きずられて T18:00:00+09:00 を送っていた。
+    it("normalizes a legacy time-of-day due_at to a local calendar day (AC-14)", () => {
+      const legacy = "2026-07-10T18:00:00+09:00";
+      const result = executeTaskTool(db, "create_task", {
+        title: "資料作成",
+        due_at: legacy,
+      });
+
+      expect(result.isError).toBe(false);
+      const created = JSON.parse(result.content);
+      // 期待値はハードコードしない（オフセット付きの値のローカル暦日は実行 TZ で
+      // 変わる。America/New_York では 7/10 05:00 なので 7/10、UTC-11 なら 7/9）
+      expect(created.due_at).toBe(toDateKey(new Date(legacy)));
+      expect(created.due_at).toMatch(/^\d{4}-\d{2}-\d{2}$/);
+    });
+
+    // AC-14（ボスのツール経路・update）: 更新経路も同じく暦日へ落とす
+    it("normalizes a legacy time-of-day due_at on update too (AC-14)", () => {
+      const created = JSON.parse(
+        executeTaskTool(db, "create_task", { title: "資料作成" }).content,
+      );
+      const legacy = "2026-07-11T18:00:00+09:00";
+
+      const updated = JSON.parse(
+        executeTaskTool(db, "update_task", { id: created.id, due_at: legacy })
+          .content,
+      );
+
+      expect(updated.due_at).toBe(toDateKey(new Date(legacy)));
+      expect(updated.due_at).toMatch(/^\d{4}-\d{2}-\d{2}$/);
     });
 
     // 機能仕様 docs/features/completion-evidence-enforcement.md 決定3

@@ -1,6 +1,7 @@
 import { TASK_PRIORITIES, TASK_STATUSES } from "./task.js";
 import type { NewTaskRecord, TaskPatch } from "./tasks-repository.js";
 import { isValidIsoDateOrDateTime } from "../lib/iso-date.js";
+import { normalizeDueAtToDateKey } from "./due-at.js";
 
 export type ValidationResult<T> =
   | { valid: true; data: T }
@@ -131,7 +132,14 @@ export function validateCreateTaskInput(
       description: (body.description as string | null | undefined) ?? null,
       category: (body.category as string | undefined) ?? "work",
       priority,
-      due_at: (body.due_at as string | null | undefined) ?? null,
+      // 保存形式はローカル暦日に一本化する（ADR 0010 決定 1）。時刻付きの旧形式
+      // は**拒否せず**受理して暦日へ落とす（決定 4。書き手がボス（LLM）であり
+      // 説明文への追従は確率的で、拒否するとツール失敗が利用者の会話に出るため）。
+      // 妥当性検査は上の validateOptionalFieldTypes が済ませているので、ここへ
+      // 来る値は null か暦として解釈できる文字列のいずれか。
+      due_at: normalizeDueAtToDateKey(
+        (body.due_at as string | null | undefined) ?? null,
+      ),
       status,
       boss_comment: (body.boss_comment as string | null | undefined) ?? null,
       estimated_minutes:
@@ -206,6 +214,14 @@ export function validatePatchTaskInput(
     if (field in body) {
       (patch as Record<string, unknown>)[field] = body[field];
     }
+  }
+  // POST と同じく、PATCH でも暦日へ正規化してから保存する（ADR 0010 決定 4）。
+  // ここで正規化しないと、web の日付編集は暦日を送るのにボス経由の更新だけが
+  // 時刻付きのまま残り、2 形式が DB に混在し続ける。
+  if ("due_at" in body) {
+    patch.due_at = normalizeDueAtToDateKey(
+      (body.due_at as string | null | undefined) ?? null,
+    );
   }
 
   return { valid: true, data: patch };
