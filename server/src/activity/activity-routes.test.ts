@@ -36,6 +36,26 @@ describe("activity routes", () => {
       expect(await readJson<ActivityEvent[]>(res)).toEqual([]);
     });
 
+    // Issue #461（親 #446 S1）: 作業ログは正規化の対象外（機能仕様「やらないこと」
+    // 「決定ログ・作業ログの表示への正規化の適用」）。恒真テストにならないよう、
+    // 正規化を適用すれば実際に変化する HTML タグ（<p> <strong>）を含む note で、
+    // 保存値との一致を直接アサートする。
+    it("AC-20: returns the note exactly as stored, without applying HTML-tag normalization", async () => {
+      vi.useFakeTimers();
+      vi.setSystemTime(new Date(2026, 6, 5, 15, 30, 0));
+      const rawNote = "<p>資料作成</p><strong>優先</strong>を報告した";
+      db.prepare(
+        "INSERT INTO activity_events (type, note, created_at) VALUES (?, ?, ?)",
+      ).run("checkin", rawNote, new Date(2026, 6, 5, 10, 0, 0, 0).toISOString());
+
+      const app = createApp(db);
+      const res = await app.request("/api/activity/today");
+
+      expect(res.status).toBe(200);
+      const body = await readJson<ActivityEvent[]>(res);
+      expect(body[0].note).toBe(rawNote);
+    });
+
     it("returns only today's events (local day boundary), ordered by created_at ascending", async () => {
       vi.useFakeTimers();
       vi.setSystemTime(new Date(2026, 6, 5, 15, 30, 0));

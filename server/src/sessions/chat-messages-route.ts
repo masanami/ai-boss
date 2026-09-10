@@ -3,6 +3,7 @@ import type { Hono } from "hono";
 import type Database from "better-sqlite3";
 import type Anthropic from "@anthropic-ai/sdk";
 import { readJsonBody } from "../lib/read-json-body.js";
+import { stripHtmlTags, splitPendingTagTail } from "../lib/strip-html-tags.js";
 import { recordActivityEvent } from "../activity/activity-events-repository.js";
 import { listTasks } from "../tasks/tasks-repository.js";
 import { countTaskEvidencesByTaskIds } from "../tasks/task-evidences-repository.js";
@@ -312,13 +313,42 @@ export function registerChatMessageRoute(
 
     return streamSSE(c, async (stream) => {
       let fullText = "";
+      // Issue #462（親 #446 S1）: 正規化済みテキストのうち、既に `text` イベント
+      // として送出した長さ。累積文字列を正規化した結果からこの位置以降を切り出す
+      // ことで、per-delta では成立しない正規化（`<`／`p`／`>` と分かれて届くと
+      // 撤回できない）を、送出済みの内容を撤回せずに実現する。
+      let sentNormalizedLength = 0;
       const toolSummaries: string[] = [];
       try {
+        /**
+         * `source` を正規化し、まだ送出していない差分を返す（無ければ `null`）。
+         * 呼び出しごとに `sentNormalizedLength` を進める。
+         *
+         * `splitPendingTagTail` の単調性により、正規化結果が縮むことはない。
+         * それでも `<=` で防いでいるのは、万一縮んだときに `slice` が末尾を
+         * 二重送出する形になるのを避けるため。
+         */
+        const takeUnsentNormalized = (source: string): string | null => {
+          const normalized = stripHtmlTags(source);
+          if (normalized.length <= sentNormalizedLength) {
+            return null;
+          }
+          const chunk = normalized.slice(sentNormalizedLength);
+          sentNormalizedLength = normalized.length;
+          return chunk;
+        };
+
         const onTextDelta = (delta: string) => {
           fullText += delta;
+          // タグの一部になりうる末尾（最後の `>` より後の `<` 以降）は送出を
+          // 保留し、タグが確定するか応答が終了した時点で確定させる。
+          const chunk = takeUnsentNormalized(splitPendingTagTail(fullText).committed);
+          if (chunk === null) {
+            return;
+          }
           void stream.writeSSE({
             event: "text",
-            data: JSON.stringify({ text: delta }),
+            data: JSON.stringify({ text: chunk }),
           });
         };
 
@@ -386,14 +416,41 @@ export function registerChatMessageRoute(
         // chunk landed. 完了が勝つ (#254 論点5): marking a fully generated
         // reply "interrupted" because a stop arrived a moment too late would
         // state something untrue about the text we are storing.
+        // Issue #462（親 #446 S1）: 生成が完了した時点で保留中のテキストが
+        // 残っていれば（`<` が閉じないまま応答が終わった場合など）、追加の
+        // `text` イベントとして 1 回送出してから `done` を送る。保留が無ければ
+        // このイベントは発生しない。`done` の `content` に反映するだけでは、
+        // `text` イベントの断片を連結した結果が確定読み出しと食い違う。
+        const pendingChunk = takeUnsentNormalized(fullText);
+        if (pendingChunk !== null) {
+          await stream.writeSSE({
+            event: "text",
+            data: JSON.stringify({ text: pendingChunk }),
+          });
+        }
+
+        // Codex 指摘（PR #467）: フォールバックの判定は**正規化後の結果**で
+        // 行う。`fullText !== ""` だけで見ると、LLM が許可リストのマークアップ
+        // しか返さなかった場合（`<p></p>` 等）にその生の応答が選ばれてしまい、
+        // 正規化を経た `done`／再読み込みの内容が空白のみになる。空応答の
+        // フォールバックが既にあるのだから、同じ扱いに寄せる。
+        //
+        // 保存する `content` は**フォールバックしない限り生のまま**である
+        // （「保存 content の扱い」決定を壊さない）。
+        const hasVisibleText = stripHtmlTags(fullText).trim() !== "";
         const bossMessage = insertMessage(db, {
           session_id: id,
           role: "boss",
-          content: fullText !== "" ? fullText : buildFallbackText(toolSummaries),
+          content: hasVisibleText ? fullText : buildFallbackText(toolSummaries),
         });
+        // Issue #461（親 #446 S1）: docs/features/boss-reply-plain-text-output.md
+        // クリティカル設計決定「SSE 送出の制約」— `done` の payload だけ
+        // `content` を正規化した値へ差し替える。DB へ挿入した行
+        // （`bossMessage`、上の insertMessage の戻り値）自体は生のままで、
+        // 「保存 content の扱い」決定（書き換えない）と両立させる。
         await stream.writeSSE({
           event: "done",
-          data: JSON.stringify(bossMessage),
+          data: JSON.stringify({ ...bossMessage, content: stripHtmlTags(bossMessage.content) }),
         });
       } catch (err) {
         // Distinguishing a user-initiated stop from a genuine failure is the
@@ -430,12 +487,26 @@ export function registerChatMessageRoute(
         // A reply cut short by a failed or timed-out LLM call is just as
         // incomplete as one the user stopped, and the reader wants the same
         // thing signalled in both cases — that the text stops mid-thought.
-        if (fullText !== "") {
+        //
+        // Codex 指摘（PR #467）: 永続化するのは **配信済みに対応する raw の
+        // 接頭辞**であって `fullText` 全体ではない。中断時は 424 行の
+        // フラッシュが走らないため、保留中の末尾（`"回答は x < 10"` の
+        // `"< 10"` のような未閉じ `<` 以降）はクライアントへ届いていない。
+        // `fullText` をそのまま保存すると、停止直後に web が保持している
+        // 配信済み接頭辞と、`GET /messages` の再読み込み結果が食い違う
+        // （未閉じ `<` は正規化で除去されないのでそのまま現れる）。
+        //
+        // `splitPendingTagTail` は純粋関数なので、ここで最終 `fullText` に
+        // 掛けた `committed` は、最後の delta 時点で送出判断に使った値と
+        // 同一になる。保存するのは**その raw の接頭辞**であり、正規化した
+        // 値ではない（「保存 content は非正規化」の決定を壊さない）。
+        const deliveredRawText = splitPendingTagTail(fullText).committed;
+        if (deliveredRawText !== "") {
           try {
             insertMessage(db, {
               session_id: id,
               role: "boss",
-              content: fullText,
+              content: deliveredRawText,
               interrupted: true,
             });
           } catch (persistErr) {

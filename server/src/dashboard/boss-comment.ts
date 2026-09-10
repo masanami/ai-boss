@@ -2,6 +2,7 @@ import type Database from "better-sqlite3";
 import { resolveBossSettings } from "../boss/boss-settings.js";
 import { buildPersonaPrompt } from "../boss/persona-prompt.js";
 import { resolveLlmBackend, type LlmBackend } from "../config.js";
+import { stripHtmlTags } from "../lib/strip-html-tags.js";
 import {
   createClaudeClient,
   createBossMessage,
@@ -124,9 +125,28 @@ async function generateBossComment(
     if (text === "") {
       return { text: FALLBACK_COMMENT, succeeded: false };
     }
+    // FR-14 の全角80字検証は**正規化前の生テキスト**に対して行う。タグ除去は
+    // 文字を減らす方向にしか働かないため、生の長さで通れば正規化後も必ず通る
+    // ＝表示値の上限として保守的に効く。この保守性は `stripHtmlTags` の置換先が
+    // 1 文字以下（ブロック境界タグ→改行1個、インラインタグ→空文字）であることに
+    // 依存している。置換先を 2 文字以上にする変更を入れるなら、この検証を
+    // 正規化後の値に対して行うよう変えること（Issue #461 レビュー指摘）。
     if (backend === "claude-code" && zenkakuEquivalentLength(text) > DASHBOARD_COMMENT_MAX_ZENKAKU_LENGTH) {
       return { text: FALLBACK_COMMENT, succeeded: false };
     }
+    // Issue #461（親 #446 S1）: 応答が許可リストのタグだけで構成される場合
+    // （例: `<p></p>`）、上の `text === ""` ガードはすり抜けるが正規化後は
+    // 空白・改行しか残らない。素通しすると空白だけのひとことがその暦日いっぱい
+    // キャッシュされるため、**正規化後にも**空判定を行いフォールバックへ落とす
+    // （上の空応答ガードと同じ意図を、正規化を挟んだ後でも保つ）。
+    if (stripHtmlTags(text).trim() === "") {
+      return { text: FALLBACK_COMMENT, succeeded: false };
+    }
+    // キャッシュへは**生の値**を渡す（正規化は下の getOrGenerateBossComment＝
+    // 読み出し境界で行う）。機能仕様のクリティカル設計決定は「送出／読み出しの
+    // 境界でのみ正規化する」であり、書き込み側で正規化すると**本変更より前に
+    // 書かれたキャッシュ行**（`settings` テーブルに永続し、同一暦日＋同一タスク
+    // fingerprint の間ヒットし続ける）が生のまま返って AC-18 を満たさない。
     return { text, succeeded: true };
   } catch (err) {
     // Claude API のエラーはリクエスト内部情報を含みうるため、クラス名のみ
@@ -143,6 +163,12 @@ async function generateBossComment(
  * 今日のひとことをキャッシュから取得する。キャッシュが無ければ Claude で
  * 生成し、成功した場合のみキャッシュへ保存する（フォールバック文言は
  * キャッシュしない）。
+ *
+ * Issue #461（親 #446 S1）: **この関数が正規化（`stripHtmlTags`）の適用点**
+ * である。キャッシュヒット・ミスの両経路の合流点で掛けることで、キャッシュに
+ * 何が入っていても——本変更より前に書かれた生の値であっても——返る値は
+ * 正規化済みになる。正規化済みの文字列を再度通しても残存タグが無く恒等の
+ * ため、二重適用は無害。
  *
  * キャッシュキーは日付に加えてタスク状態のフィンガープリント（Issue #121）
  * も使う。この関数の内部では `listTasks(db)` を一度だけ読み、その結果を
@@ -163,12 +189,18 @@ export async function getOrGenerateBossComment(
 
   const cached = getCachedBossComment(db, todayKey, fingerprint);
   if (cached !== undefined) {
-    return cached;
+    // Codex 指摘（PR #467）: 正規化後の空判定は生成側にもあるが、**旧版が
+    // 書いたキャッシュ行**（`<p></p>` のようにタグだけを含む値。旧コードでは
+    // valid だったので `settings` に残っている）はその判定を通っていない。
+    // ここで同じ判定を掛けないと、日付かタスク fingerprint が変わるまで
+    // ダッシュボードのひとことが空白のままになる。
+    const normalizedCache = stripHtmlTags(cached);
+    return normalizedCache.trim() === "" ? FALLBACK_COMMENT : normalizedCache;
   }
 
   const result = await generateBossComment(db, env, now, tasks);
   if (result.succeeded) {
     setCachedBossComment(db, todayKey, fingerprint, result.text);
   }
-  return result.text;
+  return stripHtmlTags(result.text);
 }
