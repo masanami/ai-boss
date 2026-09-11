@@ -6,6 +6,8 @@
 
 新しいテーブル・新しいキー体系は作らない。器（`record_mentoring` の `task_id` 引数・`decisions.kind='mentoring'`・決定ログのタスク別セクション）は既に実装済みであり、欠けている「タスクを起点に始める導線」だけを本スライスで足す（#438）。
 
+> **本改訂（2026-09-11）の実装対象は S1a（Issue #474）**——S1 で出荷した導線の可否条件をチャット画面ヘッダの導線と対称にし、送信中・セッション切替中に「押せてしまい、ビューだけ切り替わって発言は無音で捨てられる」状態を無くす。S1 の受入基準は覆らない（S1 は `73c1b20` で出荷済み）。
+
 ## 背景・目的
 
 随時メンタリングの導線はチャット画面ヘッダのボタンだけで（`web/src/ChatView.tsx:518`、Issue #411 / 親 #276 判断6）、押すと固定の定型文 `MENTORING_MESSAGE_CONTENT = "今の進め方を見てほしい"` を `mentoring: true` 付きで送る。**どのタスクについてのメンタリングかという情報は送っていない。**
@@ -30,11 +32,25 @@ Issue #438 の本文は起票時点の観察である。実装で裏取りした
 
 ### Issue 本文に無い、設計に影響する実態（A〜E）
 
-- **(A) 過去のメンタリング記録はボスのプロンプトに入らない。** `listRecentDecisions` は `WHERE kind = 'decision'` で **SQL レベルで mentoring 行を除外**する（`decisions-repository.ts:107`、#408 AC-42）。Issue #438 の期待動作「関連する**過去の決定**を踏まえて深掘り」は、プロンプト文脈を変えない限り成立しない（本スライスでは扱わない。下記「S1 で満たさないこと」）。
+- **(A) 過去のメンタリング記録はボスのプロンプトに入らない。** `listRecentDecisions` は `WHERE kind = 'decision'` で **SQL レベルで mentoring 行を除外**する（`decisions-repository.ts:107`、#408 AC-42）。Issue #438 の期待動作「関連する**過去の決定**を踏まえて深掘り」は、プロンプト文脈を変えない限り成立しない（S1 では扱っていない。下記「S1 で満たさないこと」）。
 - **(B) `mentoring: true` は既に「LLM を経由しない決定的なリクエストフラグ」である。** `chat-api.ts:196` → `sessions-validation.ts:92-97` → `chat-messages-route.ts:279` → `PersonaPromptContext.mentoring`。対象タスクを同じ経路に載せるのは新機構ではなく、既存経路への 1 フィールド追加になる。
 - **(C) 画面間遷移の仕組みが無い。** `setActiveView` は `AppLayout.tsx:158` のナビボタンからしか呼ばれていない。ただし `chatState`（`useChat`）は `AppLayout.tsx:59` に既にリフト済みで、`activeView` も同じ関数コンポーネントの state（`:67`）であるため、コールバックを 1 本子へ通せば「ビュー切替＋送信」は既存状態だけで成立する。
 - **(D) プロンプトのタスク一覧には既に `#id` が入っている。** `purpose === "chat"` のとき `includeId` が真になり（`persona-prompt.ts:289`・`:632`）、`- [進行中] #12 タイトル（優先度: 高 / エビデンス: … / 締切: …）` の形で出る。ボスが `record_mentoring` の `task_id` に何を入れるべきかは一意に解決できる。
 - **(E) タスク起点の導線を `adhoc` 区間に限れば、朝会ゲートには一切算入されない。** ゲートの件数は `session_id` スコープであり（`sessions-routes.ts:144`）、`record_mentoring` に渡る `sessionId` はチャットルートが渡す現在セッションである（`chat-messages-route.ts:325-326`）。`adhoc` セッションに記録された mentoring 行は朝会セッションの件数に入らないため、**ゲートのコードを 1 行も変えずに現状の判定が保たれる**。本スライスの受入基準が下記「未決の論点（判断7）」から独立できる根拠はここにある。
+
+### Issue #474 の確証（S1a・2026-09-11 時点の実コード）
+
+S1（#470 / 親 #444）は `73c1b20` でマージ済み。その実装に対するセルフレビューの残指摘（#474）を S1a として扱うため、実コードで裏取りした結果を記録する。
+
+| # | 観察 | 実コードの実態 | 判定 |
+|---|---|---|---|
+| 1 | チャット画面ヘッダの 2 ボタンは送信中に非活性化される | `ChatView.tsx:501` / `:508`（朝会・夕会の開始）・`:521`（随時メンタリング）・`:534`（会の終了）がいずれも `disabled={switching \|\| sending \|\| editingMessageId !== null}` | 一致 |
+| 2 | タスクカード導線の可否条件は送信状態を見ていない | `AppLayout.tsx:98-101` の `onStartMentoring` は `chatState.status === "ready" && chatState.sessionType === "adhoc"` のみで絞る。`sending` / `switching` を参照していない | 一致 |
+| 3 | 送信中の `send` は無言で破棄される | `use-chat.ts:339-343` の `send` は `if (sendingRef.current \|\| switchingRef.current) { return; }`。**楽観的追加（タイムラインへのユーザー発言の追加）より前**に return するため、画面にも痕跡が残らず、戻り値 `Promise<void>` からも呼び出し元は破棄を判別できない | 一致（破棄はタイムラインにも残らない） |
+| 4 | 破棄されてもビュー切替だけは起きる | `AppLayout.tsx:92-96` は `setActiveView("chat")` を**先に**呼び、その後で `void chatState.send(...)`。`send` の早期 return はビュー切替を取り消さない＝「押したのに何も起きない画面」が残る | 一致 |
+| 5 | `task?.title ?? ""` は実 UI 経路では到達不能 | `AppLayout.tsx:91` の `find` が探す `tasksState.tasks` と、`TaskBoard.tsx:188-205` がカードを描画する配列は**同一レンダーの同一配列**。ボタンはそのタスクのカード上にしか無い（`TaskCard.tsx:347-354`）ため、`find` が外れる状態でボタンが押されることはない | 一致（到達不能。ただし下記 決定 9 のとおり形として残さない） |
+
+**(F) `editingMessageId` はタスク画面表示中は常に `null` である。** ヘッダの可否条件に含まれる `editingMessageId` は `ChatView` のローカル state（`ChatView.tsx:275`。「編集中は会話状態ではなく一時的な UI 状態であり、タブ切替のアンマウントで失われることを許容する」と明記されている）。`AppLayout.tsx:200-204` は `activeView === "chat"` のときだけ `ChatView` を描画する条件レンダリングであり、タスク画面（`activeView === "tasks"`）ではアンマウントされて編集状態は破棄される。したがって**タスクカードのボタンが押せる時点では `editingMessageId !== null` は常に偽**であり、`sending || switching` だけでヘッダと同じ可否条件になる（決定 8 が `editingMessageId` を `useChat` へリフトせずに済む根拠）。
 
 ## ユーザーストーリー
 
@@ -42,22 +58,30 @@ Issue #438 の本文は起票時点の観察である。実装で裏取りした
 
 ## 機能要件
 
-- [ ] タスクカードの表示モードから、そのタスクを対象にしたメンタリングを開始できる
-- [ ] 「メンタリングする」を押すと、表示中のビューがチャットへ切り替わる
-- [ ] 「メンタリングする」を押すと、対象タスクを添えたメンタリングの発言が 1 回送信される
-- [ ] ボスのシステムプロンプトに、対象タスクのタスク行情報（ステータス・id・タイトル・優先度・エビデンス・締切）が「対象タスク」セクションとして積まれる
-- [ ] メンタリングの結論が対象タスクへ紐づいて記録される（`decisions.task_id` が埋まる）
-- [ ] 会（朝会・夕会）の最中は、タスクカードにメンタリングの開始導線を出さない
-- [ ] チャット画面ヘッダの随時メンタリングボタン（その日全体が対象）は `adhoc` 区間で従来どおり表示され、押すと従来どおり `mentoring: true` 付きで送信される
+> **本改訂（S1a）の対象は末尾 3 項目**（送信中・切替中は押せない／可否条件の一致／タイトル欠落の防止）**のみ**。それ以外は S1 で出荷済み（`73c1b20`）であり、`- [x]` を付けて区別する。
+
+- [x] タスクカードの表示モードから、そのタスクを対象にしたメンタリングを開始できる
+- [x] 「メンタリングする」を押すと、表示中のビューがチャットへ切り替わる
+- [x] 「メンタリングする」を押すと、対象タスクを添えたメンタリングの発言が 1 回送信される
+- [x] ボスのシステムプロンプトに、対象タスクのタスク行情報（ステータス・id・タイトル・優先度・エビデンス・締切）が「対象タスク」セクションとして積まれる
+- [x] メンタリングの結論が対象タスクへ紐づいて記録される（`decisions.task_id` が埋まる）
+- [x] 会（朝会・夕会）の最中は、タスクカードにメンタリングの開始導線を出さない
+- [x] チャット画面ヘッダの随時メンタリングボタン（その日全体が対象）は `adhoc` 区間で従来どおり表示され、押すと従来どおり `mentoring: true` 付きで送信される
+- [ ] 送信中（`chatState.sending` が真）は、タスクカードのメンタリング導線を押せない（押せてしまい発言だけが無音で捨てられる状態を作らない）
+- [ ] セッション切替中（`chatState.switching` が真）は、タスクカードのメンタリング導線を押せない
+- [ ] タスクカードのメンタリング導線と、チャット画面ヘッダの随時メンタリングボタンの可否条件が一致する
+- [ ] 対象タスクを解決できないまま、タイトルの欠けた発言（`「」の進め方を見てほしい`）が送信されることがない
 
 ## 技術的な制約・方針
 
-- **変更対象（web）**: `TaskCard.tsx` / `TaskBoard.tsx` / `AppLayout.tsx` / `chat-api.ts` / `use-chat.ts` / `ChatView.tsx`（既存 `send` 呼び出し 1 行の追随のみ）とそれぞれのテスト
+- **変更対象（web・S1 時点＝出荷済み）**: `TaskCard.tsx` / `TaskBoard.tsx` / `AppLayout.tsx` / `chat-api.ts` / `use-chat.ts` / `ChatView.tsx`（既存 `send` 呼び出し 1 行の追随のみ）とそれぞれのテスト。**本改訂（S1a）ではこのうち `chat-api.ts` / `use-chat.ts` / `ChatView.tsx` は対象外**
 - **変更対象（server）**: `server/src/sessions/sessions-validation.ts` / `server/src/sessions/chat-messages-route.ts` / `server/src/boss/persona-prompt.ts` / `server/src/boss/boss-tools.ts` / `server/src/boss/mentoring-tool.ts` とそれぞれのテスト
 - **変更しない**: `server/src/sessions/mentoring-gate.ts`（朝会ゲートの判定）、`server/src/decisions/decisions-repository.ts` の `listRecentDecisions`（`kind='decision'` 除外＝#408 AC-42）、`RECORD_MENTORING_TOOL` の `required`（`["content"]` のまま）、`DecisionLog.tsx` / `group-decisions-by-task.ts`、DB スキーマ（マイグレーション無し）
 - **DB スキーマ変更は無い**。`decisions.task_id` は既存列であり、本スライスは書き込み経路を確実にするだけである
 - **セッションの遅延生成は既存の `useChat` に任せる**。`send` は活性セッションが無ければ最初の送信時にセッションを作る（`use-chat.ts` の `activeSessionId` JSDoc）。タスク起点でも同じ経路を通るため、セッション生成の分岐を新設しない
-- **多重送信の抑止も既存の `useChat` に任せる**。送信中の `send` は無視される（`use-chat.test.ts:628-631`）。タスクカード側に独自のガードを足さない
+- **多重送信の抑止（最後の防波堤）は既存の `useChat` が持つ**。送信中の `send` は無視される（`use-chat.test.ts:628-631`）。この早期 return と `send` の戻り値型（`Promise<void>`）は **S1a でも変更しない**
+  - S1（#470）当時はこの制約を「タスクカード側は送信状態を一切見ない」と読んでおり、その帰結が #474（押せてしまい無音で捨てられる）である。**S1a では、可否条件を `AppLayout` が `chatState` から与える**形に改める（下記 決定 8）。`TaskCard` / `TaskBoard` は渡された可否をそのまま反映するだけで、**独自のガード（自前の送信中フラグ・二重クリック抑止）は持たない**——この点は S1 の制約のまま
+- **変更対象（S1a）**: `AppLayout.tsx` / `TaskBoard.tsx` / `TaskCard.tsx` とそれぞれのテスト。サーバ側は触らない
 - 外部送信は Claude API への推論リクエストのみ（ADR 0001）。本スライスは送信内容にタスクのタイトル・締切・優先度を含めるが、これは既にプロンプトのタスク一覧として送っている情報の範囲内であり、送信先も範囲も広がらない
 - テストで固定時刻を使う場合は `new Date(y, m, d, h)` 由来で導出する（UTC 文字列リテラルで固定しない。ADR 0007 決定 5）。本スライスは日付境界に触らないため `npm run test:tz` は必須ゲートではない
 - Claude API・時刻・macOS 通知コマンドはテストでモックする。SQLite はモックしない（CLAUDE.md「テスト方針」）
@@ -73,14 +97,19 @@ Issue #438 の本文は起票時点の観察である。実装で裏取りした
 ### IF（層間の境界となる契約）
 
 ```text
-TaskCard          onStartMentoring: ((taskId: number) => void) | null
+TaskCard          onStartMentoring?: ((task: Task) => void) | null  ← S1a で引数を変更
+                    ── `?`（未提供＝undefined 許容）は既存どおり維持する
                     ── null のときボタンを描画しない（＝会の最中）
+                  startMentoringDisabled: boolean                   ← S1a で追加
+                    ── 真のときボタンは描画したまま disabled にする（＝送信中・切替中）
    ↓ props
-TaskBoard         onStartMentoring をそのまま TaskCard へ渡す（判断に関与しない）
+TaskBoard         onStartMentoring / startMentoringDisabled をそのまま TaskCard へ
+                  渡す（判断に関与しない）
    ↓ props
-AppLayout         chatState.sessionType === "adhoc" のときだけハンドラを渡し、
-                  それ以外は null を渡す。ハンドラは
-                  setActiveView("chat") と chatState.send(...) を呼ぶ
+AppLayout         chatState.status === "ready" かつ sessionType === "adhoc" の
+                  ときだけハンドラを渡し、それ以外は null を渡す。
+                  startMentoringDisabled = chatState.sending || chatState.switching。
+                  ハンドラは setActiveView("chat") と chatState.send(...) を呼ぶ
    ↓
 use-chat.send(content, options?)
                   options: { mentoring?: true; mentoringTaskId?: number }
@@ -120,7 +149,7 @@ executeBossTool(db, sessionId, name, input, mentoringTaskId?)
 
 > Issue #438 の要決定点に対する決定。後続の実装はこの決定に従い、独自判断で逸脱しない。判断7（朝会ゲートとの関係）は決定していない — 下記「未決の論点」を参照。
 >
-> **見出しの番号は本仕様での通し番号であり、Issue #438 の「判断 N」とは別体系である。** 対応がある決定には見出しに `（判断N）` を併記した。併記の無い見出し（4・6・7）は本仕様での追加決定であり、**とくに見出し 7 は未決の「判断7」とは無関係**である。
+> **見出しの番号は本仕様での通し番号であり、Issue #438 の「判断 N」とは別体系である。** 対応がある決定には見出しに `（判断N）` を併記した。併記の無い見出し（4・6・7・8・9）は本仕様での追加決定であり、**とくに見出し 7 は未決の「判断7」とは無関係**である。決定 8・9 は S1a（Issue #474）の決定で、オーナー承認済みである。
 
 ### 1. 起点の置き場所（判断1）
 
@@ -171,6 +200,26 @@ executeBossTool(db, sessionId, name, input, mentoringTaskId?)
 - **代替案**: 不整合なフィールドを黙って捨てる — 却下（上記の見えない失敗）
 - **影響範囲**: `sessions-validation.ts`（形の検証と組み合わせの検証）・`chat-messages-route.ts`（存在検証。DB を読むため純粋関数側には置かない）
 
+### 8. 送信中・切替中の可否条件（S1a・Issue #474）
+
+> オーナー（人間）が 2026-09-11 に承認済みの方針であり、実装はこの決定に従う。
+
+- **採用案**: **`AppLayout` が `chatState.sending` / `chatState.switching` を見て、タスクカードの「メンタリングする」を非活性化する**。会（朝会・夕会）中に**非表示**にする既存の扱い（決定 1・`onStartMentoring = null`）はそのまま残し、送信中・切替中は**ボタンを描画したまま `disabled`** にする（ヘッダの 4 ボタンと同じ形）
+- **理由**: ヘッダと同じ可否条件へ揃えるだけで 2 つの導線が対称になり、`useChat` の多重送信ガードに触らずに済む。確証 (F) のとおり、ヘッダの条件に含まれる `editingMessageId !== null` はタスク画面表示中は常に偽なので、`sending || switching` だけでヘッダと**等価**になる（`editingMessageId` を `useChat` へリフトする必要が無い）。非表示ではなく非活性にするのは、送信のたびにボタンが消えて戻る（レイアウトが動く）のを避けるためで、これもヘッダの扱いと同じである
+- **代替案**: (b) `useChat.send` が破棄を戻り値で返す — 却下（`send` の戻り値型の変更は全呼び出し元に及ぶ横断変更）。(c) 現状維持 — 却下（#474 の「押したのに何も起きない画面」が残る）。(d) 送信中は `onStartMentoring` を `null` にして非表示 — 却下（上記のレイアウト移動。かつ「会中だから出さない」と「いま送れないだけ」という意味の違う 2 つを同じ表現に潰す）
+- **影響範囲**: `AppLayout.tsx`（可否の算出）・`TaskBoard.tsx`（props の中継）・`TaskCard.tsx`（`disabled` の反映）
+- **明示的な仮定**: 新しい prop 名は `startMentoringDisabled` とする（命名・内部構造は軽微・可逆な判断として本仕様で確定させる。受入基準は prop 名に依存しない）
+
+### 9. `task?.title ?? ""` フォールバックの除去（S1a・Issue #474）
+
+> オーナー（人間）が 2026-09-11 に承認済みの方針であり、実装はこの決定に従う。
+
+- **採用案**: **対象タスクを引けないときは導線を出さない**——すなわち `「」の進め方を見てほしい` を送りうる経路そのものを消す。具体的には、**ボタンを描画しているカードが持つタスクをそのままハンドラへ渡す**（`onStartMentoring(task)`）ことで、`AppLayout` 側の id → タスク再検索（`tasksState.tasks.find`）とその失敗時フォールバック（`?? ""`）を無くす。ボタンはそのタスクのカード上にしか存在しないため、「タスクを引けないのにボタンがある」状態が構造的に作れなくなる
+- **理由**: 確証 5 のとおり現状の `?? ""` は実 UI 経路では到達不能だが、到達不能な分岐は「壊れた文面を送ってよい」と読める形として残り続ける。ハンドラの引数をタスクにすれば、再検索も失敗分岐も消えて到達不能分岐そのものが無くなる。**ハンドラ側で `find` が外れたときに何もせず return する案は採らない**——それは #474 と同じ「押したのに何も起きない画面」を新たに作るためである
+- **代替案**: `find` 失敗時に早期 return — 却下（上記）。`?? "（タイトル不明）"` のような代替文面 — 却下（紐づけは `mentoringTaskId` が持つとはいえ、表示のためだけに無意味な発言をタイムラインへ残す）
+- **影響範囲**: `TaskCard.tsx`（`onStartMentoring(task.id)` → `onStartMentoring(task)`）・`TaskBoard.tsx`（型の中継）・`AppLayout.tsx`（`find` とフォールバックの削除）
+- **不変**: 送信するリクエストの中身は変わらない（`mentoringTaskId` は `task.id`、文面は `「{タイトル}」の進め方を見てほしい` のまま。決定 3・決定 6 を変更しない）
+
 ## 未決の論点（人間の決定待ち）
 
 > **判断7: タスク起点のメンタリングは、朝会の必須メンタリングゲートを満たしてよいか。**
@@ -199,11 +248,14 @@ Issue #438 の期待動作のうち「ボスがそのタスクの文脈（内容
 
 | スライス | 内容 | 触るファイル数（概算） | 出荷条件 |
 |---|---|---|---|
-| S1（最小） | タスクカード（`adhoc` 区間のみ）から「メンタリングする」→ チャット面へ遷移し、`mentoringTaskId` を載せた随時メンタリングを開始。ボスは対象タスクのタスク行情報を認識し、結論はサーバ側補完で確実にそのタスクへ紐づく | 20-24 | これだけで価値が出る（タスクを指して相談でき、結論が決定ログのそのタスクのセクションに溜まる） |
+| S1（最小） | タスクカード（`adhoc` 区間のみ）から「メンタリングする」→ チャット面へ遷移し、`mentoringTaskId` を載せた随時メンタリングを開始。ボスは対象タスクのタスク行情報を認識し、結論はサーバ側補完で確実にそのタスクへ紐づく | 20-24 | **出荷済み**（#470 / 親 #444・`73c1b20`） |
+| S1a（S1 の追補・#474） | タスクカード導線の可否条件をヘッダ導線と対称にする（送信中・切替中は非活性＝押せない・ビューも切り替わらない）＋ 対象タスクの再検索とタイトル欠落フォールバックの除去。web のみ・サーバ非変更 | 3（＋テスト 3） | S1 の導線が「押したのに何も起きない」状態を残さなくなる。S2 / S3 と依存関係が無く、単独で出荷できる |
 | S2 | 振り返り導線（タスク画面 → 決定ログの当該セクションへアンカー移動。`DecisionLog` にセクション id を付与）＋ 対象タスクに紐づく過去の決定・メンタリング記録のプロンプト投入 | 8-12 | S1 がマージされてから |
 | S3 | メンタリングの経過（やり取り）を残す仕組み／朝会ゲートとの関係（**判断7 の人間決定が入ってから**着手する） | 未定 | S2 がマージされ、かつ判断7 が決定されてから |
 
-実装対象: S1
+実装対象: S1a
+
+> S1 は `73c1b20` で `main` へ出荷済み。本改訂の実装対象は S1a（#474）である。S2 / S3 は着手順を変えない（S1a は S2 の前提ではなく、S1a と S2 のどちらを先に出してもよい）。**S1a は #476（対象タスク紐づけのターン単位問題）・#477（404 応答の形）とは別スライスであり、それらは本改訂の範囲外**（同じ仕様ファイルを並走で改訂するため、互いの節を書き換えない）。
 
 ## やらないこと
 
@@ -215,60 +267,89 @@ Issue #438 の期待動作のうち「ボスがそのタスクの文脈（内容
 - **メンタリング専用の対話面の新設**（理由: 決定 2。`sessions` / `messages` の扱いが増える）
 - **`RECORD_MENTORING_TOOL` のスキーマ変更（`task_id` の必須化）**（理由: 決定 5。朝会の全日単位メンタリングを壊す）
 - **DB スキーマの変更・新規テーブルの追加**（理由: `decisions.task_id` が既にあり、新しいキー体系を作る理由が無い）
+- **`useChat` の多重送信ガード（`sendingRef.current || switchingRef.current` の早期 return）の変更**（理由: 決定 8。最後の防波堤として残す。S1a が足すのは UI の可否条件であってガードではない）
+- **`send` / `sendChatMessage` の戻り値型の変更**（理由: 決定 8 の代替案 (b) を却下したため。全呼び出し元に及ぶ横断変更を S1a に載せない）
+- **`editingMessageId` の `useChat` へのリフトアップ**（理由: 確証 (F) によりタスク画面表示中は常に `null` であり、リフトしなくてもヘッダと等価な可否条件になる。`ChatView.tsx:268-277` が「編集中は一時的な UI 状態」と明記した設計を覆さない）
+- **ターン単位の紐づけ（#476）・`mentoringTaskId` の 404 応答の形（#477）**（理由: 別スライスとして並走しており、同じ仕様ファイルの別の節で扱う）
 
 ## 受入基準
 
-> 実装対象スライス S1 の範囲。S2 / S3 の基準はここに書かない。
+> **実装対象スライス S1a の基準は末尾の「### 導線の対称性（S1a・Issue #474）」節と「### 検証方法・品質ゲート」節**（`- [ ]`）。それ以外の節は**出荷済み S1 の基準**（`- [x]`）であり、S1a の実装時は**新規テストの追加は不要・既存テストが引き続き通ることの確認のみ**でよい（満たし直す対象ではないが、壊してもいけない）。S2 / S3 の基準はここに書かない。
 
 ### 画面（タスクカード・タスクボード・AppLayout）
 
-- [ ] `adhoc` 区間のとき、タスクカードの表示モードに「メンタリングする」ボタンが表示される
-- [ ] 会（朝会・夕会）の最中は、タスクカードに「メンタリングする」ボタンが表示されない
-- [ ] 「メンタリングする」を押すと、表示中のビューがチャットへ切り替わる
-- [ ] 「メンタリングする」を押すと、対象タスクのタイトルを含む発言が 1 回送信される
-- [ ] タスクカードの既存の表示テキスト（タイトル・説明・ボスコメント）は変わらない
-- [ ] タスクカードの既存のボス決定表示（優先度・締切）は変わらない
-- [ ] タスクカードの既存の操作項目（ステータス select・編集ボタン）は変わらない
+- [x] `adhoc` 区間のとき、タスクカードの表示モードに「メンタリングする」ボタンが表示される
+- [x] 会（朝会・夕会）の最中は、タスクカードに「メンタリングする」ボタンが表示されない
+- [x] 「メンタリングする」を押すと、表示中のビューがチャットへ切り替わる
+- [x] 「メンタリングする」を押すと、対象タスクのタイトルを含む発言が 1 回送信される
+- [x] タスクカードの既存の表示テキスト（タイトル・説明・ボスコメント）は変わらない
+- [x] タスクカードの既存のボス決定表示（優先度・締切）は変わらない
+- [x] タスクカードの既存の操作項目（ステータス select・編集ボタン）は変わらない
 
 ### 送信内容（`chat-api.ts` / `use-chat.ts`）
 
-- [ ] タスク起点の送信では、リクエストボディに `mentoring: true` が含まれる
-- [ ] タスク起点の送信では、リクエストボディの `mentoringTaskId` が対象タスクの id と一致する
-- [ ] チャット画面ヘッダのボタンからの送信では、リクエストボディに `mentoringTaskId` キーが含まれない
-- [ ] メンタリングでない通常の送信のリクエストボディは `{ content }` と完全一致する（`mentoring` / `mentoringTaskId` のいずれのキーも持たない）
+- [x] タスク起点の送信では、リクエストボディに `mentoring: true` が含まれる
+- [x] タスク起点の送信では、リクエストボディの `mentoringTaskId` が対象タスクの id と一致する
+- [x] チャット画面ヘッダのボタンからの送信では、リクエストボディに `mentoringTaskId` キーが含まれない
+- [x] メンタリングでない通常の送信のリクエストボディは `{ content }` と完全一致する（`mentoring` / `mentoringTaskId` のいずれのキーも持たない）
 
 ### リクエストの受理・拒否（`sessions-validation.ts` / `chat-messages-route.ts`）
 
-- [ ] `mentoringTaskId` が正の整数でないボディ（文字列・小数・真偽値・0・負数）は 400 で拒否される
-- [ ] `mentoringTaskId` を含み `mentoring: true` を含まないボディは 400 で拒否される
-- [ ] 存在しないタスク id を `mentoringTaskId` に指定したリクエストは 404 で拒否される
-- [ ] 上記いずれかの理由で拒否されたリクエストのユーザー発言は、`messages` に保存されない
-- [ ] `mentoringTaskId` を含まない既存のボディ（`content` のみ／`content` ＋ `mentoring: true`／`content` ＋ `replaceFromMessageId`）は、従来どおり受理される
+- [x] `mentoringTaskId` が正の整数でないボディ（文字列・小数・真偽値・0・負数）は 400 で拒否される
+- [x] `mentoringTaskId` を含み `mentoring: true` を含まないボディは 400 で拒否される
+- [x] 存在しないタスク id を `mentoringTaskId` に指定したリクエストは 404 で拒否される
+- [x] 上記いずれかの理由で拒否されたリクエストのユーザー発言は、`messages` に保存されない
+- [x] `mentoringTaskId` を含まない既存のボディ（`content` のみ／`content` ＋ `mentoring: true`／`content` ＋ `replaceFromMessageId`）は、従来どおり受理される
 
 ### システムプロンプト（`persona-prompt.ts`・純粋関数）
 
-- [ ] `mentoringTaskId` が指定され、その id が `tasks` に存在するとき、システムプロンプトに対象タスクの 1 行（ステータス・`#id`・タイトル・優先度・エビデンス・締切）を含む「対象タスク」セクションが現れる
-- [ ] `mentoringTaskId` が指定されたとき、システムプロンプトに `record_mentoring` の `task_id` へ対象タスクの id を指定するよう促す指示が含まれる
-- [ ] `mentoringTaskId` が指定されていないメンタリングのターンでは、「対象タスク」セクションが現れない
-- [ ] `mentoringTaskId` が `tasks` に存在しない id のとき、「対象タスク」セクションが現れない
-- [ ] `mentoring` が偽のターンでは、`mentoringTaskId` が渡されても「対象タスク」セクションが現れない
-- [ ] 既存の `MENTORING_FLOW_INSTRUCTION` は、メンタリングのターンで従来どおり積まれる
+- [x] `mentoringTaskId` が指定され、その id が `tasks` に存在するとき、システムプロンプトに対象タスクの 1 行（ステータス・`#id`・タイトル・優先度・エビデンス・締切）を含む「対象タスク」セクションが現れる
+- [x] `mentoringTaskId` が指定されたとき、システムプロンプトに `record_mentoring` の `task_id` へ対象タスクの id を指定するよう促す指示が含まれる
+- [x] `mentoringTaskId` が指定されていないメンタリングのターンでは、「対象タスク」セクションが現れない
+- [x] `mentoringTaskId` が `tasks` に存在しない id のとき、「対象タスク」セクションが現れない
+- [x] `mentoring` が偽のターンでは、`mentoringTaskId` が渡されても「対象タスク」セクションが現れない
+- [x] 既存の `MENTORING_FLOW_INSTRUCTION` は、メンタリングのターンで従来どおり積まれる
 
 ### `task_id` の補完（`boss-tools.ts` / `mentoring-tool.ts`）
 
-- [ ] `mentoringTaskId` があるターンで、`record_mentoring` が `task_id` 未指定で呼ばれたとき、保存される `decisions` 行の `task_id` は `mentoringTaskId` と一致する
-- [ ] `mentoringTaskId` があるターンで、`record_mentoring` が `task_id` を明示して呼ばれたとき、保存される行の `task_id` はボスが指定した値と一致する（補完が上書きしない）
-- [ ] `mentoringTaskId` が無いターンで、`record_mentoring` が `task_id` 未指定で呼ばれたとき、保存される行の `task_id` は `null` のままになる
-- [ ] 補完で保存された行の `kind` は `mentoring` である
-- [ ] `record_decision`（`kind='decision'`）の保存経路は、`mentoringTaskId` があるターンでも補完の影響を受けない
+- [x] `mentoringTaskId` があるターンで、`record_mentoring` が `task_id` 未指定で呼ばれたとき、保存される `decisions` 行の `task_id` は `mentoringTaskId` と一致する
+- [x] `mentoringTaskId` があるターンで、`record_mentoring` が `task_id` を明示して呼ばれたとき、保存される行の `task_id` はボスが指定した値と一致する（補完が上書きしない）
+- [x] `mentoringTaskId` が無いターンで、`record_mentoring` が `task_id` 未指定で呼ばれたとき、保存される行の `task_id` は `null` のままになる
+- [x] 補完で保存された行の `kind` は `mentoring` である
+- [x] `record_decision`（`kind='decision'`）の保存経路は、`mentoringTaskId` があるターンでも補完の影響を受けない
 
 ### 既存契約の保全
 
-- [ ] `RECORD_MENTORING_TOOL` の `input_schema.required` は `["content"]` のままである
-- [ ] `mentoring-gate.ts` の `isMentoringComplete` の判定（`mentoringRecordCount > 0 && userMessageCount > 0`）は変わらない
-- [ ] `listRecentDecisions` は `kind = 'decision'` のみを返す（`kind='mentoring'` を SQL レベルで除外する契約が変わらない）
-- [ ] チャット画面ヘッダの随時メンタリングボタンは、`adhoc` 区間で従来どおり表示される
-- [ ] チャット画面ヘッダの随時メンタリングボタンを押すと、従来どおり `mentoring: true` 付きの送信が行われる
+- [x] `RECORD_MENTORING_TOOL` の `input_schema.required` は `["content"]` のままである
+- [x] `mentoring-gate.ts` の `isMentoringComplete` の判定（`mentoringRecordCount > 0 && userMessageCount > 0`）は変わらない
+- [x] `listRecentDecisions` は `kind = 'decision'` のみを返す（`kind='mentoring'` を SQL レベルで除外する契約が変わらない）
+- [x] チャット画面ヘッダの随時メンタリングボタンは、`adhoc` 区間で従来どおり表示される
+- [x] チャット画面ヘッダの随時メンタリングボタンを押すと、従来どおり `mentoring: true` 付きの送信が行われる
+
+### 導線の対称性（S1a・Issue #474）
+
+> **実装対象スライス S1a の範囲。** 決定 8・決定 9 に対応する。
+
+- [ ] 送信中（`chatState.sending` が真）のとき、タスクカードの「メンタリングする」ボタンは非活性である
+- [ ] セッション切替中（`chatState.switching` が真）のとき、タスクカードの「メンタリングする」ボタンは非活性である
+- [ ] 送信中（`sending`）でも、`adhoc` 区間ならボタン自体はカード上に表示され続ける（非活性であって非表示ではない）
+- [ ] セッション切替中（`switching`）でも、`adhoc` 区間ならボタン自体はカード上に表示され続ける（非活性であって非表示ではない）
+- [ ] 送信が終わり `chatState.sending` が偽に戻ると、ボタンは再び活性になる
+- [ ] セッション切替が終わり `chatState.switching` が偽に戻ると、ボタンは再び活性になる
+- [ ] 非活性のボタンを押しても、表示中のビューはチャットへ切り替わらない
+- [ ] 非活性のボタンを押しても、メッセージ送信（`send`）は行われない
+- [ ] ヘッダの随時メンタリングボタンとタスクカードの導線の可否条件が一致する（同一の `chatState` のもとで、一方が押せて他方が押せない状態が無い）
+- [ ] タスク画面を表示して戻ると、チャットの編集モードは解除されている（`ChatView` のアンマウントで `editingMessageId` が破棄される＝タスクカード導線にとってヘッダ条件の `editingMessageId !== null` が常に偽である根拠）
+- [ ] タスクカードは `onStartMentoring` に対象タスク（id とタイトルを持つ）をそのまま渡す
+- [ ] `AppLayout` のハンドラは渡されたタスクをそのまま使い、id による `tasksState.tasks` からの再検索を行わない
+- [ ] タスクカードの導線から送信される発言の文面には、そのカードが表示しているタスクのタイトルが入る
+- [ ] タスクカードの導線から送信されるリクエストボディの `mentoringTaskId` は、そのカードのタスクの id と一致する（S1a の引数変更で変わらない）
+
+次の 3 項目は**既存テストで担保済み**であり、S1a では新規実装・新規テストを要さない（回帰確認のみ）:
+
+- [ ] `useChat` の `send` は、送信中（`sendingRef`）に呼ばれたら従来どおり何もせず戻る（多重送信ガードを変更しない）
+- [ ] `useChat` の `send` は、セッション切替中（`switchingRef`）に呼ばれたら従来どおり何もせず戻る（多重送信ガードを変更しない）
+- [ ] `useChat` の `send` の戻り値型は `Promise<void>` のままである
 
 ### 検証方法・品質ゲート
 
