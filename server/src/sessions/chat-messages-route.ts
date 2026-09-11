@@ -5,7 +5,7 @@ import type Anthropic from "@anthropic-ai/sdk";
 import { readJsonBody } from "../lib/read-json-body.js";
 import { stripHtmlTags, splitPendingTagTail } from "../lib/strip-html-tags.js";
 import { recordActivityEvent } from "../activity/activity-events-repository.js";
-import { listTasks } from "../tasks/tasks-repository.js";
+import { findTaskById, listTasks } from "../tasks/tasks-repository.js";
 import { countTaskEvidencesByTaskIds } from "../tasks/task-evidences-repository.js";
 import { listRecentDecisions } from "../decisions/decisions-repository.js";
 import { resolveBossSettings } from "../boss/boss-settings.js";
@@ -166,7 +166,20 @@ export function registerChatMessageRoute(
     if (!validation.valid) {
       return c.json({ error: validation.error }, 400);
     }
-    const { content, replaceFromMessageId, mentoring: requestedMentoring } = validation.data;
+    const {
+      content,
+      replaceFromMessageId,
+      mentoring: requestedMentoring,
+      mentoringTaskId,
+    } = validation.data;
+
+    // Issue #471（親 #444 決定7）: 存在検証は DB を読むためルート側の責務
+    // （純粋関数である sessions-validation.ts には持ち込まない）。ユーザー
+    // 発言を保存する前（insertMessage より前）に判定する — 拒否されたリク
+    // エストのユーザー発言だけが残る中間状態を作らないため。
+    if (mentoringTaskId !== undefined && !findTaskById(db, mentoringTaskId)) {
+      return c.json({ error: `task ${mentoringTaskId} not found` }, 404);
+    }
 
     // やりなおし経路（replaceFromMessageId 指定時）にだけ足すガード
     // （Issue #376, docs/features/chat-message-rewrite.md 決定3・決定1）。
@@ -280,6 +293,12 @@ export function registerChatMessageRoute(
     const mentoring =
       (session.type === "morning" && resolveMorningMentoringRequired(db)) ||
       requestedMentoring === true;
+    // Issue #471（親 #444 決定3・決定7の結線）: mentoringTaskId は
+    // mentoring が真のときだけ後段（プロンプト・ツール実行）へ渡す。
+    // バリデーションで mentoringTaskId は requestedMentoring === true の
+    // ときにしか存在しない（決定7）ので、この時点では常に mentoring も
+    // 真だが、契約として明示的に mentoring でゲートする。
+    const mentoringTaskIdForTurn = mentoring ? mentoringTaskId : undefined;
     const system = buildPersonaPrompt(persona, {
       tasks,
       // 決定 3-a: ボスが自分の裁定（要否）と現状（添付件数）を参照できる
@@ -292,6 +311,8 @@ export function registerChatMessageRoute(
       now,
       sessionType: session.type,
       mentoring,
+      // Issue #468（親 #444 決定3）: 対象タスクをプロンプトへ積む結線。
+      mentoringTaskId: mentoringTaskIdForTurn,
       // 「今何時か」「締切まであと何時間か」の主経路（Issue #288）
       includeCurrentDateTime: true,
     });
@@ -352,8 +373,10 @@ export function registerChatMessageRoute(
           });
         };
 
+        // Issue #469（親 #444 決定5）: 対象タスクを record_mentoring の
+        // task_id 補完へ結線する。
         const executeTool: BossToolExecutor = (name, input) =>
-          executeBossTool(db, id, name, input);
+          executeBossTool(db, id, name, input, mentoringTaskIdForTurn);
 
         // The tool loop (MAX_TOOL_ROUNDS · execute · continue) now lives
         // inside streamBossMessage (Issue #78, "ツール実行主体の一本化").

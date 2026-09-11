@@ -30,18 +30,27 @@ export const BOSS_TOOLS: Anthropic.Tool[] = [
  * rather than exposed as an input field. `get_activity_log` is a pure DB
  * read with no session dependency, so it is dispatched directly without
  * `sessionId`.
+ *
+ * `mentoringTaskId` (Issue #469 / task-scoped-mentoring 決定5) is this
+ * turn's target task, threaded through the same way as `sessionId` — the
+ * LLM cannot supply it. It is forwarded **only** to `record_mentoring`
+ * (as the `task_id` fallback used when the boss doesn't supply `task_id`
+ * itself); `record_decision`'s save path is intentionally left untouched
+ * by it, since this is a `record_mentoring`-specific fallback, not a
+ * general decision-logging one.
  */
 export function executeBossTool(
   db: Database.Database,
   sessionId: number,
   name: string,
   input: unknown,
+  mentoringTaskId?: number,
 ): ToolExecutionResult {
   if (name === "record_decision") {
     return executeRecordDecisionTool(db, sessionId, input);
   }
   if (name === "record_mentoring") {
-    return executeRecordMentoringTool(db, sessionId, input);
+    return executeRecordMentoringTool(db, sessionId, input, mentoringTaskId);
   }
   if (name === "get_activity_log") {
     return executeGetActivityLogTool(db, input);

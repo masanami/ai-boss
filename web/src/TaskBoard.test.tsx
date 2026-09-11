@@ -492,6 +492,53 @@ describe("TaskBoard", () => {
     expect(tasksState.refresh).toHaveBeenCalledTimes(1);
   });
 
+  // Issue #470 (親 #444): TaskBoard は onStartMentoring をそのまま
+  // TaskCard へ渡すだけで、判断には関与しない。
+  describe("onStartMentoring passthrough (Issue #470)", () => {
+    it("passes onStartMentoring through to the task card and calls it with the clicked task id", () => {
+      const task = makeTask({ id: 7, title: "資料を作る", status: "todo" });
+      const onStartMentoring = vi.fn();
+
+      render(
+        <TaskBoard
+          tasksState={makeTasksState({ tasks: [task] })}
+          onStartMentoring={onStartMentoring}
+        />,
+      );
+
+      fireEvent.click(
+        screen.getByRole("button", { name: "メンタリングする" }),
+      );
+
+      expect(onStartMentoring).toHaveBeenCalledWith(7);
+    });
+
+    it("does not render the mentoring button when onStartMentoring is not provided", () => {
+      const task = makeTask({ id: 7, title: "資料を作る", status: "todo" });
+
+      render(<TaskBoard tasksState={makeTasksState({ tasks: [task] })} />);
+
+      expect(
+        screen.queryByRole("button", { name: "メンタリングする" }),
+      ).not.toBeInTheDocument();
+    });
+
+    it("does not render the mentoring button when onStartMentoring is null (meeting in progress)", () => {
+      const task = makeTask({ id: 7, title: "資料を作る", status: "todo" });
+
+      render(
+        <TaskBoard
+          tasksState={makeTasksState({ tasks: [task] })}
+          onStartMentoring={null}
+        />,
+      );
+
+      expect(
+        screen.queryByRole("button", { name: "メンタリングする" }),
+      ).not.toBeInTheDocument();
+    });
+  });
+
   // 「完了」「中止」列をローカル暦日で直近 7 日に絞る（Issue #428 / #437）。
   // now = 2026-09-10 のとき包含範囲は 2026-09-04〜2026-09-10。
   describe("完了/中止 列の直近ウィンドウ (#428)", () => {

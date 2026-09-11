@@ -3,6 +3,7 @@ import type {
   ChatSession,
   ChatStreamHandlers,
   ChatToolEvent,
+  SendMessageOptions,
   SessionType,
 } from "./chat";
 
@@ -169,12 +170,18 @@ function dispatchSseEvent(event: SseEvent, handlers: ChatStreamHandlers): void {
  * the new reply. Omitted, the POST body is `{ content }` unchanged — this
  * keeps the existing contract for a plain send untouched.
  *
- * `mentoring` requests the 随時メンタリング flow (Issue #411, 親 #276 判断6):
- * `true` adds `mentoring: true` to the body, which makes the server queue
- * `MENTORING_FLOW_INSTRUCTION` for this turn regardless of the session type
- * or the 強制 setting (`sessions-validation.ts`'s `ChatMessageInput`).
- * Mirrors the server's undefined-as-absent contract — omitted or `false`
- * leaves the body without a `mentoring` key at all, same as
+ * `options` (Issue #470, 親 #444 決定4) replaces the former trailing
+ * `mentoring?: boolean` positional argument with a single object shared with
+ * `useChat().send`:
+ * - `options.mentoring` requests the 随時メンタリング flow (Issue #411,
+ *   親 #276 判断6): `true` adds `mentoring: true` to the body, which makes
+ *   the server queue `MENTORING_FLOW_INSTRUCTION` for this turn regardless
+ *   of the session type or the 強制 setting (`sessions-validation.ts`'s
+ *   `ChatMessageInput`).
+ * - `options.mentoringTaskId` attributes the send to a task's card (Issue
+ *   #470, 親 #444 決定3).
+ * Mirrors the server's undefined-as-absent contract — omitting a key (or the
+ * whole `options` object) leaves the body without it, same as
  * `replaceFromMessageId`.
  */
 export async function sendChatMessage(
@@ -183,18 +190,22 @@ export async function sendChatMessage(
   handlers: ChatStreamHandlers,
   signal?: AbortSignal,
   replaceFromMessageId?: number,
-  mentoring?: boolean,
+  options?: SendMessageOptions,
 ): Promise<void> {
   const body: {
     content: string;
     replaceFromMessageId?: number;
     mentoring?: true;
+    mentoringTaskId?: number;
   } = { content };
   if (replaceFromMessageId !== undefined) {
     body.replaceFromMessageId = replaceFromMessageId;
   }
-  if (mentoring === true) {
+  if (options?.mentoring === true) {
     body.mentoring = true;
+  }
+  if (options?.mentoringTaskId !== undefined) {
+    body.mentoringTaskId = options.mentoringTaskId;
   }
   const response = await fetch(`${SESSIONS_URL}/${sessionId}/messages`, {
     method: "POST",

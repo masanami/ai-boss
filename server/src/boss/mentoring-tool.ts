@@ -43,11 +43,21 @@ function isRecord(value: unknown): value is Record<string, unknown> {
  * the chat route (the tool has no way to know its own session otherwise)
  * and is not part of the LLM-provided input. Input validation mirrors
  * `executeRecordDecisionTool` exactly (shared shape, different `kind`).
+ *
+ * `mentoringTaskId` (Issue #469 / task-scoped-mentoring 決定5) is the task
+ * the caller is mentoring about for this turn — supplied the same way as
+ * `sessionId` (the LLM cannot know it). When the boss calls `record_mentoring`
+ * without `task_id` (undefined or explicit `null` — the two are already
+ * treated as equivalent below), `mentoringTaskId` is used as the value to
+ * persist and is subject to the same `findTaskById` existence check as an
+ * explicit `task_id`. An explicit non-null `task_id` from the boss always
+ * wins over `mentoringTaskId` (fallback never overwrites it).
  */
 export function executeRecordMentoringTool(
   db: Database.Database,
   sessionId: number,
   input: unknown,
+  mentoringTaskId?: number,
 ): ToolExecutionResult {
   if (!isRecord(input) || typeof input.content !== "string" || input.content.trim() === "") {
     return {
@@ -56,13 +66,15 @@ export function executeRecordMentoringTool(
     };
   }
 
-  if (input.task_id !== undefined && input.task_id !== null) {
-    if (typeof input.task_id !== "number") {
-      return { content: "task_id must be a number or null", isError: true };
-    }
-    if (!findTaskById(db, input.task_id)) {
-      return { content: `task ${input.task_id} not found`, isError: true };
-    }
+  if (input.task_id !== undefined && input.task_id !== null && typeof input.task_id !== "number") {
+    return { content: "task_id must be a number or null", isError: true };
+  }
+
+  const explicitTaskId = typeof input.task_id === "number" ? input.task_id : undefined;
+  const effectiveTaskId = explicitTaskId ?? mentoringTaskId ?? null;
+
+  if (effectiveTaskId !== null && !findTaskById(db, effectiveTaskId)) {
+    return { content: `task ${effectiveTaskId} not found`, isError: true };
   }
 
   if (input.rationale !== undefined && typeof input.rationale !== "string") {
@@ -72,7 +84,7 @@ export function executeRecordMentoringTool(
   const decision = insertDecision(db, {
     session_id: sessionId,
     content: input.content,
-    task_id: (input.task_id as number | undefined) ?? null,
+    task_id: effectiveTaskId,
     rationale: (input.rationale as string | undefined) ?? null,
     kind: "mentoring",
   });

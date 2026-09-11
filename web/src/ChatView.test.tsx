@@ -1617,7 +1617,7 @@ describe("ChatView mentoring (Issue #411)", () => {
     ).not.toBeInTheDocument();
   });
 
-  it("sends a fixed message with the mentoring flag when the button is pressed", () => {
+  it("sends a fixed message with the mentoring option when the button is pressed", () => {
     const send = vi.fn();
     render(
       <ChatView chatState={makeChatState({ sessionType: "adhoc", send })} />,
@@ -1628,9 +1628,13 @@ describe("ChatView mentoring (Issue #411)", () => {
     expect(send).toHaveBeenCalledTimes(1);
     // The flag is what makes the server queue MENTORING_FLOW_INSTRUCTION
     // (親 #276 判断6) — a plain send without it would leave 随時メンタリング
-    // without a record (`record_mentoring` never gets called).
-    const [, mentoringFlag] = send.mock.calls[0] as [string, boolean];
-    expect(mentoringFlag).toBe(true);
+    // without a record (`record_mentoring` never gets called). Issue #470
+    // (親 #444 決定4): the second argument is now an options object, and this
+    // header-origin send must not carry a mentoringTaskId (AC-10) — it is
+    // not attributed to any task card.
+    expect(send).toHaveBeenCalledWith("今の進め方を見てほしい", {
+      mentoring: true,
+    });
   });
 
   it("disables the mentoring button while sending or switching", () => {

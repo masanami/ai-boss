@@ -2783,7 +2783,10 @@ describe("useChat reload after rewrite (Issue #378, AC-54)", () => {
 // メンタリングの導線。`ChatApiError`（chat-api.ts）の `code` で分岐する
 // （ADR 0008 決定2 と同じ作法）。
 describe("useChat mentoring (Issue #411)", () => {
-  it("posts mentoring: true when send is called with the mentoring flag", async () => {
+  // Issue #470 (親 #444 決定4): `send` の第2引数は末尾の位置引数
+  // （`mentoring?: boolean`）から、`chat-api.ts`の`sendChatMessage`と同じ形の
+  // `options?: { mentoring?: true; mentoringTaskId?: number }` に置き換わった。
+  it("posts mentoring: true when send is called with the mentoring option", async () => {
     const fetchMock = vi
       .fn()
       .mockResolvedValueOnce(jsonResponse([SESSION]))
@@ -2797,7 +2800,7 @@ describe("useChat mentoring (Issue #411)", () => {
     await waitFor(() => expect(result.current.status).toBe("ready"));
 
     await act(async () => {
-      await result.current.send("今の進め方を見てほしい", true);
+      await result.current.send("今の進め方を見てほしい", { mentoring: true });
     });
 
     expect(fetchMock).toHaveBeenNthCalledWith(3, "/api/sessions/1/messages", {
@@ -2831,7 +2834,39 @@ describe("useChat mentoring (Issue #411)", () => {
     const body = JSON.parse(
       fetchMock.mock.calls[2][1].body as string,
     ) as Record<string, unknown>;
-    expect("mentoring" in body).toBe(false);
+    expect(body).toEqual({ content: "続きの相談です" });
+  });
+
+  // Issue #470 (親 #444 決定3, AC-9): タスク起点の送信は mentoringTaskId を
+  // sendChatMessage まで届ける。
+  it("posts mentoringTaskId when send is called with the mentoringTaskId option (AC-9)", async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(jsonResponse([SESSION]))
+      .mockResolvedValueOnce(jsonResponse(HISTORY))
+      .mockResolvedValueOnce(
+        sseResponse([`event: done\ndata: ${JSON.stringify(BOSS_REPLY)}\n\n`]),
+      );
+    vi.stubGlobal("fetch", fetchMock);
+
+    const { result } = renderHook(() => useChat());
+    await waitFor(() => expect(result.current.status).toBe("ready"));
+
+    await act(async () => {
+      await result.current.send("「資料を作る」の進め方を見てほしい", {
+        mentoring: true,
+        mentoringTaskId: 42,
+      });
+    });
+
+    const body = JSON.parse(
+      fetchMock.mock.calls[2][1].body as string,
+    ) as Record<string, unknown>;
+    expect(body).toEqual({
+      content: "「資料を作る」の進め方を見てほしい",
+      mentoring: true,
+      mentoringTaskId: 42,
+    });
   });
 
   it("blocks ending the session with mentoringRequired instead of a generic error on a 409 mentoring_required response", async () => {

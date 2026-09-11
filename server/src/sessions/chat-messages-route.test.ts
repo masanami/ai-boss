@@ -2,8 +2,9 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type Database from "better-sqlite3";
 import { openDatabase } from "../db/connection.js";
 import { runMigrations } from "../db/migrate.js";
-import { listTasks } from "../tasks/tasks-repository.js";
+import { insertTask, listTasks } from "../tasks/tasks-repository.js";
 import { listDecisions } from "../decisions/decisions-repository.js";
+import { MENTORING_TARGET_TASK_INSTRUCTION } from "../boss/persona-prompt.js";
 import { updateSessionSummary } from "./sessions-repository.js";
 import { insertMessage } from "./messages-repository.js";
 import type { Session } from "./session.js";
@@ -798,6 +799,215 @@ describe("POST /api/sessions/:id/messages", () => {
       });
 
       expect(res.status).toBe(200);
+    });
+  });
+
+  // Issue #471（親 #444 決定7）: mentoringTaskId の受理・検証・配線。
+  describe("mentoringTaskId（Issue #471, 親 #444 決定7）", () => {
+    function countMessagesInSession(sessionId: number): number {
+      return (
+        db
+          .prepare("SELECT COUNT(*) AS count FROM messages WHERE session_id = ?")
+          .get(sessionId) as { count: number }
+      ).count;
+    }
+
+    it.each([
+      ["a numeric string", "7"],
+      ["zero", 0],
+      ["a negative integer", -1],
+      ["a decimal", 1.5],
+      ["a boolean", true],
+    ])(
+      "returns 400 and does not persist the user message when mentoringTaskId is %s, even with mentoring: true (AC-12/AC-15)",
+      async (_label, value) => {
+        const session = await createSession();
+        const app = createApp(db, env);
+
+        const res = await app.request(`/api/sessions/${session.id}/messages`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            content: "進め方を見てほしい",
+            mentoring: true,
+            mentoringTaskId: value,
+          }),
+        });
+
+        expect(res.status).toBe(400);
+        const body = await readJson<ErrorBody>(res);
+        expect(body.error).toContain("mentoringTaskId");
+        expect(streamBossMessageMock).not.toHaveBeenCalled();
+        expect(countMessagesInSession(session.id)).toBe(0);
+      },
+    );
+
+    it("returns 400 and does not persist the user message when mentoringTaskId is present without mentoring: true (AC-13/AC-15)", async () => {
+      const task = insertTask(db, {
+        title: "資料作成",
+        description: null,
+        category: "work",
+        priority: null,
+        due_at: null,
+        status: "todo",
+        boss_comment: null,
+        estimated_minutes: null,
+      });
+      const session = await createSession();
+      const app = createApp(db, env);
+
+      const res = await app.request(`/api/sessions/${session.id}/messages`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          content: "進め方を見てほしい",
+          mentoringTaskId: task.id,
+        }),
+      });
+
+      expect(res.status).toBe(400);
+      const body = await readJson<ErrorBody>(res);
+      expect(body.error).toContain("mentoringTaskId");
+      expect(streamBossMessageMock).not.toHaveBeenCalled();
+      expect(countMessagesInSession(session.id)).toBe(0);
+    });
+
+    it("returns 404 and does not persist the user message when mentoringTaskId refers to a nonexistent task (AC-14/AC-15)", async () => {
+      const session = await createSession();
+      const app = createApp(db, env);
+
+      const res = await app.request(`/api/sessions/${session.id}/messages`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          content: "進め方を見てほしい",
+          mentoring: true,
+          mentoringTaskId: 9999,
+        }),
+      });
+
+      expect(res.status).toBe(404);
+      const body = await readJson<ErrorBody>(res);
+      expect(typeof body.error).toBe("string");
+      expect(streamBossMessageMock).not.toHaveBeenCalled();
+      expect(countMessagesInSession(session.id)).toBe(0);
+    });
+
+    it("wires a validated mentoringTaskId into buildPersonaPrompt, adding the 対象タスク section (結線の担保)", async () => {
+      const task = insertTask(db, {
+        title: "資料作成",
+        description: null,
+        category: "work",
+        priority: null,
+        due_at: null,
+        status: "todo",
+        boss_comment: null,
+        estimated_minutes: null,
+      });
+      const session = await createSession();
+      streamBossMessageMock.mockResolvedValue(fakeTextMessage("了解した"));
+      const app = createApp(db, env);
+
+      const res = await app.request(`/api/sessions/${session.id}/messages`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          content: "進め方を見てほしい",
+          mentoring: true,
+          mentoringTaskId: task.id,
+        }),
+      });
+      await res.text();
+
+      expect(res.status).toBe(200);
+      const system = streamBossMessageMock.mock.calls[0][1].system as string;
+      expect(system).toContain(MENTORING_TARGET_TASK_INSTRUCTION);
+      expect(system).toContain("資料作成");
+    });
+
+    // セルフレビュー指摘: 対照群にもタスクを1件 insert し、「mentoringTaskId 省略
+    // だから対象タスクセクションが無い」であって「tasks が空だから無い」の
+    // 誤検出（`resolveMentoringTargetTask` は候補が無ければどのみち undefined
+    // を返すため、tasks 空だとどんな実装でも緑になってしまう）を防ぐ。
+    // 併せて MENTORING_FLOW_INSTRUCTION（"record_mentoring" を含む既存の
+    // メンタリング指示。他のテストが同じ流儀で代理検証している）自体は
+    // 積まれていることも確認し、mentoring ゲートごと壊れて全セクションが
+    // 消えるケースを見逃さないようにする。
+    it("does not add the 対象タスク section when mentoringTaskId is omitted, even with mentoring: true and an existing task (AC-16 非回帰)", async () => {
+      insertTask(db, {
+        title: "資料作成",
+        description: null,
+        category: "work",
+        priority: null,
+        due_at: null,
+        status: "todo",
+        boss_comment: null,
+        estimated_minutes: null,
+      });
+      const session = await createSession();
+      streamBossMessageMock.mockResolvedValue(fakeTextMessage("了解した"));
+      const app = createApp(db, env);
+
+      const res = await app.request(`/api/sessions/${session.id}/messages`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ content: "進め方を見てほしい", mentoring: true }),
+      });
+      await res.text();
+
+      expect(res.status).toBe(200);
+      const system = streamBossMessageMock.mock.calls[0][1].system as string;
+      expect(system).toContain("record_mentoring");
+      expect(system).not.toContain(MENTORING_TARGET_TASK_INSTRUCTION);
+    });
+
+    it("wires a validated mentoringTaskId into executeBossTool, filling record_mentoring's task_id fallback (結線の担保)", async () => {
+      const task = insertTask(db, {
+        title: "資料作成",
+        description: null,
+        category: "work",
+        priority: null,
+        due_at: null,
+        status: "todo",
+        boss_comment: null,
+        estimated_minutes: null,
+      });
+      const session = await createSession();
+      streamBossMessageMock.mockImplementation(
+        async (_client, _request, callbacks: StreamBossMessageCallbacks) => {
+          const result = await callbacks.executeTool!("record_mentoring", {
+            content: "今のやり方のままで進める",
+          });
+          await callbacks.onToolEvent?.({
+            name: "record_mentoring",
+            input: { content: "今のやり方のままで進める" },
+            result: result.content,
+            isError: result.isError,
+          });
+          callbacks.onTextDelta?.("そう決めた");
+          return fakeTextMessage("そう決めた");
+        },
+      );
+      const app = createApp(db, env);
+
+      const res = await app.request(`/api/sessions/${session.id}/messages`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          content: "進め方を見てほしい",
+          mentoring: true,
+          mentoringTaskId: task.id,
+        }),
+      });
+      await res.text();
+
+      expect(res.status).toBe(200);
+      const decisions = listDecisions(db);
+      expect(decisions).toHaveLength(1);
+      expect(decisions[0]).toMatchObject({
+        kind: "mentoring",
+        task_id: task.id,
+      });
     });
   });
 

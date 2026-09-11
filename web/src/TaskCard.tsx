@@ -16,6 +16,15 @@ interface TaskCardProps {
    * 親はこれでドロップ先ハイライトの要否を判定する（Issue #122 レビュー指摘）。
    */
   onDraggingChange?: (id: number | null) => void;
+  /**
+   * タスクカードからのメンタリング起動（Issue #470, 親 #444 決定1）。
+   * `null`（または未指定）のときは「メンタリングする」ボタン自体を描画しない
+   * — 呼び出し元（`AppLayout`）が朝会・夕会の会中はこれを渡さないことで
+   * AC-2 を満たす。このコンポーネントは adhoc 判定に関与しない（判断は
+   * 呼び出し元）。表示モードのアクション行にのみ置き、編集モードには置かない
+   * （未保存の編集を抱えたまま画面が切り替わる論点を避けるため）。
+   */
+  onStartMentoring?: ((taskId: number) => void) | null;
 }
 
 const PRIORITY_LABEL: Record<TaskPriority, string> = {
@@ -52,6 +61,7 @@ function TaskCard({
   onStatusChange,
   onEdit,
   onDraggingChange,
+  onStartMentoring,
 }: TaskCardProps) {
   const [isEditing, setIsEditing] = useState(false);
   const [title, setTitle] = useState(task.title);
@@ -334,6 +344,14 @@ function TaskCard({
         <button type="button" onClick={startEditing}>
           編集
         </button>
+        {onStartMentoring !== null && onStartMentoring !== undefined && (
+          <button
+            type="button"
+            onClick={() => onStartMentoring(task.id)}
+          >
+            メンタリングする
+          </button>
+        )}
       </div>
     </div>
   );

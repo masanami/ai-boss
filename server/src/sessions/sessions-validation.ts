@@ -54,6 +54,18 @@ export interface ChatMessageInput {
    * 持たせない — `true` のときだけ明示的にキーを持つ。
    */
   mentoring?: boolean;
+  /**
+   * このターンのメンタリングの対象タスクの id（Issue #471, 親 #444 決定7,
+   * docs/features/task-scoped-mentoring.md「IF」）。`mentoring: true` と
+   * 同時にのみ指定できる — 伴わない場合は無視せず 400 で拒否する。形の検証は
+   * `replaceFromMessageId` と同じ `isPositiveInteger` を再利用する（0・負数・
+   * 小数・文字列・真偽値はいずれも 400）。存在検証（DB を読む）はここでは
+   * 行わない — ルート側（`chat-messages-route.ts`）の責務。
+   *
+   * `mentoring`/`replaceFromMessageId` と同じ undefined-as-absent の作法を
+   * 踏襲し、値があるときだけ `data` にキーを持つ。
+   */
+  mentoringTaskId?: number;
 }
 
 function isPositiveInteger(value: unknown): value is number {
@@ -92,9 +104,33 @@ export function validateChatMessageInput(
   if (body.mentoring !== undefined && typeof body.mentoring !== "boolean") {
     return { valid: false, error: "mentoring must be a boolean" };
   }
+
+  // Issue #471（決定7）: 形の検証（isPositiveInteger の再利用）と、
+  // `mentoring: true` との組み合わせ検証。無視せず 400 で拒否する
+  // （「対象タスクを指定したつもりで紐づかないメンタリングが残る」を防ぐ）。
+  if (body.mentoringTaskId !== undefined) {
+    if (!isPositiveInteger(body.mentoringTaskId)) {
+      return {
+        valid: false,
+        error: "mentoringTaskId must be a positive integer",
+      };
+    }
+    if (body.mentoring !== true) {
+      return {
+        valid: false,
+        error: "mentoringTaskId requires mentoring: true",
+      };
+    }
+  }
+
   // `mentoring` は `true` のときだけキーを持つ（`ChatMessageInput` の JSDoc
   // が定める undefined-as-absent の作法。既定 false は「キーが無い」で表す）。
   const mentoringField = body.mentoring === true ? { mentoring: true as const } : {};
+  // `mentoringTaskId` も同じ作法（値があるときだけキーを持つ）。上のガードを
+  // 通っていれば `isPositiveInteger` の型ガードにより number に絞り込み済み。
+  const mentoringTaskIdField = isPositiveInteger(body.mentoringTaskId)
+    ? { mentoringTaskId: body.mentoringTaskId }
+    : {};
 
   // 未指定ならここで確定する（早期 return）: `replaceFromMessageId` キーを
   // 一切持たない従来どおりの形を保つ（型アサーションに頼らず、`data` の
@@ -102,7 +138,10 @@ export function validateChatMessageInput(
   // undefined-as-absent 挙動で非回帰テストを通していたが、それはテストの
   // 緩さに実装を合わせる向きが逆だった）。
   if (body.replaceFromMessageId === undefined) {
-    return { valid: true, data: { content: body.content, ...mentoringField } };
+    return {
+      valid: true,
+      data: { content: body.content, ...mentoringField, ...mentoringTaskIdField },
+    };
   }
 
   if (!isPositiveInteger(body.replaceFromMessageId)) {
@@ -120,6 +159,7 @@ export function validateChatMessageInput(
       content: body.content,
       replaceFromMessageId: body.replaceFromMessageId,
       ...mentoringField,
+      ...mentoringTaskIdField,
     },
   };
 }

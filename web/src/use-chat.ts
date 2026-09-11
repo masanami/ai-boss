@@ -7,7 +7,13 @@ import {
   fetchSessions,
   sendChatMessage,
 } from "./chat-api";
-import type { ChatEntry, ChatMessage, ChatSession, SessionType } from "./chat";
+import type {
+  ChatEntry,
+  ChatMessage,
+  ChatSession,
+  SendMessageOptions,
+  SessionType,
+} from "./chat";
 import { selectRestoreSessions } from "./select-restore-session";
 import { buildTimeline, selectTimelineSessions } from "./merge-timeline";
 
@@ -57,14 +63,22 @@ export interface UseChatResult {
   draft: string;
   setDraft: (value: string) => void;
   /**
-   * `mentoring` requests 随時メンタリング (Issue #411, 親 #276 判断6): `true`
-   * makes the sent message add `mentoring: true` to the request body, which
-   * queues `MENTORING_FLOW_INSTRUCTION` for this turn server-side regardless
-   * of session type or the 強制 setting. Only `ChatView`'s dedicated
-   * "進め方を点検してもらう" button passes `true` — the plain send path
-   * (submitting the draft input) omits it, unchanged from before this issue.
+   * `options` (Issue #470, 親 #444 決定4) replaces the former trailing
+   * `mentoring?: boolean` positional argument with a single object mirroring
+   * `sendChatMessage`'s own `options` (`chat-api.ts`):
+   * - `options.mentoring` requests 随時メンタリング (Issue #411, 親 #276
+   *   判断6): `true` makes the sent message add `mentoring: true` to the
+   *   request body, which queues `MENTORING_FLOW_INSTRUCTION` for this turn
+   *   server-side regardless of session type or the 強制 setting. Only
+   *   `ChatView`'s dedicated "進め方を点検してもらう" button and the
+   *   task-card mentoring button (Issue #470) pass `true` — the plain send
+   *   path (submitting the draft input) omits it, unchanged from before
+   *   Issue #411.
+   * - `options.mentoringTaskId` attributes the send to a task's card (Issue
+   *   #470, 親 #444 決定3) — only the task-card mentoring button passes
+   *   this.
    */
-  send: (content: string, mentoring?: boolean) => Promise<void>;
+  send: (content: string, options?: SendMessageOptions) => Promise<void>;
   /**
    * Rewrites a past message (Issue #378, #255 決定6): the server truncates
    * `activeSessionId` from `messageId` onward, then generates a fresh reply
@@ -323,7 +337,7 @@ export function useChat(): UseChatResult {
   }, []);
 
   const send = useCallback(
-    async (content: string, mentoring?: boolean) => {
+    async (content: string, options?: SendMessageOptions) => {
       if (sendingRef.current || switchingRef.current) {
         return;
       }
@@ -405,7 +419,7 @@ export function useChat(): UseChatResult {
           },
           controller.signal,
           undefined,
-          mentoring,
+          options,
         );
       } catch (err) {
         // Keyed on our own controller rather than on the error's name: this
