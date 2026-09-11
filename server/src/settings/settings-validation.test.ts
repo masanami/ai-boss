@@ -1,5 +1,8 @@
 import { describe, expect, it } from "vitest";
-import { validatePutSettingsInput } from "./settings-validation.js";
+import {
+  isValidWorkingHoursRange,
+  validatePutSettingsInput,
+} from "./settings-validation.js";
 
 const TIME_KEYS = [
   "work_start",
@@ -336,5 +339,98 @@ describe("validatePutSettingsInput", () => {
       boss_strictness: 99,
     });
     expect(result.valid).toBe(false);
+  });
+
+  // work_start / work_end 相関チェック（#480, 親要件 #448 決定1・2）。
+  // 本チケットが担うのは「全量更新（両キーが同時に送られる更新）」の拒否
+  // まで。部分更新（片方だけ送る更新）の相関チェックは、この純粋関数
+  // （DB アクセスを持たない）ではなく #481 が `settings-routes.ts`
+  // （DB から現在の保存値を読める層）に配線する設計であり、この関数は
+  // 片方だけ送られたときは意図的に関知しない。#481 実装後もこの関数
+  // レベルの契約は変わらないため、ここでは「片方だけ送られたときは拒否
+  // しない」ことも合わせて確認し、越権していないことを担保する
+  // （HTTP レベルの部分更新拒否の担保は `settings-routes.test.ts` 側）。
+  describe("work_start / work_end correlation (AC-1, AC-2, AC-5, AC-6)", () => {
+    it("accepts a valid range (work_start=09:00, work_end=18:00) (AC-5)", () => {
+      const result = validatePutSettingsInput({
+        work_start: "09:00",
+        work_end: "18:00",
+      });
+      expect(result).toEqual({
+        valid: true,
+        data: { work_start: "09:00", work_end: "18:00" },
+      });
+    });
+
+    it("rejects an overnight range (work_start=22:00, work_end=02:00) when both are sent (AC-1)", () => {
+      const result = validatePutSettingsInput({
+        work_start: "22:00",
+        work_end: "02:00",
+      });
+      expect(result.valid).toBe(false);
+    });
+
+    it("rejects an equal-time range (work_start=09:00, work_end=09:00) when both are sent (AC-1, decision 2: >=)", () => {
+      const result = validatePutSettingsInput({
+        work_start: "09:00",
+        work_end: "09:00",
+      });
+      expect(result.valid).toBe(false);
+    });
+
+    it("error message identifies the work_start/work_end relationship as invalid (AC-2)", () => {
+      const result = validatePutSettingsInput({
+        work_start: "22:00",
+        work_end: "02:00",
+      });
+      expect(result.valid).toBe(false);
+      if (!result.valid) {
+        expect(result.error).toContain("work_start");
+        expect(result.error).toContain("work_end");
+      }
+    });
+
+    it("does not reject when only work_start is sent (partial-update correlation is wired in settings-routes.ts by #481, not here)", () => {
+      const result = validatePutSettingsInput({ work_start: "23:00" });
+      expect(result).toEqual({
+        valid: true,
+        data: { work_start: "23:00" },
+      });
+    });
+
+    it("does not reject when only work_end is sent (partial-update correlation is wired in settings-routes.ts by #481, not here)", () => {
+      const result = validatePutSettingsInput({ work_end: "01:00" });
+      expect(result).toEqual({
+        valid: true,
+        data: { work_end: "01:00" },
+      });
+    });
+
+    it("rejects the whole patch when the working-hours correlation is invalid, even alongside other valid keys (all-or-nothing)", () => {
+      const result = validatePutSettingsInput({
+        boss_name: "鬼上司",
+        work_start: "22:00",
+        work_end: "02:00",
+      });
+      expect(result.valid).toBe(false);
+    });
+  });
+
+  describe("isValidWorkingHoursRange (shared helper for #481/#482)", () => {
+    it("returns true for a normal daytime range", () => {
+      expect(isValidWorkingHoursRange("09:00", "18:00")).toBe(true);
+    });
+
+    it("returns true for a range one minute wide", () => {
+      expect(isValidWorkingHoursRange("17:59", "18:00")).toBe(true);
+    });
+
+    it("returns false for an overnight range (start > end)", () => {
+      expect(isValidWorkingHoursRange("22:00", "02:00")).toBe(false);
+    });
+
+    it("returns false for an equal start/end (decision 2: >=, not >)", () => {
+      expect(isValidWorkingHoursRange("09:00", "09:00")).toBe(false);
+    });
   });
 });
