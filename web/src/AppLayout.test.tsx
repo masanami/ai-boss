@@ -43,8 +43,9 @@ function createGate() {
     open = () => resolve();
     fail = () => reject(new Error("gate failed"));
   });
-  // 誰も待たないまま fail() されたときの unhandled rejection を防ぐ
-  // （テストによっては gate を開けずに終える）。
+  // 防御。不変条件としては、**すべてのテストが終了前に gate を解放する**
+  // （`releaseAndJoin` を参照）— 解放しないまま抜けると、保留中の fetch が
+  // テスト終了後に解決してアンマウント済みのツリーへ setState する。
   promise.catch(() => {});
   return { promise, open, fail };
 }
@@ -830,13 +831,23 @@ describe("AppLayout", () => {
   // 渡された可否をそのまま反映するだけ（単位レベルの確認は TaskCard.test.tsx
   // / TaskBoard.test.tsx 側）。
   describe("タスクカード導線の可否条件 (Issue #489, S1a)", () => {
-    const ADHOC_SESSION: ChatSession = {
-      id: 30,
-      type: "adhoc",
-      started_at: new Date().toISOString(),
-      ended_at: null,
-      summary: null,
-    };
+    const ADHOC_SESSION_ID = 30;
+
+    /**
+     * 復元対象になる「今日の未終了 adhoc セッション」。`started_at` は
+     * ローカル暦日で今日かどうかを判定される（ADR 0007）ので、describe の
+     * 評価時に 1 回だけ固めず、`it` ごとに作る（既存の `makeTask` と同じ
+     * 作法。コレクションと実行の間に日付が変わると復元されなくなる）。
+     */
+    function makeAdhocSession(): ChatSession {
+      return {
+        id: ADHOC_SESSION_ID,
+        type: "adhoc",
+        started_at: new Date().toISOString(),
+        ended_at: null,
+        summary: null,
+      };
+    }
 
     /** チャット画面から 1 通送信し、その送信を未完のまま保持する。 */
     async function startHeldSend(): Promise<void> {
@@ -862,18 +873,35 @@ describe("AppLayout", () => {
     }
 
     /**
-     * gate を開け（または失敗させ）、それが引き起こす状態更新が落ち着く
-     * まで待つ。テストの assertion 自体はもう終わっていても、未合流のまま
-     * 抜けると送信・切替の完了による setState がテスト終了後に走り
-     * 「not wrapped in act」警告になるため、必ずここで合流させる。
+     * gate を解放し、それが引き起こす状態更新に合流する（後片付け）。
+     * 未合流のまま抜けると送信・切替の完了による setState がテスト終了後に
+     * 走り「not wrapped in act」警告になるため、必ず最後にこれを呼ぶ。
+     *
+     * 合流の signal にボタンの再活性を使っているが、**これは主張ではなく
+     * 「状態が落ち着いた」ことの目印**である（再活性そのものは
+     * `re-enables ...` の 2 本が専用に主張する）。
      */
-    async function settleGate(release: () => void): Promise<void> {
+    async function releaseAndJoin(release: () => void): Promise<void> {
       release();
       await waitFor(() =>
         expect(
           screen.getByRole("button", { name: "メンタリングする" }),
         ).toBeEnabled(),
       );
+    }
+
+    /**
+     * 「描画されたまま非活性」を、存在と非活性の 2 つに分けて主張する。
+     * `getByRole` は不在時に throw するため `getByRole(...)` の直後に
+     * `toBeInTheDocument()` を置いても恒真にしかならない（レビュー指摘）。
+     * `queryByRole` は不在時に null を返すので、存在のほうも本当に検査される。
+     */
+    function expectMentoringButtonRenderedAndDisabled(): void {
+      const button = screen.queryByRole("button", {
+        name: "メンタリングする",
+      });
+      expect(button).not.toBeNull();
+      expect(button).toBeDisabled();
     }
 
     it("disables the task-card mentoring button while a send is in flight (sending)", async () => {
@@ -883,7 +911,7 @@ describe("AppLayout", () => {
         "fetch",
         createRoutedFetchMock({
           tasks: [task],
-          sessions: [ADHOC_SESSION],
+          sessions: [makeAdhocSession()],
           holdSendMessage: gate.promise,
         }),
       );
@@ -892,13 +920,12 @@ describe("AppLayout", () => {
       await startHeldSend();
       await openTaskBoard("資料を作る");
 
-      const button = screen.getByRole("button", { name: "メンタリングする" });
       // 非活性であって非表示ではない（決定8: 送信のたびにボタンが消えて
-      // 戻るレイアウト移動を避ける）。
-      expect(button).toBeInTheDocument();
-      expect(button).toBeDisabled();
+      // 戻るレイアウト移動を避ける）。会中の非表示との対は、同ファイルの
+      // 「does not show a メンタリングする button ... during a meeting」が持つ。
+      expectMentoringButtonRenderedAndDisabled();
 
-      await settleGate(gate.open);
+      await releaseAndJoin(gate.open);
     });
 
     it("neither switches to chat nor sends when the mentoring button is clicked while sending", async () => {
@@ -909,7 +936,7 @@ describe("AppLayout", () => {
         "fetch",
         createRoutedFetchMock({
           tasks: [task],
-          sessions: [ADHOC_SESSION],
+          sessions: [makeAdhocSession()],
           holdSendMessage: gate.promise,
           onSendMessage: (sessionId) => {
             messagePostCount += 1;
@@ -933,16 +960,25 @@ describe("AppLayout", () => {
       fireEvent.click(screen.getByRole("button", { name: "メンタリングする" }));
 
       // #474 の本体: 押しても「ビューだけ切り替わる」ことが起きない。
+      // この 2 行がこのテストで変異を検出している箇所である（`disabled` を
+      // 外すと `startMentoringForTask` が走って `setActiveView("chat")` が
+      // 効き、chat 面が出てしまう）。
       expect(
         screen.getByRole("main", { name: "タスクボード" }),
       ).toBeInTheDocument();
       expect(
         screen.queryByRole("main", { name: "ボスとの対話" }),
       ).not.toBeInTheDocument();
-      // 発言も送られない（`useChat` のガードに無音で捨てられる経路に入らない）。
+      // 発言も増えない。ただし**この行は単独では変異を検出しない**:
+      // `sending` 中は `useChat` 側のガード（`use-chat.ts` の
+      // `sendingRef.current || switchingRef.current` 早期 return）も同じ
+      // 送信を止めるので、`disabled` の有無にかかわらず 1 のままになる。
+      // 「押しても `onStartMentoring` が呼ばれない」ことの担保は
+      // `TaskCard.test.tsx` の単体テストが持つ（そちらは変異で落ちる）。
+      // ここに残すのは、最後の防波堤が二重に効いていることの回帰確認。
       expect(messagePostCount).toBe(1);
 
-      await settleGate(gate.open);
+      await releaseAndJoin(gate.open);
     });
 
     it("re-enables the task-card mentoring button once the send settles", async () => {
@@ -952,7 +988,7 @@ describe("AppLayout", () => {
         "fetch",
         createRoutedFetchMock({
           tasks: [task],
-          sessions: [ADHOC_SESSION],
+          sessions: [makeAdhocSession()],
           holdSendMessage: gate.promise,
         }),
       );
@@ -980,7 +1016,7 @@ describe("AppLayout", () => {
         "fetch",
         createRoutedFetchMock({
           tasks: [task],
-          sessions: [ADHOC_SESSION],
+          sessions: [makeAdhocSession()],
           holdSessionsFetchAfterFirst: gate.promise,
         }),
       );
@@ -999,11 +1035,9 @@ describe("AppLayout", () => {
 
       await openTaskBoard("資料を作る");
 
-      const button = screen.getByRole("button", { name: "メンタリングする" });
-      expect(button).toBeInTheDocument();
-      expect(button).toBeDisabled();
+      expectMentoringButtonRenderedAndDisabled();
 
-      await settleGate(gate.fail);
+      await releaseAndJoin(gate.fail);
     });
 
     // 切替が終われば再び活性になる（一時的な非活性であることの確認）。
@@ -1016,7 +1050,7 @@ describe("AppLayout", () => {
         "fetch",
         createRoutedFetchMock({
           tasks: [task],
-          sessions: [ADHOC_SESSION],
+          sessions: [makeAdhocSession()],
           holdSessionsFetchAfterFirst: gate.promise,
         }),
       );
@@ -1048,14 +1082,14 @@ describe("AppLayout", () => {
     // 2 つの導線を突き合わせる。ChatView はタブ切替でアンマウントされるため
     // 同時には見えないが、chatState は AppLayout にリフト済みで切替をまたいで
     // 生き続ける（Issue #93）ので、同じ状態のまま両方を観測できる。
-    it("keeps the header mentoring button and the task-card entry point in the same enabled/disabled state", async () => {
+    it("keeps the header mentoring button and the task-card entry point in the same enabled/disabled state (sending)", async () => {
       const gate = createGate();
       const task = makeTask({ id: 42, title: "資料を作る", status: "todo" });
       vi.stubGlobal(
         "fetch",
         createRoutedFetchMock({
           tasks: [task],
-          sessions: [ADHOC_SESSION],
+          sessions: [makeAdhocSession()],
           holdSendMessage: gate.promise,
         }),
       );
@@ -1084,7 +1118,49 @@ describe("AppLayout", () => {
         screen.getByRole("button", { name: "メンタリングする" }),
       ).toBeDisabled();
 
-      await settleGate(gate.open);
+      await releaseAndJoin(gate.open);
+    });
+
+    // 対称性のもう一方の軸（レビュー指摘）。上の sending 軸だけだと、ヘッダの
+    // 「進め方を点検してもらう」から `switching` を落とす変異をこのファイルの
+    // どのテストも検出しない（切替中を見ている他のテストが押しているのは
+    // 「朝会を開始」という別のボタンであるため）。
+    it("keeps the header mentoring button and the task-card entry point in the same enabled/disabled state (switching)", async () => {
+      const gate = createGate();
+      const task = makeTask({ id: 42, title: "資料を作る", status: "todo" });
+      vi.stubGlobal(
+        "fetch",
+        createRoutedFetchMock({
+          tasks: [task],
+          sessions: [makeAdhocSession()],
+          holdSessionsFetchAfterFirst: gate.promise,
+        }),
+      );
+
+      render(<AppLayout />);
+      fireEvent.click(screen.getByRole("button", { name: "チャット" }));
+      await waitFor(() =>
+        expect(
+          screen.getByRole("button", { name: "進め方を点検してもらう" }),
+        ).toBeEnabled(),
+      );
+
+      fireEvent.click(screen.getByRole("button", { name: "朝会を開始" }));
+
+      // 切替中はヘッダの随時メンタリングボタンも非活性になる（`ChatView` の
+      // `disabled={switching || ...}`）。会はまだ開始していないので
+      // `sessionType` は adhoc のままで、ボタン自体は描画され続けている。
+      await waitFor(() =>
+        expect(
+          screen.getByRole("button", { name: "進め方を点検してもらう" }),
+        ).toBeDisabled(),
+      );
+
+      // 同じ chatState のまま、タスクカード側も非活性である。
+      await openTaskBoard("資料を作る");
+      expectMentoringButtonRenderedAndDisabled();
+
+      await releaseAndJoin(gate.fail);
     });
 
     // 確証 (F) の根拠: ヘッダの可否条件に含まれる `editingMessageId !== null`
@@ -1098,12 +1174,12 @@ describe("AppLayout", () => {
         "fetch",
         createRoutedFetchMock({
           tasks: [task],
-          sessions: [ADHOC_SESSION],
+          sessions: [makeAdhocSession()],
           sessionMessages: {
-            [ADHOC_SESSION.id]: [
+            [ADHOC_SESSION_ID]: [
               {
                 id: 500,
-                session_id: ADHOC_SESSION.id,
+                session_id: ADHOC_SESSION_ID,
                 role: "user",
                 content: "昨日の続きをやる",
                 interrupted: 0,

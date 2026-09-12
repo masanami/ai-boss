@@ -829,12 +829,9 @@ describe("TaskCard", () => {
 
       fireEvent.click(screen.getByRole("button", { name: "メンタリングする" }));
 
+      // 引数はタイトルも含むタスク全体である（`onStartMentoring(task.id)` に
+      // 戻すとこの 1 行が落ちる）。
       expect(onStartMentoring).toHaveBeenCalledWith(BASE_TASK);
-      // 引数はタイトルも含むタスク全体である（id だけを渡す実装に戻すと
-      // 上の toHaveBeenCalledWith と併せてここが落ちる）。
-      const [argument] = onStartMentoring.mock.calls[0] as [Task];
-      expect(argument.id).toBe(1);
-      expect(argument.title).toBe("資料を作る");
     });
 
     // Issue #489 (S1a・決定8): 送信中・セッション切替中は「描画したまま
@@ -858,7 +855,11 @@ describe("TaskCard", () => {
       });
 
       // 非活性であって非表示ではない（決定8: 送信のたびにボタンが消えて
-      // 戻るレイアウト移動を避ける）。
+      // 戻るレイアウト移動を避ける）。`onStartMentoring={null}` の非表示
+      // （会中）と同じ表現に潰れていないことを、存在と非活性の 2 つを分けて
+      // 主張することで示す。存在の側は `queryByRole`（不在なら null を返す）
+      // で見る — `getByRole` は不在時に throw するため、その直後に
+      // `toBeInTheDocument()` を置いても恒真にしかならない。
       it("keeps the button rendered while disabled (disabled, not hidden)", () => {
         render(
           <TaskCard
@@ -870,9 +871,11 @@ describe("TaskCard", () => {
           />,
         );
 
-        expect(
-          screen.getByRole("button", { name: "メンタリングする" }),
-        ).toBeInTheDocument();
+        const button = screen.queryByRole("button", {
+          name: "メンタリングする",
+        });
+        expect(button).not.toBeNull();
+        expect(button).toBeDisabled();
       });
 
       it("does not call onStartMentoring when the disabled button is clicked", () => {
