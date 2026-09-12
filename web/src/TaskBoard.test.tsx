@@ -495,7 +495,9 @@ describe("TaskBoard", () => {
   // Issue #470 (親 #444): TaskBoard は onStartMentoring をそのまま
   // TaskCard へ渡すだけで、判断には関与しない。
   describe("onStartMentoring passthrough (Issue #470)", () => {
-    it("passes onStartMentoring through to the task card and calls it with the clicked task id", () => {
+    // Issue #489 (S1a・決定9): 中継する引数は id ではなくクリックされた
+    // カードのタスクそのもの。
+    it("passes onStartMentoring through to the task card and calls it with the clicked task itself (S1a)", () => {
       const task = makeTask({ id: 7, title: "資料を作る", status: "todo" });
       const onStartMentoring = vi.fn();
 
@@ -510,7 +512,7 @@ describe("TaskBoard", () => {
         screen.getByRole("button", { name: "メンタリングする" }),
       );
 
-      expect(onStartMentoring).toHaveBeenCalledWith(7);
+      expect(onStartMentoring).toHaveBeenCalledWith(task);
     });
 
     it("does not render the mentoring button when onStartMentoring is not provided", () => {
@@ -536,6 +538,40 @@ describe("TaskBoard", () => {
       expect(
         screen.queryByRole("button", { name: "メンタリングする" }),
       ).not.toBeInTheDocument();
+    });
+
+    // Issue #489 (S1a・決定8): 可否も判断せずそのまま中継する（判断は
+    // AppLayout が持つ）。
+    it("passes startMentoringDisabled through to the task card", () => {
+      const task = makeTask({ id: 7, title: "資料を作る", status: "todo" });
+
+      render(
+        <TaskBoard
+          tasksState={makeTasksState({ tasks: [task] })}
+          onStartMentoring={vi.fn()}
+          startMentoringDisabled
+        />,
+      );
+
+      expect(
+        screen.getByRole("button", { name: "メンタリングする" }),
+      ).toBeDisabled();
+    });
+
+    it("leaves the mentoring button enabled when startMentoringDisabled is false", () => {
+      const task = makeTask({ id: 7, title: "資料を作る", status: "todo" });
+
+      render(
+        <TaskBoard
+          tasksState={makeTasksState({ tasks: [task] })}
+          onStartMentoring={vi.fn()}
+          startMentoringDisabled={false}
+        />,
+      );
+
+      expect(
+        screen.getByRole("button", { name: "メンタリングする" }),
+      ).toBeEnabled();
     });
   });
 

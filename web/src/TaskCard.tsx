@@ -23,8 +23,26 @@ interface TaskCardProps {
    * AC-2 を満たす。このコンポーネントは adhoc 判定に関与しない（判断は
    * 呼び出し元）。表示モードのアクション行にのみ置き、編集モードには置かない
    * （未保存の編集を抱えたまま画面が切り替わる論点を避けるため）。
+   *
+   * 引数はこのカードが表示しているタスクそのものである（Issue #489 / S1a
+   * 決定9）。id だけを渡すと呼び出し元が id からタスクを引き直すことになり、
+   * 引けなかったときの分岐（タイトルの欠けた発言）が形として残ってしまう。
    */
-  onStartMentoring?: ((taskId: number) => void) | null;
+  onStartMentoring?: ((task: Task) => void) | null;
+  /**
+   * 「メンタリングする」を非活性にする（Issue #489 / S1a 決定8）。送信中
+   * （`sending`）・セッション切替中（`switching`）に押せてしまい、発言だけが
+   * `useChat` の多重送信ガードへ無音で捨てられる状態（#474）を塞ぐ。
+   *
+   * 会中の**非表示**（`onStartMentoring = null`）とは別の状態として扱う
+   * — 「会だから出さない」と「いま送れないだけ」を同じ表現に潰さないため。
+   * 非表示にしないのは、送信のたびにボタンが消えて戻る（レイアウトが動く）
+   * のを避けるためで、チャット画面ヘッダの各ボタンの扱いと同じである。
+   *
+   * 未指定は「押せる」（既存の呼び出し箇所の挙動を変えない）。可否の判断は
+   * このコンポーネントではなく呼び出し元（`AppLayout`）が持つ。
+   */
+  startMentoringDisabled?: boolean;
 }
 
 const PRIORITY_LABEL: Record<TaskPriority, string> = {
@@ -62,6 +80,7 @@ function TaskCard({
   onEdit,
   onDraggingChange,
   onStartMentoring,
+  startMentoringDisabled = false,
 }: TaskCardProps) {
   const [isEditing, setIsEditing] = useState(false);
   const [title, setTitle] = useState(task.title);
@@ -347,7 +366,8 @@ function TaskCard({
         {onStartMentoring !== null && onStartMentoring !== undefined && (
           <button
             type="button"
-            onClick={() => onStartMentoring(task.id)}
+            onClick={() => onStartMentoring(task)}
+            disabled={startMentoringDisabled}
           >
             メンタリングする
           </button>
