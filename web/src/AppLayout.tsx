@@ -13,6 +13,7 @@ import {
   widthFromPointerX,
 } from "./side-panel-width";
 import TaskBoard from "./TaskBoard";
+import type { Task } from "./task";
 import TodaySummary from "./TodaySummary";
 import { useChat } from "./use-chat";
 import { useHealthCheck } from "./use-health-check";
@@ -87,18 +88,34 @@ function AppLayout() {
   // 開いているセッションの復元がまだ届いていない一瞬だけボタンが出てしまう
   // （AC-2 の穴）。`status` が `"ready"` になるまではボタンを出さないことで
   // 閉じる。
-  const startMentoringForTask = (taskId: number) => {
-    const task = tasksState.tasks.find((candidate) => candidate.id === taskId);
+  // 引数はカードが表示しているタスクそのもの（Issue #489 / S1a 決定9）。
+  // 以前はここで id から `tasksState.tasks` を引き直し、引けなければ
+  // `?? ""` で `「」の進め方を見てほしい` を送りうる形だった。ボタンはその
+  // タスクのカード上にしか無いので、タスクをそのまま受け取れば再検索も
+  // 失敗分岐も要らなくなる（到達不能な分岐を形としても残さない）。
+  const startMentoringForTask = (task: Task) => {
     setActiveView("chat");
-    void chatState.send(`「${task?.title ?? ""}」の進め方を見てほしい`, {
+    void chatState.send(`「${task.title}」の進め方を見てほしい`, {
       mentoring: true,
-      mentoringTaskId: taskId,
+      mentoringTaskId: task.id,
     });
   };
   const onStartMentoring =
     chatState.status === "ready" && chatState.sessionType === "adhoc"
       ? startMentoringForTask
       : null;
+  // 送信中・セッション切替中は導線を非活性にする（Issue #489 / S1a 決定8）。
+  // チャット画面ヘッダの各ボタン（`ChatView` の
+  // `disabled={switching || sending || editingMessageId !== null}`）と可否を
+  // 揃えるためのもので、これが無いと押せてしまい、ビューだけ chat へ切り
+  // 替わって発言は `useChat` の多重送信ガードに無音で捨てられる（#474）。
+  //
+  // ヘッダ条件の第 3 項 `editingMessageId !== null` をここに持たないのは、
+  // それが `ChatView` のローカル state であり、タスク画面表示中は `ChatView`
+  // がアンマウントされていて常に `null` だからである（確証 F）。したがって
+  // `sending || switching` だけでヘッダと等価になり、`editingMessageId` を
+  // `useChat` へリフトする必要が無い。
+  const startMentoringDisabled = chatState.sending || chatState.switching;
 
   function handleSplitterPointerDown(event: PointerEvent<HTMLDivElement>) {
     // Defensive: jsdom (and, in principle, a very old browser) doesn't
@@ -207,6 +224,7 @@ function AppLayout() {
             <TaskBoard
               tasksState={tasksState}
               onStartMentoring={onStartMentoring}
+              startMentoringDisabled={startMentoringDisabled}
             />
           </main>
         )}

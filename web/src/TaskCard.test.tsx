@@ -813,7 +813,10 @@ describe("TaskCard", () => {
       ).not.toBeInTheDocument();
     });
 
-    it("calls onStartMentoring with the task id when clicked", () => {
+    // Issue #489 (S1a・決定9): 引数は id ではなくカードが表示している
+    // タスクそのもの。呼び出し元（AppLayout）が id からタスクを引き直す
+    // 経路（とその失敗時フォールバック `?? ""`）を消すための契約である。
+    it("calls onStartMentoring with the task itself (not just its id) when clicked (S1a, 決定9)", () => {
       const onStartMentoring = vi.fn();
       render(
         <TaskCard
@@ -826,7 +829,105 @@ describe("TaskCard", () => {
 
       fireEvent.click(screen.getByRole("button", { name: "メンタリングする" }));
 
-      expect(onStartMentoring).toHaveBeenCalledWith(1);
+      // 引数はタイトルも含むタスク全体である（`onStartMentoring(task.id)` に
+      // 戻すとこの 1 行が落ちる）。
+      expect(onStartMentoring).toHaveBeenCalledWith(BASE_TASK);
+    });
+
+    // Issue #489 (S1a・決定8): 送信中・セッション切替中は「描画したまま
+    // 非活性」にする。会（朝会・夕会）中の非表示（`onStartMentoring = null`）
+    // とは別の状態であり、同じ表現に潰さない。
+    describe("startMentoringDisabled (Issue #489, S1a 決定8)", () => {
+      it("renders the button disabled when startMentoringDisabled is true", () => {
+        render(
+          <TaskCard
+            task={BASE_TASK}
+            onStatusChange={vi.fn()}
+            onEdit={vi.fn()}
+            onStartMentoring={vi.fn()}
+            startMentoringDisabled
+          />,
+        );
+
+        expect(
+          screen.getByRole("button", { name: "メンタリングする" }),
+        ).toBeDisabled();
+      });
+
+      // 非活性であって非表示ではない（決定8: 送信のたびにボタンが消えて
+      // 戻るレイアウト移動を避ける）。`onStartMentoring={null}` の非表示
+      // （会中）と同じ表現に潰れていないことを、存在と非活性の 2 つを分けて
+      // 主張することで示す。存在の側は `queryByRole`（不在なら null を返す）
+      // で見る — `getByRole` は不在時に throw するため、その直後に
+      // `toBeInTheDocument()` を置いても恒真にしかならない。
+      it("keeps the button rendered while disabled (disabled, not hidden)", () => {
+        render(
+          <TaskCard
+            task={BASE_TASK}
+            onStatusChange={vi.fn()}
+            onEdit={vi.fn()}
+            onStartMentoring={vi.fn()}
+            startMentoringDisabled
+          />,
+        );
+
+        const button = screen.queryByRole("button", {
+          name: "メンタリングする",
+        });
+        expect(button).not.toBeNull();
+        expect(button).toBeDisabled();
+      });
+
+      it("does not call onStartMentoring when the disabled button is clicked", () => {
+        const onStartMentoring = vi.fn();
+        render(
+          <TaskCard
+            task={BASE_TASK}
+            onStatusChange={vi.fn()}
+            onEdit={vi.fn()}
+            onStartMentoring={onStartMentoring}
+            startMentoringDisabled
+          />,
+        );
+
+        fireEvent.click(
+          screen.getByRole("button", { name: "メンタリングする" }),
+        );
+
+        expect(onStartMentoring).not.toHaveBeenCalled();
+      });
+
+      // 除外側（上の 3 件が恒真にならないための対）。
+      it("renders the button enabled when startMentoringDisabled is false", () => {
+        render(
+          <TaskCard
+            task={BASE_TASK}
+            onStatusChange={vi.fn()}
+            onEdit={vi.fn()}
+            onStartMentoring={vi.fn()}
+            startMentoringDisabled={false}
+          />,
+        );
+
+        expect(
+          screen.getByRole("button", { name: "メンタリングする" }),
+        ).toBeEnabled();
+      });
+
+      it("renders the button enabled when startMentoringDisabled is omitted", () => {
+        render(
+          <TaskCard
+            task={BASE_TASK}
+            onStatusChange={vi.fn()}
+            onEdit={vi.fn()}
+            onStartMentoring={vi.fn()}
+          />,
+        );
+
+        expect(
+          screen.getByRole("button", { name: "メンタリングする" }),
+        ).toBeEnabled();
+      });
     });
 
     // 決定1: 未保存の編集を抱えたまま画面が切り替わる論点を避けるため、

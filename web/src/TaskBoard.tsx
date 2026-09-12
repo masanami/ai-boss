@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import type { DragEvent } from "react";
 import TaskCard from "./TaskCard";
 import TaskForm from "./TaskForm";
-import type { TaskStatus } from "./task";
+import type { Task, TaskStatus } from "./task";
 import type { UseTasksResult } from "./use-tasks";
 import { TASK_DRAG_DATA_TYPE } from "./task-dnd";
 import { describeTasksApiError } from "./tasks-api";
@@ -56,12 +56,23 @@ interface TaskBoardProps {
   /**
    * タスクカードからのメンタリング起動（Issue #470, 親 #444 決定1）。
    * `TaskCard` へそのまま渡すだけで、判断には関与しない（adhoc 区間かどうか
-   * の判定は `AppLayout` が持つ）。
+   * の判定は `AppLayout` が持つ）。引数はクリックされたカードのタスクその
+   * ものである（Issue #489 / S1a 決定9）。
    */
-  onStartMentoring?: ((taskId: number) => void) | null;
+  onStartMentoring?: ((task: Task) => void) | null;
+  /**
+   * メンタリング導線の非活性（Issue #489 / S1a 決定8）。これも `TaskCard`
+   * へそのまま渡すだけで、可否の判断（送信中・切替中かどうか）は
+   * `AppLayout` が持つ。
+   */
+  startMentoringDisabled?: boolean;
 }
 
-function TaskBoard({ tasksState, onStartMentoring }: TaskBoardProps) {
+function TaskBoard({
+  tasksState,
+  onStartMentoring,
+  startMentoringDisabled,
+}: TaskBoardProps) {
   const { tasks, status, addTask, editTask, refresh } = tasksState;
   const [actionError, setActionError] = useState<string | null>(null);
   // ドラッグ中にハイライトすべきドロップ先カラム（Issue #122）。
@@ -202,6 +213,7 @@ function TaskBoard({ tasksState, onStartMentoring }: TaskBoardProps) {
                       onEdit={(id, patch) => runAction(editTask(id, patch))}
                       onDraggingChange={setDraggingTaskId}
                       onStartMentoring={onStartMentoring}
+                      startMentoringDisabled={startMentoringDisabled}
                     />
                   </li>
                 ))}
