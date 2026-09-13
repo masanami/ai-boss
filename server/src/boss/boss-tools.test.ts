@@ -77,6 +77,69 @@ describe("executeBossTool", () => {
     expect(parsed).toMatchObject({ events: [], truncated: false });
   });
 
+  // 機能仕様 docs/features/task-start-commitment.md 決定6（Issue #525）
+  describe("committed_start_at: null via update_task（API バックエンド経路）", () => {
+    it("clears committed_start_at and committed_at when { id, committed_start_at: null } is executed directly", () => {
+      const task = insertTask(db, {
+        title: "資料作成",
+        description: null,
+        category: "work",
+        priority: null,
+        due_at: null,
+        status: "todo",
+        boss_comment: null,
+        estimated_minutes: null,
+      });
+      executeBossTool(db, sessionId, "update_task", {
+        id: task.id,
+        committed_start_at: "2026-09-14T20:00:00+09:00",
+      });
+
+      const result = executeBossTool(db, sessionId, "update_task", {
+        id: task.id,
+        committed_start_at: null,
+      });
+
+      expect(result.isError).toBe(false);
+      const updated = JSON.parse(result.content);
+      expect(updated.committed_start_at).toBeNull();
+      expect(updated.committed_at).toBeNull();
+    });
+
+    it("records the before/after values in the task_update event note when the commitment is cleared", () => {
+      const task = insertTask(db, {
+        title: "資料作成",
+        description: null,
+        category: "work",
+        priority: null,
+        due_at: null,
+        status: "todo",
+        boss_comment: null,
+        estimated_minutes: null,
+      });
+      executeBossTool(db, sessionId, "update_task", {
+        id: task.id,
+        committed_start_at: "2026-09-14T20:00:00+09:00",
+      });
+
+      executeBossTool(db, sessionId, "update_task", {
+        id: task.id,
+        committed_start_at: null,
+      });
+
+      // 2 件（初期設定 → 取り消し）であることを固定してから 2 件目（取り消し）
+      // を見る — id DESC の先頭だけを見ると、取り消しが no-op になった場合に
+      // 1 件目（初期設定）のイベントを誤って「取り消しのイベント」として拾って
+      // しまい、そちらの note にも偶然 "null"（変更前プレースホルダ）と同じ
+      // 日時文字列が含まれるため、変異を検出できなくなる（実測で確認済み）。
+      const events = db
+        .prepare("SELECT * FROM activity_events WHERE type = 'task_update' ORDER BY id ASC")
+        .all() as { note: string | null }[];
+      expect(events).toHaveLength(2);
+      expect(events[1].note).toBe("着手の約束を 2026-09-14T11:00:00.000Z から null に変更");
+    });
+  });
+
   describe("mentoringTaskId fallback dispatch (Issue #469)", () => {
     it("passes mentoringTaskId through to record_mentoring when task_id is omitted (AC-23)", () => {
       const task = insertTask(db, {

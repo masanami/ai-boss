@@ -109,6 +109,16 @@ const createTaskShape = {
     .boolean()
     .describe("完了報告にエビデンス（ファイル添付・リンク）を必須にするか。省略時は false。")
     .optional(),
+  // 着手の約束（機能仕様 docs/features/task-start-commitment.md 決定6）。文言は
+  // boss/task-tools.ts の JSON Schema と一致させる（下のテストが description
+  // 一致を検証している）。作成時は値のみ（取り消す約束が無いため null は扱わない）。
+  committed_start_at: z
+    .string()
+    .describe(
+      '着手の約束（時刻とオフセットを含む ISO 8601 の日時。例: "2026-09-14T20:00:00+09:00"）。' +
+        "ユーザーが確認した着手日時のみを設定すること。",
+    )
+    .optional(),
 };
 
 const updateTaskShape = {
@@ -120,6 +130,19 @@ const updateTaskShape = {
   status: z.enum(TASK_STATUSES).optional(),
   boss_comment: z.string().optional(),
   estimated_minutes: z.number().int().optional(),
+  // 着手の約束（決定6）。JSON Schema（task-tools.ts）と Zod shape の両方が
+  // null を受け付ける必要がある（片方だけが弾くと、そのバックエンドでは
+  // 約束を取り消せなくなる。約束の編集 UI が無いため唯一の取り消し経路）。
+  // `describe()` は `.nullable()` の後に付ける — 既存の一致テストは
+  // `.optional()` を `unwrap()` した型の `description` を比べるため。
+  committed_start_at: z
+    .string()
+    .nullable()
+    .describe(
+      '着手の約束（時刻とオフセットを含む ISO 8601 の日時。例: "2026-09-14T20:00:00+09:00"）。' +
+        "ユーザーが確認した着手日時のみを設定すること。null を指定すると約束を取り消す。",
+    )
+    .optional(),
 };
 
 const recordDecisionShape = {
