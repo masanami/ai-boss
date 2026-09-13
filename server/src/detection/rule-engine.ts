@@ -24,8 +24,12 @@ import {
  * 通知のリストを決定的に返す。LLM 呼び出し・DB アクセス・Date.now() は行わない。
  *
  * ゲート:
- * - 勤務時間帯外: 朝会・夕会定時ルールを除く全ルールを停止
- * - 休憩申告中: 休憩延伸ルールを除く全ルールを停止
+ * - 勤務時間帯外: 朝会・夕会定時ルールと着手の約束（commitment_missed）を除く
+ *   全ルールを停止。commitment_missed は勤務時間帯外では約束 1 件につき 1 回だけ
+ *   発火する（段階を上げない）
+ * - 休憩申告中: 休憩延伸・朝会・夕会・着手の約束を除く全ルールを停止
+ *
+ * commitment_missed の例外は ADR 0004 改訂（2026-09-13）による。
  */
 export function evaluateRules(input: DetectionInput): FiringNotification[] {
   const { now, tasks, activityEvents, notifications, settings, todaysSessionTypes } =

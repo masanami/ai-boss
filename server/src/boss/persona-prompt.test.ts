@@ -1107,9 +1107,13 @@ describe("buildPersonaPrompt", () => {
           sessionType,
         });
 
+        // 「確認」単体は見積もりの確認指示（常に積まれる）でも満たされて恒真に
+        // なるため、約束の指示にしか無い「確認した日時だけを committed_start_at
+        // に保存」の組を文言で直書きして検証する（定数の import も恒真になる）。
         expect(prompt).toContain("着手の約束");
-        expect(prompt).toContain("committed_start_at");
-        expect(prompt).toContain("確認");
+        expect(prompt).toContain(
+          "ユーザーが確認（同意または修正）した日時だけをcommitted_start_at に保存すること",
+        );
       });
     }
 

@@ -72,7 +72,9 @@ const COMMITTED_START_AT_FORMAT_ERROR =
 // docs/features/task-start-commitment.md 決定3-2・Issue #527）。作成時は
 // `updateTask` のような既存行が無いため、この検証層で `status`（省略時
 // "todo"）と `committed_start_at` の組だけで判定する。
-const COMMITMENT_REQUIRES_TODO_ERROR =
+// 更新時の拒否（tasks-routes.ts の PATCH・task-tools.ts の update_task）も
+// この文言を使う（同じ拒否で経路ごとに error が食い違わないよう 1 箇所に置く）。
+export const COMMITMENT_REQUIRES_TODO_ERROR =
   "着手の約束はステータスが todo のタスクにだけ設定できます";
 
 function isValidCommittedStartAt(value: unknown): value is string {
