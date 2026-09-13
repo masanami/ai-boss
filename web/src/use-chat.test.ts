@@ -3025,6 +3025,7 @@ describe("useChat mentoringTarget (Issue #476, S1b)", () => {
     });
 
     expect(result.current.mentoringTarget).toEqual({
+      kind: "task",
       id: 42,
       title: "資料を作る",
     });
@@ -3198,6 +3199,7 @@ describe("useChat mentoringTarget (Issue #476, S1b)", () => {
       await result.current.startMentoring({ id: 42, title: "資料を作る" });
     });
     expect(result.current.mentoringTarget).toEqual({
+      kind: "task",
       id: 42,
       title: "資料を作る",
     });
@@ -3235,6 +3237,7 @@ describe("useChat mentoringTarget (Issue #476, S1b)", () => {
     expect(result.current.sessionType).toBe("adhoc");
     expect(result.current.error).not.toBeNull();
     expect(result.current.mentoringTarget).toEqual({
+      kind: "task",
       id: 42,
       title: "資料を作る",
     });
@@ -3257,6 +3260,7 @@ describe("useChat mentoringTarget (Issue #476, S1b)", () => {
       await result.current.startMentoring({ id: 42, title: "資料を作る" });
     });
     expect(result.current.mentoringTarget).toEqual({
+      kind: "task",
       id: 42,
       title: "資料を作る",
     });
@@ -3333,6 +3337,456 @@ describe("useChat mentoringTarget (Issue #476, S1b)", () => {
       await result.current.startMentoring({ id: 42, title: "資料を作る" });
     });
 
+    await act(async () => {
+      await result.current.rewrite(1, "書き直した内容");
+    });
+
+    const body = JSON.parse(
+      fetchMock.mock.calls[3][1].body as string,
+    ) as Record<string, unknown>;
+    expect(body).toEqual({
+      content: "書き直した内容",
+      replaceFromMessageId: 1,
+    });
+  });
+});
+
+// Issue #503 (決定1・決定2): ヘッダの「進め方を点検してもらう」で始める
+// 全日単位の随時メンタリングも「相談中」として保持し、継続中は毎ターン
+// `mentoring: true`（`mentoringTaskId` 無し）を送る。S1b と同じく、担保は
+// `fetch` 境界に実際に載った body で確認し、「完全一致」の基準は `toEqual`
+// で照合する（除外側を恒真にしないため）。
+describe("useChat 全日単位の相談中 (Issue #503)", () => {
+  const doneStream = () =>
+    sseResponse([`event: done\ndata: ${JSON.stringify(BOSS_REPLY)}\n\n`]);
+
+  /** Bodies of every `POST /api/sessions/:id/messages`, in order. */
+  function postedBodies(fetchMock: { mock: { calls: unknown[][] } }): unknown[] {
+    return fetchMock.mock.calls
+      .filter(
+        ([url, init]) =>
+          typeof url === "string" &&
+          /^\/api\/sessions\/\d+\/messages$/.test(url) &&
+          (init as { method?: string } | undefined)?.method === "POST",
+      )
+      .map(([, init]) => JSON.parse((init as { body: string }).body) as unknown);
+  }
+
+  it("sets the 全日単位 consultation and sends 今の進め方を見てほしい with exactly { mentoring: true } when startDayMentoring is called", async () => {
+    const fetchMock = routedFetch({
+      sessions: [SESSION],
+      messages: { 1: [] },
+      stream: doneStream(),
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const { result } = renderHook(() => useChat());
+    await waitFor(() => expect(result.current.status).toBe("ready"));
+
+    await act(async () => {
+      await result.current.startDayMentoring();
+    });
+
+    expect(result.current.mentoringTarget).toEqual({ kind: "day" });
+    expect(postedBodies(fetchMock)).toEqual([
+      { content: "今の進め方を見てほしい", mentoring: true },
+    ]);
+  });
+
+  it("adds exactly { mentoring: true } (no mentoringTaskId) to options-less sends on the 2nd and 3rd turns", async () => {
+    const state: RoutedFetchState = {
+      sessions: [SESSION],
+      messages: { 1: [] },
+      stream: doneStream(),
+    };
+    const fetchMock = routedFetch(state);
+    vi.stubGlobal("fetch", fetchMock);
+
+    const { result } = renderHook(() => useChat());
+    await waitFor(() => expect(result.current.status).toBe("ready"));
+
+    await act(async () => {
+      await result.current.startDayMentoring();
+    });
+    state.stream = doneStream();
+    await act(async () => {
+      await result.current.send("2ターン目の相談です");
+    });
+    state.stream = doneStream();
+    await act(async () => {
+      await result.current.send("3ターン目の相談です");
+    });
+
+    const bodies = postedBodies(fetchMock);
+    expect(bodies).toHaveLength(3);
+    expect(bodies[1]).toEqual({ content: "2ターン目の相談です", mentoring: true });
+    expect(bodies[2]).toEqual({ content: "3ターン目の相談です", mentoring: true });
+    expect(bodies[1]).not.toHaveProperty("mentoringTaskId");
+    expect(bodies[2]).not.toHaveProperty("mentoringTaskId");
+  });
+
+  it("does not merge the 全日単位 context into an explicitly-passed options argument", async () => {
+    const state: RoutedFetchState = {
+      sessions: [SESSION],
+      messages: { 1: [] },
+      stream: doneStream(),
+    };
+    const fetchMock = routedFetch(state);
+    vi.stubGlobal("fetch", fetchMock);
+
+    const { result } = renderHook(() => useChat());
+    await waitFor(() => expect(result.current.status).toBe("ready"));
+
+    await act(async () => {
+      await result.current.startDayMentoring();
+    });
+    state.stream = doneStream();
+    await act(async () => {
+      await result.current.send("明示した送信です", {});
+    });
+
+    expect(postedBodies(fetchMock)[1]).toEqual({ content: "明示した送信です" });
+  });
+
+  it("does not set the 全日単位 consultation nor send while a message send is already in flight (sendingRef)", async () => {
+    let resolvePost: (value: unknown) => void = () => {};
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(jsonResponse([])) // mount: no adhoc session
+      .mockImplementationOnce(
+        () => new Promise((resolve) => { resolvePost = resolve; }),
+      ); // createSession("adhoc") pending
+    vi.stubGlobal("fetch", fetchMock);
+
+    const { result } = renderHook(() => useChat());
+    await waitFor(() => expect(result.current.status).toBe("ready"));
+
+    let sendPromise: Promise<void>;
+    act(() => {
+      sendPromise = result.current.send("送信中に開始を試みる");
+    });
+
+    await act(async () => {
+      await result.current.startDayMentoring();
+    });
+
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(result.current.mentoringTarget).toBeNull();
+
+    resolvePost(jsonResponse(SESSION, 201));
+    await act(async () => {
+      await sendPromise;
+    });
+  });
+
+  it("does not set the 全日単位 consultation nor send while a session switch is already in flight (switchingRef)", async () => {
+    let resolveList: (value: unknown) => void = () => {};
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(jsonResponse([])) // mount: no adhoc session
+      .mockImplementationOnce(
+        () => new Promise((resolve) => { resolveList = resolve; }),
+      ); // startSession's list lookup pending
+    vi.stubGlobal("fetch", fetchMock);
+
+    const { result } = renderHook(() => useChat());
+    await waitFor(() => expect(result.current.status).toBe("ready"));
+
+    let switchPromise: Promise<void>;
+    act(() => {
+      switchPromise = result.current.startSession("morning");
+    });
+
+    await act(async () => {
+      await result.current.startDayMentoring();
+    });
+
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(result.current.mentoringTarget).toBeNull();
+
+    resolveList(jsonResponse(MORNING_SESSION_TODAY, 201));
+    await act(async () => {
+      await switchPromise;
+    });
+  });
+
+  it("keeps the 全日単位 consultation when its send is attempted but fails (session creation)", async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(jsonResponse([])) // mount: no adhoc session
+      .mockResolvedValueOnce({
+        ok: false,
+        status: 500,
+        json: () => Promise.resolve({ error: "セッションの作成に失敗しました" }),
+      }); // createSession("adhoc") fails
+    vi.stubGlobal("fetch", fetchMock);
+
+    const { result } = renderHook(() => useChat());
+    await waitFor(() => expect(result.current.status).toBe("ready"));
+
+    await act(async () => {
+      await result.current.startDayMentoring();
+    });
+
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(result.current.error).not.toBeNull();
+    expect(result.current.mentoringTarget).toEqual({ kind: "day" });
+  });
+
+  it("replaces a task-origin consultation, and later options-less sends carry exactly { mentoring: true } without the old mentoringTaskId", async () => {
+    const state: RoutedFetchState = {
+      sessions: [SESSION],
+      messages: { 1: [] },
+      stream: doneStream(),
+    };
+    const fetchMock = routedFetch(state);
+    vi.stubGlobal("fetch", fetchMock);
+
+    const { result } = renderHook(() => useChat());
+    await waitFor(() => expect(result.current.status).toBe("ready"));
+
+    await act(async () => {
+      await result.current.startMentoring({ id: 42, title: "資料を作る" });
+    });
+    state.stream = doneStream();
+    await act(async () => {
+      await result.current.startDayMentoring();
+    });
+    expect(result.current.mentoringTarget).toEqual({ kind: "day" });
+
+    state.stream = doneStream();
+    await act(async () => {
+      await result.current.send("続きです");
+    });
+
+    const bodies = postedBodies(fetchMock);
+    expect(bodies).toHaveLength(3);
+    expect(bodies[1]).toEqual({ content: "今の進め方を見てほしい", mentoring: true });
+    expect(bodies[2]).toEqual({ content: "続きです", mentoring: true });
+  });
+
+  it("is replaced by a task-origin consultation, and later options-less sends carry that task's mentoringTaskId", async () => {
+    const state: RoutedFetchState = {
+      sessions: [SESSION],
+      messages: { 1: [] },
+      stream: doneStream(),
+    };
+    const fetchMock = routedFetch(state);
+    vi.stubGlobal("fetch", fetchMock);
+
+    const { result } = renderHook(() => useChat());
+    await waitFor(() => expect(result.current.status).toBe("ready"));
+
+    await act(async () => {
+      await result.current.startDayMentoring();
+    });
+    state.stream = doneStream();
+    await act(async () => {
+      await result.current.startMentoring({ id: 7, title: "経費精算をする" });
+    });
+    expect(result.current.mentoringTarget).toEqual({
+      kind: "task",
+      id: 7,
+      title: "経費精算をする",
+    });
+
+    state.stream = doneStream();
+    await act(async () => {
+      await result.current.send("続きです");
+    });
+
+    expect(postedBodies(fetchMock)[2]).toEqual({
+      content: "続きです",
+      mentoring: true,
+      mentoringTaskId: 7,
+    });
+  });
+
+  it("clears the 全日単位 consultation via clearMentoringTarget, and the next send is exactly { content }", async () => {
+    const state: RoutedFetchState = {
+      sessions: [SESSION],
+      messages: { 1: [] },
+      stream: doneStream(),
+    };
+    const fetchMock = routedFetch(state);
+    vi.stubGlobal("fetch", fetchMock);
+
+    const { result } = renderHook(() => useChat());
+    await waitFor(() => expect(result.current.status).toBe("ready"));
+
+    await act(async () => {
+      await result.current.startDayMentoring();
+    });
+    expect(result.current.mentoringTarget).toEqual({ kind: "day" });
+    act(() => {
+      result.current.clearMentoringTarget();
+    });
+    expect(result.current.mentoringTarget).toBeNull();
+
+    state.stream = doneStream();
+    await act(async () => {
+      await result.current.send("解除後の発言です");
+    });
+
+    expect(postedBodies(fetchMock)[1]).toEqual({ content: "解除後の発言です" });
+  });
+
+  it("clears the 全日単位 consultation when a meeting starts, and a send inside the meeting is exactly { content }", async () => {
+    const state: RoutedFetchState = {
+      sessions: [SESSION],
+      messages: { 1: [], 20: [] },
+      created: MORNING_SESSION_TODAY,
+      stream: doneStream(),
+    };
+    const fetchMock = routedFetch(state);
+    vi.stubGlobal("fetch", fetchMock);
+
+    const { result } = renderHook(() => useChat());
+    await waitFor(() => expect(result.current.status).toBe("ready"));
+
+    await act(async () => {
+      await result.current.startDayMentoring();
+    });
+    expect(result.current.mentoringTarget).toEqual({ kind: "day" });
+    await act(async () => {
+      await result.current.startSession("morning");
+    });
+
+    expect(result.current.sessionType).toBe("morning");
+    expect(result.current.mentoringTarget).toBeNull();
+
+    state.stream = doneStream();
+    await act(async () => {
+      await result.current.send("朝会中の発言です");
+    });
+
+    expect(postedBodies(fetchMock)[1]).toEqual({ content: "朝会中の発言です" });
+  });
+
+  it("keeps the 全日単位 consultation when starting a meeting fails and the chat stays adhoc", async () => {
+    const state: RoutedFetchState = {
+      sessions: [SESSION],
+      messages: { 1: [] },
+      createError: {
+        status: 409,
+        error: "今日の夕会は既に終了しています",
+      },
+      stream: doneStream(),
+    };
+    const fetchMock = routedFetch(state);
+    vi.stubGlobal("fetch", fetchMock);
+
+    const { result } = renderHook(() => useChat());
+    await waitFor(() => expect(result.current.status).toBe("ready"));
+
+    await act(async () => {
+      await result.current.startDayMentoring();
+    });
+    await act(async () => {
+      await result.current.startSession("evening");
+    });
+
+    expect(result.current.sessionType).toBe("adhoc");
+    expect(result.current.error).not.toBeNull();
+    expect(result.current.mentoringTarget).toEqual({ kind: "day" });
+
+    state.stream = doneStream();
+    await act(async () => {
+      await result.current.send("続きです");
+    });
+    expect(postedBodies(fetchMock)[1]).toEqual({
+      content: "続きです",
+      mentoring: true,
+    });
+  });
+
+  it("clears the 全日単位 consultation when endSession is called, and the next send is exactly { content }", async () => {
+    const state: RoutedFetchState = {
+      sessions: [MORNING_SESSION_TODAY, SESSION],
+      messages: { 20: MORNING_HISTORY, 1: [] },
+      stream: doneStream(),
+    };
+    const fetchMock = routedFetch(state);
+    vi.stubGlobal("fetch", fetchMock);
+
+    const { result } = renderHook(() => useChat());
+    await waitFor(() => expect(result.current.status).toBe("ready"));
+    expect(result.current.sessionType).toBe("morning");
+
+    await act(async () => {
+      await result.current.startDayMentoring();
+    });
+    expect(result.current.mentoringTarget).toEqual({ kind: "day" });
+
+    await act(async () => {
+      await result.current.endSession();
+    });
+
+    expect(result.current.mentoringTarget).toBeNull();
+    expect(result.current.sessionType).toBe("adhoc");
+
+    state.stream = doneStream();
+    await act(async () => {
+      await result.current.send("会の後の発言です");
+    });
+    const adhocPosts = fetchMock.mock.calls.filter(
+      ([url, init]) =>
+        url === "/api/sessions/1/messages" &&
+        (init as { method?: string } | undefined)?.method === "POST",
+    );
+    expect(adhocPosts).toHaveLength(1);
+    expect(
+      JSON.parse((adhocPosts[0][1] as { body: string }).body) as unknown,
+    ).toEqual({ content: "会の後の発言です" });
+  });
+
+  // 受容する劣化（「やらないこと」: リロードをまたいだ復元はしない）。
+  it("loses the 全日単位 consultation on a reload (remount), and a send afterwards is exactly { content }", async () => {
+    const state: RoutedFetchState = {
+      sessions: [SESSION],
+      messages: { 1: [] },
+      stream: doneStream(),
+    };
+    const fetchMock = routedFetch(state);
+    vi.stubGlobal("fetch", fetchMock);
+
+    const first = renderHook(() => useChat());
+    await waitFor(() => expect(first.result.current.status).toBe("ready"));
+    await act(async () => {
+      await first.result.current.startDayMentoring();
+    });
+    expect(first.result.current.mentoringTarget).toEqual({ kind: "day" });
+    first.unmount();
+
+    const { result } = renderHook(() => useChat());
+    await waitFor(() => expect(result.current.status).toBe("ready"));
+    expect(result.current.mentoringTarget).toBeNull();
+
+    state.stream = doneStream();
+    await act(async () => {
+      await result.current.send("リロード後の発言です");
+    });
+
+    expect(postedBodies(fetchMock)[1]).toEqual({ content: "リロード後の発言です" });
+  });
+
+  it("does not add mentoring keys to a rewrite during the 全日単位 consultation (rewrite is a separate send path)", async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(jsonResponse([SESSION]))
+      .mockResolvedValueOnce(jsonResponse(HISTORY))
+      .mockResolvedValueOnce(doneStream()) // startDayMentoring's send
+      .mockResolvedValueOnce(doneStream()) // rewrite's POST
+      .mockResolvedValueOnce(jsonResponse([SESSION])) // refreshTimeline: fetchSessions
+      .mockResolvedValueOnce(jsonResponse(HISTORY)); // refreshTimeline: fetchSessionMessages
+    vi.stubGlobal("fetch", fetchMock);
+
+    const { result } = renderHook(() => useChat());
+    await waitFor(() => expect(result.current.status).toBe("ready"));
+
+    await act(async () => {
+      await result.current.startDayMentoring();
+    });
     await act(async () => {
       await result.current.rewrite(1, "書き直した内容");
     });

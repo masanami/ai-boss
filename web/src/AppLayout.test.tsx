@@ -1454,7 +1454,11 @@ describe("AppLayout", () => {
       expect(bodies[1]).toEqual({ content: "解除後の発言です" });
     });
 
-    it("clears the 相談中 state when the header 全日単位 mentoring button is used, and its own send has no mentoringTaskId", async () => {
+    // Issue #503（決定2。S1b 決定11 の 2 を上書き）: ヘッダ押下は「解除」
+    // ではなく全日単位の相談中への「置き換え」になった。以前はこのテストが
+    // 3 ターン目のボディを `{ content: "続き" }` に固定していた — それは
+    // #491 の欠落そのものだったので、期待値を意図して書き換えている。
+    it("replaces the task-origin 相談中 with the 全日単位 one when the header mentoring button is used, and no send afterwards carries the old mentoringTaskId", async () => {
       const task = makeTask({ id: 42, title: "資料を作る", status: "todo" });
       const bodies: {
         content: string;
@@ -1502,7 +1506,10 @@ describe("AppLayout", () => {
       await waitFor(() => expect(bodies).toHaveLength(2));
 
       expect(
-        screen.queryByText(/について相談中/),
+        screen.getByText("今日の進め方について相談中"),
+      ).toBeInTheDocument();
+      expect(
+        screen.queryByText("「資料を作る」について相談中"),
       ).not.toBeInTheDocument();
       expect(bodies[1]).toEqual({
         content: "今の進め方を見てほしい",
@@ -1512,7 +1519,7 @@ describe("AppLayout", () => {
       await sendFromInput("続き");
 
       expect(bodies).toHaveLength(3);
-      expect(bodies[2]).toEqual({ content: "続き" });
+      expect(bodies[2]).toEqual({ content: "続き", mentoring: true });
     });
 
     it("clears the 相談中 state when a morning meeting starts, and messages sent during it carry no mentoringTaskId", async () => {
@@ -1569,6 +1576,168 @@ describe("AppLayout", () => {
 
       expect(bodies).toHaveLength(2);
       expect(bodies[1]).toEqual({ content: "朝会中の発言です" });
+    });
+
+    // Issue #503（決定1・決定2）: ヘッダの「進め方を点検してもらう」で始める
+    // 全日単位の相談中。S1b と同じ帯・同じ解除条件で、送るボディは
+    // `{ content, mentoring: true }`（`mentoringTaskId` 無し）。
+    describe("全日単位の相談中 (Issue #503)", () => {
+      type SentBody = {
+        content: string;
+        mentoring?: true;
+        mentoringTaskId?: number;
+      };
+
+      function stubFetchRecordingBodies(tasks: Task[]): SentBody[] {
+        const bodies: SentBody[] = [];
+        vi.stubGlobal(
+          "fetch",
+          createRoutedFetchMock({
+            tasks,
+            onSendMessage: (sessionId, body) => {
+              bodies.push(body);
+              return {
+                id: 900 + bodies.length,
+                session_id: sessionId,
+                role: "boss",
+                content: "了解した。",
+                interrupted: 0,
+                created_at: new Date().toISOString(),
+              };
+            },
+          }),
+        );
+        return bodies;
+      }
+
+      async function startDayMentoringFromHeader(
+        bodies: SentBody[],
+      ): Promise<void> {
+        fireEvent.click(screen.getByRole("button", { name: "チャット" }));
+        await waitFor(() =>
+          expect(
+            screen.getByRole("button", { name: "進め方を点検してもらう" }),
+          ).toBeEnabled(),
+        );
+        const sentBefore = bodies.length;
+        fireEvent.click(
+          screen.getByRole("button", { name: "進め方を点検してもらう" }),
+        );
+        await waitFor(() => expect(bodies).toHaveLength(sentBefore + 1));
+        await waitFor(() =>
+          expect(screen.getByLabelText("メッセージ")).toBeEnabled(),
+        );
+      }
+
+      it("shows 今日の進め方について相談中 (with the clear affordance, outside 会話履歴) and keeps sending exactly { content, mentoring: true } on the 2nd and 3rd input-box turns", async () => {
+        const bodies = stubFetchRecordingBodies([]);
+
+        render(<AppLayout />);
+        await startDayMentoringFromHeader(bodies);
+
+        expect(
+          screen.getByText("今日の進め方について相談中"),
+        ).toBeInTheDocument();
+        expect(
+          screen.getByRole("button", { name: "相談を終える" }),
+        ).toBeInTheDocument();
+        const timeline = screen.getByRole("list", { name: "会話履歴" });
+        expect(
+          within(timeline).queryByText("今日の進め方について相談中"),
+        ).not.toBeInTheDocument();
+        expect(bodies[0]).toEqual({
+          content: "今の進め方を見てほしい",
+          mentoring: true,
+        });
+
+        await sendFromInput("2ターン目です");
+        await sendFromInput("3ターン目です");
+
+        expect(bodies).toHaveLength(3);
+        expect(bodies[1]).toEqual({ content: "2ターン目です", mentoring: true });
+        expect(bodies[2]).toEqual({ content: "3ターン目です", mentoring: true });
+      });
+
+      it("replaces the 全日単位 相談中 with a task-origin one when メンタリングする is used, and the next input-box send carries that task's mentoringTaskId", async () => {
+        const task = makeTask({ id: 42, title: "資料を作る", status: "todo" });
+        const bodies = stubFetchRecordingBodies([task]);
+
+        render(<AppLayout />);
+        await startDayMentoringFromHeader(bodies);
+        expect(
+          screen.getByText("今日の進め方について相談中"),
+        ).toBeInTheDocument();
+
+        fireEvent.click(screen.getByRole("button", { name: "タスク" }));
+        await waitFor(() =>
+          expect(
+            screen.getByRole("button", { name: "メンタリングする" }),
+          ).toBeEnabled(),
+        );
+        fireEvent.click(
+          screen.getByRole("button", { name: "メンタリングする" }),
+        );
+
+        await waitFor(() =>
+          expect(
+            screen.getByText("「資料を作る」について相談中"),
+          ).toBeInTheDocument(),
+        );
+        expect(
+          screen.queryByText("今日の進め方について相談中"),
+        ).not.toBeInTheDocument();
+        await waitFor(() => expect(bodies).toHaveLength(2));
+
+        await sendFromInput("続きです");
+
+        expect(bodies).toHaveLength(3);
+        expect(bodies[2]).toEqual({
+          content: "続きです",
+          mentoring: true,
+          mentoringTaskId: 42,
+        });
+      });
+
+      it("clears the 全日単位 相談中 when the clear affordance is pressed, and the next input-box send is exactly { content }", async () => {
+        const bodies = stubFetchRecordingBodies([]);
+
+        render(<AppLayout />);
+        await startDayMentoringFromHeader(bodies);
+
+        fireEvent.click(screen.getByRole("button", { name: "相談を終える" }));
+
+        expect(
+          screen.queryByText(/について相談中/),
+        ).not.toBeInTheDocument();
+
+        await sendFromInput("解除後の発言です");
+
+        expect(bodies).toHaveLength(2);
+        expect(bodies[1]).toEqual({ content: "解除後の発言です" });
+      });
+
+      it("clears the 全日単位 相談中 when a morning meeting starts, and an input-box send inside it is exactly { content }", async () => {
+        const bodies = stubFetchRecordingBodies([]);
+
+        render(<AppLayout />);
+        await startDayMentoringFromHeader(bodies);
+        expect(
+          screen.getByText("今日の進め方について相談中"),
+        ).toBeInTheDocument();
+
+        fireEvent.click(screen.getByRole("button", { name: "朝会を開始" }));
+        await waitFor(() =>
+          expect(screen.getByText("朝会中")).toBeInTheDocument(),
+        );
+        expect(
+          screen.queryByText(/について相談中/),
+        ).not.toBeInTheDocument();
+
+        await sendFromInput("朝会中の発言です");
+
+        expect(bodies).toHaveLength(2);
+        expect(bodies[1]).toEqual({ content: "朝会中の発言です" });
+      });
     });
   });
 

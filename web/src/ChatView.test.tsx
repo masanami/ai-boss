@@ -165,6 +165,7 @@ function makeChatState(overrides: Partial<UseChatResult> = {}): UseChatResult {
     activeSessionId: null,
     mentoringTarget: null,
     startMentoring: vi.fn(),
+    startDayMentoring: vi.fn(),
     clearMentoringTarget: vi.fn(),
     draft: "",
     setDraft: vi.fn(),
@@ -1626,24 +1627,27 @@ describe("ChatView mentoring (Issue #411)", () => {
     ).not.toBeInTheDocument();
   });
 
-  it("sends a fixed message with the mentoring option when the button is pressed", () => {
+  // Issue #503 (決定1): the fixed message + `mentoring: true` (no
+  // mentoringTaskId) are now sent by `useChat.startDayMentoring`, which
+  // also starts the 全日単位 相談中 — the button only calls it. What actually
+  // reaches `fetch` is pinned in use-chat.test.ts and AppLayout.test.tsx.
+  it("starts the 全日単位 consultation (startDayMentoring) when the button is pressed, without calling send directly", () => {
     const send = vi.fn();
+    const startDayMentoring = vi.fn();
     render(
-      <ChatView chatState={makeChatState({ sessionType: "adhoc", send })} />,
+      <ChatView
+        chatState={makeChatState({
+          sessionType: "adhoc",
+          send,
+          startDayMentoring,
+        })}
+      />,
     );
 
     fireEvent.click(screen.getByRole("button", { name: MENTORING_BUTTON_NAME }));
 
-    expect(send).toHaveBeenCalledTimes(1);
-    // The flag is what makes the server queue MENTORING_FLOW_INSTRUCTION
-    // (親 #276 判断6) — a plain send without it would leave 随時メンタリング
-    // without a record (`record_mentoring` never gets called). Issue #470
-    // (親 #444 決定4): the second argument is now an options object, and this
-    // header-origin send must not carry a mentoringTaskId (AC-10) — it is
-    // not attributed to any task card.
-    expect(send).toHaveBeenCalledWith("今の進め方を見てほしい", {
-      mentoring: true,
-    });
+    expect(startDayMentoring).toHaveBeenCalledTimes(1);
+    expect(send).not.toHaveBeenCalled();
   });
 
   it("disables the mentoring button while sending or switching", () => {
@@ -1737,7 +1741,7 @@ describe("ChatView 相談中 state (Issue #476, S1b)", () => {
     render(
       <ChatView
         chatState={makeChatState({
-          mentoringTarget: { id: 42, title: "資料を作る" },
+          mentoringTarget: { kind: "task", id: 42, title: "資料を作る" },
         })}
       />,
     );
@@ -1764,7 +1768,7 @@ describe("ChatView 相談中 state (Issue #476, S1b)", () => {
     render(
       <ChatView
         chatState={makeChatState({
-          mentoringTarget: { id: 42, title: "資料を作る" },
+          mentoringTarget: { kind: "task", id: 42, title: "資料を作る" },
           clearMentoringTarget,
         })}
       />,
@@ -1781,7 +1785,7 @@ describe("ChatView 相談中 state (Issue #476, S1b)", () => {
     render(
       <ChatView
         chatState={makeChatState({
-          mentoringTarget: { id: 42, title: "資料を作る" },
+          mentoringTarget: { kind: "task", id: 42, title: "資料を作る" },
         })}
       />,
     );
@@ -1793,19 +1797,24 @@ describe("ChatView 相談中 state (Issue #476, S1b)", () => {
     expect(screen.getByText("「資料を作る」について相談中")).toBeInTheDocument();
   });
 
-  // 決定11: 全日単位メンタリングボタンは対象タスク無しの状態へ解除する。
-  // 送信自体の形（`mentoring: true` のみ・`mentoringTaskId` 無し）は
-  // #491 の範囲で変えない。
-  it("clears the mentoring target when the header 全日単位 mentoring button is clicked, without changing what it sends", () => {
+  // Issue #503（決定2。S1b 決定11 の 2 を上書き）: タスク起点の相談中に
+  // 全日単位メンタリングボタンを押すと、解除ではなく全日単位の相談中への
+  // 置き換えになる。置き換え（と古い mentoringTaskId が載らないこと）は
+  // `startDayMentoring` の中身なので use-chat.test.ts / AppLayout.test.tsx
+  // が持ち、ここは「解除関数や send を直接呼ばず、開始関数を呼ぶ」ことだけ
+  // を見る。
+  it("starts the 全日単位 consultation (instead of clearing and sending) when the header mentoring button is clicked during a task-origin 相談中", () => {
     const clearMentoringTarget = vi.fn();
     const send = vi.fn();
+    const startDayMentoring = vi.fn();
     render(
       <ChatView
         chatState={makeChatState({
           sessionType: "adhoc",
-          mentoringTarget: { id: 42, title: "資料を作る" },
+          mentoringTarget: { kind: "task", id: 42, title: "資料を作る" },
           clearMentoringTarget,
           send,
+          startDayMentoring,
         })}
       />,
     );
@@ -1814,10 +1823,80 @@ describe("ChatView 相談中 state (Issue #476, S1b)", () => {
       screen.getByRole("button", { name: "進め方を点検してもらう" }),
     );
 
+    expect(startDayMentoring).toHaveBeenCalledTimes(1);
+    expect(clearMentoringTarget).not.toHaveBeenCalled();
+    expect(send).not.toHaveBeenCalled();
+  });
+});
+
+// Issue #503（決定2）: 全日単位の相談中も S1b と同じ帯（タイムラインの外）に、
+// 同じ解除導線で出す。文面だけが `今日の進め方について相談中` になる。
+describe("ChatView 全日単位の相談中 (Issue #503)", () => {
+  it("shows 今日の進め方について相談中 and the clear affordance when the 全日単位 consultation is active", () => {
+    render(
+      <ChatView
+        chatState={makeChatState({ mentoringTarget: { kind: "day" } })}
+      />,
+    );
+
+    const status = screen.getByText("今日の進め方について相談中");
+    expect(status.closest(".chat-mentoring-target")).toHaveAttribute(
+      "role",
+      "status",
+    );
+    expect(
+      screen.getByRole("button", { name: "相談を終える" }),
+    ).toBeInTheDocument();
+  });
+
+  it("renders the 全日単位 相談中 state outside the conversation timeline list", () => {
+    render(
+      <ChatView
+        chatState={makeChatState({ mentoringTarget: { kind: "day" } })}
+      />,
+    );
+
+    const timeline = screen.getByRole("list", { name: "会話履歴" });
+    expect(
+      within(timeline).queryByText("今日の進め方について相談中"),
+    ).not.toBeInTheDocument();
+    expect(screen.getByText("今日の進め方について相談中")).toBeInTheDocument();
+  });
+
+  it("does not show a task-title 相談中 text for the 全日単位 consultation, nor the 全日単位 text for a task-origin one", () => {
+    const { rerender } = render(
+      <ChatView
+        chatState={makeChatState({ mentoringTarget: { kind: "day" } })}
+      />,
+    );
+    expect(screen.queryByText(/^「.*」について相談中$/)).not.toBeInTheDocument();
+
+    rerender(
+      <ChatView
+        chatState={makeChatState({
+          mentoringTarget: { kind: "task", id: 42, title: "資料を作る" },
+        })}
+      />,
+    );
+    expect(
+      screen.queryByText("今日の進め方について相談中"),
+    ).not.toBeInTheDocument();
+    expect(screen.getByText("「資料を作る」について相談中")).toBeInTheDocument();
+  });
+
+  it("calls clearMentoringTarget when the clear affordance is clicked during the 全日単位 consultation", () => {
+    const clearMentoringTarget = vi.fn();
+    render(
+      <ChatView
+        chatState={makeChatState({
+          mentoringTarget: { kind: "day" },
+          clearMentoringTarget,
+        })}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "相談を終える" }));
+
     expect(clearMentoringTarget).toHaveBeenCalledTimes(1);
-    expect(send).toHaveBeenCalledTimes(1);
-    expect(send).toHaveBeenCalledWith("今の進め方を見てほしい", {
-      mentoring: true,
-    });
   });
 });
