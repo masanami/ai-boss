@@ -89,6 +89,17 @@ export function toDateKey(date: Date, timeZone?: string): string {
   return `${part("year").padStart(4, "0")}-${part("month")}-${part("day")}`;
 }
 
+/**
+ * ローカル日時を `YYYY-MM-DD HH:mm` 形式で返す（通知文面での着手の約束の表示に
+ * 使う。機能仕様 docs/features/task-start-commitment.md 決定 5）。日付部分は
+ * `toDateKey` に委ね、時刻をゼロ詰めして組み立てる。
+ */
+export function toLocalDateTimeKey(date: Date): string {
+  const hours = String(date.getHours()).padStart(2, "0");
+  const minutes = String(date.getMinutes()).padStart(2, "0");
+  return `${toDateKey(date)} ${hours}:${minutes}`;
+}
+
 const DATE_KEY_PATTERN = /^(\d{4})-(\d{2})-(\d{2})$/;
 
 /**

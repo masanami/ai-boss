@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import { evaluateRules } from "./rule-engine.js";
 import { DEFAULT_DETECTION_SETTINGS, type DetectionInput } from "./detection-types.js";
 import { makeActivityEvent, makeTask } from "./detection-test-fixtures.js";
+import { buildCommitmentMissedRuleKey } from "./commitment-missed.js";
 
 const settings = DEFAULT_DETECTION_SETTINGS;
 
@@ -261,5 +262,542 @@ describe("evaluateRules", () => {
     const result = evaluateRules(baseInput());
 
     expect(result).toEqual([]);
+  });
+
+  // 機能仕様 docs/features/task-start-commitment.md 決定 4・ADR 0004 改訂
+  // （2026-09-13）。固定時刻はすべて new Date(2026, 8, 14, h, min)（翌日は
+  // new Date(2026, 8, 15, h, min)）から導出する（TZ 非依存。既定の勤務時間帯
+  // 09:00-18:00・エスカレーション間隔 15/10/10 分）。
+  describe("commitment_missed (Issue #524)", () => {
+    const DAY = (h: number, min: number) => new Date(2026, 8, 14, h, min);
+    const NEXT_DAY = (h: number, min: number) => new Date(2026, 8, 15, h, min);
+
+    it("fires commitment_missed exactly at the committed time (0-minute grace), not one minute before", () => {
+      const committedStartAt = DAY(14, 0).toISOString();
+      const committedAt = DAY(9, 30).toISOString();
+      const task = makeTask({
+        id: 1,
+        status: "todo",
+        committed_start_at: committedStartAt,
+        committed_at: committedAt,
+      });
+
+      const at1400 = evaluateRules(baseInput({ now: DAY(14, 0), tasks: [task] }));
+      expect(at1400).toEqual([
+        {
+          ruleType: "commitment_missed",
+          ruleKey: buildCommitmentMissedRuleKey(task),
+          escalationLevel: 1,
+          taskId: 1,
+        },
+      ]);
+
+      const at1359 = evaluateRules(baseInput({ now: DAY(13, 59), tasks: [task] }));
+      expect(at1359).toEqual([]);
+    });
+
+    it.each(["in_progress", "paused", "done", "dropped"] as const)(
+      "does not fire commitment_missed for a %s task even past the committed time",
+      (status) => {
+        const task = makeTask({
+          id: 1,
+          status,
+          committed_start_at: DAY(14, 0).toISOString(),
+          committed_at: DAY(9, 30).toISOString(),
+        });
+
+        const result = evaluateRules(baseInput({ now: DAY(14, 30), tasks: [task] }));
+
+        expect(result.map((r) => r.ruleType)).not.toContain("commitment_missed");
+      },
+    );
+
+    it("fires commitment_missed for a non-top-priority task's commitment", () => {
+      const taskA = makeTask({
+        id: 1,
+        priority: "high",
+        status: "in_progress",
+        committed_start_at: null,
+        committed_at: null,
+      });
+      const taskB = makeTask({
+        id: 2,
+        priority: "low",
+        status: "todo",
+        committed_start_at: DAY(14, 0).toISOString(),
+        committed_at: DAY(9, 0).toISOString(),
+      });
+
+      const result = evaluateRules(baseInput({ now: DAY(14, 30), tasks: [taskA, taskB] }));
+
+      expect(result).toContainEqual({
+        ruleType: "commitment_missed",
+        ruleKey: buildCommitmentMissedRuleKey(taskB),
+        escalationLevel: 1,
+        taskId: 2,
+      });
+    });
+
+    it("does not fire unstarted for a top-priority task with a commitment, even before the commitment time", () => {
+      const task = makeTask({
+        id: 1,
+        status: "todo",
+        created_at: DAY(9, 0).toISOString(),
+        estimated_minutes: null,
+        committed_start_at: DAY(14, 0).toISOString(),
+        committed_at: DAY(9, 30).toISOString(),
+      });
+
+      const result = evaluateRules(baseInput({ now: DAY(13, 0), tasks: [task] }));
+
+      expect(result.map((r) => r.ruleType)).not.toContain("unstarted");
+    });
+
+    it("does not fire avoidance for a top-priority task with a commitment, even with recent activity on other tasks", () => {
+      const task = makeTask({
+        id: 1,
+        status: "todo",
+        created_at: DAY(9, 0).toISOString(),
+        estimated_minutes: null,
+        committed_start_at: DAY(14, 0).toISOString(),
+        committed_at: DAY(9, 30).toISOString(),
+      });
+      const otherActivity = [
+        makeActivityEvent({ type: "task_start", task_id: 999, created_at: DAY(12, 50).toISOString() }),
+      ];
+
+      const result = evaluateRules(
+        baseInput({ now: DAY(13, 0), tasks: [task], activityEvents: otherActivity }),
+      );
+
+      expect(result.map((r) => r.ruleType)).not.toContain("avoidance");
+    });
+
+    it("fires only commitment_missed (not unstarted) once the top-priority task's commitment time has passed", () => {
+      const task = makeTask({
+        id: 1,
+        status: "todo",
+        created_at: DAY(9, 0).toISOString(),
+        estimated_minutes: null,
+        committed_start_at: DAY(14, 0).toISOString(),
+        committed_at: DAY(9, 30).toISOString(),
+      });
+
+      const result = evaluateRules(baseInput({ now: DAY(14, 30), tasks: [task] }));
+
+      expect(result).toEqual([
+        {
+          ruleType: "commitment_missed",
+          ruleKey: buildCommitmentMissedRuleKey(task),
+          escalationLevel: 1,
+          taskId: 1,
+        },
+      ]);
+    });
+
+    it("does not fall back to evaluating unstarted for the next-priority task when the top-priority task has a commitment", () => {
+      const taskA = makeTask({
+        id: 1,
+        priority: "high",
+        status: "todo",
+        committed_start_at: DAY(20, 0).toISOString(),
+        committed_at: DAY(9, 0).toISOString(),
+      });
+      const taskB = makeTask({
+        id: 2,
+        priority: "low",
+        status: "todo",
+        committed_start_at: null,
+        committed_at: null,
+        created_at: DAY(9, 0).toISOString(),
+        estimated_minutes: null,
+      });
+
+      // taskA の約束（20:00）はまだ来ていないため commitment_missed も発火しない。
+      // ここで確認したいのは taskB への unstarted が「次点への繰り下げ」で
+      // 発火しないこと。
+      const result = evaluateRules(baseInput({ now: DAY(13, 0), tasks: [taskA, taskB] }));
+
+      expect(result.map((r) => r.ruleType)).not.toContain("unstarted");
+    });
+
+    it("still fires unstarted at exactly the threshold for a top-priority task without a commitment (unaffected)", () => {
+      const task = makeTask({
+        id: 1,
+        status: "todo",
+        created_at: DAY(9, 0).toISOString(),
+        estimated_minutes: null,
+        committed_start_at: null,
+        committed_at: null,
+      });
+
+      const at1000 = evaluateRules(baseInput({ now: DAY(10, 0), tasks: [task] }));
+      expect(at1000.map((r) => r.ruleType)).toContain("unstarted");
+
+      const at0959 = evaluateRules(baseInput({ now: DAY(9, 59), tasks: [task] }));
+      expect(at0959.map((r) => r.ruleType)).not.toContain("unstarted");
+    });
+
+    // ruleKey の形そのものを検査するテスト（buildCommitmentMissedRuleKey は
+    // 使わず直書きする）。
+    it("returns a commitment_missed ruleKey in the form commitment_missed:{taskId}:{committed_start_at}:{committed_at}", () => {
+      const committedStartAt = DAY(14, 0).toISOString();
+      const committedAt = DAY(9, 30).toISOString();
+      const task = makeTask({
+        id: 7,
+        status: "todo",
+        committed_start_at: committedStartAt,
+        committed_at: committedAt,
+      });
+
+      const result = evaluateRules(baseInput({ now: DAY(14, 0), tasks: [task] }));
+
+      expect(result).toEqual([
+        {
+          ruleType: "commitment_missed",
+          ruleKey: `commitment_missed:7:${committedStartAt}:${committedAt}`,
+          escalationLevel: 1,
+          taskId: 7,
+        },
+      ]);
+    });
+
+    it("does not carry over notification history from a changed commitment time (new ruleKey => L1)", () => {
+      const taskId = 42;
+      const firstTask = makeTask({
+        id: taskId,
+        status: "todo",
+        committed_start_at: DAY(14, 0).toISOString(),
+        committed_at: DAY(9, 30).toISOString(),
+      });
+
+      const firstResult = evaluateRules(baseInput({ now: DAY(14, 0), tasks: [firstTask] }));
+      expect(firstResult).toHaveLength(1);
+      const notifications = [
+        { ruleKey: firstResult[0].ruleKey, escalationLevel: 1, sentAt: DAY(14, 0).toISOString() },
+      ];
+
+      const secondTask = makeTask({
+        id: taskId,
+        status: "todo",
+        committed_start_at: DAY(14, 10).toISOString(),
+        committed_at: DAY(14, 5).toISOString(),
+      });
+
+      const secondResult = evaluateRules(
+        baseInput({ now: DAY(14, 20), tasks: [secondTask], notifications }),
+      );
+
+      expect(secondResult).toEqual([
+        {
+          ruleType: "commitment_missed",
+          ruleKey: buildCommitmentMissedRuleKey(secondTask),
+          escalationLevel: 1,
+          taskId,
+        },
+      ]);
+    });
+
+    it("escalates to L2 at +15 minutes within working hours, not yet at +14", () => {
+      const task = makeTask({
+        id: 1,
+        status: "todo",
+        committed_start_at: DAY(14, 0).toISOString(),
+        committed_at: DAY(9, 30).toISOString(),
+      });
+      const ruleKey = buildCommitmentMissedRuleKey(task);
+      const notifications = [{ ruleKey, escalationLevel: 1, sentAt: DAY(14, 0).toISOString() }];
+
+      const at1414 = evaluateRules(baseInput({ now: DAY(14, 14), tasks: [task], notifications }));
+      expect(at1414).toEqual([]);
+
+      const at1415 = evaluateRules(baseInput({ now: DAY(14, 15), tasks: [task], notifications }));
+      expect(at1415).toEqual([
+        { ruleType: "commitment_missed", ruleKey, escalationLevel: 2, taskId: 1 },
+      ]);
+    });
+
+    it("resets to L1 within working hours when an activity signal occurs after the last notification", () => {
+      const task = makeTask({
+        id: 1,
+        status: "todo",
+        committed_start_at: DAY(14, 0).toISOString(),
+        committed_at: DAY(9, 30).toISOString(),
+      });
+      const ruleKey = buildCommitmentMissedRuleKey(task);
+      const notifications = [{ ruleKey, escalationLevel: 1, sentAt: DAY(14, 0).toISOString() }];
+      const activityEvents = [makeActivityEvent({ type: "chat_message", created_at: DAY(14, 5).toISOString() })];
+
+      const result = evaluateRules(
+        baseInput({ now: DAY(14, 6), tasks: [task], notifications, activityEvents }),
+      );
+
+      expect(result).toEqual([
+        { ruleType: "commitment_missed", ruleKey, escalationLevel: 1, taskId: 1 },
+      ]);
+    });
+
+    it("fires L1 outside working hours when the ruleKey has no notification history yet", () => {
+      const task = makeTask({
+        id: 1,
+        status: "todo",
+        committed_start_at: DAY(20, 0).toISOString(),
+        committed_at: DAY(9, 0).toISOString(),
+      });
+
+      const result = evaluateRules(baseInput({ now: DAY(20, 0), tasks: [task] }));
+
+      expect(result).toEqual([
+        {
+          ruleType: "commitment_missed",
+          ruleKey: buildCommitmentMissedRuleKey(task),
+          escalationLevel: 1,
+          taskId: 1,
+        },
+      ]);
+    });
+
+    it("does not re-fire outside working hours once the ruleKey already has notification history, even without activity", () => {
+      const task = makeTask({
+        id: 1,
+        status: "todo",
+        committed_start_at: DAY(20, 0).toISOString(),
+        committed_at: DAY(9, 0).toISOString(),
+      });
+      const ruleKey = buildCommitmentMissedRuleKey(task);
+      const notifications = [{ ruleKey, escalationLevel: 1, sentAt: DAY(20, 0).toISOString() }];
+
+      const result = evaluateRules(baseInput({ now: DAY(20, 15), tasks: [task], notifications }));
+
+      expect(result).toEqual([]);
+    });
+
+    it("does not re-fire outside working hours even when an activity signal follows the notification", () => {
+      const task = makeTask({
+        id: 1,
+        status: "todo",
+        committed_start_at: DAY(20, 0).toISOString(),
+        committed_at: DAY(9, 0).toISOString(),
+      });
+      const ruleKey = buildCommitmentMissedRuleKey(task);
+      const notifications = [{ ruleKey, escalationLevel: 1, sentAt: DAY(20, 0).toISOString() }];
+      const activityEvents = [makeActivityEvent({ type: "chat_message", created_at: DAY(20, 5).toISOString() })];
+
+      const result = evaluateRules(
+        baseInput({ now: DAY(20, 6), tasks: [task], notifications, activityEvents }),
+      );
+
+      expect(result).toEqual([]);
+    });
+
+    it("does not re-fire once working hours end for a commitment already notified inside working hours", () => {
+      const task = makeTask({
+        id: 1,
+        status: "todo",
+        committed_start_at: DAY(17, 0).toISOString(),
+        committed_at: DAY(9, 0).toISOString(),
+      });
+      const ruleKey = buildCommitmentMissedRuleKey(task);
+      const notifications = [{ ruleKey, escalationLevel: 1, sentAt: DAY(17, 0).toISOString() }];
+
+      const result = evaluateRules(baseInput({ now: DAY(18, 0), tasks: [task], notifications }));
+
+      expect(result).toEqual([]);
+    });
+
+    it("escalates to L2 once the next working-hours window begins the next day, not before it", () => {
+      const task = makeTask({
+        id: 1,
+        status: "todo",
+        committed_start_at: DAY(20, 0).toISOString(),
+        committed_at: DAY(9, 0).toISOString(),
+      });
+      const ruleKey = buildCommitmentMissedRuleKey(task);
+      const notifications = [{ ruleKey, escalationLevel: 1, sentAt: DAY(20, 0).toISOString() }];
+
+      const at0859 = evaluateRules(baseInput({ now: NEXT_DAY(8, 59), tasks: [task], notifications }));
+      expect(at0859).toEqual([]);
+
+      const at0900 = evaluateRules(baseInput({ now: NEXT_DAY(9, 0), tasks: [task], notifications }));
+      expect(at0900).toEqual([
+        { ruleType: "commitment_missed", ruleKey, escalationLevel: 2, taskId: 1 },
+      ]);
+    });
+
+    it("fires L1 outside working hours the next calendar day when there is still no notification history (no calendar-day cutoff)", () => {
+      const task = makeTask({
+        id: 1,
+        status: "todo",
+        committed_start_at: DAY(20, 0).toISOString(),
+        committed_at: DAY(9, 0).toISOString(),
+      });
+
+      const result = evaluateRules(baseInput({ now: NEXT_DAY(2, 0), tasks: [task] }));
+
+      expect(result).toEqual([
+        {
+          ruleType: "commitment_missed",
+          ruleKey: buildCommitmentMissedRuleKey(task),
+          escalationLevel: 1,
+          taskId: 1,
+        },
+      ]);
+    });
+
+    it("fires L1 outside working hours when the commitment was moved (20:00 -> 21:00), even with history for the old commitment", () => {
+      const taskId = 5;
+      const firstTask = makeTask({
+        id: taskId,
+        status: "todo",
+        committed_start_at: DAY(20, 0).toISOString(),
+        committed_at: DAY(19, 0).toISOString(),
+      });
+      const firstResult = evaluateRules(baseInput({ now: DAY(20, 0), tasks: [firstTask] }));
+      expect(firstResult).toHaveLength(1);
+      const notifications = [
+        { ruleKey: firstResult[0].ruleKey, escalationLevel: 1, sentAt: DAY(20, 0).toISOString() },
+      ];
+
+      const secondTask = makeTask({
+        id: taskId,
+        status: "todo",
+        committed_start_at: DAY(21, 0).toISOString(),
+        committed_at: DAY(20, 5).toISOString(),
+      });
+
+      const secondResult = evaluateRules(
+        baseInput({ now: DAY(21, 0), tasks: [secondTask], notifications }),
+      );
+
+      expect(secondResult).toEqual([
+        {
+          ruleType: "commitment_missed",
+          ruleKey: buildCommitmentMissedRuleKey(secondTask),
+          escalationLevel: 1,
+          taskId,
+        },
+      ]);
+    });
+
+    it("fires L1 outside working hours when the commitment was moved back to its original time (20:00 -> 21:00 -> 20:00), even with history for the first instance", () => {
+      const taskId = 6;
+      const firstTask = makeTask({
+        id: taskId,
+        status: "todo",
+        committed_start_at: DAY(20, 0).toISOString(),
+        committed_at: DAY(19, 0).toISOString(),
+      });
+      const firstResult = evaluateRules(baseInput({ now: DAY(20, 0), tasks: [firstTask] }));
+      expect(firstResult).toHaveLength(1);
+      const notifications = [
+        { ruleKey: firstResult[0].ruleKey, escalationLevel: 1, sentAt: DAY(20, 0).toISOString() },
+      ];
+
+      const secondTask = makeTask({
+        id: taskId,
+        status: "todo",
+        committed_start_at: DAY(20, 0).toISOString(),
+        committed_at: DAY(20, 10).toISOString(),
+      });
+
+      const secondResult = evaluateRules(
+        baseInput({ now: DAY(20, 10), tasks: [secondTask], notifications }),
+      );
+
+      expect(secondResult).toEqual([
+        {
+          ruleType: "commitment_missed",
+          ruleKey: buildCommitmentMissedRuleKey(secondTask),
+          escalationLevel: 1,
+          taskId,
+        },
+      ]);
+    });
+
+    it("fires commitment_missed inside working hours while on a declared break", () => {
+      const task = makeTask({
+        id: 1,
+        status: "todo",
+        committed_start_at: DAY(14, 0).toISOString(),
+        committed_at: DAY(9, 0).toISOString(),
+      });
+      const activeBreak = [makeActivityEvent({ type: "break_start", created_at: DAY(13, 55).toISOString() })];
+
+      const result = evaluateRules(
+        baseInput({ now: DAY(14, 0), tasks: [task], activityEvents: activeBreak }),
+      );
+
+      expect(result).toEqual([
+        {
+          ruleType: "commitment_missed",
+          ruleKey: buildCommitmentMissedRuleKey(task),
+          escalationLevel: 1,
+          taskId: 1,
+        },
+      ]);
+    });
+
+    it("fires commitment_missed outside working hours while on a declared break", () => {
+      const task = makeTask({
+        id: 1,
+        status: "todo",
+        committed_start_at: DAY(20, 0).toISOString(),
+        committed_at: DAY(9, 0).toISOString(),
+      });
+      const activeBreak = [makeActivityEvent({ type: "break_start", created_at: DAY(19, 55).toISOString() })];
+
+      const result = evaluateRules(
+        baseInput({ now: DAY(20, 0), tasks: [task], activityEvents: activeBreak }),
+      );
+
+      expect(result).toEqual([
+        {
+          ruleType: "commitment_missed",
+          ruleKey: buildCommitmentMissedRuleKey(task),
+          escalationLevel: 1,
+          taskId: 1,
+        },
+      ]);
+    });
+
+    it("does not re-fire outside working hours while on a declared break once notification history exists (still the 1-time rule)", () => {
+      const task = makeTask({
+        id: 1,
+        status: "todo",
+        committed_start_at: DAY(20, 0).toISOString(),
+        committed_at: DAY(9, 0).toISOString(),
+      });
+      const ruleKey = buildCommitmentMissedRuleKey(task);
+      const notifications = [{ ruleKey, escalationLevel: 1, sentAt: DAY(20, 0).toISOString() }];
+      const activeBreak = [makeActivityEvent({ type: "break_start", created_at: DAY(19, 55).toISOString() })];
+
+      const result = evaluateRules(
+        baseInput({ now: DAY(20, 15), tasks: [task], notifications, activityEvents: activeBreak }),
+      );
+
+      expect(result).toEqual([]);
+    });
+
+    it("does not open the working-hours gate for other rules (unstarted/deadline_overdue) when commitment_missed fires outside working hours", () => {
+      const taskA = makeTask({
+        id: 1,
+        status: "todo",
+        committed_start_at: DAY(20, 0).toISOString(),
+        committed_at: DAY(9, 0).toISOString(),
+      });
+      const taskB = makeTask({
+        id: 2,
+        status: "todo",
+        committed_start_at: null,
+        committed_at: null,
+        due_at: "2026-09-13",
+      });
+
+      const result = evaluateRules(baseInput({ now: DAY(20, 0), tasks: [taskA, taskB] }));
+
+      expect(result.map((r) => r.ruleType)).toContain("commitment_missed");
+      expect(result.map((r) => r.ruleType)).not.toContain("unstarted");
+      expect(result.map((r) => r.ruleType)).not.toContain("deadline_overdue");
+    });
   });
 });
