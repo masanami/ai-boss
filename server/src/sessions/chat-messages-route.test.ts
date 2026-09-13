@@ -42,6 +42,7 @@ const { MissingApiKeyError } = await import("../llm/claude-client.js");
 
 interface ErrorBody {
   error: string;
+  code?: string;
 }
 
 interface SseEvent {
@@ -872,7 +873,9 @@ describe("POST /api/sessions/:id/messages", () => {
       expect(countMessagesInSession(session.id)).toBe(0);
     });
 
-    it("returns 404 and does not persist the user message when mentoringTaskId refers to a nonexistent task (AC-14/AC-15)", async () => {
+    // Issue #495: 404 の出どころ（セッション不在 404 との取り違え）を区別する
+    // ため、ボディ全体を `code` と文言まで照合する。
+    it("returns 404 with code mentoring_task_not_found and does not persist the user message when mentoringTaskId refers to a nonexistent task (AC-14/AC-15)", async () => {
       const session = await createSession();
       const app = createApp(db, env);
 
@@ -888,7 +891,10 @@ describe("POST /api/sessions/:id/messages", () => {
 
       expect(res.status).toBe(404);
       const body = await readJson<ErrorBody>(res);
-      expect(typeof body.error).toBe("string");
+      expect(body).toEqual({
+        error: "対象のタスクが見つかりません",
+        code: "mentoring_task_not_found",
+      });
       expect(streamBossMessageMock).not.toHaveBeenCalled();
       expect(countMessagesInSession(session.id)).toBe(0);
     });

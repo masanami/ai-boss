@@ -178,7 +178,13 @@ export function registerChatMessageRoute(
     // 発言を保存する前（insertMessage より前）に判定する — 拒否されたリク
     // エストのユーザー発言だけが残る中間状態を作らないため。
     if (mentoringTaskId !== undefined && !findTaskById(db, mentoringTaskId)) {
-      return c.json({ error: `task ${mentoringTaskId} not found` }, 404);
+      return c.json(
+        {
+          error: "対象のタスクが見つかりません",
+          code: "mentoring_task_not_found",
+        },
+        404,
+      );
     }
 
     // やりなおし経路（replaceFromMessageId 指定時）にだけ足すガード
