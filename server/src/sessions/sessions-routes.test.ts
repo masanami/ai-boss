@@ -522,23 +522,23 @@ describe("sessions routes", () => {
       expect(body[0].content).toBe(rawUserContent);
     });
 
-    it("returns 404 for a non-existent session id", async () => {
-      const app = createApp(db);
+    // Issue #501: セッション不在 404 は 3 エンドポイントで同じ形に揃える。
+    // ボディ全体を `code` と文言まで照合し、数値でない id も同じ応答であることを確かめる。
+    it.each(["9999", "not-a-number"])(
+      "returns 404 with code session_not_found for a non-existent session id (%s)",
+      async (rawId) => {
+        const app = createApp(db);
 
-      const res = await app.request("/api/sessions/9999/messages");
+        const res = await app.request(`/api/sessions/${rawId}/messages`);
 
-      expect(res.status).toBe(404);
-      const body = await readJson<ErrorBody>(res);
-      expect(typeof body.error).toBe("string");
-    });
-
-    it("returns 404 for a non-numeric session id", async () => {
-      const app = createApp(db);
-
-      const res = await app.request("/api/sessions/not-a-number/messages");
-
-      expect(res.status).toBe(404);
-    });
+        expect(res.status).toBe(404);
+        const body = await readJson<ErrorBodyWithCode>(res);
+        expect(body).toEqual({
+          error: "セッションが見つかりません",
+          code: "session_not_found",
+        });
+      },
+    );
   });
 
   describe("POST /api/sessions/:id/end", () => {
@@ -573,17 +573,25 @@ describe("sessions routes", () => {
       });
     });
 
-    it("returns 404 for a non-existent session id", async () => {
-      const app = createApp(db);
+    // Issue #501: セッション不在 404 は 3 エンドポイントで同じ形に揃える。
+    // ボディ全体を `code` と文言まで照合し、数値でない id も同じ応答であることを確かめる。
+    it.each(["9999", "not-a-number"])(
+      "returns 404 with code session_not_found for a non-existent session id (%s)",
+      async (rawId) => {
+        const app = createApp(db);
 
-      const res = await app.request("/api/sessions/9999/end", {
-        method: "POST",
-      });
+        const res = await app.request(`/api/sessions/${rawId}/end`, {
+          method: "POST",
+        });
 
-      expect(res.status).toBe(404);
-      const body = await readJson<{ error: string }>(res);
-      expect(typeof body.error).toBe("string");
-    });
+        expect(res.status).toBe(404);
+        const body = await readJson<ErrorBodyWithCode>(res);
+        expect(body).toEqual({
+          error: "セッションが見つかりません",
+          code: "session_not_found",
+        });
+      },
+    );
 
     it("is idempotent: ending an already-ended session returns 200 with the original ended_at", async () => {
       const app = createApp(db);

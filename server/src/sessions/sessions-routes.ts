@@ -267,7 +267,10 @@ export function createSessionsRouter(
 
     const session = endSession(db, id);
     if (!session) {
-      return c.json({ error: `session ${rawId} not found` }, 404);
+      return c.json(
+        { error: "セッションが見つかりません", code: "session_not_found" },
+        404,
+      );
     }
 
     const isFirstEnding = before !== undefined && before.ended_at === null;
@@ -325,7 +328,10 @@ export function createSessionsRouter(
 
     const session = findSessionById(db, id);
     if (!session) {
-      return c.json({ error: `session ${c.req.param("id")} not found` }, 404);
+      return c.json(
+        { error: "セッションが見つかりません", code: "session_not_found" },
+        404,
+      );
     }
 
     return c.json(normalizeMessagesForResponse(listMessagesBySessionId(db, id)));

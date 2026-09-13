@@ -127,20 +127,28 @@ describe("POST /api/sessions/:id/messages", () => {
     );
   }
 
-  it("returns 404 for a non-existent session id", async () => {
-    const app = createApp(db, env);
+  // Issue #501: セッション不在 404 は 3 エンドポイントで同じ形に揃える。
+  // ボディ全体を `code` と文言まで照合し、数値でない id も同じ応答であることを確かめる。
+  it.each(["9999", "not-a-number"])(
+    "returns 404 with code session_not_found for a non-existent session id (%s)",
+    async (rawId) => {
+      const app = createApp(db, env);
 
-    const res = await app.request("/api/sessions/9999/messages", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ content: "こんにちは" }),
-    });
+      const res = await app.request(`/api/sessions/${rawId}/messages`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ content: "こんにちは" }),
+      });
 
-    expect(res.status).toBe(404);
-    const body = await readJson<ErrorBody>(res);
-    expect(typeof body.error).toBe("string");
-    expect(streamBossMessageMock).not.toHaveBeenCalled();
-  });
+      expect(res.status).toBe(404);
+      const body = await readJson<ErrorBody>(res);
+      expect(body).toEqual({
+        error: "セッションが見つかりません",
+        code: "session_not_found",
+      });
+      expect(streamBossMessageMock).not.toHaveBeenCalled();
+    },
+  );
 
   it("returns 400 when content is missing", async () => {
     const session = await createSession();
