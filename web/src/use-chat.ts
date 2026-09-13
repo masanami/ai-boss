@@ -21,6 +21,12 @@ export type ChatLoadStatus = "loading" | "ready" | "error";
 
 export type { ChatEntry };
 
+/** The task a 相談中 consultation is about (Issue #476, S1b). */
+export interface MentoringTarget {
+  id: number;
+  title: string;
+}
+
 export interface UseChatResult {
   entries: ChatEntry[];
   status: ChatLoadStatus;
@@ -51,6 +57,36 @@ export interface UseChatResult {
    */
   activeSessionId: number | null;
   /**
+   * The task currently being consulted about (Issue #476, S1b, 決定10), or
+   * `null` when nothing is "相談中". Set by `startMentoring` (replacing any
+   * previous target), and cleared by `clearMentoringTarget`, `startSession`,
+   * and `endSession` (決定11) — a session switch or an explicit clear always
+   * wins over whatever task was previously targeted. Only the `id`/`title`
+   * captured at the moment `startMentoring` was called are kept (no
+   * re-lookup against the task list later, mirroring 決定9's no-re-search
+   * rule) — this is also what `ChatView` renders in its "相談中" state
+   * display.
+   */
+  mentoringTarget: MentoringTarget | null;
+  /**
+   * Starts (or replaces) 相談中 for `task` (Issue #476, S1b): sets
+   * `mentoringTarget` to `task`, then sends the same task-origin message
+   * `send` always has (`「${task.title}」の進め方を見てほしい` with
+   * `{ mentoring: true, mentoringTaskId: task.id }`, unchanged from S1/S1a).
+   * No-op (does not set the target, does not send) while `sendingRef.current
+   * || switchingRef.current` — the same guard `send` itself uses — so a send
+   * the multi-send guard would discard (Issue #474) never leaves the target
+   * set. A send that is attempted but fails (session creation, network)
+   * keeps the target: the 相談中 display stays, and the user can retry or
+   * clear it.
+   */
+  startMentoring: (task: MentoringTarget) => Promise<void>;
+  /**
+   * Clears `mentoringTarget` back to `null` (Issue #476, S1b, 決定11): the
+   * explicit "相談を終える" affordance in `ChatView`'s 相談中 display.
+   */
+  clearMentoringTarget: () => void;
+  /**
    * The in-progress message text. Lifted up from `ChatView` (Issue #153,
    * same pattern as the rest of this hook's state, Issue #93) so it survives
    * `ChatView` unmounting on a tab switch. Not persisted beyond the page
@@ -77,6 +113,15 @@ export interface UseChatResult {
    * - `options.mentoringTaskId` attributes the send to a task's card (Issue
    *   #470, 親 #444 決定3) — only the task-card mentoring button passes
    *   this.
+   *
+   * **When `options` is omitted and `mentoringTarget` is non-null** (Issue
+   * #476, S1b, 決定10), `send` adds `{ mentoring: true, mentoringTaskId:
+   * mentoringTarget.id }` itself before posting — this is what lets a plain
+   * `send(content)` call (the input box's `submitDraft`) keep attributing
+   * turns 2+ of an ongoing 相談 to the same task, without every call site
+   * having to remember to pass the option. Passing `options` explicitly
+   * (e.g. the header's 全日単位メンタリングボタン's `{ mentoring: true }`)
+   * is used as-is and is never merged with the tracked target.
    */
   send: (content: string, options?: SendMessageOptions) => Promise<void>;
   /**
@@ -247,6 +292,8 @@ export function useChat(): UseChatResult {
   const [activeSessionId, setActiveSessionIdState] = useState<number | null>(
     null,
   );
+  const [mentoringTarget, setMentoringTargetState] =
+    useState<MentoringTarget | null>(null);
   const sessionIdRef = useRef<number | null>(null);
   const sessionTypeRef = useRef<SessionType>("adhoc");
   const entriesRef = useRef<ChatEntry[]>([]);
@@ -264,6 +311,12 @@ export function useChat(): UseChatResult {
   // being generated (Issue #254). `stop` aborts through this; `send` clears
   // it on the way out so a later `stop` can't abort a finished request.
   const abortRef = useRef<AbortController | null>(null);
+  // Read synchronously by `send` (same tick as a call), mirroring
+  // `sessionIdRef` above — a plain `useState` read inside `send`'s
+  // `useCallback` would see whatever value was captured when the callback
+  // was created, not the value as of the call that is actually running
+  // (Issue #476, S1b, 決定10).
+  const mentoringTargetRef = useRef<MentoringTarget | null>(null);
 
   // Writes both the ref (read synchronously by `send`/`rewrite`/`endSession`
   // in the same tick they run) and the public `activeSessionId` state
@@ -273,6 +326,17 @@ export function useChat(): UseChatResult {
     sessionIdRef.current = id;
     setActiveSessionIdState(id);
   }, []);
+
+  // Same ref+state pairing as `setActiveSession`, for the same reason: `send`
+  // reads `mentoringTargetRef.current` synchronously, while `ChatView` reads
+  // the `mentoringTarget` state for display (Issue #476, S1b, 決定10).
+  const setMentoringTarget = useCallback(
+    (target: MentoringTarget | null) => {
+      mentoringTargetRef.current = target;
+      setMentoringTargetState(target);
+    },
+    [],
+  );
 
   useEffect(() => {
     entriesRef.current = entries;
@@ -341,6 +405,17 @@ export function useChat(): UseChatResult {
       if (sendingRef.current || switchingRef.current) {
         return;
       }
+      // 決定10: 呼び出し側が options を渡さなかった場合だけ、追跡中の対象
+      // タスクを自動的に付加する。呼び出し側が明示した options はそのまま
+      // 使う（付加しない）— 全日単位メンタリングボタンの `{ mentoring: true
+      // }` に mentoringTaskId が紛れ込まないための境界。
+      const effectiveOptions: SendMessageOptions | undefined =
+        options === undefined && mentoringTargetRef.current !== null
+          ? {
+              mentoring: true,
+              mentoringTaskId: mentoringTargetRef.current.id,
+            }
+          : options;
       sendingRef.current = true;
       setSending(true);
       setError(null);
@@ -419,7 +494,7 @@ export function useChat(): UseChatResult {
           },
           controller.signal,
           undefined,
-          options,
+          effectiveOptions,
         );
       } catch (err) {
         // Keyed on our own controller rather than on the error's name: this
@@ -473,6 +548,34 @@ export function useChat(): UseChatResult {
     },
     [ifMounted, nextLocalKey, setActiveSession],
   );
+
+  const startMentoring = useCallback(
+    async (task: MentoringTarget) => {
+      // Checked here too (not just inside `send`, which shares the exact
+      // same guard): without this, a discarded send (Issue #474's
+      // multi-send guard) would still leave `mentoringTarget` set to a task
+      // whose message never actually went out — the 相談中 display would
+      // claim a consultation that never started (Issue #476, S1b, 決定10).
+      if (sendingRef.current || switchingRef.current) {
+        return;
+      }
+      // Keep only id/title: callers pass the whole `Task`, and the chat state
+      // should not hold on to the task board's object.
+      setMentoringTarget({ id: task.id, title: task.title });
+      // Same message/options S1/S1a already send for this button (決定3・
+      // 決定6) — S1b only adds the persistent target, not a new opening
+      // message.
+      await send(`「${task.title}」の進め方を見てほしい`, {
+        mentoring: true,
+        mentoringTaskId: task.id,
+      });
+    },
+    [send, setMentoringTarget],
+  );
+
+  const clearMentoringTarget = useCallback(() => {
+    setMentoringTarget(null);
+  }, [setMentoringTarget]);
 
   const rewrite = useCallback(
     async (messageId: number, content: string) => {
@@ -650,6 +753,13 @@ export function useChat(): UseChatResult {
         );
 
         setActiveSession(active.id);
+        // 決定11: 会の開始でも相談中を解除する。adhoc で選んだ対象タスクが
+        // 会のセッションの記録へ持ち越されない（確証 (K) の前提）ようにする。
+        // `setMentoringRequired(false)` と違い試行前には置かない: 開始に失敗
+        // して adhoc に留まる場合（夕会の 409 など）は、相談もそのまま続く
+        // のが正しい。切替中は `send` のガードが効くので、ここまで解除が
+        // 遅れても会のセッションへ対象タスクが載ることはない。
+        setMentoringTarget(null);
         ifMounted(() => {
           setSessionType(type);
           setEntries(timeline);
@@ -665,7 +775,7 @@ export function useChat(): UseChatResult {
         ifMounted(() => setSwitching(false));
       }
     },
-    [ifMounted, setActiveSession],
+    [ifMounted, setActiveSession, setMentoringTarget],
   );
 
   const endSession = useCallback(async () => {
@@ -684,6 +794,9 @@ export function useChat(): UseChatResult {
     // one was blocked must clear the notice even though nothing here ever
     // sets it back to `false` on success otherwise (Issue #411).
     setMentoringRequired(false);
+    // 決定11: 会の終了でも相談中を解除する（会中に別のメンタリングを開始
+    // していた場合、adhoc へ戻ったあとにその対象が持ち越されないため）。
+    setMentoringTarget(null);
     try {
       await endSessionRequest(id);
 
@@ -729,7 +842,7 @@ export function useChat(): UseChatResult {
       switchingRef.current = false;
       ifMounted(() => setSwitching(false));
     }
-  }, [ifMounted, setActiveSession]);
+  }, [ifMounted, setActiveSession, setMentoringTarget]);
 
   return {
     entries,
@@ -741,6 +854,9 @@ export function useChat(): UseChatResult {
     error,
     mentoringRequired,
     activeSessionId,
+    mentoringTarget,
+    startMentoring,
+    clearMentoringTarget,
     draft,
     setDraft,
     send,

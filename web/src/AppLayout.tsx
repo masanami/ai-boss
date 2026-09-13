@@ -76,11 +76,7 @@ function AppLayout() {
   // タスクカードからのメンタリング起動（Issue #470, 親 #444 決定1・決定2・
   // 決定3）。`adhoc` 区間のときだけハンドラを TaskBoard/TaskCard へ渡し、会
   // （朝会・夕会）の最中は `null` にして「メンタリングする」ボタン自体を出さ
-  // せない（AC-2）。ハンドラは表示を chat へ切り替え、対象タスクのタイトル
-  // を含む発言を `mentoring: true` ＋ `mentoringTaskId` 付きで 1 回送信する
-  // （決定6: 文面はタイトルを含む画面表示用で、紐づけの根拠は
-  // `mentoringTaskId` が持つ）。専用の対話面は作らず既存のチャット面へ寄せる
-  // （決定2）。
+  // せない（AC-2）。専用の対話面は作らず既存のチャット面へ寄せる（決定2）。
   //
   // `chatState.status === "ready"` も併せてゲートする（self-review 指摘）:
   // `sessionType` の初期値は `"adhoc"`（`useChat` がマウント時に会の復元を
@@ -93,12 +89,15 @@ function AppLayout() {
   // `?? ""` で `「」の進め方を見てほしい` を送りうる形だった。ボタンはその
   // タスクのカード上にしか無いので、タスクをそのまま受け取れば再検索も
   // 失敗分岐も要らなくなる（到達不能な分岐を形としても残さない）。
+  //
+  // Issue #476（S1b, 決定10）: 表示切替はここで行い、「相談中」の開始と送信
+  // は `chatState.startMentoring` へ委ねる（以前はここで直接
+  // `chatState.send(...)` を呼んでいたが、それだと 2 ターン目以降の対象タス
+  // ク保持ができない）。文面・options 自体は S1/S1a から変わらず
+  // `startMentoring` の内部が担う。
   const startMentoringForTask = (task: Task) => {
     setActiveView("chat");
-    void chatState.send(`「${task.title}」の進め方を見てほしい`, {
-      mentoring: true,
-      mentoringTaskId: task.id,
-    });
+    void chatState.startMentoring(task);
   };
   const onStartMentoring =
     chatState.status === "ready" && chatState.sessionType === "adhoc"

@@ -15,7 +15,8 @@
   gap: 0.5rem;
 }
 
-.chat-session-bar button {
+.chat-session-bar button,
+.chat-mentoring-target button {
   background-color: var(--color-bg-elevated);
   color: var(--color-text);
   border: 1px solid var(--color-border);
@@ -304,6 +305,25 @@
   background-color: var(--color-bg-elevated);
   color: var(--color-text);
   border: 1px solid var(--color-border);
+}
+
+/* 「相談中」の状態表示（Issue #476, S1b, 決定10）。危険色ではなく
+   `.chat-mentoring-blocked` と同じ accent 系にする — これも失敗ではなく
+   現在の状態を示す表示のため。ボタンを右寄せにし、帯の中で状態文とひと目で
+   区別できるようにする。 */
+.chat-mentoring-target {
+  margin: 0;
+  padding: 0.6rem 0.85rem;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  border: 1px solid var(--color-accent);
+  border-radius: 8px;
+  background-color: var(--color-bg-elevated);
+  color: var(--color-text);
+  font-size: 0.85rem;
+  line-height: 1.5;
 }
 
 .chat-error {
