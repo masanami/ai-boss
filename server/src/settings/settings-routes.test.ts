@@ -23,7 +23,38 @@ const MINUTE_KEYS = [
 
 interface ErrorBody {
   error: string;
+  code?: string;
 }
+
+// #517: 決定3の日本語 error 文言（画面・API設計の表そのもの）。実装の
+// SETTING_LABELS からは独立に、仕様の表を直接転記する（実装を参照すると
+// 恒真になり、文言が崩れたことを検出できなくなるため）。
+const TIME_KEY_ERRORS: Record<
+  "work_start" | "work_end" | "morning_meeting_time" | "evening_meeting_time",
+  string
+> = {
+  work_start: "勤務開始の時刻を 09:00 の形式で入力してください",
+  work_end: "勤務終了の時刻を 09:00 の形式で入力してください",
+  morning_meeting_time: "朝会の時刻を 09:00 の形式で入力してください",
+  evening_meeting_time: "夕会の時刻を 09:00 の形式で入力してください",
+};
+
+const MINUTE_KEY_ERRORS: Record<(typeof MINUTE_KEYS)[number], string> = {
+  detection_unstarted_fallback_minutes:
+    "未着手のフォールバック（分）には 1 以上の整数を入力してください",
+  detection_silence_fallback_minutes:
+    "無音のフォールバック（分）には 1 以上の整数を入力してください",
+  detection_break_fallback_minutes:
+    "休憩のフォールバック（分）には 1 以上の整数を入力してください",
+  escalation_l2_after_minutes:
+    "エスカレーション: レベル2まで（分）には 1 以上の整数を入力してください",
+  escalation_l3_after_minutes:
+    "エスカレーション: レベル3まで（分）には 1 以上の整数を入力してください",
+  escalation_repeat_minutes:
+    "エスカレーション: 再通知間隔（分）には 1 以上の整数を入力してください",
+};
+
+const WORKING_HOURS_ERROR = "勤務開始は勤務終了より前の時刻にしてください";
 
 interface SettingsBody {
   boss_name: string;
@@ -312,6 +343,184 @@ describe("settings routes", () => {
       expect(res.status).toBe(400);
     });
 
+    // #517: 設定保存のバリデーションエラーの応答の形。画面から届く 5 箇所
+    // の 400 の error/code を日本語・機械可読な形にする。HTTP レベルで
+    // ステータス・応答ボディの完全一致・非回帰（保存されないこと）を
+    // 確認する（前後関係の 2 規則は上の describe ブロックで既に確認済み）。
+    describe("日本語の error / code 応答 (#517)", () => {
+      describe("必須の文字列（空欄）", () => {
+        it.each(["", "   "])(
+          "returns 400 with the Japanese error and code (setting_required) when boss_name is %j",
+          async (value) => {
+            const app = createApp(db);
+
+            const res = await app.request("/api/settings", {
+              method: "PUT",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ boss_name: value }),
+            });
+
+            expect(res.status).toBe(400);
+            const body = await readJson<ErrorBody>(res);
+            expect(body).toEqual({
+              error: "ボスの名前を入力してください",
+              code: "setting_required",
+            });
+          },
+        );
+
+        it.each(["", "   "])(
+          "returns 400 with the Japanese error and code (setting_required) when model is %j",
+          async (value) => {
+            const app = createApp(db);
+
+            const res = await app.request("/api/settings", {
+              method: "PUT",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ model: value }),
+            });
+
+            expect(res.status).toBe(400);
+            const body = await readJson<ErrorBody>(res);
+            expect(body).toEqual({
+              error: "モデルを入力してください",
+              code: "setting_required",
+            });
+          },
+        );
+
+        it("saves nothing (non-regression) when boss_name is rejected as empty", async () => {
+          const app = createApp(db);
+
+          const res = await app.request("/api/settings", {
+            method: "PUT",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ boss_name: "" }),
+          });
+          expect(res.status).toBe(400);
+
+          const row = db
+            .prepare("SELECT value FROM settings WHERE key = ?")
+            .get("boss_name") as { value: string } | undefined;
+          expect(row).toBeUndefined();
+        });
+      });
+
+      describe("時刻の形式", () => {
+        it.each([
+          ["work_start", ""],
+          ["work_start", "9:00"],
+          ["work_end", ""],
+          ["work_end", "9:00"],
+          ["morning_meeting_time", ""],
+          ["morning_meeting_time", "9:00"],
+          ["evening_meeting_time", ""],
+          ["evening_meeting_time", "9:00"],
+        ] as const)(
+          "returns 400 with the Japanese error and code (invalid_time) when %s is %j",
+          async (key, value) => {
+            const app = createApp(db);
+
+            const res = await app.request("/api/settings", {
+              method: "PUT",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ [key]: value }),
+            });
+
+            expect(res.status).toBe(400);
+            const body = await readJson<ErrorBody>(res);
+            expect(body).toEqual({
+              error: TIME_KEY_ERRORS[key],
+              code: "invalid_time",
+            });
+          },
+        );
+
+        it("saves nothing (non-regression) when work_start's format is rejected", async () => {
+          const app = createApp(db);
+
+          const res = await app.request("/api/settings", {
+            method: "PUT",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ work_start: "9:00" }),
+          });
+          expect(res.status).toBe(400);
+
+          const row = db
+            .prepare("SELECT value FROM settings WHERE key = ?")
+            .get("work_start") as { value: string } | undefined;
+          expect(row).toBeUndefined();
+        });
+      });
+
+      describe("正の整数", () => {
+        it.each(
+          MINUTE_KEYS.flatMap((key) =>
+            [0, -5, 1.5].map((value) => [key, value] as const),
+          ),
+        )(
+          "returns 400 with the Japanese error and code (invalid_positive_integer) when %s is %s",
+          async (key, value) => {
+            const app = createApp(db);
+
+            const res = await app.request("/api/settings", {
+              method: "PUT",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ [key]: value }),
+            });
+
+            expect(res.status).toBe(400);
+            const body = await readJson<ErrorBody>(res);
+            expect(body).toEqual({
+              error: MINUTE_KEY_ERRORS[key],
+              code: "invalid_positive_integer",
+            });
+          },
+        );
+
+        it("saves nothing (non-regression) when detection_unstarted_fallback_minutes is rejected as 0", async () => {
+          const app = createApp(db);
+
+          const res = await app.request("/api/settings", {
+            method: "PUT",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              detection_unstarted_fallback_minutes: 0,
+            }),
+          });
+          expect(res.status).toBe(400);
+
+          const row = db
+            .prepare("SELECT value FROM settings WHERE key = ?")
+            .get("detection_unstarted_fallback_minutes") as
+            | { value: string }
+            | undefined;
+          expect(row).toBeUndefined();
+        });
+      });
+
+      // #517 決定2: 対象外の400は英語のまま・code無し。TONE_PRESETS に
+      // 含まれない値は画面からは届かないが（<select> が選択肢を
+      // 制限する）、API を直接叩いたときの契約として英語のままである
+      // ことを固定する（decision 5: 対象外が変わらないことも回帰対象）。
+      it("returns the unmodified English error with no code for an out-of-scope 400 (boss_tone_preset)", async () => {
+        const app = createApp(db);
+
+        const res = await app.request("/api/settings", {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ boss_tone_preset: "gentle" }),
+        });
+
+        expect(res.status).toBe(400);
+        const body = await readJson<ErrorBody>(res);
+        expect(body).toEqual({
+          error:
+            "boss_tone_preset must be one of: reliable, strict, logical, passionate",
+        });
+      });
+    });
+
     // GAP-13: settings-validation.test.ts already covers these boundaries at
     // the function level; the checks below repeat them through the real
     // HTTP route (readJsonBody -> validatePutSettingsInput -> setSettingValue)
@@ -594,32 +803,28 @@ describe("settings routes", () => {
         expect(workEndRow?.value).toBe("17:30");
       });
 
-      it("returns 400 for an overnight range (work_start=22:00, work_end=02:00) (AC-1)", async () => {
-        const app = createApp(db);
+      it.each([
+        ["22:00", "02:00"],
+        ["09:00", "09:00"],
+      ])(
+        "returns 400 with the Japanese error and code (invalid_working_hours) for an invalid range (work_start=%s, work_end=%s) (AC-1, AC-2, decision 2: >=) (#517)",
+        async (start, end) => {
+          const app = createApp(db);
 
-        const res = await app.request("/api/settings", {
-          method: "PUT",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ work_start: "22:00", work_end: "02:00" }),
-        });
+          const res = await app.request("/api/settings", {
+            method: "PUT",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ work_start: start, work_end: end }),
+          });
 
-        expect(res.status).toBe(400);
-        const body = await readJson<ErrorBody>(res);
-        expect(body.error).toContain("work_start");
-        expect(body.error).toContain("work_end");
-      });
-
-      it("returns 400 for an equal-time range (work_start=09:00, work_end=09:00) (AC-1, decision 2: >=)", async () => {
-        const app = createApp(db);
-
-        const res = await app.request("/api/settings", {
-          method: "PUT",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ work_start: "09:00", work_end: "09:00" }),
-        });
-
-        expect(res.status).toBe(400);
-      });
+          expect(res.status).toBe(400);
+          const body = await readJson<ErrorBody>(res);
+          expect(body).toEqual({
+            error: WORKING_HOURS_ERROR,
+            code: "invalid_working_hours",
+          });
+        },
+      );
 
       it("writes neither work_start nor work_end to the settings table when the range is rejected (AC-6)", async () => {
         const app = createApp(db);
@@ -674,7 +879,7 @@ describe("settings routes", () => {
     // 適用後の値ではなく生値）、および相関チェックが patch に触れていない
     // ときは発火しないスコープをそれぞれ担保する。
     describe("work_start / work_end partial-update correlation (AC-3, AC-4)", () => {
-      it("returns 400 when work_start alone is pushed past the currently-effective (default) work_end (AC-3, exclusion side)", async () => {
+      it("returns 400 with the Japanese error and code (invalid_working_hours) when work_start alone is pushed past the currently-effective (default) work_end (AC-3, exclusion side) (#517)", async () => {
         const app = createApp(db);
 
         const res = await app.request("/api/settings", {
@@ -685,8 +890,10 @@ describe("settings routes", () => {
 
         expect(res.status).toBe(400);
         const body = await readJson<ErrorBody>(res);
-        expect(body.error).toContain("work_start");
-        expect(body.error).toContain("work_end");
+        expect(body).toEqual({
+          error: WORKING_HOURS_ERROR,
+          code: "invalid_working_hours",
+        });
 
         const row = db
           .prepare("SELECT value FROM settings WHERE key = ?")
@@ -709,7 +916,7 @@ describe("settings routes", () => {
         expect(body.work_end).toBe("18:00");
       });
 
-      it("returns 400 for work_end alone when work_start is unset and the default work_start would be >= it (AC-4)", async () => {
+      it("returns 400 with the Japanese error and code (invalid_working_hours) for work_end alone when work_start is unset and the default work_start would be >= it (AC-4) (#517)", async () => {
         // Issue #481 の完了条件に挙げられている具体例そのもの:
         // work_start 未設定の DB への { work_end: "02:00" } のみの更新は
         // 既定値 09:00 と突き合わされ拒否される。
@@ -723,8 +930,10 @@ describe("settings routes", () => {
 
         expect(res.status).toBe(400);
         const body = await readJson<ErrorBody>(res);
-        expect(body.error).toContain("work_start");
-        expect(body.error).toContain("work_end");
+        expect(body).toEqual({
+          error: WORKING_HOURS_ERROR,
+          code: "invalid_working_hours",
+        });
 
         const row = db
           .prepare("SELECT value FROM settings WHERE key = ?")
@@ -797,8 +1006,10 @@ describe("settings routes", () => {
 
         expect(res.status).toBe(400);
         const body = await readJson<ErrorBody>(res);
-        expect(body.error).toContain("work_start");
-        expect(body.error).toContain("work_end");
+        expect(body).toEqual({
+          error: WORKING_HOURS_ERROR,
+          code: "invalid_working_hours",
+        });
 
         // all-or-nothing: 既存の生値も 10:00 で上書きされず、22:00 のまま
         const row = db
@@ -832,8 +1043,10 @@ describe("settings routes", () => {
         // 20:00 >= 18:00 のため拒否される（fail-open で無条件通過しない）。
         expect(res.status).toBe(400);
         const body = await readJson<ErrorBody>(res);
-        expect(body.error).toContain("work_start");
-        expect(body.error).toContain("work_end");
+        expect(body).toEqual({
+          error: WORKING_HOURS_ERROR,
+          code: "invalid_working_hours",
+        });
 
         const row = db
           .prepare("SELECT value FROM settings WHERE key = ?")
