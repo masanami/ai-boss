@@ -27,6 +27,23 @@ export interface MentoringTarget {
   title: string;
 }
 
+/**
+ * What is currently "相談中" (Issue #476 S1b, generalized in Issue #503
+ * 決定1): a task-origin consultation about one task, or a 全日単位
+ * consultation about the whole day's approach. A single value rather than
+ * two flags, so the two can never both be active — starting one replaces
+ * the other by construction.
+ */
+export type MentoringConsultation =
+  | { kind: "task"; id: number; title: string }
+  | { kind: "day" };
+
+// The header's 全日単位メンタリング opening message (Issue #411, 親 #276
+// 判断6). Always sent with `mentoring: true` — without the flag the server
+// does not queue MENTORING_FLOW_INSTRUCTION, and nothing gets recorded via
+// `record_mentoring`.
+const DAY_MENTORING_MESSAGE_CONTENT = "今の進め方を見てほしい";
+
 export interface UseChatResult {
   entries: ChatEntry[];
   status: ChatLoadStatus;
@@ -57,17 +74,18 @@ export interface UseChatResult {
    */
   activeSessionId: number | null;
   /**
-   * The task currently being consulted about (Issue #476, S1b, 決定10), or
-   * `null` when nothing is "相談中". Set by `startMentoring` (replacing any
-   * previous target), and cleared by `clearMentoringTarget`, `startSession`,
-   * and `endSession` (決定11) — a session switch or an explicit clear always
-   * wins over whatever task was previously targeted. Only the `id`/`title`
-   * captured at the moment `startMentoring` was called are kept (no
-   * re-lookup against the task list later, mirroring 決定9's no-re-search
-   * rule) — this is also what `ChatView` renders in its "相談中" state
-   * display.
+   * What is currently being consulted about, or `null` when nothing is
+   * "相談中". `{ kind: "task" }` is set by `startMentoring` (Issue #476, S1b,
+   * 決定10) and `{ kind: "day" }` by `startDayMentoring` (Issue #503) — each
+   * replaces whatever was there before, including the other kind. Cleared by
+   * `clearMentoringTarget`, `startSession`, and `endSession` (S1b 決定11) — a
+   * session switch or an explicit clear always wins. For a task, only the
+   * `id`/`title` captured at the moment `startMentoring` was called are kept
+   * (no re-lookup against the task list later, mirroring 決定9's
+   * no-re-search rule) — this is also what `ChatView` renders in its
+   * "相談中" state display.
    */
-  mentoringTarget: MentoringTarget | null;
+  mentoringTarget: MentoringConsultation | null;
   /**
    * Starts (or replaces) 相談中 for `task` (Issue #476, S1b): sets
    * `mentoringTarget` to `task`, then sends the same task-origin message
@@ -81,6 +99,16 @@ export interface UseChatResult {
    * clear it.
    */
   startMentoring: (task: MentoringTarget) => Promise<void>;
+  /**
+   * Starts (or replaces) the 全日単位 相談中 (Issue #503, 決定1): sets
+   * `mentoringTarget` to `{ kind: "day" }`, then sends the header's opening
+   * message `今の進め方を見てほしい` with `{ mentoring: true }` (no
+   * `mentoringTaskId` — it is not about any task). Same discipline as
+   * `startMentoring`: a no-op (no target, no send) while
+   * `sendingRef.current || switchingRef.current`, and a send that is
+   * attempted but fails keeps the target.
+   */
+  startDayMentoring: () => Promise<void>;
   /**
    * Clears `mentoringTarget` back to `null` (Issue #476, S1b, 決定11): the
    * explicit "相談を終える" affordance in `ChatView`'s 相談中 display.
@@ -115,13 +143,14 @@ export interface UseChatResult {
    *   this.
    *
    * **When `options` is omitted and `mentoringTarget` is non-null** (Issue
-   * #476, S1b, 決定10), `send` adds `{ mentoring: true, mentoringTaskId:
-   * mentoringTarget.id }` itself before posting — this is what lets a plain
-   * `send(content)` call (the input box's `submitDraft`) keep attributing
-   * turns 2+ of an ongoing 相談 to the same task, without every call site
-   * having to remember to pass the option. Passing `options` explicitly
-   * (e.g. the header's 全日単位メンタリングボタン's `{ mentoring: true }`)
-   * is used as-is and is never merged with the tracked target.
+   * #476, S1b, 決定10; Issue #503), `send` adds the 相談中 context itself
+   * before posting — `{ mentoring: true, mentoringTaskId: mentoringTarget.id }`
+   * for a task, `{ mentoring: true }` for the 全日単位 consultation. This is
+   * what lets a plain `send(content)` call (the input box's `submitDraft`)
+   * keep turns 2+ of an ongoing 相談 in mentoring (and attributed to the same
+   * task), without every call site having to remember to pass the option.
+   * Passing `options` explicitly is used as-is and is never merged with the
+   * tracked target.
    */
   send: (content: string, options?: SendMessageOptions) => Promise<void>;
   /**
@@ -293,7 +322,7 @@ export function useChat(): UseChatResult {
     null,
   );
   const [mentoringTarget, setMentoringTargetState] =
-    useState<MentoringTarget | null>(null);
+    useState<MentoringConsultation | null>(null);
   const sessionIdRef = useRef<number | null>(null);
   const sessionTypeRef = useRef<SessionType>("adhoc");
   const entriesRef = useRef<ChatEntry[]>([]);
@@ -316,7 +345,7 @@ export function useChat(): UseChatResult {
   // `useCallback` would see whatever value was captured when the callback
   // was created, not the value as of the call that is actually running
   // (Issue #476, S1b, 決定10).
-  const mentoringTargetRef = useRef<MentoringTarget | null>(null);
+  const mentoringTargetRef = useRef<MentoringConsultation | null>(null);
 
   // Writes both the ref (read synchronously by `send`/`rewrite`/`endSession`
   // in the same tick they run) and the public `activeSessionId` state
@@ -331,7 +360,7 @@ export function useChat(): UseChatResult {
   // reads `mentoringTargetRef.current` synchronously, while `ChatView` reads
   // the `mentoringTarget` state for display (Issue #476, S1b, 決定10).
   const setMentoringTarget = useCallback(
-    (target: MentoringTarget | null) => {
+    (target: MentoringConsultation | null) => {
       mentoringTargetRef.current = target;
       setMentoringTargetState(target);
     },
@@ -405,17 +434,17 @@ export function useChat(): UseChatResult {
       if (sendingRef.current || switchingRef.current) {
         return;
       }
-      // 決定10: 呼び出し側が options を渡さなかった場合だけ、追跡中の対象
-      // タスクを自動的に付加する。呼び出し側が明示した options はそのまま
-      // 使う（付加しない）— 全日単位メンタリングボタンの `{ mentoring: true
-      // }` に mentoringTaskId が紛れ込まないための境界。
+      // 決定10: 呼び出し側が options を渡さなかった場合だけ、相談中の文脈を
+      // 自動的に付加する。呼び出し側が明示した options はそのまま使う（付加
+      // しない）。全日単位（#503）には mentoringTaskId を載せない — タスク
+      // 起点から置き換わった後に古い対象タスクが紛れ込まないための境界。
+      const target = mentoringTargetRef.current;
       const effectiveOptions: SendMessageOptions | undefined =
-        options === undefined && mentoringTargetRef.current !== null
-          ? {
-              mentoring: true,
-              mentoringTaskId: mentoringTargetRef.current.id,
-            }
-          : options;
+        options !== undefined || target === null
+          ? options
+          : target.kind === "task"
+            ? { mentoring: true, mentoringTaskId: target.id }
+            : { mentoring: true };
       sendingRef.current = true;
       setSending(true);
       setError(null);
@@ -561,7 +590,7 @@ export function useChat(): UseChatResult {
       }
       // Keep only id/title: callers pass the whole `Task`, and the chat state
       // should not hold on to the task board's object.
-      setMentoringTarget({ id: task.id, title: task.title });
+      setMentoringTarget({ kind: "task", id: task.id, title: task.title });
       // Same message/options S1/S1a already send for this button (決定3・
       // 決定6) — S1b only adds the persistent target, not a new opening
       // message.
@@ -572,6 +601,17 @@ export function useChat(): UseChatResult {
     },
     [send, setMentoringTarget],
   );
+
+  const startDayMentoring = useCallback(async () => {
+    // Same guard as `startMentoring`, for the same reason (Issue #503,
+    // 決定1・確証 (G)): a send the guard would discard must not leave the
+    // 全日単位 相談中 displayed for a consultation that never went out.
+    if (sendingRef.current || switchingRef.current) {
+      return;
+    }
+    setMentoringTarget({ kind: "day" });
+    await send(DAY_MENTORING_MESSAGE_CONTENT, { mentoring: true });
+  }, [send, setMentoringTarget]);
 
   const clearMentoringTarget = useCallback(() => {
     setMentoringTarget(null);
@@ -856,6 +896,7 @@ export function useChat(): UseChatResult {
     activeSessionId,
     mentoringTarget,
     startMentoring,
+    startDayMentoring,
     clearMentoringTarget,
     draft,
     setDraft,

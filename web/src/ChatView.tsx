@@ -13,12 +13,11 @@ const SESSION_END_LABELS = {
   evening: "夕会を終了",
 } as const;
 
-// Issue #411 (親 #276 判断6): 随時メンタリングのボタンが送る定型のユーザー
-// 発言。`mentoring: true` を必ず伴わせる（`send` の第2引数）— フラグ無しの
-// 定型文だけでは MENTORING_FLOW_INSTRUCTION が積まれず、随時メンタリングだ
-// け記録（`record_mentoring`）が残らない（機能仕様「画面・API設計」）。
-const MENTORING_MESSAGE_CONTENT = "今の進め方を見てほしい";
+// Issue #411 (親 #276 判断6): 随時メンタリングのボタン。押したときに送る
+// 定型文と `mentoring: true` は `useChat.startDayMentoring` が持つ（#503）。
 const MENTORING_BUTTON_LABEL = "進め方を点検してもらう";
+// Issue #503 (決定2): 全日単位の「相談中」の状態表示の文面。
+const DAY_MENTORING_STATUS = "今日の進め方について相談中";
 
 // AC-39/AC-40: `code` 一致（`mentoringRequired`）で分岐する状態表示。
 // エラー文言をそのまま出さず、逃げ道（設定でオフ）を必ず併記する — これを
@@ -254,6 +253,7 @@ function ChatView({ chatState }: ChatViewProps) {
     mentoringRequired,
     activeSessionId,
     mentoringTarget,
+    startDayMentoring,
     clearMentoringTarget,
     draft,
     setDraft,
@@ -515,17 +515,13 @@ function ChatView({ chatState }: ChatViewProps) {
                 （会でない区間）のときだけ表示する — 朝会・夕会の会中は、その
                 会のフロー指示が既に会話を主導しているため、ここに置かない
                 （「画面・API設計」）。
-                Issue #476（S1b, 決定11）: タスク起点の「相談中」が残っている
-                と、この全日単位の送信へ古い対象タスクが持ち越されてしまう
-                ため（確証 (I)）、送信の前に必ず解除する。送信の形自体
-                （`mentoring: true` のみ・`mentoringTaskId` 無し）は変えない
-                （#491 の範囲）。 */}
+                Issue #503（決定1・決定2）: 押すと全日単位の「相談中」になり、
+                タスク起点の相談中はそれに置き換わる。状態の設定・ガード・送信
+                は `startDayMentoring` が持ち、ここは呼ぶだけにする（ガードの
+                外で状態を設定しないため。確証 (G)）。 */}
             <button
               type="button"
-              onClick={() => {
-                clearMentoringTarget();
-                void send(MENTORING_MESSAGE_CONTENT, { mentoring: true });
-              }}
+              onClick={() => void startDayMentoring()}
               disabled={switching || sending || editingMessageId !== null}
             >
               {MENTORING_BUTTON_LABEL}
@@ -550,10 +546,15 @@ function ChatView({ chatState }: ChatViewProps) {
           なので `chat-timeline`（タイムライン）へは混ぜず、セッションバーの
           直下に置く（既存の `chat-mentoring-blocked` と同じ帯）。タイトルは
           `startMentoring` 呼び出し時に受け取った値をそのまま使う（決定9と
-          同じ規律でタスク一覧の再検索をしない）。 */}
+          同じ規律でタスク一覧の再検索をしない）。全日単位の相談中（#503）
+          も同じ帯・同じ解除導線で出し、文面だけを出し分ける。 */}
       {mentoringTarget !== null && (
         <div className="chat-mentoring-target" role="status">
-          <span>「{mentoringTarget.title}」について相談中</span>
+          <span>
+            {mentoringTarget.kind === "task"
+              ? `「${mentoringTarget.title}」について相談中`
+              : DAY_MENTORING_STATUS}
+          </span>
           <button type="button" onClick={clearMentoringTarget}>
             相談を終える
           </button>
