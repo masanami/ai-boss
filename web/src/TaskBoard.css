@@ -53,10 +53,17 @@
   cursor: default;
 }
 
+/*
+ * 列グリッド（Issue #515）: grid ではなく flex にする。展開列は
+ * 最小 18rem（操作行の必要幅 約254px に余裕を持たせた値）で余りを分け
+ * 合い、畳んだ列（.task-column-collapsed）は内容の幅に詰める。5 列がこの
+ * 最小幅で収まらないときは、`.app-main` ではなくこの列グリッドの中だけを
+ * 横スクロールにする（決定1: フォームを横に流さないため）。
+ */
 .task-board-columns {
-  display: grid;
-  grid-template-columns: repeat(5, 1fr);
+  display: flex;
   gap: 1rem;
+  overflow-x: auto;
 }
 
 .task-column {
@@ -65,6 +72,11 @@
   border-radius: 8px;
   padding: 0.75rem;
   min-height: 200px;
+  flex: 1 0 18rem;
+}
+
+.task-column-collapsed {
+  flex: 0 0 auto;
 }
 
 .task-column-drag-over {
@@ -78,6 +90,35 @@
   letter-spacing: 0.04em;
   color: var(--color-text-muted);
   margin: 0 0 0.75rem;
+}
+
+/*
+ * 開閉トグル（完了・中止列。Issue #515）。ブラウザ既定のボタン装飾をリセットし
+ * 見出し（h2）と同じ見た目にする。既存のボタン規則
+ * (`.task-form button, .task-card-actions button`) には触れない。
+ */
+.task-column-toggle {
+  display: block;
+  width: 100%;
+  background: none;
+  border: none;
+  margin: 0;
+  padding: 0;
+  font: inherit;
+  color: inherit;
+  text-transform: inherit;
+  letter-spacing: inherit;
+  text-align: inherit;
+  cursor: pointer;
+}
+
+/*
+ * 畳んだ帯は見出しを縦書きにして、細くても読めるようにする（Issue #515。
+ * 帯の高さは行の高さまで伸びるので縦書きの見出しが収まる）。
+ */
+.task-column-collapsed h2 {
+  margin: 0;
+  writing-mode: vertical-rl;
 }
 
 .task-column ul {

@@ -84,6 +84,24 @@ function makeTasksState(overrides: Partial<UseTasksResult> = {}): UseTasksResult
   };
 }
 
+/**
+ * 完了・中止列は既定で畳まれているため、カードを主張する既存アサーションの
+ * 前提として展開する（#515 決定2）。畳んだままでは窓の絞り込みを外しても
+ * 通る恒真テストになるため、除外側のアサーションでも必ず呼ぶ。展開が実際に
+ * 起きたこと（aria-expanded="true"）もあわせて確認する。
+ */
+function expandTerminalColumn(label: "完了" | "中止") {
+  const column = screen.getByRole("region", { name: label });
+  // 日数・件数は見出しの完全一致テストが固定するので、ここでは問わない
+  // （窓の日数を変えたときに、見出しと無関係なテストまで落ちないようにする）。
+  const toggle = within(column).getByRole("button", {
+    name: new RegExp(`^${label}（直近 \\d+ 日・\\d+ 件）$`),
+  });
+  fireEvent.click(toggle);
+  expect(toggle).toHaveAttribute("aria-expanded", "true");
+  return column;
+}
+
 describe("TaskBoard", () => {
   // 直近ウィンドウのテストだけが Date を固定する。実タイマーのままの
   // テストでは no-op なので、既存テストの挙動は変わらない。
@@ -123,10 +141,10 @@ describe("TaskBoard", () => {
       within(inProgressColumn).getByText("進行中のタスク"),
     ).toBeInTheDocument();
 
-    const doneColumn = screen.getByRole("region", { name: "完了" });
+    const doneColumn = expandTerminalColumn("完了");
     expect(within(doneColumn).getByText("完了したタスク")).toBeInTheDocument();
 
-    const droppedColumn = screen.getByRole("region", { name: "中止" });
+    const droppedColumn = expandTerminalColumn("中止");
     expect(
       within(droppedColumn).getByText("中止したタスク"),
     ).toBeInTheDocument();
@@ -600,6 +618,8 @@ describe("TaskBoard", () => {
       ];
 
       render(<TaskBoard tasksState={makeTasksState({ tasks })} />);
+      expandTerminalColumn("完了");
+      expandTerminalColumn("中止");
 
       expect(
         screen.queryByText("境界の1日前に完了したタスク"),
@@ -620,6 +640,7 @@ describe("TaskBoard", () => {
       ];
 
       render(<TaskBoard tasksState={makeTasksState({ tasks })} />);
+      expandTerminalColumn("完了");
 
       expect(screen.queryByText("先月完了したタスク")).not.toBeInTheDocument();
     });
@@ -637,6 +658,7 @@ describe("TaskBoard", () => {
       ];
 
       render(<TaskBoard tasksState={makeTasksState({ tasks })} />);
+      expandTerminalColumn("完了");
 
       expect(screen.queryByText("完了時刻が無いタスク")).not.toBeInTheDocument();
     });
@@ -653,6 +675,7 @@ describe("TaskBoard", () => {
       ];
 
       render(<TaskBoard tasksState={makeTasksState({ tasks })} />);
+      expandTerminalColumn("完了");
 
       expect(
         screen.queryByText("古く完了して今日触ったタスク"),
@@ -671,7 +694,7 @@ describe("TaskBoard", () => {
 
       render(<TaskBoard tasksState={makeTasksState({ tasks })} />);
 
-      const doneColumn = screen.getByRole("region", { name: "完了" });
+      const doneColumn = expandTerminalColumn("完了");
       expect(
         within(doneColumn).getByText("今日完了したタスク"),
       ).toBeInTheDocument();
@@ -695,12 +718,12 @@ describe("TaskBoard", () => {
 
       render(<TaskBoard tasksState={makeTasksState({ tasks })} />);
 
-      const doneColumn = screen.getByRole("region", { name: "完了" });
+      const doneColumn = expandTerminalColumn("完了");
       expect(
         within(doneColumn).getByText("下限ちょうどに完了したタスク"),
       ).toBeInTheDocument();
 
-      const droppedColumn = screen.getByRole("region", { name: "中止" });
+      const droppedColumn = expandTerminalColumn("中止");
       expect(
         within(droppedColumn).getByText("下限ちょうどに中止したタスク"),
       ).toBeInTheDocument();
@@ -718,7 +741,7 @@ describe("TaskBoard", () => {
 
       render(<TaskBoard tasksState={makeTasksState({ tasks })} />);
 
-      const droppedColumn = screen.getByRole("region", { name: "中止" });
+      const droppedColumn = expandTerminalColumn("中止");
       expect(
         within(droppedColumn).getByText("今日中止したタスク"),
       ).toBeInTheDocument();
@@ -739,7 +762,7 @@ describe("TaskBoard", () => {
 
       render(<TaskBoard tasksState={makeTasksState({ tasks })} />);
 
-      const droppedColumn = screen.getByRole("region", { name: "中止" });
+      const droppedColumn = expandTerminalColumn("中止");
       expect(
         within(droppedColumn).getByText("完了時刻が古い中止タスク"),
       ).toBeInTheDocument();
@@ -758,6 +781,7 @@ describe("TaskBoard", () => {
       const { rerender } = render(
         <TaskBoard tasksState={makeTasksState({ tasks: [stale] })} />,
       );
+      expandTerminalColumn("中止");
       expect(screen.queryByText("古い中止タスク")).not.toBeInTheDocument();
 
       rerender(
@@ -768,6 +792,7 @@ describe("TaskBoard", () => {
         />,
       );
 
+      // rerender は同一インスタンスを保つため、展開状態はそのまま保持される。
       const droppedColumn = screen.getByRole("region", { name: "中止" });
       expect(
         within(droppedColumn).getByText("古い中止タスク"),
@@ -820,6 +845,7 @@ describe("TaskBoard", () => {
       const tasksState = makeTasksState({ tasks: [task] });
 
       const { rerender } = render(<TaskBoard tasksState={tasksState} />);
+      expandTerminalColumn("完了");
 
       const dataTransfer = makeDataTransfer(1);
       const doneColumn = screen.getByRole("region", { name: "完了" });
@@ -878,7 +904,7 @@ describe("TaskBoard", () => {
 
       render(<TaskBoard tasksState={makeTasksState({ tasks })} />);
 
-      const doneColumn = screen.getByRole("region", { name: "完了" });
+      const doneColumn = expandTerminalColumn("完了");
       const titles = within(doneColumn)
         .getAllByRole("listitem")
         .map(
@@ -923,29 +949,29 @@ describe("TaskBoard", () => {
 
       render(<TaskBoard tasksState={makeTasksState({ tasks })} />);
 
-      const doneColumn = screen.getByRole("region", { name: "完了" });
+      const doneColumn = expandTerminalColumn("完了");
       expect(within(doneColumn).getAllByRole("listitem")).toHaveLength(2);
     });
 
-    it("labels the 完了 heading with the window length (AC-16)", () => {
+    it("labels the 完了 heading with the window length and in-window count (AC-16, #515 決定2改訂)", () => {
       render(<TaskBoard tasksState={makeTasksState()} />);
 
       const doneColumn = screen.getByRole("region", { name: "完了" });
       // 定数を import せずリテラルで固定する（AC-38 の変異確認を成立させる）。
-      // アンカー付きで完全一致にし、件数表示等の後付け（決定 6 の却下事項）が
-      // 素通りしないようにする。
+      // アンカー付きで完全一致にし、日数・件数表示以外の後付け（決定 6 の
+      // 却下事項）が素通りしないようにする。tasks が空なので 0 件。
       expect(
         within(doneColumn).getByRole("heading", { level: 2 }),
-      ).toHaveTextContent(/^完了（直近 7 日）$/);
+      ).toHaveTextContent(/^完了（直近 7 日・0 件）$/);
     });
 
-    it("labels the 中止 heading with the window length (AC-17)", () => {
+    it("labels the 中止 heading with the window length and in-window count (AC-17, #515 決定2改訂)", () => {
       render(<TaskBoard tasksState={makeTasksState()} />);
 
       const droppedColumn = screen.getByRole("region", { name: "中止" });
       expect(
         within(droppedColumn).getByRole("heading", { level: 2 }),
-      ).toHaveTextContent(/^中止（直近 7 日）$/);
+      ).toHaveTextContent(/^中止（直近 7 日・0 件）$/);
     });
 
     it("leaves the headings of the non-terminal columns unchanged (AC-18)", () => {
@@ -975,6 +1001,379 @@ describe("TaskBoard", () => {
       // 完全一致で引けること（見出しの文言変更が波及していないこと）。
       expect(screen.getByRole("region", { name: "完了" })).toBeInTheDocument();
       expect(screen.getByRole("region", { name: "中止" })).toBeInTheDocument();
+    });
+  });
+
+  // 「完了」「中止」列を既定で畳み、開閉トグルで出し分ける（#515）。
+  describe("完了/中止 列の既定折りたたみと開閉 (#515)", () => {
+    beforeEach(() => {
+      vi.useFakeTimers({ toFake: ["Date"] });
+      vi.setSystemTime(NOW);
+    });
+
+    it("collapses 完了 and 中止 by default and hides their in-window cards", () => {
+      const tasks = [
+        makeTask({
+          id: 1,
+          title: "窓内の完了タスク",
+          status: "done",
+          completed_at: localIso(2026, 8, 10, 9),
+        }),
+        makeTask({
+          id: 2,
+          title: "窓内の中止タスク",
+          status: "dropped",
+          updated_at: localIso(2026, 8, 10, 9),
+        }),
+      ];
+
+      render(<TaskBoard tasksState={makeTasksState({ tasks })} />);
+
+      const doneColumn = screen.getByRole("region", { name: "完了" });
+      const doneToggle = within(doneColumn).getByRole("button", {
+        name: /^完了（直近 \d+ 日・\d+ 件）$/,
+      });
+      expect(doneToggle).toHaveAttribute("aria-expanded", "false");
+      expect(
+        within(doneColumn).queryByRole("listitem"),
+      ).not.toBeInTheDocument();
+
+      const droppedColumn = screen.getByRole("region", { name: "中止" });
+      const droppedToggle = within(droppedColumn).getByRole("button", {
+        name: /^中止（直近 \d+ 日・\d+ 件）$/,
+      });
+      expect(droppedToggle).toHaveAttribute("aria-expanded", "false");
+      expect(
+        within(droppedColumn).queryByRole("listitem"),
+      ).not.toBeInTheDocument();
+    });
+
+    it("expands 完了 and shows its in-window card on toggle click, and collapses again on a second click", () => {
+      const task = makeTask({
+        id: 1,
+        title: "窓内の完了タスク",
+        status: "done",
+        completed_at: localIso(2026, 8, 10, 9),
+      });
+
+      render(<TaskBoard tasksState={makeTasksState({ tasks: [task] })} />);
+
+      const doneColumn = expandTerminalColumn("完了");
+      expect(
+        within(doneColumn).getByText("窓内の完了タスク"),
+      ).toBeInTheDocument();
+
+      const doneToggle = within(doneColumn).getByRole("button", {
+        name: /^完了（直近 \d+ 日・\d+ 件）$/,
+      });
+      fireEvent.click(doneToggle);
+
+      expect(doneToggle).toHaveAttribute("aria-expanded", "false");
+      expect(
+        within(doneColumn).queryByText("窓内の完了タスク"),
+      ).not.toBeInTheDocument();
+    });
+
+    it("expands 中止 independently of 完了 (toggling one does not affect the other, both directions)", () => {
+      render(<TaskBoard tasksState={makeTasksState()} />);
+
+      const doneColumn = screen.getByRole("region", { name: "完了" });
+      const doneToggle = within(doneColumn).getByRole("button", {
+        name: /^完了（直近 \d+ 日・\d+ 件）$/,
+      });
+      const droppedColumn = screen.getByRole("region", { name: "中止" });
+      const droppedToggle = within(droppedColumn).getByRole("button", {
+        name: /^中止（直近 \d+ 日・\d+ 件）$/,
+      });
+
+      // 完了だけを開いても中止は畳んだまま。
+      expandTerminalColumn("完了");
+      expect(doneToggle).toHaveAttribute("aria-expanded", "true");
+      expect(droppedToggle).toHaveAttribute("aria-expanded", "false");
+
+      // 続けて中止も開くと、完了は開いたまま中止も開く（アコーディオン化
+      // していないこと。片方の開閉でもう片方が閉じる変異を検出する）。
+      expandTerminalColumn("中止");
+      expect(doneToggle).toHaveAttribute("aria-expanded", "true");
+      expect(droppedToggle).toHaveAttribute("aria-expanded", "true");
+
+      // 中止を畳んでも完了は開いたまま（閉じる操作でもう片方が道連れに
+      // ならないこと。2 列で開閉状態を共有していないかを確認する）。
+      fireEvent.click(droppedToggle);
+      expect(doneToggle).toHaveAttribute("aria-expanded", "true");
+      expect(droppedToggle).toHaveAttribute("aria-expanded", "false");
+    });
+
+    it("does not show an out-of-window 完了 task even after expanding the column", () => {
+      const task = makeTask({
+        id: 1,
+        title: "窓外の完了タスク",
+        status: "done",
+        completed_at: localIso(2026, 8, 3, 23, 59, 59),
+      });
+
+      render(<TaskBoard tasksState={makeTasksState({ tasks: [task] })} />);
+
+      expandTerminalColumn("完了");
+
+      expect(screen.queryByText("窓外の完了タスク")).not.toBeInTheDocument();
+    });
+
+    it("does not render a toggle on 未着手/進行中/一時停止 columns and always shows their cards", () => {
+      const tasks = [
+        makeTask({ id: 1, title: "todoのタスク", status: "todo" }),
+        makeTask({ id: 2, title: "進行中のタスク", status: "in_progress" }),
+        makeTask({ id: 3, title: "一時停止のタスク", status: "paused" }),
+      ];
+
+      render(<TaskBoard tasksState={makeTasksState({ tasks })} />);
+
+      for (const label of ["未着手", "進行中", "一時停止"]) {
+        const column = screen.getByRole("region", { name: label });
+        // TaskCard 自身の「編集」ボタン等は残るため、見出しの中にボタンが
+        // 無いことと、aria-expanded を持つボタンが列に無いことで確認する。
+        expect(
+          within(
+            within(column).getByRole("heading", { level: 2 }),
+          ).queryByRole("button"),
+        ).not.toBeInTheDocument();
+        expect(
+          within(column)
+            .queryAllByRole("button")
+            .filter((button) => button.hasAttribute("aria-expanded")),
+        ).toEqual([]);
+      }
+      expect(screen.getByText("todoのタスク")).toBeInTheDocument();
+      expect(screen.getByText("進行中のタスク")).toBeInTheDocument();
+      expect(screen.getByText("一時停止のタスク")).toBeInTheDocument();
+    });
+
+    it("resets both toggles to collapsed when TaskBoard is unmounted and remounted (tab switch, decision 3)", () => {
+      const { unmount } = render(<TaskBoard tasksState={makeTasksState()} />);
+
+      expandTerminalColumn("完了");
+      expandTerminalColumn("中止");
+
+      unmount();
+
+      render(<TaskBoard tasksState={makeTasksState()} />);
+
+      const doneToggle = screen.getByRole("button", {
+        name: /^完了（直近 \d+ 日・\d+ 件）$/,
+      });
+      const droppedToggle = screen.getByRole("button", {
+        name: /^中止（直近 \d+ 日・\d+ 件）$/,
+      });
+      expect(doneToggle).toHaveAttribute("aria-expanded", "false");
+      expect(droppedToggle).toHaveAttribute("aria-expanded", "false");
+    });
+  });
+
+  // 見出しの窓内件数表示（#428 決定6の改訂、#515 決定2）。
+  describe("見出しの件数表示 (#515 決定2)", () => {
+    beforeEach(() => {
+      vi.useFakeTimers({ toFake: ["Date"] });
+      vi.setSystemTime(NOW);
+    });
+
+    it("names the 完了 toggle with the in-window count, excluding out-of-window and null completed_at tasks", () => {
+      const tasks = [
+        makeTask({
+          id: 1,
+          title: "窓内1",
+          status: "done",
+          completed_at: localIso(2026, 8, 10, 9),
+        }),
+        makeTask({
+          id: 2,
+          title: "窓内2",
+          status: "done",
+          completed_at: localIso(2026, 8, 6, 9),
+        }),
+        makeTask({
+          id: 3,
+          title: "窓外1",
+          status: "done",
+          completed_at: localIso(2026, 8, 1, 9),
+        }),
+        makeTask({
+          id: 4,
+          title: "窓外2",
+          status: "done",
+          completed_at: localIso(2026, 7, 20, 9),
+        }),
+        makeTask({
+          id: 5,
+          title: "窓外3(null)",
+          status: "done",
+          completed_at: null,
+        }),
+      ];
+
+      render(<TaskBoard tasksState={makeTasksState({ tasks })} />);
+
+      const doneColumn = screen.getByRole("region", { name: "完了" });
+      expect(
+        within(doneColumn).getByRole("button", {
+          name: "完了（直近 7 日・2 件）",
+        }),
+      ).toBeInTheDocument();
+    });
+
+    it("names the 中止 toggle with the in-window count based on updated_at", () => {
+      const tasks = [
+        makeTask({
+          id: 1,
+          title: "窓内",
+          status: "dropped",
+          updated_at: localIso(2026, 8, 10, 9),
+        }),
+        makeTask({
+          id: 2,
+          title: "窓外",
+          status: "dropped",
+          updated_at: localIso(2026, 8, 1, 9),
+        }),
+      ];
+
+      render(<TaskBoard tasksState={makeTasksState({ tasks })} />);
+
+      const droppedColumn = screen.getByRole("region", { name: "中止" });
+      expect(
+        within(droppedColumn).getByRole("button", {
+          name: "中止（直近 7 日・1 件）",
+        }),
+      ).toBeInTheDocument();
+    });
+
+    it("names the 完了 toggle with 0 件 when there are no in-window done tasks", () => {
+      // 窓外の done だけがある状態（status の一致だけで数えると 1 件になる）。
+      const tasks = [
+        makeTask({
+          id: 1,
+          title: "窓外",
+          status: "done",
+          completed_at: localIso(2026, 8, 1, 9),
+        }),
+      ];
+
+      render(<TaskBoard tasksState={makeTasksState({ tasks })} />);
+
+      const doneColumn = screen.getByRole("region", { name: "完了" });
+      expect(
+        within(doneColumn).getByRole("button", {
+          name: "完了（直近 7 日・0 件）",
+        }),
+      ).toBeInTheDocument();
+    });
+
+    it("keeps the toggle's accessible name unchanged before and after expanding", () => {
+      const task = makeTask({
+        id: 1,
+        title: "窓内",
+        status: "done",
+        completed_at: localIso(2026, 8, 10, 9),
+      });
+
+      render(<TaskBoard tasksState={makeTasksState({ tasks: [task] })} />);
+
+      const doneColumn = screen.getByRole("region", { name: "完了" });
+      const toggle = within(doneColumn).getByRole("button", {
+        name: "完了（直近 7 日・1 件）",
+      });
+
+      fireEvent.click(toggle);
+
+      expect(
+        within(doneColumn).getByRole("button", {
+          name: "完了（直近 7 日・1 件）",
+        }),
+      ).toBe(toggle);
+    });
+  });
+
+  // 畳んだ列でもドロップ先として機能する（#515 決定4）。
+  describe("畳んだ列へのドロップ (#515 決定4)", () => {
+    it("calls editTask with status done when a card is dropped into the collapsed 完了 column", async () => {
+      const task = makeTask({ id: 1, title: "todoのタスク", status: "todo" });
+      const tasksState = makeTasksState({ tasks: [task] });
+
+      render(<TaskBoard tasksState={tasksState} />);
+
+      const dataTransfer = makeDataTransfer(1);
+      const doneColumn = screen.getByRole("region", { name: "完了" });
+      fireEvent.dragOver(doneColumn, { dataTransfer });
+      fireEvent.drop(doneColumn, { dataTransfer });
+
+      await waitFor(() =>
+        expect(tasksState.editTask).toHaveBeenCalledWith(1, {
+          status: "done",
+        }),
+      );
+    });
+
+    it("calls editTask with status dropped when a card is dropped into the collapsed 中止 column", async () => {
+      const task = makeTask({ id: 1, title: "todoのタスク", status: "todo" });
+      const tasksState = makeTasksState({ tasks: [task] });
+
+      render(<TaskBoard tasksState={tasksState} />);
+
+      const dataTransfer = makeDataTransfer(1);
+      const droppedColumn = screen.getByRole("region", { name: "中止" });
+      fireEvent.dragOver(droppedColumn, { dataTransfer });
+      fireEvent.drop(droppedColumn, { dataTransfer });
+
+      await waitFor(() =>
+        expect(tasksState.editTask).toHaveBeenCalledWith(1, {
+          status: "dropped",
+        }),
+      );
+    });
+
+    it("highlights the collapsed 完了 column while dragging a card over it", () => {
+      const task = makeTask({ id: 1, title: "todoのタスク", status: "todo" });
+      const tasksState = makeTasksState({ tasks: [task] });
+
+      render(<TaskBoard tasksState={tasksState} />);
+
+      const dataTransfer = makeDataTransfer();
+      const card = screen.getByText("todoのタスク").closest(".task-card");
+      const doneColumn = screen.getByRole("region", { name: "完了" });
+      expect(
+        within(doneColumn).getByRole("button", {
+          name: /^完了（直近 \d+ 日・\d+ 件）$/,
+        }),
+      ).toHaveAttribute("aria-expanded", "false");
+
+      fireEvent.dragStart(card as Element, { dataTransfer });
+      fireEvent.dragEnter(doneColumn, { dataTransfer });
+
+      expect(doneColumn).toHaveClass("task-column-drag-over");
+    });
+
+    it("keeps the 完了 toggle collapsed after a card is dropped into it", async () => {
+      const task = makeTask({ id: 1, title: "todoのタスク", status: "todo" });
+      const tasksState = makeTasksState({ tasks: [task] });
+
+      render(<TaskBoard tasksState={tasksState} />);
+
+      const dataTransfer = makeDataTransfer(1);
+      const doneColumn = screen.getByRole("region", { name: "完了" });
+      const doneToggle = within(doneColumn).getByRole("button", {
+        name: /^完了（直近 \d+ 日・\d+ 件）$/,
+      });
+      expect(doneToggle).toHaveAttribute("aria-expanded", "false");
+
+      fireEvent.dragOver(doneColumn, { dataTransfer });
+      fireEvent.drop(doneColumn, { dataTransfer });
+
+      await waitFor(() =>
+        expect(tasksState.editTask).toHaveBeenCalledWith(1, {
+          status: "done",
+        }),
+      );
+
+      expect(doneToggle).toHaveAttribute("aria-expanded", "false");
     });
   });
 });

@@ -27,7 +27,11 @@ interface BoardColumn {
    * （決定 6）を入れても**変えない**（支援技術・既存テストの参照先）。
    */
   label: string;
-  /** 直近 `RECENT_TERMINAL_WINDOW_DAYS` 日に絞る列か（done / dropped）。 */
+  /**
+   * 直近 `RECENT_TERMINAL_WINDOW_DAYS` 日に絞る列か（done / dropped）。
+   * 既定で畳む列（開閉トグルを出す列）の判定にも兼用する（Issue #515。
+   * 仕様では窓で絞る 2 列がそのまま畳む対象なので、別フラグを増やさない）。
+   */
   limitedToRecentWindow?: boolean;
 }
 
@@ -40,13 +44,17 @@ const COLUMNS: BoardColumn[] = [
 ];
 
 /**
- * 見出しの文言。絞り込み中の列はその範囲を示す（決定 6: 何も示さないと
- * 「昨日完了したはずのカードが無い」理由が UI のどこにも無い）。日数は
- * 定数から導出し、テンプレートに直書きして二重管理にしない。
+ * 見出しの文言。絞り込み中の列はその範囲と窓内の件数を示す（決定 6: 何も
+ * 示さないと「昨日完了したはずのカードが無い」理由が UI のどこにも無い。
+ * Issue #515 決定2で件数表示を追加: 畳んだまま「空かどうか」が分からない
+ * と、確かめるために毎回開くことになるため）。日数・件数は定数と実際の
+ * 描画件数（`visibleCount`）から導出し、テンプレートに直書きして二重管理
+ * にしない。文言は開閉で変えない（押すたびに帯の幅や行の高さが揺れない
+ * ようにするため）。
  */
-function columnHeading(column: BoardColumn): string {
+function columnHeading(column: BoardColumn, visibleCount: number): string {
   return column.limitedToRecentWindow === true
-    ? `${column.label}（直近 ${RECENT_TERMINAL_WINDOW_DAYS} 日）`
+    ? `${column.label}（直近 ${RECENT_TERMINAL_WINDOW_DAYS} 日・${visibleCount} 件）`
     : column.label;
 }
 
@@ -82,6 +90,23 @@ function TaskBoard({
   // ドラッグ中のタスク id（TaskCard から通知される）。ハイライトを「実際に
   // ステータスが変わるドロップ」だけに限定するために保持する。
   const [draggingTaskId, setDraggingTaskId] = useState<number | null>(null);
+  // 展開中の終端列（完了・中止）。既定は畳み（Issue #515 決定3）。保存しない
+  // ため、アンマウント（タブ切替）のたびに state ごと消え既定へ戻る。
+  const [expandedTerminalColumns, setExpandedTerminalColumns] = useState<
+    ReadonlySet<TaskStatus>
+  >(() => new Set());
+
+  const toggleColumnExpanded = (status: TaskStatus) => {
+    setExpandedTerminalColumns((current) => {
+      const next = new Set(current);
+      if (next.has(status)) {
+        next.delete(status);
+      } else {
+        next.add(status);
+      }
+      return next;
+    });
+  };
 
   useEffect(() => {
     // ボード表示（マウント）のたびに共有 tasks を再取得する。旧実装が
@@ -176,50 +201,78 @@ function TaskBoard({
       )}
       {actionError !== null && <p role="alert">{actionError}</p>}
       <div className="task-board-columns">
-        {COLUMNS.map((column) => (
-          <section
-            key={column.status}
-            className={
-              dragOverStatus === column.status
-                ? "task-column task-column-drag-over"
-                : "task-column"
-            }
-            aria-label={column.label}
-            onDragEnter={() => handleDragEnter(column.status)}
-            onDragOver={handleDragOver}
-            onDragLeave={(event) => handleDragLeave(event, column.status)}
-            onDrop={(event) => handleDrop(event, column.status)}
-          >
-            <h2>{columnHeading(column)}</h2>
-            <ul>
-              {tasks
-                .filter(
-                  (task) =>
-                    task.status === column.status &&
-                    (column.limitedToRecentWindow !== true ||
-                      isWithinRecentLocalDays(
-                        terminalReferenceAt(task),
-                        now,
-                        RECENT_TERMINAL_WINDOW_DAYS,
-                      )),
-                )
-                .map((task) => (
-                  <li key={task.id}>
-                    <TaskCard
-                      task={task}
-                      onStatusChange={(id, newStatus) =>
-                        runAction(editTask(id, { status: newStatus }))
-                      }
-                      onEdit={(id, patch) => runAction(editTask(id, patch))}
-                      onDraggingChange={setDraggingTaskId}
-                      onStartMentoring={onStartMentoring}
-                      startMentoringDisabled={startMentoringDisabled}
-                    />
-                  </li>
-                ))}
-            </ul>
-          </section>
-        ))}
+        {COLUMNS.map((column) => {
+          // 畳める列＝窓で絞る列。畳めない列（未着手/進行中/一時停止）は
+          // 常に展開扱いにし、開閉トグルを出さない。
+          const isCollapsible = column.limitedToRecentWindow === true;
+          const isExpanded =
+            !isCollapsible || expandedTerminalColumns.has(column.status);
+          // 列に描画する対象（窓の絞り込み込み）を 1 回だけ計算し、見出しの
+          // 件数とカード描画の両方に使う（別の数え方を作らない）。
+          const visibleTasks = tasks.filter(
+            (task) =>
+              task.status === column.status &&
+              (column.limitedToRecentWindow !== true ||
+                isWithinRecentLocalDays(
+                  terminalReferenceAt(task),
+                  now,
+                  RECENT_TERMINAL_WINDOW_DAYS,
+                )),
+          );
+          // 開閉状態を CSS へ渡す（畳んだ列は内容の幅に詰めた帯にする）。
+          const columnClassNames = ["task-column"];
+          if (!isExpanded) {
+            columnClassNames.push("task-column-collapsed");
+          }
+          if (dragOverStatus === column.status) {
+            columnClassNames.push("task-column-drag-over");
+          }
+
+          return (
+            <section
+              key={column.status}
+              className={columnClassNames.join(" ")}
+              aria-label={column.label}
+              onDragEnter={() => handleDragEnter(column.status)}
+              onDragOver={handleDragOver}
+              onDragLeave={(event) => handleDragLeave(event, column.status)}
+              onDrop={(event) => handleDrop(event, column.status)}
+            >
+              <h2>
+                {isCollapsible ? (
+                  <button
+                    type="button"
+                    className="task-column-toggle"
+                    aria-expanded={isExpanded}
+                    onClick={() => toggleColumnExpanded(column.status)}
+                  >
+                    {columnHeading(column, visibleTasks.length)}
+                  </button>
+                ) : (
+                  columnHeading(column, visibleTasks.length)
+                )}
+              </h2>
+              {isExpanded && (
+                <ul>
+                  {visibleTasks.map((task) => (
+                    <li key={task.id}>
+                      <TaskCard
+                        task={task}
+                        onStatusChange={(id, newStatus) =>
+                          runAction(editTask(id, { status: newStatus }))
+                        }
+                        onEdit={(id, patch) => runAction(editTask(id, patch))}
+                        onDraggingChange={setDraggingTaskId}
+                        onStartMentoring={onStartMentoring}
+                        startMentoringDisabled={startMentoringDisabled}
+                      />
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </section>
+          );
+        })}
       </div>
     </div>
   );
