@@ -60,10 +60,18 @@
 
 ## 機能要件
 
-- [ ] 3 エンドポイントのセッション不在 404 が、同じ安定した `code` を持つ
-- [ ] 3 エンドポイントのセッション不在 404 の `error` が、同じ日本語の文言である
-- [ ] 数値でない id によるセッション不在も、数値の id と同じ応答になる
-- [ ] 各エンドポイントのセッション不在 404 を検証するテストが、応答を変更前の形に戻す実装では落ちる
+- [ ] `POST /api/sessions/:id/messages` のセッション不在 404 が、同じ安定した `code`（`session_not_found`）を持つ
+- [ ] `POST /api/sessions/:id/end` のセッション不在 404 が、同じ安定した `code`（`session_not_found`）を持つ
+- [ ] `GET /api/sessions/:id/messages` のセッション不在 404 が、同じ安定した `code`（`session_not_found`）を持つ
+- [ ] `POST /api/sessions/:id/messages` のセッション不在 404 の `error` が、同じ日本語の文言（「セッションが見つかりません」）である
+- [ ] `POST /api/sessions/:id/end` のセッション不在 404 の `error` が、同じ日本語の文言（「セッションが見つかりません」）である
+- [ ] `GET /api/sessions/:id/messages` のセッション不在 404 の `error` が、同じ日本語の文言（「セッションが見つかりません」）である
+- [ ] `POST /api/sessions/:id/messages` において、数値でない id によるセッション不在も、数値の id と同じ応答（同じ `code`・同じ `error`）になる
+- [ ] `POST /api/sessions/:id/end` において、数値でない id によるセッション不在も、数値の id と同じ応答（同じ `code`・同じ `error`）になる
+- [ ] `GET /api/sessions/:id/messages` において、数値でない id によるセッション不在も、数値の id と同じ応答（同じ `code`・同じ `error`）になる
+- [ ] `POST /api/sessions/:id/messages` のセッション不在 404 を検証するテストが、(a) `code` だけを取り除く変異、(b) `error` だけを変更前の英語文言に戻す変異のそれぞれで落ちる（決定 5）
+- [ ] `POST /api/sessions/:id/end` のセッション不在 404 を検証するテストが、(a) `code` だけを取り除く変異、(b) `error` だけを変更前の英語文言に戻す変異のそれぞれで落ちる（決定 5）
+- [ ] `GET /api/sessions/:id/messages` のセッション不在 404 を検証するテストが、(a) `code` だけを取り除く変異、(b) `error` だけを変更前の英語文言に戻す変異のそれぞれで落ちる（決定 5）
 
 ## 技術的な制約・方針
 
