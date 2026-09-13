@@ -76,6 +76,7 @@
 - **変更しない**: `server/src/detection/time-utils.ts` の `isWithinWorkingHours`（判定式そのものは S1 では変えない。決定 1 の代替案 C を参照）、`server/src/detection/rule-engine.ts`、`server/src/detection/detection-types.ts` の `DetectionSettings` / `WorkingHours`（表現を変えないため）、`server/src/db/migrate.ts`（S1 はスキーマ変更を伴わない）、休憩まわり（`break-overrun.ts` / `derive-break-status.ts` / `activity-record.ts`）
 - **時刻の書式検証は既存の `TIME_PATTERN`（`detection-types.ts`）を再利用する**。新しい正規表現を作らない。S1 が足すのは書式検証ではなく**相関チェック**である
 - **エラー応答は既存の `{ error }` 形式に揃える**（`settings-routes.ts` の `c.json({ error: result.error }, 400)`）。設定 API は `code` を持たない（`code` を持つのは reports 系のルータであり、設定 API の既存の作法に合わせる）
+  - > **注記（#507）**: 「設定 API は `code` を持たない」は、[`settings-validation-error-response-shape.md`](settings-validation-error-response-shape.md) が意図的に上書きした（勤務時間の前後関係の 400 は日本語の `error` と `code` `invalid_working_hours` を返す）
 - **日付境界に触る変更であるため `npm run test:tz`（非 UTC タイムゾーンでの追加実行）も通す**（[ADR 0007](../adr/0007-local-calendar-day-basis.md) 決定 6）。新規テストの固定時刻は `new Date(y, m, d, h, m)` 由来のローカル日時から導出し、UTC 文字列リテラルで固定しない（同 決定 5）
 - **`npm run test:tz` は `main` のベースラインと突き合わせて判定する**。本リポジトリには UTC-11 / UTC+14 でのみ露見する既存欠陥があり、S1 の変更に起因しない失敗をここで新規欠陥と誤認しないため
 - **テストでは Claude API・現在時刻・macOS 通知コマンドをモックする**。SQLite はモックしない（一時ファイルまたは `:memory:` で実 DB を使う）
