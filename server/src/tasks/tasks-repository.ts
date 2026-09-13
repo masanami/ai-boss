@@ -176,7 +176,8 @@ export function isEvidenceGateBlocking(
 export type UpdateTaskResult =
   | { ok: true; task: Task }
   | { ok: false; reason: "not_found" }
-  | { ok: false; reason: "evidence_required" };
+  | { ok: false; reason: "evidence_required" }
+  | { ok: false; reason: "commitment_requires_todo" };
 
 const EVIDENCE_REQUIRED_LABELS: Record<"true" | "false", string> = {
   true: "必須",
@@ -214,8 +215,7 @@ function buildEvidenceRequiredChangeNote(
  * （決定3）。
  *
  * 退役（ステータス変更による約束の消去、決定3-2）の `note` はこの関数の
- * 対象外 — 後続チケット（T2）がこの層に手を入れやすいよう、意図的に別の
- * 関数として分けておく。
+ * 対象外 — 別の関数（{@link buildCommitmentRetiredNote}）として分けている。
  */
 function buildCommittedStartAtChangeNote(
   existing: string | null,
@@ -225,6 +225,18 @@ function buildCommittedStartAtChangeNote(
     return null;
   }
   return `着手の約束を ${existing ?? "null"} から ${patchValue ?? "null"} に変更`;
+}
+
+/**
+ * Builds the `task_update` `note` fragment for the T2 "retirement"
+ * behaviour（機能仕様 docs/features/task-start-commitment.md 決定3-2）: when
+ * a status change moves a task away from `todo`, an existing commitment is
+ * cleared in the same update. Distinguishes this from an ordinary
+ * `committed_start_at` edit ({@link buildCommittedStartAtChangeNote}) so the
+ * `note` explains *why* the value changed.
+ */
+function buildCommitmentRetiredNote(existingCommittedStartAt: string | null): string {
+  return `約束の退役（ステータス変更による）: 着手の約束を ${existingCommittedStartAt ?? "null"} から null に変更`;
 }
 
 /**
@@ -283,6 +295,19 @@ export function updateTask(
     return { ok: false, reason: "not_found" };
   }
 
+  // 着手の約束の拒否（決定3-2）: 更新後のステータス（patch.status があれば
+  // その値、無ければ既存の値）が todo でないのに、committed_start_at に
+  // 非 null の値を設定しようとする要求は何も書き込まずに拒否する。形式の
+  // 検証（tasks-validation.ts）の後・エビデンス強制ゲートより前に置く。
+  const statusAfterUpdate = patch.status ?? existing.status;
+  if (
+    patch.committed_start_at !== undefined &&
+    patch.committed_start_at !== null &&
+    statusAfterUpdate !== "todo"
+  ) {
+    return { ok: false, reason: "commitment_requires_todo" };
+  }
+
   const next: Task = { ...existing, ...patch };
 
   const isTransitionToDone =
@@ -313,22 +338,37 @@ export function updateTask(
     patch.evidence_required,
   );
 
+  // 着手の約束の退役（決定3-2）: ステータスが変わり、変更後が todo 以外に
+  // なる更新では、既存の約束を同じ更新で消す（遷移元は問わない）。ここより
+  // 前でエビデンスゲートに拒否された更新は既に return 済みなので届かない。
+  const isStatusChangeAwayFromTodo =
+    patch.status !== undefined &&
+    patch.status !== existing.status &&
+    patch.status !== "todo";
+  const shouldRetireCommitment =
+    isStatusChangeAwayFromTodo && existing.committed_start_at !== null;
+  if (shouldRetireCommitment) {
+    next.committed_start_at = null;
+  }
+
   // 着手の約束（決定1・3）: committed_start_at がこの patch で実際に変わる
   // ときだけ committed_at をこの更新の now に書き換える（取り消し = null な
   // ら committed_at も null）。値が変わらなければ committed_at も note も
-  // 変えない。
+  // 変えない。退役するときは常に committed_at も null にし、note は退役
+  // 専用の文言にする（決定3の通常の変更 note とは分ける）。
   const committedStartAtChanged =
     patch.committed_start_at !== undefined &&
     patch.committed_start_at !== existing.committed_start_at;
-  const committedAt = committedStartAtChanged
-    ? patch.committed_start_at === null
-      ? null
-      : now
-    : existing.committed_at;
-  const committedStartAtChangeNote = buildCommittedStartAtChangeNote(
-    existing.committed_start_at,
-    patch.committed_start_at,
-  );
+  const committedAt = shouldRetireCommitment
+    ? null
+    : committedStartAtChanged
+      ? patch.committed_start_at === null
+        ? null
+        : now
+      : existing.committed_at;
+  const committedStartAtChangeNote = shouldRetireCommitment
+    ? buildCommitmentRetiredNote(existing.committed_start_at)
+    : buildCommittedStartAtChangeNote(existing.committed_start_at, patch.committed_start_at);
   const note = combineChangeNotes(
     evidenceRequiredChangeNote,
     committedStartAtChangeNote,

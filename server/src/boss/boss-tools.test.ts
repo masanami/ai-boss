@@ -77,6 +77,24 @@ describe("executeBossTool", () => {
     expect(parsed).toMatchObject({ events: [], truncated: false });
   });
 
+  // 機能仕様 docs/features/task-start-commitment.md 決定3-2（Issue #527）。
+  // create_task のツール定義（TASK_TOOLS）に status は無いが、
+  // validateCreateTaskInput は executeCreateTask 経由で raw な入力全体を
+  // そのまま検証するため、executeBossTool に status を直接渡して拒否を
+  // 担保する（Issue #527 本文で親了承済み）。
+  describe("committed_start_at の拒否（作成時、決定3-2）", () => {
+    it("rejects create_task when status is not todo and committed_start_at is set, and does not create the task (mutation: skip the create-time rejection)", () => {
+      const result = executeBossTool(db, sessionId, "create_task", {
+        title: "t",
+        status: "done",
+        committed_start_at: "2026-09-14T20:00:00+09:00",
+      });
+
+      expect(result.isError).toBe(true);
+      expect(listTasks(db)).toHaveLength(0);
+    });
+  });
+
   // 機能仕様 docs/features/task-start-commitment.md 決定6（Issue #525）
   describe("committed_start_at: null via update_task（API バックエンド経路）", () => {
     it("clears committed_start_at and committed_at when { id, committed_start_at: null } is executed directly", () => {

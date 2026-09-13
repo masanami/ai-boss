@@ -450,6 +450,58 @@ describe("executeTaskTool", () => {
     });
   });
 
+  // 機能仕様 docs/features/task-start-commitment.md 決定3-2（Issue #527）
+  describe("committed_start_at の退役・拒否（決定3-2、Issue #527）", () => {
+    it("returns isError: true and does not update the task when the target status is not todo (mutation: skip the rejection)", () => {
+      const task = insertTask(db, {
+        title: "資料作成",
+        description: null,
+        category: "work",
+        priority: null,
+        due_at: null,
+        status: "paused",
+        boss_comment: null,
+        estimated_minutes: null,
+      });
+
+      const result = executeTaskTool(db, "update_task", {
+        id: task.id,
+        committed_start_at: "2026-09-14T20:00:00+09:00",
+      });
+
+      expect(result.isError).toBe(true);
+      expect(result.content).toContain("約束");
+      const events = db
+        .prepare("SELECT * FROM activity_events WHERE type = 'task_update'")
+        .all() as ActivityEvent[];
+      expect(events).toHaveLength(0);
+    });
+
+    it("clears committed_start_at when a status change on a committed todo task retires the commitment (mutation: limit retirement to the PATCH route handler)", () => {
+      const task = insertTask(db, {
+        title: "資料作成",
+        description: null,
+        category: "work",
+        priority: null,
+        due_at: null,
+        status: "todo",
+        boss_comment: null,
+        estimated_minutes: null,
+        committed_start_at: "2026-09-14T11:00:00.000Z",
+      });
+
+      const result = executeTaskTool(db, "update_task", {
+        id: task.id,
+        status: "in_progress",
+      });
+
+      expect(result.isError).toBe(false);
+      const updated = JSON.parse(result.content);
+      expect(updated.committed_start_at).toBeNull();
+      expect(updated.committed_at).toBeNull();
+    });
+  });
+
   describe("unknown tool name", () => {
     it("returns an error result", () => {
       const result = executeTaskTool(db, "delete_task", {});

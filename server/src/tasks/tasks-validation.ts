@@ -5,7 +5,7 @@ import { isValidIsoDateTime } from "../lib/iso-date.js";
 
 export type ValidationResult<T> =
   | { valid: true; data: T }
-  | { valid: false; error: string };
+  | { valid: false; error: string; code?: "commitment_requires_todo" };
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null;
@@ -67,6 +67,13 @@ const COMMITTED_START_AT_OFFSET_PATTERN =
 
 const COMMITTED_START_AT_FORMAT_ERROR =
   'committed_start_at must be an ISO 8601 date-time with an offset (e.g. "2026-09-14T20:00:00+09:00"), or null';
+
+// 着手の約束は todo のタスクにだけ置ける（機能仕様
+// docs/features/task-start-commitment.md 決定3-2・Issue #527）。作成時は
+// `updateTask` のような既存行が無いため、この検証層で `status`（省略時
+// "todo"）と `committed_start_at` の組だけで判定する。
+const COMMITMENT_REQUIRES_TODO_ERROR =
+  "着手の約束はステータスが todo のタスクにだけ設定できます";
 
 function isValidCommittedStartAt(value: unknown): value is string {
   return (
@@ -177,6 +184,19 @@ export function validateCreateTaskInput(
   const typeError = validateOptionalFieldTypes(body);
   if (typeError) {
     return { valid: false, error: typeError };
+  }
+
+  // 決定3-2（Issue #527）: status（省略時 todo）が todo でないのに
+  // committed_start_at に非 null の値が来た作成要求は拒否する。形式の検証
+  // （上の validateOptionalFieldTypes）の後に置く。
+  const committedStartAtRaw =
+    (body.committed_start_at as string | null | undefined) ?? null;
+  if (committedStartAtRaw !== null && status !== "todo") {
+    return {
+      valid: false,
+      error: COMMITMENT_REQUIRES_TODO_ERROR,
+      code: "commitment_requires_todo",
+    };
   }
 
   return {
