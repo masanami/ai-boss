@@ -6,6 +6,7 @@ import {
   parseDateKey,
   timeStringToMinutes,
   toDateKey,
+  toLocalDateTimeKey,
   toLocalOffset,
 } from "./time-utils.js";
 
@@ -174,6 +175,19 @@ describe("toDateKey", () => {
 
       expect(toDateKey(date, systemTimeZone)).toBe(toDateKey(date));
     });
+  });
+});
+
+// 機能仕様 docs/features/task-start-commitment.md 決定 5（通知文面の約束の
+// ローカル日時）で使う。固定値は new Date(y, m, d, h, min) 由来のローカル
+// 日時から導出し、UTC 文字列リテラルで固定しない（ADR 0007 決定 5）。
+describe("toLocalDateTimeKey", () => {
+  it("formats a local date/time as YYYY-MM-DD HH:mm", () => {
+    expect(toLocalDateTimeKey(new Date(2026, 8, 14, 20, 0))).toBe("2026-09-14 20:00");
+  });
+
+  it("zero-pads single-digit hours and minutes", () => {
+    expect(toLocalDateTimeKey(new Date(2026, 8, 14, 9, 5))).toBe("2026-09-14 09:05");
   });
 });
 

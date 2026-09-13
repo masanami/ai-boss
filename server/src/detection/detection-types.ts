@@ -16,6 +16,7 @@ export const DETECTION_RULE_TYPES = [
   "deadline_overdue",
   "morning_meeting",
   "evening_meeting",
+  "commitment_missed",
 ] as const;
 export type DetectionRuleType = (typeof DETECTION_RULE_TYPES)[number];
 

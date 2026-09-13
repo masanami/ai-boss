@@ -311,9 +311,19 @@ it("RULE_GATE_SCENARIOS declares exactly one scenario per rule type the working-
   // Guards against a rule type silently gaining no tick-level gate coverage
   // (e.g. a new DetectionRuleType added inside evaluateRules's gates without
   // a matching entry here).
+  //
+  // commitment_missed is excluded alongside morning_meeting/evening_meeting:
+  // like the meeting rules, it is deliberately evaluated *outside* both the
+  // working-hours and break gates (機能仕様 docs/features/task-start-commitment.md
+  // 決定 4・ADR 0004 改訂 2026-09-13). Its own gate-exemption behavior (the
+  // "at most once outside working hours" rule, rather than "suppressed
+  // entirely") is covered separately below, not by this generic table.
   const coveredRuleTypes = RULE_GATE_SCENARIOS.map((s) => s.ruleType).sort();
   const gatedRuleTypes = DETECTION_RULE_TYPES.filter(
-    (type) => type !== "morning_meeting" && type !== "evening_meeting",
+    (type) =>
+      type !== "morning_meeting" &&
+      type !== "evening_meeting" &&
+      type !== "commitment_missed",
   ).sort();
   expect(coveredRuleTypes).toEqual(gatedRuleTypes);
 });
@@ -471,6 +481,42 @@ describe("createTicker().tick", () => {
     expect(recorded[0]).toMatchObject({
       type: "unstarted",
       rule_key: `unstarted:${task.id}`,
+      escalation_level: 1,
+    });
+    expect(recorded[0].body).toContain("資料作成");
+    db.close();
+  });
+
+  // Issue #524（親 #519 T3）: commitment_missed が発火すると notifications に
+  // type/rule_key/escalation_level が記録される（機能仕様
+  // docs/features/task-start-commitment.md 受入基準「通知文面」3件目）。
+  it("records a commitment_missed notification with its type/rule_key/escalation_level when a commitment is missed", async () => {
+    const committedStartAt = new Date(2026, 6, 5, 9, 31).toISOString();
+    const task = insertTask(db, {
+      title: "資料作成",
+      description: null,
+      category: "work",
+      priority: "high",
+      due_at: null,
+      status: "todo",
+      boss_comment: null,
+      estimated_minutes: null,
+      committed_start_at: committedStartAt,
+    });
+    markTodaysMeetingsDone(db);
+
+    vi.setSystemTime(new Date(committedStartAt));
+
+    const execFile = vi.fn().mockImplementation(ok);
+    const ticker = createTicker({ db, env, execFile });
+
+    await ticker.tick();
+
+    const recorded = listNotificationsSince(db, "1970-01-01T00:00:00.000Z");
+    expect(recorded).toHaveLength(1);
+    expect(recorded[0]).toMatchObject({
+      type: "commitment_missed",
+      rule_key: `commitment_missed:${task.id}:${task.committed_start_at}:${task.committed_at}`,
       escalation_level: 1,
     });
     expect(recorded[0].body).toContain("資料作成");

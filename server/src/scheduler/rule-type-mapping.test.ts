@@ -17,6 +17,11 @@ describe("mapToNotificationRuleType", () => {
     expect(mapToNotificationRuleType("morning_meeting")).toBe("morning_meeting");
     expect(mapToNotificationRuleType("evening_meeting")).toBe("evening_meeting");
   });
+
+  // Issue #524（親 #519 T3）: commitment_missed も名前を変えずそのまま渡す。
+  it("passes through commitment_missed unchanged", () => {
+    expect(mapToNotificationRuleType("commitment_missed")).toBe("commitment_missed");
+  });
 });
 
 describe("toEscalationLevel", () => {
