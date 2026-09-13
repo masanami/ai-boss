@@ -1,5 +1,3 @@
-<!-- DRAFT（2026-09-13）: クリティカル設計決定 1〜5・スライス S1 の範囲は推奨案で仮置きしており、意思決定者の回答待ち。確定時にこのコメントを削除する -->
-
 # セッション不在 404 の応答の形（3 エンドポイント横断）
 
 ## 概要
@@ -47,7 +45,7 @@
 
 **(F) セッションは削除できないため、UI からは到達しない。** `server/src` の本番コードにある `DELETE FROM` は `task-evidences-repository.ts` と `messages-repository.ts` の 2 本のみで、`sessions-routes.ts` に削除エンドポイントは無い。到達しうるのは DB の手動書き換え・DB リセット後のタブ放置・API の直叩きに限られる。
 
-**(G) #477 の S1（Issue #495・実装中）との関係。** #477 の受入基準は「`chat-messages-route.ts:161` のセッション 404 の `error` 文言は変更前と同じ」「同応答は変更前と同じく `code` を持たない」を含む。これは **#477 S1 の時点での非回帰条件であって恒久的な契約ではなく**、本件はそれを**意図的に上書きする**。
+**(G) #477 の S1（Issue #495・PR #499・未マージ）との関係。** #477 の受入基準は「`chat-messages-route.ts:161` のセッション 404 の `error` 文言は変更前と同じ」「同応答は変更前と同じく `code` を持たない」を含む（`chat-route-error-response-shape.md:155-156`）。これは **#477 S1 の時点での非回帰条件であって恒久的な契約ではなく**、本件はそれを**意図的に上書きする**。なお PR #499（`7ff2f32`）の変更は `:181` の応答とその task 404 テストの照合だけで、セッション不在 404 のテスト（`chat-messages-route.test.ts:129`）には触れておらず、「161 行は `code` なし」をテストで固定していない（意思決定者が差分で確認済み）。したがって本件で書き換える #499 由来のテストは無い。
 
 ### 目的
 
@@ -60,24 +58,33 @@
 
 ## 機能要件
 
-- [ ] `POST /api/sessions/:id/messages` のセッション不在 404 が、同じ安定した `code`（`session_not_found`）を持つ
-- [ ] `POST /api/sessions/:id/end` のセッション不在 404 が、同じ安定した `code`（`session_not_found`）を持つ
-- [ ] `GET /api/sessions/:id/messages` のセッション不在 404 が、同じ安定した `code`（`session_not_found`）を持つ
-- [ ] `POST /api/sessions/:id/messages` のセッション不在 404 の `error` が、同じ日本語の文言（「セッションが見つかりません」）である
-- [ ] `POST /api/sessions/:id/end` のセッション不在 404 の `error` が、同じ日本語の文言（「セッションが見つかりません」）である
-- [ ] `GET /api/sessions/:id/messages` のセッション不在 404 の `error` が、同じ日本語の文言（「セッションが見つかりません」）である
-- [ ] `POST /api/sessions/:id/messages` において、数値でない id によるセッション不在も、数値の id と同じ応答（同じ `code`・同じ `error`）になる
-- [ ] `POST /api/sessions/:id/end` において、数値でない id によるセッション不在も、数値の id と同じ応答（同じ `code`・同じ `error`）になる
-- [ ] `GET /api/sessions/:id/messages` において、数値でない id によるセッション不在も、数値の id と同じ応答（同じ `code`・同じ `error`）になる
-- [ ] `POST /api/sessions/:id/messages` のセッション不在 404 を検証するテストが、(a) `code` だけを取り除く変異、(b) `error` だけを変更前の英語文言に戻す変異のそれぞれで落ちる（決定 5）
-- [ ] `POST /api/sessions/:id/end` のセッション不在 404 を検証するテストが、(a) `code` だけを取り除く変異、(b) `error` だけを変更前の英語文言に戻す変異のそれぞれで落ちる（決定 5）
-- [ ] `GET /api/sessions/:id/messages` のセッション不在 404 を検証するテストが、(a) `code` だけを取り除く変異、(b) `error` だけを変更前の英語文言に戻す変異のそれぞれで落ちる（決定 5）
+- [ ] `POST /api/sessions/:id/messages` の数値の id によるセッション不在 404 が `code`（`session_not_found`）を持つ
+- [ ] `POST /api/sessions/:id/end` の数値の id によるセッション不在 404 が `code`（`session_not_found`）を持つ
+- [ ] `GET /api/sessions/:id/messages` の数値の id によるセッション不在 404 が `code`（`session_not_found`）を持つ
+- [ ] `POST /api/sessions/:id/messages` の数値の id によるセッション不在 404 の `error` が「セッションが見つかりません」である
+- [ ] `POST /api/sessions/:id/end` の数値の id によるセッション不在 404 の `error` が「セッションが見つかりません」である
+- [ ] `GET /api/sessions/:id/messages` の数値の id によるセッション不在 404 の `error` が「セッションが見つかりません」である
+- [ ] `POST /api/sessions/:id/messages` の数値でない id によるセッション不在 404 の `code` が、数値の id と同じ `session_not_found` である
+- [ ] `POST /api/sessions/:id/end` の数値でない id によるセッション不在 404 の `code` が、数値の id と同じ `session_not_found` である
+- [ ] `GET /api/sessions/:id/messages` の数値でない id によるセッション不在 404 の `code` が、数値の id と同じ `session_not_found` である
+- [ ] `POST /api/sessions/:id/messages` の数値でない id によるセッション不在 404 の `error` が、数値の id と同じ「セッションが見つかりません」である
+- [ ] `POST /api/sessions/:id/end` の数値でない id によるセッション不在 404 の `error` が、数値の id と同じ「セッションが見つかりません」である
+- [ ] `GET /api/sessions/:id/messages` の数値でない id によるセッション不在 404 の `error` が、数値の id と同じ「セッションが見つかりません」である
+- [ ] `POST /api/sessions/:id/messages` のセッション不在 404 を検証するテストが、`code` だけを取り除く変異（決定 5 の変異 (a)）で落ちる
+- [ ] `POST /api/sessions/:id/messages` のセッション不在 404 を検証するテストが、`error` だけを変更前の英語文言に戻す変異（決定 5 の変異 (b)）で落ちる
+- [ ] `POST /api/sessions/:id/end` のセッション不在 404 を検証するテストが、`code` だけを取り除く変異（決定 5 の変異 (a)）で落ちる
+- [ ] `POST /api/sessions/:id/end` のセッション不在 404 を検証するテストが、`error` だけを変更前の英語文言に戻す変異（決定 5 の変異 (b)）で落ちる
+- [ ] `GET /api/sessions/:id/messages` のセッション不在 404 を検証するテストが、`code` だけを取り除く変異（決定 5 の変異 (a)）で落ちる
+- [ ] `GET /api/sessions/:id/messages` のセッション不在 404 を検証するテストが、`error` だけを変更前の英語文言に戻す変異（決定 5 の変異 (b)）で落ちる
 
 ## 技術的な制約・方針
 
-- **変更対象**: `server/src/sessions/chat-messages-route.ts`（161 行）・`server/src/sessions/sessions-routes.ts`（270 行・328 行）と、`server/src/sessions/chat-messages-route.test.ts`・`server/src/sessions/sessions-routes.test.ts`。**それ以外のファイルは触らない**
-- 3 箇所で同じ応答を組み立てる方法（共通の関数に寄せるか、各所に書くか）は実装者の裁量とする。受入基準は応答の形とテストの締まりだけを問う
-- **実装は #495（#477 S1）の出荷後に行う**。#495 も `chat-messages-route.ts` と `chat-messages-route.test.ts` を触るため並走させない。#495 が 161 行の非回帰（文言据え置き・`code` なし）をテストで固定している場合は、本件でその照合を本仕様の契約へ書き換える（背景 (G) の意図的な上書き）
+- **変更対象**: `server/src/sessions/chat-messages-route.ts`（161 行）・`server/src/sessions/sessions-routes.ts`（270 行・328 行）と、`server/src/sessions/chat-messages-route.test.ts`・`server/src/sessions/sessions-routes.test.ts`。下記の共通モジュールを切り出す場合に限り、`server/src/sessions/` 配下の新規ファイル 1 件を加えてよい。**それ以外のファイルは触らない**
+- **3 箇所で同じ応答を組み立てる方法**は次のいずれかとし、どちらを選ぶかは実装者の裁量とする（受入基準は応答の形とテストの締まりだけを問う）
+  - 共通化する場合は `server/src/sessions/` 配下の新しい小さなモジュールに置き、`sessions-routes.ts` と `chat-messages-route.ts` の両方から import する。**2 ファイルのどちらかに定義してもう一方から import してはならない**（`sessions-routes.ts:21` が既に `chat-messages-route.ts` を import しているため、逆向きの import は循環する）
+  - 共通化しない場合は 3 箇所に同じリテラルを書き、揃っていることはテストで担保する
+- **実装は #495（PR #499）のマージ後に行う**。PR #499 も `chat-messages-route.ts` と `chat-messages-route.test.ts` を触るため並走させない。本仕様の行番号は `4106645` 時点のもので、#499 のマージで `chat-messages-route.ts` の 181 行以降（同テストの該当箇所を含む）がずれるため、**実装時は行番号ではなく文字列（`` `session ${rawId} not found` `` / `` `session ${c.req.param("id")} not found` ``、テスト名 `"returns 404 for a non-existent session id"` 等）で該当箇所を特定する**
+- 本件は #477 仕様の受入基準「同ルートのセッション不在 404（`chat-messages-route.ts:161`）の応答は、変更前と同じく `code` を持たない」「同 404 の `error` 文言は変更前と同じ」（`chat-route-error-response-shape.md:155-156`）を**意図的に上書きする**（背景 (G)）。両仕様の食い違いは本仕様が後勝ちである
 - **web は 1 行も変更しない**（確証 (E)。`chat-api.ts` / `use-chat.ts` / `ChatView.tsx` とそのテストのフィクスチャいずれも対象外）
 - **DB スキーマ変更・マイグレーションは無い**
 - 外部送信は Claude API への推論リクエストのみ（ADR 0001）。本件は送信内容を変えない
@@ -123,6 +130,7 @@
 - **#477 決定 2 との整合**: #477 決定 2 は `task_not_found`（資源スコープ）を 2 つの理由で却下した。本件にはどちらも当てはまらない
   - 「共用すると、どのフィールドが不正かを web が区別できなくなる」— `mentoringTaskId` は**ボディのフィールド**であり、同じ task 不在が別の意味（パスの task とボディの対象タスク）を持ちうるための理由である。本件はパスの `:id` だけが対象で、区別すべき別のフィールドが無い
   - 「既存 `code` の粒度とも合わない」— #477 が見たのは同ルートの**そのルートの操作に固有の拒否**（`session_already_ended` / `message_not_editable` 等）の粒度である。セッション不在はルートに固有の事実ではなく 3 エンドポイントで同一の事実であり、操作スコープで名付けると 1 つの事実を 3 つの名前に割ることになる
+- **一般原則にはしない**: 上の整理を「ボディのフィールドが指す資源の不在は操作・文脈スコープ、パスの資源の不在は資源スコープ」という一般原則には昇格させない（ADR にもしない）。ボディのフィールド（`replaceFromMessageId`）が指すメッセージの不在に資源型の名前を付けた `message_not_found`（`chat-messages-route.ts:210`）という反例が既にあるためである。本決定の理由は本仕様の 3 箇所に対する説明に留める
 - **代替案**:
   - (B) エンドポイントごとの `code`（例 `chat_session_not_found` / `end_session_not_found` / `session_messages_not_found`）— 却下（web が得る情報は増えないのに、「セッションが消えた」を扱うときに 3 つの `code` を列挙させる。既存の `code` にエンドポイント名で名付けたものは無い）
 - **影響範囲**: 3 行とそれを照合するテスト
@@ -148,13 +156,14 @@
 
 ### 5. テストは `code`・`error` まで照合し、変異で担保を証明する
 
-- **採用案**: 3 エンドポイントそれぞれのセッション不在 404 のテストを `code` と `error` の文言まで締め、数値でない id の例を 3 エンドポイントに揃えたうえで、**エンドポイントごとに次の 2 つの変異を 1 つずつ打ち、当該エンドポイントのテストが落ちること**を確認する
+- **採用案**: 3 エンドポイントそれぞれのセッション不在 404 のテストを `code` と `error` の文言まで締め、数値でない id の例を 3 エンドポイントに揃えたうえで、**エンドポイントごとに次の 2 つの変異を 1 つずつ（計 6 回）打ち、当該エンドポイントのテストが落ち、他の 2 エンドポイントのセッション不在 404 のテストは落ちないこと**を確認する
   - 変異 (a): そのエンドポイントの応答から `code` だけを取り除く（`error` は変更後の文言のまま）
   - 変異 (b): そのエンドポイントの `error` だけを変更前の英語文言に戻す（`code` は付けたまま）
-- **理由**: 確証 (D) のとおり現行の照合は応答の形を問わず通る。`code` と `error` は独立に変えられる主張なので、片方だけを崩す変異で**それぞれの照合が実際に効いている**ことを示す（#477 決定 5・`MEMORY` の教訓「AC 担保は変異で証明する」と同じ規律）
+  - 変異は**そのエンドポイントの応答を組み立てる箇所**に打つ。共通モジュールに寄せた場合も、共通モジュール本体ではなく当該エンドポイントの呼び出し箇所を、変異させた応答のリテラルに一時的に差し替える（共通モジュール本体を変異させると 3 エンドポイントすべてが崩れ、限局の確認にならない）
+- **理由**: 確証 (D) のとおり現行の照合は応答の形を問わず通る。`code` と `error` は独立に変えられる主張なので、片方だけを崩す変異で**それぞれの照合が実際に効いている**ことを示す。加えて、他の 2 エンドポイントのテストが落ちないことで、**各テストが自分のエンドポイントの 404 を守っている**（1 本のテストが別エンドポイントの応答で代わりに通っていない）ことを示す（#477 決定 5 と受入基準「セッション不在 404 を検証する既存テストは落ちない」・`MEMORY` の教訓「AC 担保は変異で証明する」と同じ規律）
 - **代替案**: 変更前の形（英語・`code` なし）へ丸ごと戻す変異 1 つで確認する — 却下（`code` か `error` の片方しか照合していないテストでも落ちるため、もう片方の照合が恒真のまま残っても検出できない）
 - **変異の手順**: 変異は本番コードへ一時的に加える。**適用後に `git diff` で変異が意図した 1 箇所に限られていることを確認し、確認が済んだら `git checkout -- <変異したファイル>` で確実に復元する**（復元漏れのまま次の変異・変更へ進まない）。変異はコミットしない
-- **変異結果の記録先**: 変異はコミットされないため、**変異の内容（エンドポイント × (a)/(b)）・落ちたテスト・落ちなかったテストを PR 本文に記載する**。これが変異の受入基準の充足を後からレビュアーが確認する唯一の証跡になる
+- **変異結果の記録先**: 変異はコミットされないため、**変異の内容（エンドポイント × (a)/(b)）・落ちたテスト・落ちなかったテスト（他の 2 エンドポイントのセッション不在 404 のテストを含む）を PR 本文に記載する**（#477 と同じ形）。これが変異の受入基準の充足を後からレビュアーが確認する唯一の証跡になる
 - **影響範囲**: `chat-messages-route.test.ts`・`sessions-routes.test.ts` の当該テスト。変異は上記手順で復元する
 
 ### 6. web は変更しない（`code` による分岐を今は入れない）
@@ -168,7 +177,7 @@
 
 | スライス | 内容 | 触るファイル数（概算） | 出荷条件 |
 |---|---|---|---|
-| S1（最小） | 3 エンドポイントのセッション不在 404 を `{ error: "セッションが見つかりません", code: "session_not_found" }` へ揃え、各テストを `code`・文言まで照合する形に締め（数値でない id の例を含む）、エンドポイントごとの変異で落ちることを確認する | 4 | これだけで資源単位の応答契約が揃い、テストが各 404 の形を守る状態になる。#495 の出荷後に実装する |
+| S1（最小） | 3 エンドポイントのセッション不在 404 を `{ error: "セッションが見つかりません", code: "session_not_found" }` へ揃え、各テストを `code`・文言まで照合する形に締め（数値でない id の例を含む）、エンドポイントごとの変異（2 種 × 3 ＝ 6 回）で当該テストだけが落ちることを確認する | 4-5 | これだけで資源単位の応答契約が揃い、テストが各 404 の形を守る状態になる。#495（PR #499）のマージ後に実装する |
 
 実装対象: S1
 
@@ -176,7 +185,7 @@
 
 ## やらないこと
 
-- **`chat-messages-route.ts:181` の task 404（`mentoringTaskId`）の変更**（理由: #477 S1＝Issue #495 が扱う）
+- **`chat-messages-route.ts:181` の task 404（`mentoringTaskId`）の変更**（理由: #477 S1＝Issue #495・PR #499 が扱う）
 - **`chat-messages-route.ts:209-210` の `message_not_found` の日本語化**（理由: #477 決定 1 代替案 D。どのメッセージ id がどのセッションに無いかを文面から落とし、やりなおし経路のデバッグ性を損なう）
 - **400 バリデーションエラー（`sessions-validation.ts` の英語文言）の日本語化・`code` 付与**（理由: web がボディを組み立てるため UI から到達せず、開発者向けの契約違反エラーである）
 - **他資源の 404 の変更**（`tasks-routes.ts:84` / `task-evidences-routes.ts:34` `:38` / `checkins-routes.ts:75`）（理由: 本件はセッション資源の不在に限る）
@@ -203,6 +212,12 @@
 - [ ] `POST /api/sessions/:id/end` のセッション不在 404 の `error` だけを変更前の英語文言に戻す変異を加えたとき、同エンドポイントのセッション不在 404 のテストが落ちる
 - [ ] `GET /api/sessions/:id/messages` のセッション不在 404 から `code` だけを取り除く変異を加えたとき、同エンドポイントのセッション不在 404 のテストが落ちる
 - [ ] `GET /api/sessions/:id/messages` のセッション不在 404 の `error` だけを変更前の英語文言に戻す変異を加えたとき、同エンドポイントのセッション不在 404 のテストが落ちる
+- [ ] `POST /api/sessions/:id/messages` のセッション不在 404 から `code` だけを取り除く変異を加えたとき、`POST /api/sessions/:id/end` と `GET /api/sessions/:id/messages` のセッション不在 404 のテストは落ちない
+- [ ] `POST /api/sessions/:id/messages` のセッション不在 404 の `error` だけを変更前の英語文言に戻す変異を加えたとき、`POST /api/sessions/:id/end` と `GET /api/sessions/:id/messages` のセッション不在 404 のテストは落ちない
+- [ ] `POST /api/sessions/:id/end` のセッション不在 404 から `code` だけを取り除く変異を加えたとき、`POST /api/sessions/:id/messages` と `GET /api/sessions/:id/messages` のセッション不在 404 のテストは落ちない
+- [ ] `POST /api/sessions/:id/end` のセッション不在 404 の `error` だけを変更前の英語文言に戻す変異を加えたとき、`POST /api/sessions/:id/messages` と `GET /api/sessions/:id/messages` のセッション不在 404 のテストは落ちない
+- [ ] `GET /api/sessions/:id/messages` のセッション不在 404 から `code` だけを取り除く変異を加えたとき、`POST /api/sessions/:id/messages` と `POST /api/sessions/:id/end` のセッション不在 404 のテストは落ちない
+- [ ] `GET /api/sessions/:id/messages` のセッション不在 404 の `error` だけを変更前の英語文言に戻す変異を加えたとき、`POST /api/sessions/:id/messages` と `POST /api/sessions/:id/end` のセッション不在 404 のテストは落ちない
 - [ ] 上記 6 つの変異確認の結果（変異の内容・落ちたテスト・落ちなかったテスト）が PR 本文に記載されている
 - [ ] `npm run lint` が pass する
 - [ ] `npm run typecheck` が pass する
