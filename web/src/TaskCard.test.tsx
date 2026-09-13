@@ -33,6 +33,8 @@ const BASE_TASK: Task = {
   updated_at: "2026-07-05T00:00:00.000Z",
   completed_at: null,
   evidence_required: false,
+  committed_start_at: null,
+  committed_at: null,
 };
 
 function makeEvidence(
@@ -120,6 +122,71 @@ describe("TaskCard", () => {
     );
 
     expect(screen.queryByText(/ボス決定: 締切/)).not.toBeInTheDocument();
+  });
+
+  // Issue #526 (#519 決定7): 着手の約束は「ボス決定: 着手の約束
+  // YYYY-MM-DD HH:mm」のローカル日時 1 行で表示する。固定時刻は
+  // `new Date(2026, 8, 14, 20, 0)` のローカル日時から組む（TZ 非依存。
+  // 機能仕様「受入基準」の固定時刻規約）。
+  it("shows the start commitment as a local-time boss decision (#526)", () => {
+    render(
+      <TaskCard
+        task={{
+          ...BASE_TASK,
+          committed_start_at: new Date(2026, 8, 14, 20, 0).toISOString(),
+        }}
+        onStatusChange={vi.fn()}
+        onEdit={vi.fn()}
+      />,
+    );
+
+    expect(
+      screen.getByText("ボス決定: 着手の約束 2026-09-14 20:00"),
+    ).toBeInTheDocument();
+  });
+
+  it("hides the start commitment line when committed_start_at is null (#526)", () => {
+    render(
+      <TaskCard task={BASE_TASK} onStatusChange={vi.fn()} onEdit={vi.fn()} />,
+    );
+
+    expect(
+      screen.queryByText(/ボス決定: 着手の約束/),
+    ).not.toBeInTheDocument();
+  });
+
+  // 分オーダーのゼロ埋めを担保する（"20:00" ではなく "20:05" のような値で、
+  // 桁落ちの変異〔pad 忘れ〕を検出する）。
+  it("zero-pads single-digit month, day, hour, and minute in the start commitment (#526)", () => {
+    render(
+      <TaskCard
+        task={{
+          ...BASE_TASK,
+          committed_start_at: new Date(2026, 0, 5, 9, 5).toISOString(),
+        }}
+        onStatusChange={vi.fn()}
+        onEdit={vi.fn()}
+      />,
+    );
+
+    expect(
+      screen.getByText("ボス決定: 着手の約束 2026-01-05 09:05"),
+    ).toBeInTheDocument();
+  });
+
+  // 決定7の防御: 解釈できない値は行を出さない。
+  it("hides the start commitment line when committed_start_at cannot be parsed as a date (#526, defensive)", () => {
+    render(
+      <TaskCard
+        task={{ ...BASE_TASK, committed_start_at: "not-a-date" }}
+        onStatusChange={vi.fn()}
+        onEdit={vi.fn()}
+      />,
+    );
+
+    expect(
+      screen.queryByText(/ボス決定: 着手の約束/),
+    ).not.toBeInTheDocument();
   });
 
   it("shows the boss comment when present", () => {
