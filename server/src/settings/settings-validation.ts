@@ -38,13 +38,72 @@ export type SettingKey = (typeof SETTINGS_KEYS)[number];
  */
 export type SettingsPatch = Partial<Record<SettingKey, string | null>>;
 
+/**
+ * Machine-readable rule identifier for the 5 Japanese-language validation
+ * failures (#517, docs/features/settings-validation-error-response-shape.md
+ * 決定 3). One code per *rule* (not per key) — `error` carries the item name
+ * and how to fix it, `code` only distinguishes which rule fired. Every other
+ * `PUT /api/settings` 400 (#517 決定 2 の対象外の6箇所) stays English and
+ * carries no `code` at all — do not add new members here for those.
+ */
+export type SettingErrorCode =
+  | "setting_required"
+  | "invalid_time"
+  | "invalid_positive_integer"
+  | "invalid_working_hours";
+
+// #517 決定4: キー→日本語ラベルの対応表をここ1箇所に置く。ラベルは
+// web/src/SettingsView.tsx の該当 <label> に合わせる（時刻は「勤務開始／
+// 勤務終了／朝会／夕会」）。この表と一致することを照合するテストは無い
+// （決定4「ラベルの同期」— 複製の同期は /demo で確認する）。
+type RequiredStringKey = "boss_name" | "model";
+type TimeKey =
+  | "work_start"
+  | "work_end"
+  | "morning_meeting_time"
+  | "evening_meeting_time";
+type PositiveIntegerKey =
+  | "detection_unstarted_fallback_minutes"
+  | "detection_silence_fallback_minutes"
+  | "detection_break_fallback_minutes"
+  | "escalation_l2_after_minutes"
+  | "escalation_l3_after_minutes"
+  | "escalation_repeat_minutes";
+type LabeledSettingKey = RequiredStringKey | TimeKey | PositiveIntegerKey;
+
+const SETTING_LABELS: Record<LabeledSettingKey, string> = {
+  boss_name: "ボスの名前",
+  model: "モデル",
+  work_start: "勤務開始",
+  work_end: "勤務終了",
+  morning_meeting_time: "朝会",
+  evening_meeting_time: "夕会",
+  detection_unstarted_fallback_minutes: "未着手のフォールバック",
+  detection_silence_fallback_minutes: "無音のフォールバック",
+  detection_break_fallback_minutes: "休憩のフォールバック",
+  escalation_l2_after_minutes: "エスカレーション: レベル2まで",
+  escalation_l3_after_minutes: "エスカレーション: レベル3まで",
+  escalation_repeat_minutes: "エスカレーション: 再通知間隔",
+};
+
+// #517 決定3: 勤務時間の前後関係の error/code は規則単位の固定文言。
+// settings-validation.ts:272 と settings-routes.ts:145 の両方が使うが、
+// 両呼び出し箇所は各自オブジェクトを組む（決定5: 片方だけを崩す変異で
+// 片方のテストだけが落ちることを担保するため、応答オブジェクトの組み立て
+// 自体は共有しない）。
+export const WORKING_HOURS_ERROR =
+  "勤務開始は勤務終了より前の時刻にしてください";
+export const WORKING_HOURS_CODE: SettingErrorCode = "invalid_working_hours";
+
 export type ValidationResult<T> =
   | { valid: true; data: T }
-  | { valid: false; error: string };
+  | { valid: false; error: string; code?: SettingErrorCode };
 
 type FieldValidator = (
   value: unknown,
-) => { valid: true; value: string | null } | { valid: false; error: string };
+) =>
+  | { valid: true; value: string | null }
+  | { valid: false; error: string; code?: SettingErrorCode };
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -54,14 +113,19 @@ function ok(value: string | null): { valid: true; value: string | null } {
   return { valid: true, value };
 }
 
-function err(error: string): { valid: false; error: string } {
-  return { valid: false, error };
+function err(
+  error: string,
+  code?: SettingErrorCode,
+): { valid: false; error: string; code?: SettingErrorCode } {
+  return code === undefined
+    ? { valid: false, error }
+    : { valid: false, error, code };
 }
 
-function validateNonEmptyString(key: SettingKey): FieldValidator {
+function validateNonEmptyString(key: RequiredStringKey): FieldValidator {
   return (value) => {
     if (typeof value !== "string" || value.trim() === "") {
-      return err(`${key} must be a non-empty string`);
+      return err(`${SETTING_LABELS[key]}を入力してください`, "setting_required");
     }
     return ok(value.trim());
   };
@@ -108,19 +172,25 @@ function validateCustomInstructions(value: unknown) {
   return ok(value === "" ? null : value);
 }
 
-function validateTime(key: SettingKey): FieldValidator {
+function validateTime(key: TimeKey): FieldValidator {
   return (value) => {
     if (typeof value !== "string" || !TIME_PATTERN.test(value)) {
-      return err(`${key} must be in "HH:mm" format`);
+      return err(
+        `${SETTING_LABELS[key]}の時刻を 09:00 の形式で入力してください`,
+        "invalid_time",
+      );
     }
     return ok(value);
   };
 }
 
-function validatePositiveIntegerMinutes(key: SettingKey): FieldValidator {
+function validatePositiveIntegerMinutes(key: PositiveIntegerKey): FieldValidator {
   return (value) => {
     if (typeof value !== "number" || !Number.isInteger(value) || value <= 0) {
-      return err(`${key} must be a positive integer`);
+      return err(
+        `${SETTING_LABELS[key]}（分）には 1 以上の整数を入力してください`,
+        "invalid_positive_integer",
+      );
     }
     return ok(String(value));
   };
@@ -254,7 +324,7 @@ export function validatePutSettingsInput(
 
     const result = VALIDATORS[key](body[key]);
     if (!result.valid) {
-      return { valid: false, error: result.error };
+      return result;
     }
 
     data[key] = result.value;
@@ -269,7 +339,7 @@ export function validatePutSettingsInput(
     typeof data.work_end === "string" &&
     !isValidWorkingHoursRange(data.work_start, data.work_end)
   ) {
-    return err("work_start must be earlier than work_end");
+    return err(WORKING_HOURS_ERROR, WORKING_HOURS_CODE);
   }
 
   return { valid: true, data };
