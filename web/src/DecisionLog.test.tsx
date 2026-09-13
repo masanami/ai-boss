@@ -2,6 +2,25 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { render, screen, waitFor, within } from "@testing-library/react";
 import DecisionLog from "./DecisionLog";
 import type { DecisionRecord } from "./decision";
+import type { Task } from "./task";
+
+function makeTask(overrides: Partial<Task> & { id: number }): Task {
+  return {
+    title: `task-${overrides.id}`,
+    description: null,
+    category: "work",
+    priority: null,
+    due_at: null,
+    status: "todo",
+    boss_comment: null,
+    estimated_minutes: null,
+    created_at: new Date(2026, 6, 5).toISOString(),
+    updated_at: new Date(2026, 6, 5).toISOString(),
+    completed_at: null,
+    evidence_required: false,
+    ...overrides,
+  };
+}
 
 /** Builds a `created_at` from a local wall-clock date so ordering fixtures
  * stay meaningful in any timezone (ADR 0007 決定5). */
@@ -245,5 +264,97 @@ describe("DecisionLog", () => {
       screen.queryByRole("button", { name: "進言する" }),
     ).not.toBeInTheDocument();
     expect(screen.queryByLabelText("進言履歴")).not.toBeInTheDocument();
+  });
+});
+
+// Issue #513 (S1, 決定1・決定2・決定3・決定4): 決定ログ本文中の `#<id>` に
+// タスク名をホバー表示する。`AppLayout` からの配線は AppLayout.test.tsx が持つ
+// ため、ここでは `tasks`/`tasksStatus` を直接 props で与える。
+describe("DecisionLog task-id hover (Issue #513)", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  const TASK_2 = makeTask({ id: 2, title: "打ち合わせの準備" });
+
+  it("shows the task title as a hover (title attribute) on a #<id> in the decision content", async () => {
+    stubFetchWith([
+      makeDecision({ id: 1, task_id: null, content: "#2 を先に片付けろ" }),
+    ]);
+
+    const { container } = render(<DecisionLog tasks={[TASK_2]} tasksStatus="ready" />);
+
+    // Waits on the container element itself, not `screen.getByText`: once
+    // decorated, the content's text is split across a `<span>` and sibling
+    // text nodes, and RTL's text matcher only inspects an element's *direct*
+    // text-node children (not descendants), so a regex spanning the whole
+    // sentence would never match the wrapping `<p>` here.
+    await waitFor(() =>
+      expect(container.querySelector(".decision-content")).not.toBeNull(),
+    );
+    const referenced = container.querySelector(".decision-content [title]");
+    expect(referenced).not.toBeNull();
+    expect(referenced).toHaveAttribute("title", "打ち合わせの準備");
+    expect(referenced).toHaveTextContent("#2");
+  });
+
+  it("does not add a title-bearing element for a #<id> not in the task list", async () => {
+    stubFetchWith([
+      makeDecision({ id: 1, task_id: null, content: "#9999 は存在しない" }),
+    ]);
+
+    const { container } = render(<DecisionLog tasks={[TASK_2]} tasksStatus="ready" />);
+
+    await waitFor(() =>
+      expect(screen.getByText(/#9999 は存在しない/)).toBeInTheDocument(),
+    );
+    expect(container.querySelectorAll(".decision-content [title]")).toHaveLength(0);
+  });
+
+  it.each(["loading", "error"] as const)(
+    "does not add a title-bearing element while the task list status is %s, even though a matching task exists",
+    async (tasksStatus) => {
+      stubFetchWith([
+        makeDecision({ id: 1, task_id: null, content: "#2 を先に片付けろ" }),
+      ]);
+
+      const { container } = render(
+        <DecisionLog tasks={[TASK_2]} tasksStatus={tasksStatus} />,
+      );
+
+      // 装飾されると本文が `<span>` とテキストノードに分かれ `getByText` が
+      // 当たらなくなるので、本文要素そのものの出現を待つ（変異で装飾された
+      // ときに「待ち合わせのタイムアウト」ではなく下のアサーションで落とす）。
+      await waitFor(() =>
+        expect(container.querySelector(".decision-content")).not.toBeNull(),
+      );
+      expect(
+        container.querySelectorAll(".decision-content [title]"),
+      ).toHaveLength(0);
+      expect(container.querySelector(".decision-content")!.textContent).toBe(
+        "#2 を先に片付けろ",
+      );
+    },
+  );
+
+  it("keeps the rendered textContent identical to the original content, decoration or not", async () => {
+    stubFetchWith([
+      makeDecision({
+        id: 1,
+        task_id: null,
+        content: "#2 と #9999 を同時に見てほしい",
+      }),
+    ]);
+
+    const { container } = render(<DecisionLog tasks={[TASK_2]} tasksStatus="ready" />);
+
+    // Same reason as above: wait on the DOM element itself, not a
+    // `screen.getByText` regex spanning text split across the decorated
+    // `<span>` and its sibling plain-text node.
+    await waitFor(() =>
+      expect(container.querySelector(".decision-content")).not.toBeNull(),
+    );
+    const content = container.querySelector(".decision-content");
+    expect(content!.textContent).toBe("#2 と #9999 を同時に見てほしい");
   });
 });
