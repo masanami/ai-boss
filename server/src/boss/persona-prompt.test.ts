@@ -1085,6 +1085,48 @@ describe("buildPersonaPrompt", () => {
     });
   });
 
+  // 機能仕様 docs/features/task-start-commitment.md 決定6（Issue #525）:
+  // 着手の約束はボスが提案し、ユーザーが確認した日時だけを保存する。担保は
+  // この指示だけで、機械的なゲートは置かない（見積もり確認と同じ作法）。
+  describe("着手の約束の確認指示（committed_start_at, Issue #525 決定6）", () => {
+    const sessionTypesToCheck: Array<
+      ["morning" | "evening" | "adhoc" | undefined, string]
+    > = [
+      ["morning", "morning"],
+      ["evening", "evening"],
+      ["adhoc", "adhoc"],
+      [undefined, "未指定"],
+    ];
+
+    for (const [sessionType, label] of sessionTypesToCheck) {
+      it(`sessionType が ${label} のとき、着手の約束はユーザーが確認した日時だけを保存する指示を含む`, () => {
+        const prompt = buildPersonaPrompt(DEFAULT_PERSONA_SETTINGS, {
+          tasks: [],
+          recentDecisions: [],
+          now,
+          sessionType,
+        });
+
+        expect(prompt).toContain("着手の約束");
+        expect(prompt).toContain("committed_start_at");
+        expect(prompt).toContain("確認");
+      });
+    }
+
+    it("purpose が notification / daily-report のときは含まない", () => {
+      for (const purpose of ["notification", "daily-report"] as const) {
+        const prompt = buildPersonaPrompt(DEFAULT_PERSONA_SETTINGS, {
+          tasks: [],
+          recentDecisions: [],
+          now,
+          purpose,
+        });
+
+        expect(prompt, purpose).not.toContain("committed_start_at");
+      }
+    });
+  });
+
   // Issue #409（親 #276）: 仕事の進め方のメンタリング。context.mentoring は
   // 呼び出し側（チャットルート）が「朝会 かつ 強制オン」または「リクエストの
   // mentoring」を評価して渡す単一の boolean（buildPersonaPrompt は純粋関数の
@@ -1446,6 +1488,33 @@ describe("buildPersonaPrompt", () => {
       });
 
       expect(prompt).toContain(`締切: ${expectedLocal}`);
+    });
+
+    // 機能仕様 docs/features/task-start-commitment.md 決定6（Issue #525）:
+    // ボスに渡すタスク一覧で、約束を持つタスクの行にはその約束の日時が含まれ、
+    // 約束を持たないタスクの行には約束の項目が含まれない。
+    it("committed_start_at を持つタスクの行に、約束の日時がローカル整形で含まれる", () => {
+      const prompt = buildPersonaPrompt(DEFAULT_PERSONA_SETTINGS, {
+        tasks: [makeTask({ committed_start_at: storedIso })],
+        recentDecisions: [],
+        now,
+      });
+
+      expect(prompt).toContain(`着手の約束: ${expectedLocal}`);
+    });
+
+    it("committed_start_at を持たないタスクの行には約束の項目が含まれない", () => {
+      // "着手の約束" 単独では、常時積まれる確認指示
+      // （TASK_COMMITMENT_CONFIRMATION_INSTRUCTION）にも同じ語句が出現するため
+      // 判定に使えない。タスク整形行が実際に付け足す区切り
+      // "/ 着手の約束:" の有無で判定する。
+      const prompt = buildPersonaPrompt(DEFAULT_PERSONA_SETTINGS, {
+        tasks: [makeTask({ committed_start_at: null })],
+        recentDecisions: [],
+        now,
+      });
+
+      expect(prompt).not.toContain("/ 着手の約束:");
     });
 
     it("タスクの締切が日付のみのとき、その値をそのまま表示する", () => {

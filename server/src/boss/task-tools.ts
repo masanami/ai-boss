@@ -53,6 +53,18 @@ export const TASK_TOOLS: Anthropic.Tool[] = [
           description:
             "完了報告にエビデンス（ファイル添付・リンク）を必須にするか。省略時は false。",
         },
+        // 着手の約束（機能仕様 docs/features/task-start-commitment.md 決定6）。
+        // 作成時は値のみ受け付ける（取り消す約束が無いため null は扱わない）。
+        //
+        // claude-code-backend.ts の Zod shape と同じ文言を**あえて二重に**書く
+        // （due_at と同じ作法。上のコメント参照。同ファイルのテストが description
+        // 一致を検証しており、定数を共有するとその検証が恒真になるため）。
+        committed_start_at: {
+          type: "string",
+          description:
+            '着手の約束（時刻とオフセットを含む ISO 8601 の日時。例: "2026-09-14T20:00:00+09:00"）。' +
+            "ユーザーが確認した着手日時のみを設定すること。",
+        },
       },
       required: ["title"],
     },
@@ -72,6 +84,16 @@ export const TASK_TOOLS: Anthropic.Tool[] = [
         status: { type: "string", enum: [...TASK_STATUSES] },
         boss_comment: { type: "string" },
         estimated_minutes: { type: "integer" },
+        // 着手の約束（決定6）。null は「取り消す」— 約束の編集 UI が無いため、
+        // ボスの update_task がオーナーの取り消し要求を反映できる唯一の経路
+        // （claude-code-backend.ts の Zod shape も同じく nullable にする必要が
+        // ある。片方だけが null を弾くと、そのバックエンドでは取り消せなくなる）。
+        committed_start_at: {
+          type: ["string", "null"],
+          description:
+            '着手の約束（時刻とオフセットを含む ISO 8601 の日時。例: "2026-09-14T20:00:00+09:00"）。' +
+            "ユーザーが確認した着手日時のみを設定すること。null を指定すると約束を取り消す。",
+        },
       },
       required: ["id"],
     },

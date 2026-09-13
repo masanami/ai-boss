@@ -299,7 +299,14 @@ function formatTaskLine(
   const dueAt = task.due_at === null ? "未設定" : formatStoredDateTime(task.due_at);
   const idPart = includeId ? `#${task.id} ` : "";
   const evidenceInfo = formatEvidenceInfo(task.evidence_required, evidenceCount);
-  return `- [${status}] ${idPart}${task.title}（優先度: ${priority} / エビデンス: ${evidenceInfo} / 締切: ${dueAt}）`;
+  // 着手の約束（機能仕様 docs/features/task-start-commitment.md 決定6）: 約束を
+  // 持つタスクの行にだけ約束の日時を足す。committed_at（約束を置いた時刻）は
+  // 出さない（決定1: ボスに渡すタスク一覧には出さない）。
+  const commitmentPart =
+    task.committed_start_at === null
+      ? ""
+      : ` / 着手の約束: ${formatStoredDateTime(task.committed_start_at)}`;
+  return `- [${status}] ${idPart}${task.title}（優先度: ${priority} / エビデンス: ${evidenceInfo} / 締切: ${dueAt}${commitmentPart}）`;
 }
 
 function formatTaskSection(
@@ -651,6 +658,14 @@ const TASK_ESTIMATE_CONFIRMATION_INSTRUCTION =
   "チャットからタスクを新規作成するときは、所要時間の見積もりを提案し、ユーザーが確認（同意または修正）した値だけを" +
   "estimated_minutes に保存すること（確認前に保存してはならない）。";
 
+// 着手の約束の確認指示（機能仕様 docs/features/task-start-commitment.md 決定6）。
+// TASK_ESTIMATE_CONFIRMATION_INSTRUCTION と同じ作法: 会の種別（朝会・夕会・
+// 随時・未指定のいずれ）を問わず通常チャットに積む。担保はこの指示だけとし、
+// 機械的なゲートは置かない（決定6「確認の担保はこの指示だけ」）。
+const TASK_COMMITMENT_CONFIRMATION_INSTRUCTION =
+  "着手の約束（いつからそのタスクに着手するか）を提案するときは、ユーザーが確認（同意または修正）した日時だけを" +
+  "committed_start_at に保存すること（確認前に保存してはならない）。";
+
 // 日報生成（Issue #108）の「値の抽出」段専用の purpose。Markdown をここで
 // 組み立てさせない（親要件チケット #100 のクリティカル設計決定 — 構造は
 // レンダラーが決める）ため、指示は「3値を平文で submit_evening_summary ツール
@@ -751,6 +766,7 @@ export function buildPersonaPrompt(
       sections.push(sessionFlowInstruction);
     }
     sections.push(TASK_ESTIMATE_CONFIRMATION_INSTRUCTION);
+    sections.push(TASK_COMMITMENT_CONFIRMATION_INSTRUCTION);
     // Issue #459（親 #446 S1）: chat 分岐にのみ積む。notification /
     // daily-report は本変更の対象外（それぞれ既存の指示を持つ）。
     sections.push(CHAT_PLAIN_TEXT_INSTRUCTION);
