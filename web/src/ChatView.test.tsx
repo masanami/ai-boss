@@ -9,6 +9,7 @@ import {
 import ChatView from "./ChatView";
 import { useChat, type UseChatResult } from "./use-chat";
 import type { ChatEntry, ChatMessage, ChatSession } from "./chat";
+import type { Task } from "./task";
 
 // ChatView no longer calls useChat itself (Issue #93: the hook is lifted up
 // to AppLayout so the conversation survives a tab switch). This harness
@@ -1898,5 +1899,166 @@ describe("ChatView 全日単位の相談中 (Issue #503)", () => {
     fireEvent.click(screen.getByRole("button", { name: "相談を終える" }));
 
     expect(clearMentoringTarget).toHaveBeenCalledTimes(1);
+  });
+});
+
+// Issue #513 (S1, 決定1・決定3・決定4): ボスのチャット返信中の `#<id>` に
+// タスク名をホバー表示する。`chatState` だけでなく `tasks`/`tasksStatus` も
+// `makeChatState` と同じ「直接 props で与える」形にする（AppLayout との配線は
+// AppLayout.test.tsx が持つ）。
+describe("ChatView task-id hover (Issue #513)", () => {
+  function makeTask(overrides: Partial<Task> & { id: number }): Task {
+    return {
+      title: `task-${overrides.id}`,
+      description: null,
+      category: "work",
+      priority: null,
+      due_at: null,
+      status: "todo",
+      boss_comment: null,
+      estimated_minutes: null,
+      created_at: new Date(2026, 6, 5).toISOString(),
+      updated_at: new Date(2026, 6, 5).toISOString(),
+      completed_at: null,
+      evidence_required: false,
+      ...overrides,
+    };
+  }
+
+  const TASK_1 = makeTask({ id: 1, title: "見積もり資料の作成" });
+
+  it("shows the task title as a hover (title attribute) on a #<id> in a confirmed boss reply", () => {
+    const { container } = render(
+      <ChatView
+        chatState={makeChatState({
+          entries: [
+            {
+              kind: "message",
+              key: "message-1",
+              role: "boss",
+              content: "#1 を先に進めろ。",
+            },
+          ],
+        })}
+        tasks={[TASK_1]}
+        tasksStatus="ready"
+      />,
+    );
+
+    const referenced = container.querySelector(".chat-message-content [title]");
+    expect(referenced).not.toBeNull();
+    expect(referenced).toHaveAttribute("title", "見積もり資料の作成");
+    expect(referenced).toHaveTextContent("#1");
+  });
+
+  it("does not add a title-bearing element for a #<id> not in the task list", () => {
+    const { container } = render(
+      <ChatView
+        chatState={makeChatState({
+          entries: [
+            {
+              kind: "message",
+              key: "message-1",
+              role: "boss",
+              content: "#9999 は存在しない。",
+            },
+          ],
+        })}
+        tasks={[TASK_1]}
+        tasksStatus="ready"
+      />,
+    );
+
+    expect(
+      container.querySelectorAll(".chat-message-content [title]"),
+    ).toHaveLength(0);
+    expect(screen.getByText("#9999 は存在しない。")).toBeInTheDocument();
+  });
+
+  it.each(["loading", "error"] as const)(
+    "does not add a title-bearing element while the task list status is %s, even though a matching task exists",
+    (tasksStatus) => {
+      const { container } = render(
+        <ChatView
+          chatState={makeChatState({
+            entries: [
+              {
+                kind: "message",
+                key: "message-1",
+                role: "boss",
+                content: "#1 を先に進めろ。",
+              },
+            ],
+          })}
+          tasks={[TASK_1]}
+          tasksStatus={tasksStatus}
+        />,
+      );
+
+      expect(
+        container.querySelectorAll(".chat-message-content [title]"),
+      ).toHaveLength(0);
+    },
+  );
+
+  it("does not decorate a #<id> in the user's own message, even though a matching task exists", () => {
+    const { container } = render(
+      <ChatView
+        chatState={makeChatState({
+          entries: [
+            {
+              kind: "message",
+              key: "message-1",
+              role: "user",
+              content: "#1 の状況を教えて",
+            },
+          ],
+        })}
+        tasks={[TASK_1]}
+        tasksStatus="ready"
+      />,
+    );
+
+    expect(
+      container.querySelectorAll(".chat-message-content [title]"),
+    ).toHaveLength(0);
+    expect(screen.getByText("#1 の状況を教えて")).toBeInTheDocument();
+  });
+
+  it("does not decorate a #<id> in the streaming (not yet confirmed) reply, even though a matching task exists", () => {
+    const { container } = render(
+      <ChatView
+        chatState={makeChatState({ streamingText: "#1 を確認中…" })}
+        tasks={[TASK_1]}
+        tasksStatus="ready"
+      />,
+    );
+
+    expect(
+      container.querySelectorAll(".chat-message-content [title]"),
+    ).toHaveLength(0);
+    expect(screen.getByText("#1 を確認中…")).toBeInTheDocument();
+  });
+
+  it("keeps the rendered textContent identical to the original message, decoration or not", () => {
+    const { container } = render(
+      <ChatView
+        chatState={makeChatState({
+          entries: [
+            {
+              kind: "message",
+              key: "message-1",
+              role: "boss",
+              content: "#1 と #9999 を同時に見てほしい",
+            },
+          ],
+        })}
+        tasks={[TASK_1]}
+        tasksStatus="ready"
+      />,
+    );
+
+    const bubble = container.querySelector(".chat-message-content");
+    expect(bubble!.textContent).toBe("#1 と #9999 を同時に見てほしい");
   });
 });

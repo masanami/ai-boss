@@ -11,6 +11,16 @@ const TIME_KEYS = [
   "evening_meeting_time",
 ] as const;
 
+// #517: 決定 3 の日本語 error 文言（画面・API設計の表そのもの）。実装の
+// SETTING_LABELS からは独立に、仕様の表を直接転記する（実装を参照すると
+// 恒真になり、文言が崩れたことを検出できなくなるため）。
+const TIME_KEY_ERRORS: Record<(typeof TIME_KEYS)[number], string> = {
+  work_start: "勤務開始の時刻を 09:00 の形式で入力してください",
+  work_end: "勤務終了の時刻を 09:00 の形式で入力してください",
+  morning_meeting_time: "朝会の時刻を 09:00 の形式で入力してください",
+  evening_meeting_time: "夕会の時刻を 09:00 の形式で入力してください",
+};
+
 const MINUTE_KEYS = [
   "detection_unstarted_fallback_minutes",
   "detection_silence_fallback_minutes",
@@ -19,6 +29,21 @@ const MINUTE_KEYS = [
   "escalation_l3_after_minutes",
   "escalation_repeat_minutes",
 ] as const;
+
+const MINUTE_KEY_ERRORS: Record<(typeof MINUTE_KEYS)[number], string> = {
+  detection_unstarted_fallback_minutes:
+    "未着手のフォールバック（分）には 1 以上の整数を入力してください",
+  detection_silence_fallback_minutes:
+    "無音のフォールバック（分）には 1 以上の整数を入力してください",
+  detection_break_fallback_minutes:
+    "休憩のフォールバック（分）には 1 以上の整数を入力してください",
+  escalation_l2_after_minutes:
+    "エスカレーション: レベル2まで（分）には 1 以上の整数を入力してください",
+  escalation_l3_after_minutes:
+    "エスカレーション: レベル3まで（分）には 1 以上の整数を入力してください",
+  escalation_repeat_minutes:
+    "エスカレーション: 再通知間隔（分）には 1 以上の整数を入力してください",
+};
 
 describe("validatePutSettingsInput", () => {
   it("rejects a non-object body (array)", () => {
@@ -55,10 +80,17 @@ describe("validatePutSettingsInput", () => {
       expect(result).toEqual({ valid: true, data: { boss_name: "鬼上司" } });
     });
 
-    it("rejects an empty string", () => {
-      const result = validatePutSettingsInput({ boss_name: "" });
-      expect(result.valid).toBe(false);
-    });
+    it.each(["", "   "])(
+      "rejects %j with the Japanese error and code (setting_required) (#517)",
+      (value) => {
+        const result = validatePutSettingsInput({ boss_name: value });
+        expect(result).toEqual({
+          valid: false,
+          error: "ボスの名前を入力してください",
+          code: "setting_required",
+        });
+      },
+    );
 
     it("rejects a non-string value", () => {
       const result = validatePutSettingsInput({ boss_name: 123 });
@@ -162,6 +194,18 @@ describe("validatePutSettingsInput", () => {
       expect(result).toEqual({ valid: true, data: { [key]: "09:30" } });
     });
 
+    it.each(["", "9:00"])(
+      "rejects %j with the Japanese error and code (invalid_time) (#517)",
+      (value) => {
+        const result = validatePutSettingsInput({ [key]: value });
+        expect(result).toEqual({
+          valid: false,
+          error: TIME_KEY_ERRORS[key],
+          code: "invalid_time",
+        });
+      },
+    );
+
     it("rejects a value missing zero-padding", () => {
       const result = validatePutSettingsInput({ [key]: "9:30" });
       expect(result.valid).toBe(false);
@@ -184,20 +228,17 @@ describe("validatePutSettingsInput", () => {
       expect(result).toEqual({ valid: true, data: { [key]: "30" } });
     });
 
-    it("rejects 0", () => {
-      const result = validatePutSettingsInput({ [key]: 0 });
-      expect(result.valid).toBe(false);
-    });
-
-    it("rejects a negative number", () => {
-      const result = validatePutSettingsInput({ [key]: -5 });
-      expect(result.valid).toBe(false);
-    });
-
-    it("rejects a non-integer number", () => {
-      const result = validatePutSettingsInput({ [key]: 1.5 });
-      expect(result.valid).toBe(false);
-    });
+    it.each([0, -5, 1.5])(
+      "rejects %s with the Japanese error and code (invalid_positive_integer) (#517)",
+      (value) => {
+        const result = validatePutSettingsInput({ [key]: value });
+        expect(result).toEqual({
+          valid: false,
+          error: MINUTE_KEY_ERRORS[key],
+          code: "invalid_positive_integer",
+        });
+      },
+    );
 
     it("rejects a numeric string", () => {
       const result = validatePutSettingsInput({ [key]: "30" });
@@ -214,10 +255,17 @@ describe("validatePutSettingsInput", () => {
       });
     });
 
-    it("rejects an empty string", () => {
-      const result = validatePutSettingsInput({ model: "" });
-      expect(result.valid).toBe(false);
-    });
+    it.each(["", "   "])(
+      "rejects %j with the Japanese error and code (setting_required) (#517)",
+      (value) => {
+        const result = validatePutSettingsInput({ model: value });
+        expect(result).toEqual({
+          valid: false,
+          error: "モデルを入力してください",
+          code: "setting_required",
+        });
+      },
+    );
 
     it("rejects a non-string value", () => {
       const result = validatePutSettingsInput({ model: 42 });
@@ -362,33 +410,23 @@ describe("validatePutSettingsInput", () => {
       });
     });
 
-    it("rejects an overnight range (work_start=22:00, work_end=02:00) when both are sent (AC-1)", () => {
-      const result = validatePutSettingsInput({
-        work_start: "22:00",
-        work_end: "02:00",
-      });
-      expect(result.valid).toBe(false);
-    });
-
-    it("rejects an equal-time range (work_start=09:00, work_end=09:00) when both are sent (AC-1, decision 2: >=)", () => {
-      const result = validatePutSettingsInput({
-        work_start: "09:00",
-        work_end: "09:00",
-      });
-      expect(result.valid).toBe(false);
-    });
-
-    it("error message identifies the work_start/work_end relationship as invalid (AC-2)", () => {
-      const result = validatePutSettingsInput({
-        work_start: "22:00",
-        work_end: "02:00",
-      });
-      expect(result.valid).toBe(false);
-      if (!result.valid) {
-        expect(result.error).toContain("work_start");
-        expect(result.error).toContain("work_end");
-      }
-    });
+    it.each([
+      ["22:00", "02:00"],
+      ["09:00", "09:00"],
+    ])(
+      "rejects an invalid range (work_start=%s, work_end=%s) with the Japanese error and code (invalid_working_hours) when both are sent (AC-1, AC-2, decision 2: >=) (#517)",
+      (start, end) => {
+        const result = validatePutSettingsInput({
+          work_start: start,
+          work_end: end,
+        });
+        expect(result).toEqual({
+          valid: false,
+          error: "勤務開始は勤務終了より前の時刻にしてください",
+          code: "invalid_working_hours",
+        });
+      },
+    );
 
     it("does not reject when only work_start is sent (partial-update correlation is wired in settings-routes.ts by #481, not here)", () => {
       const result = validatePutSettingsInput({ work_start: "23:00" });

@@ -5,6 +5,8 @@ import { getSettingValue, setSettingValue } from "./settings-repository.js";
 import {
   isValidWorkingHoursRange,
   validatePutSettingsInput,
+  WORKING_HOURS_ERROR,
+  WORKING_HOURS_CODE,
   type SettingsPatch,
 } from "./settings-validation.js";
 import { resolveBossSettings } from "../boss/boss-settings.js";
@@ -128,7 +130,15 @@ export function createSettingsRouter(db: Database.Database): Hono {
 
     const result = validatePutSettingsInput(body);
     if (!result.valid) {
-      return c.json({ error: result.error }, 400);
+      // #517 決定1・決定2: validatePutSettingsInput が code を付けて返した
+      // 5箇所だけ {error, code} にする。それ以外（対象外の400）は code を
+      // 付けず従来どおり {error} のみを返す。
+      return c.json(
+        result.code === undefined
+          ? { error: result.error }
+          : { error: result.error, code: result.code },
+        400,
+      );
     }
 
     // Partial-update correlation check (#481, 親要件 #448 決定1・6):
@@ -142,7 +152,13 @@ export function createSettingsRouter(db: Database.Database): Hono {
     if (result.data.work_start !== undefined || result.data.work_end !== undefined) {
       const { start, end } = resolveEffectiveWorkingHours(db, result.data);
       if (!isValidWorkingHoursRange(start, end)) {
-        return c.json({ error: "work_start must be earlier than work_end" }, 400);
+        // #517 決定5: :272（settings-validation.ts）とは独立にオブジェクトを
+        // 組む（定数は共有するが組み立て文は共有しない。片方だけを崩す変異で
+        // 片方のテストだけが落ちることを担保するため）。
+        return c.json(
+          { error: WORKING_HOURS_ERROR, code: WORKING_HOURS_CODE },
+          400,
+        );
       }
     }
 

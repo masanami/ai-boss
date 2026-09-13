@@ -8,6 +8,7 @@ import {
 } from "@testing-library/react";
 import AppLayout from "./AppLayout";
 import type { ChatMessage, ChatSession } from "./chat";
+import type { DecisionRecord } from "./decision";
 import { SIDE_PANEL_WIDTH_STORAGE_KEY } from "./side-panel-width";
 import type { Task } from "./task";
 
@@ -95,9 +96,12 @@ function createRoutedFetchMock(options: {
    * その間 `chatState.switching` が真のままになる。
    */
   holdSessionsFetchAfterFirst?: Promise<void>;
+  /** Issue #513: `GET /api/decisions` の応答（決定ログ本文の `#<id>` の配線確認用）。 */
+  decisions?: DecisionRecord[];
 } = {}) {
   const {
     tasks: initialTasks = [],
+    decisions = [],
     onCreateTask,
     onPatchTask,
     onCheckin,
@@ -136,6 +140,9 @@ function createRoutedFetchMock(options: {
     }
     if (url === "/api/activity/today") {
       return jsonResponse(200, []);
+    }
+    if (url === "/api/decisions" && method === "GET") {
+      return jsonResponse(200, decisions);
     }
     if (url === "/api/reports" && method === "GET") {
       return jsonResponse(200, []);
@@ -682,6 +689,89 @@ describe("AppLayout", () => {
     await waitFor(() =>
       expect(screen.getByLabelText("メッセージ")).toHaveValue("書きかけの相談"),
     );
+  });
+
+  // Issue #513 (S1, 決定2): `ChatView` / `DecisionLog` の一覧 props は省略可能
+  // （省略時は装飾しない）なので、AppLayout が `tasksState` を渡し忘れても
+  // 型検査は通る。配線はここで実際の AppLayout を描画して確かめる。
+  describe("ボスの文面中の #<id> へのタスク名の配線 (Issue #513)", () => {
+    const TASK = makeTask({ id: 1, title: "見積もり資料の作成" });
+
+    it("passes the task list to the chat so a confirmed boss reply's #<id> carries the task title", async () => {
+      // 復元されるのは当日のセッションなので、Issue #93 のテストと同じく時刻を固定する。
+      vi.useFakeTimers({ toFake: ["Date"] });
+      vi.setSystemTime(new Date(2026, 6, 5, 12, 0, 0));
+      const chatSession: ChatSession = {
+        id: 7,
+        type: "adhoc",
+        started_at: new Date(2026, 6, 5, 9, 0, 0).toISOString(),
+        ended_at: null,
+        summary: null,
+      };
+      vi.stubGlobal(
+        "fetch",
+        createRoutedFetchMock({
+          tasks: [TASK],
+          sessions: [chatSession],
+          sessionMessages: {
+            7: [
+              {
+                id: 1,
+                session_id: 7,
+                role: "boss",
+                content: "#1 を先に進めろ。",
+                interrupted: 0,
+                created_at: chatSession.started_at,
+              },
+            ],
+          },
+        }),
+      );
+
+      render(<AppLayout />);
+      fireEvent.click(screen.getByRole("button", { name: "チャット" }));
+
+      const chat = await screen.findByRole("main", { name: "ボスとの対話" });
+      await waitFor(() =>
+        expect(chat.querySelector(".chat-message-content [title]")).toHaveAttribute(
+          "title",
+          "見積もり資料の作成",
+        ),
+      );
+    });
+
+    it("passes the task list to the decision log so a #<id> in the content carries the task title", async () => {
+      vi.stubGlobal(
+        "fetch",
+        createRoutedFetchMock({
+          tasks: [TASK],
+          decisions: [
+            {
+              id: 1,
+              session_id: 7,
+              task_id: null,
+              task_title: null,
+              content: "#1 を最優先にする",
+              rationale: null,
+              status: "active",
+              kind: "decision",
+              created_at: new Date(2026, 6, 5, 9, 0, 0).toISOString(),
+            },
+          ],
+        }),
+      );
+
+      render(<AppLayout />);
+      fireEvent.click(screen.getByRole("button", { name: "決定ログ" }));
+
+      const log = await screen.findByRole("main", { name: "決定ログ" });
+      await waitFor(() =>
+        expect(log.querySelector(".decision-content [title]")).toHaveAttribute(
+          "title",
+          "見積もり資料の作成",
+        ),
+      );
+    });
   });
 
   // Issue #470 (親 #444): タスクカードからのメンタリング起動。判断
