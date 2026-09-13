@@ -191,7 +191,8 @@
 ### 決定 6: ボスへの露出はツールの入力・確認の指示・タスク一覧の 1 項目に限る
 
 - **採用案**:
-  - `create_task`・`update_task` の入力に `committed_start_at` を加える。説明文に保存形式（時刻とオフセットを含む ISO 8601 の日時、例 `2026-09-14T20:00:00+09:00`）と「`null` で取り消す」を明示し、`claude-code-backend.ts` の Zod shape と同じ文言を二重に書く（C11。一致テストを保つ）
+  - `create_task`・`update_task` の入力に `committed_start_at` を加える。説明文に保存形式（時刻とオフセットを含む ISO 8601 の日時、例 `2026-09-14T20:00:00+09:00`）を明示し、`update_task` には「`null` で取り消す」も明示する。`claude-code-backend.ts` の Zod shape と同じ文言を二重に書く（C11。一致テストを保つ）
+  - **`update_task` の `committed_start_at` は、JSON Schema（`task-tools.ts`）と Zod shape（`claude-code-backend.ts`）の両方で `null` を受け付ける**。約束の編集 UI を置かない（決定 7）ため、オーナーが約束の取り消しを頼んだときの製品上の経路はボスの `update_task` だけであり、どちらかの定義が `null` を弾くと、そのバックエンドでは約束を取り消せなくなる（Codex レビュー 3 回目の指摘）。2 つの定義は許容値を別々に持つため、両方を個別に検査する。`create_task` の `committed_start_at` は値のみとする（作成時に取り消す約束は無い）
   - 「着手の約束はボスが提案し、ユーザーが確認（同意または修正）した日時だけを保存する」指示を、見積もりの確認指示と同じく会の種別を問わず通常チャットに積む（A1 (b)）。**確認の担保はこの指示だけ**とし、機械的なゲートは置かない（見積もりと同じ。C7）
   - `formatTaskLine` は、約束を持つタスクの行にだけ約束の日時を載せる
   - `estimated_minutes` をタスク一覧に載せることは本仕様に含めない
@@ -336,7 +337,13 @@ S1 は統合ブランチ `feat/issue-{親Issue番号}` に集約し、次の 4 �
 
 ### ボスのツールと文脈（決定 6）
 
-- [ ] `create_task` と `update_task` のツール定義が `committed_start_at` の入力を持ち、その説明文が「時刻とオフセットを含む ISO 8601 の日時」と「`null` で取り消す」ことを明示する
+- [ ] `create_task` と `update_task` のツール定義が `committed_start_at` の入力を持ち、その説明文が「時刻とオフセットを含む ISO 8601 の日時」であることを明示する
+- [ ] `update_task` のツール定義の `committed_start_at` の説明文が、`null` で約束を取り消せることを明示する
+- [ ] `task-tools.ts` の `update_task` の JSON Schema で、`committed_start_at` の型が `null` を含む（例: `type: ["string", "null"]`）（変異: JSON Schema だけ `type: "string"` に戻し、Zod 側は nullable のままにする — 入力「`TASK_TOOLS` の `update_task` の `input_schema.properties.committed_start_at` の型を読む」で `null` を含まない）
+- [ ] `claude-code-backend.ts` の `update_task` の Zod shape は `committed_start_at: null` を受け付ける（入力 `z.object(TOOL_ZOD_SHAPES.update_task).safeParse({ id: 1, committed_start_at: null })` が成功する。変異: Zod だけ `.nullable()` を外し、JSON Schema 側は `null` を含むままにする — 同じ入力で失敗する）
+- [ ] Zod shape で検証した `update_task` の入力 `{ id, committed_start_at: null }` を `executeBossTool` で実行すると、約束を持つ `todo` のタスクの `committed_start_at` と `committed_at` が `NULL` になる（claude-code バックエンドの経路。変異: Zod shape から `.nullable()` を外す — 入力「約束 `2026-09-14T20:00:00+09:00` を持つ `todo` のタスクへ `{ id, committed_start_at: null }`」で検証に失敗して実行されず、値が残る）
+- [ ] `executeBossTool` に `update_task` の入力 `{ id, committed_start_at: null }` を直接渡して実行すると、約束を持つ `todo` のタスクの `committed_start_at` と `committed_at` が `NULL` になる（API バックエンドの経路。変異: `executeUpdateTask` が `null` を「項目なし」として落としてから `updateTask` を呼ぶ — 入力「約束 `2026-09-14T20:00:00+09:00` を持つ `todo` のタスクへ `{ id, committed_start_at: null }`」で値が残る）
+- [ ] `update_task` の `{ id, committed_start_at: null }` の実行で約束を取り消すと、記録される `task_update` イベントの `note` に変更前の値と変更後の値 `null` が含まれる（変異: `executeUpdateTask` が `null` を「項目なし」として落としてから `updateTask` を呼ぶ — 同じ入力で `note` が `null` のまま）
 - [ ] `claude-code-backend.ts` の `create_task`・`update_task` の Zod shape の `committed_start_at` の説明文が、`task-tools.ts` の説明文と一致する
 - [ ] `update_task` ツールに解釈できない `committed_start_at`（例: `"20:00"`）を渡すと、`isError: true` を返しタスクを更新しない
 - [ ] 通常チャットのシステムプロンプトに、着手の約束はユーザーが確認した日時だけを保存するよう指示する文言が、会の種別が朝会・夕会・随時・未指定のいずれでも含まれる
