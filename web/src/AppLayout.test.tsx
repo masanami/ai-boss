@@ -1205,6 +1205,373 @@ describe("AppLayout", () => {
     });
   });
 
+  // Issue #476 (S1b・決定10・決定11): タスク起点のメンタリングは、開始後も
+  // 「相談中」として web 側に保持され、継続中は毎ターン `mentoring: true` ＋
+  // `mentoringTaskId` が送られる。基準は必ず `fetch` に実際に載った body で
+  // 確認する（`send`/`sendChatMessage` の呼び出し引数では確認しない — #476
+  // の欠陥は「呼び出し側が渡し忘れる」ことなので、呼び出し引数側の基準は
+  // 欠陥を再現しても緑のままになりうる）。
+  describe("相談中の保持と解除 (Issue #476, S1b)", () => {
+    async function sendFromInput(content: string): Promise<void> {
+      fireEvent.change(screen.getByLabelText("メッセージ"), {
+        target: { value: content },
+      });
+      fireEvent.click(screen.getByRole("button", { name: "送信" }));
+      await waitFor(() =>
+        expect(screen.getByLabelText("メッセージ")).toBeEnabled(),
+      );
+    }
+
+    it("does not show the 相談中 state before any task-origin mentoring has started", async () => {
+      const task = makeTask({ id: 42, title: "資料を作る", status: "todo" });
+      vi.stubGlobal("fetch", createRoutedFetchMock({ tasks: [task] }));
+
+      render(<AppLayout />);
+      fireEvent.click(screen.getByRole("button", { name: "チャット" }));
+      await waitFor(() =>
+        expect(screen.getByLabelText("メッセージ")).toBeEnabled(),
+      );
+
+      expect(
+        screen.queryByText(/について相談中/),
+      ).not.toBeInTheDocument();
+    });
+
+    it("shows the 相談中 state (task title + clear affordance) outside 会話履歴 after メンタリングする is clicked", async () => {
+      const task = makeTask({ id: 42, title: "資料を作る", status: "todo" });
+      vi.stubGlobal("fetch", createRoutedFetchMock({ tasks: [task] }));
+
+      render(<AppLayout />);
+      fireEvent.click(screen.getByRole("button", { name: "タスク" }));
+      await waitFor(() =>
+        expect(
+          screen.getByRole("region", { name: "未着手" }),
+        ).toBeInTheDocument(),
+      );
+      fireEvent.click(
+        screen.getByRole("button", { name: "メンタリングする" }),
+      );
+
+      await waitFor(() =>
+        expect(
+          screen.getByText("「資料を作る」について相談中"),
+        ).toBeInTheDocument(),
+      );
+      expect(
+        screen.getByRole("button", { name: "相談を終える" }),
+      ).toBeInTheDocument();
+      const timeline = screen.getByRole("list", { name: "会話履歴" });
+      expect(
+        within(timeline).queryByText("「資料を作る」について相談中"),
+      ).not.toBeInTheDocument();
+    });
+
+    it("keeps sending mentoring: true + the started task's mentoringTaskId on the 2nd and 3rd input-box turns", async () => {
+      const task = makeTask({ id: 42, title: "資料を作る", status: "todo" });
+      const bodies: {
+        content: string;
+        mentoring?: true;
+        mentoringTaskId?: number;
+      }[] = [];
+      vi.stubGlobal(
+        "fetch",
+        createRoutedFetchMock({
+          tasks: [task],
+          onSendMessage: (sessionId, body) => {
+            bodies.push(body);
+            return {
+              id: 900 + bodies.length,
+              session_id: sessionId,
+              role: "boss",
+              content: "了解した。",
+              interrupted: 0,
+              created_at: new Date().toISOString(),
+            };
+          },
+        }),
+      );
+
+      render(<AppLayout />);
+      fireEvent.click(screen.getByRole("button", { name: "タスク" }));
+      await waitFor(() =>
+        expect(
+          screen.getByRole("region", { name: "未着手" }),
+        ).toBeInTheDocument(),
+      );
+      fireEvent.click(
+        screen.getByRole("button", { name: "メンタリングする" }),
+      );
+      await waitFor(() =>
+        expect(
+          screen.getByRole("main", { name: "ボスとの対話" }),
+        ).toBeInTheDocument(),
+      );
+      await waitFor(() => expect(bodies).toHaveLength(1));
+
+      await sendFromInput("2ターン目です");
+      await sendFromInput("3ターン目です");
+
+      expect(bodies).toHaveLength(3);
+      expect(bodies[1]).toEqual({
+        content: "2ターン目です",
+        mentoring: true,
+        mentoringTaskId: 42,
+      });
+      expect(bodies[2]).toEqual({
+        content: "3ターン目です",
+        mentoring: true,
+        mentoringTaskId: 42,
+      });
+    });
+
+    it("replaces the target when a different task's card is used to start mentoring", async () => {
+      const taskA = makeTask({ id: 1, title: "資料を作る", status: "todo" });
+      const taskB = makeTask({ id: 2, title: "経費精算をする", status: "todo" });
+      const bodies: {
+        content: string;
+        mentoring?: true;
+        mentoringTaskId?: number;
+      }[] = [];
+      vi.stubGlobal(
+        "fetch",
+        createRoutedFetchMock({
+          tasks: [taskA, taskB],
+          onSendMessage: (sessionId, body) => {
+            bodies.push(body);
+            return {
+              id: 900 + bodies.length,
+              session_id: sessionId,
+              role: "boss",
+              content: "了解した。",
+              interrupted: 0,
+              created_at: new Date().toISOString(),
+            };
+          },
+        }),
+      );
+
+      render(<AppLayout />);
+      fireEvent.click(screen.getByRole("button", { name: "タスク" }));
+      const todoColumn = await screen.findByRole("region", { name: "未着手" });
+      await waitFor(() =>
+        expect(within(todoColumn).getByText("資料を作る")).toBeInTheDocument(),
+      );
+      fireEvent.click(
+        within(
+          within(todoColumn).getByText("資料を作る").closest(".task-card")!,
+        ).getByRole("button", { name: "メンタリングする" }),
+      );
+
+      await waitFor(() =>
+        expect(
+          screen.getByText("「資料を作る」について相談中"),
+        ).toBeInTheDocument(),
+      );
+
+      fireEvent.click(screen.getByRole("button", { name: "タスク" }));
+      const todoColumnAgain = await screen.findByRole("region", {
+        name: "未着手",
+      });
+      await waitFor(() =>
+        expect(
+          within(todoColumnAgain).getByText("経費精算をする"),
+        ).toBeInTheDocument(),
+      );
+      fireEvent.click(
+        within(
+          within(todoColumnAgain)
+            .getByText("経費精算をする")
+            .closest(".task-card")!,
+        ).getByRole("button", { name: "メンタリングする" }),
+      );
+
+      await waitFor(() =>
+        expect(
+          screen.getByText("「経費精算をする」について相談中"),
+        ).toBeInTheDocument(),
+      );
+      expect(
+        screen.queryByText("「資料を作る」について相談中"),
+      ).not.toBeInTheDocument();
+
+      await waitFor(() => expect(bodies).toHaveLength(2));
+      await sendFromInput("続きです");
+
+      expect(bodies).toHaveLength(3);
+      expect(bodies[2]).toEqual({
+        content: "続きです",
+        mentoring: true,
+        mentoringTaskId: 2,
+      });
+    });
+
+    it("clears the 相談中 state and stops attaching mentoring keys once the clear affordance is pressed", async () => {
+      const task = makeTask({ id: 42, title: "資料を作る", status: "todo" });
+      const bodies: {
+        content: string;
+        mentoring?: true;
+        mentoringTaskId?: number;
+      }[] = [];
+      vi.stubGlobal(
+        "fetch",
+        createRoutedFetchMock({
+          tasks: [task],
+          onSendMessage: (sessionId, body) => {
+            bodies.push(body);
+            return {
+              id: 900 + bodies.length,
+              session_id: sessionId,
+              role: "boss",
+              content: "了解した。",
+              interrupted: 0,
+              created_at: new Date().toISOString(),
+            };
+          },
+        }),
+      );
+
+      render(<AppLayout />);
+      fireEvent.click(screen.getByRole("button", { name: "タスク" }));
+      await waitFor(() =>
+        expect(
+          screen.getByRole("region", { name: "未着手" }),
+        ).toBeInTheDocument(),
+      );
+      fireEvent.click(
+        screen.getByRole("button", { name: "メンタリングする" }),
+      );
+      await waitFor(() => expect(bodies).toHaveLength(1));
+
+      fireEvent.click(screen.getByRole("button", { name: "相談を終える" }));
+
+      expect(
+        screen.queryByText(/について相談中/),
+      ).not.toBeInTheDocument();
+
+      await sendFromInput("解除後の発言です");
+
+      expect(bodies).toHaveLength(2);
+      expect(bodies[1]).toEqual({ content: "解除後の発言です" });
+    });
+
+    it("clears the 相談中 state when the header 全日単位 mentoring button is used, and its own send has no mentoringTaskId", async () => {
+      const task = makeTask({ id: 42, title: "資料を作る", status: "todo" });
+      const bodies: {
+        content: string;
+        mentoring?: true;
+        mentoringTaskId?: number;
+      }[] = [];
+      vi.stubGlobal(
+        "fetch",
+        createRoutedFetchMock({
+          tasks: [task],
+          onSendMessage: (sessionId, body) => {
+            bodies.push(body);
+            return {
+              id: 900 + bodies.length,
+              session_id: sessionId,
+              role: "boss",
+              content: "了解した。",
+              interrupted: 0,
+              created_at: new Date().toISOString(),
+            };
+          },
+        }),
+      );
+
+      render(<AppLayout />);
+      fireEvent.click(screen.getByRole("button", { name: "タスク" }));
+      await waitFor(() =>
+        expect(
+          screen.getByRole("region", { name: "未着手" }),
+        ).toBeInTheDocument(),
+      );
+      fireEvent.click(
+        screen.getByRole("button", { name: "メンタリングする" }),
+      );
+      await waitFor(() => expect(bodies).toHaveLength(1));
+      await waitFor(() =>
+        expect(
+          screen.getByText("「資料を作る」について相談中"),
+        ).toBeInTheDocument(),
+      );
+
+      fireEvent.click(
+        screen.getByRole("button", { name: "進め方を点検してもらう" }),
+      );
+      await waitFor(() => expect(bodies).toHaveLength(2));
+
+      expect(
+        screen.queryByText(/について相談中/),
+      ).not.toBeInTheDocument();
+      expect(bodies[1]).toEqual({
+        content: "今の進め方を見てほしい",
+        mentoring: true,
+      });
+
+      await sendFromInput("続き");
+
+      expect(bodies).toHaveLength(3);
+      expect(bodies[2]).toEqual({ content: "続き" });
+    });
+
+    it("clears the 相談中 state when a morning meeting starts, and messages sent during it carry no mentoringTaskId", async () => {
+      const task = makeTask({ id: 42, title: "資料を作る", status: "todo" });
+      const bodies: {
+        content: string;
+        mentoring?: true;
+        mentoringTaskId?: number;
+      }[] = [];
+      vi.stubGlobal(
+        "fetch",
+        createRoutedFetchMock({
+          tasks: [task],
+          onSendMessage: (sessionId, body) => {
+            bodies.push(body);
+            return {
+              id: 900 + bodies.length,
+              session_id: sessionId,
+              role: "boss",
+              content: "了解した。",
+              interrupted: 0,
+              created_at: new Date().toISOString(),
+            };
+          },
+        }),
+      );
+
+      render(<AppLayout />);
+      fireEvent.click(screen.getByRole("button", { name: "タスク" }));
+      await waitFor(() =>
+        expect(
+          screen.getByRole("region", { name: "未着手" }),
+        ).toBeInTheDocument(),
+      );
+      fireEvent.click(
+        screen.getByRole("button", { name: "メンタリングする" }),
+      );
+      await waitFor(() => expect(bodies).toHaveLength(1));
+      await waitFor(() =>
+        expect(
+          screen.getByText("「資料を作る」について相談中"),
+        ).toBeInTheDocument(),
+      );
+
+      fireEvent.click(screen.getByRole("button", { name: "朝会を開始" }));
+      await waitFor(() =>
+        expect(screen.getByText("朝会中")).toBeInTheDocument(),
+      );
+      expect(
+        screen.queryByText(/について相談中/),
+      ).not.toBeInTheDocument();
+
+      await sendFromInput("朝会中の発言です");
+
+      expect(bodies).toHaveLength(2);
+      expect(bodies[1]).toEqual({ content: "朝会中の発言です" });
+    });
+  });
+
   it("switches the main area to the settings view when the settings nav item is clicked", () => {
     render(<AppLayout />);
 

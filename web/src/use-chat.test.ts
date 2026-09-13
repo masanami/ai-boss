@@ -2990,3 +2990,359 @@ describe("useChat mentoring (Issue #411)", () => {
     expect(result.current.sessionType).toBe("adhoc");
   });
 });
+
+// Issue #476 (S1b・決定10・決定11): web が「相談中（対象タスク）」の状態を
+// 持ち、継続中は毎ターン mentoring: true + mentoringTaskId を送る。担保は
+// `fetch` 境界に実際に載った body で確認する（`send` の呼び出し引数や
+// `sendChatMessage` の呼び出し引数では確認しない — #476 の欠陥は「呼び出し
+// 側が渡し忘れる」ことなので、呼び出し引数側の基準は欠陥を再現しても緑の
+// ままになりうる）。
+describe("useChat mentoringTarget (Issue #476, S1b)", () => {
+  it("is null initially", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValueOnce(jsonResponse([])));
+
+    const { result } = renderHook(() => useChat());
+    await waitFor(() => expect(result.current.status).toBe("ready"));
+
+    expect(result.current.mentoringTarget).toBeNull();
+  });
+
+  it("sets mentoringTarget and sends the task-titled message with mentoring:true + mentoringTaskId when startMentoring is called", async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(jsonResponse([SESSION]))
+      .mockResolvedValueOnce(jsonResponse(HISTORY))
+      .mockResolvedValueOnce(
+        sseResponse([`event: done\ndata: ${JSON.stringify(BOSS_REPLY)}\n\n`]),
+      );
+    vi.stubGlobal("fetch", fetchMock);
+
+    const { result } = renderHook(() => useChat());
+    await waitFor(() => expect(result.current.status).toBe("ready"));
+
+    await act(async () => {
+      await result.current.startMentoring({ id: 42, title: "資料を作る" });
+    });
+
+    expect(result.current.mentoringTarget).toEqual({
+      id: 42,
+      title: "資料を作る",
+    });
+    const body = JSON.parse(
+      fetchMock.mock.calls[2][1].body as string,
+    ) as Record<string, unknown>;
+    expect(body).toEqual({
+      content: "「資料を作る」の進め方を見てほしい",
+      mentoring: true,
+      mentoringTaskId: 42,
+    });
+  });
+
+  it("adds mentoring:true and the tracked mentoringTaskId to every subsequent options-less send, through the 3rd turn", async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(jsonResponse([SESSION]))
+      .mockResolvedValueOnce(jsonResponse(HISTORY))
+      .mockResolvedValueOnce(
+        sseResponse([`event: done\ndata: ${JSON.stringify(BOSS_REPLY)}\n\n`]),
+      ) // startMentoring's send
+      .mockResolvedValueOnce(
+        sseResponse([`event: done\ndata: ${JSON.stringify(BOSS_REPLY)}\n\n`]),
+      ) // 2nd turn
+      .mockResolvedValueOnce(
+        sseResponse([`event: done\ndata: ${JSON.stringify(BOSS_REPLY)}\n\n`]),
+      ); // 3rd turn
+    vi.stubGlobal("fetch", fetchMock);
+
+    const { result } = renderHook(() => useChat());
+    await waitFor(() => expect(result.current.status).toBe("ready"));
+
+    await act(async () => {
+      await result.current.startMentoring({ id: 42, title: "資料を作る" });
+    });
+    await act(async () => {
+      await result.current.send("2ターン目の相談です");
+    });
+    await act(async () => {
+      await result.current.send("3ターン目の相談です");
+    });
+
+    const secondBody = JSON.parse(
+      fetchMock.mock.calls[3][1].body as string,
+    ) as Record<string, unknown>;
+    const thirdBody = JSON.parse(
+      fetchMock.mock.calls[4][1].body as string,
+    ) as Record<string, unknown>;
+    expect(secondBody).toEqual({
+      content: "2ターン目の相談です",
+      mentoring: true,
+      mentoringTaskId: 42,
+    });
+    expect(thirdBody).toEqual({
+      content: "3ターン目の相談です",
+      mentoring: true,
+      mentoringTaskId: 42,
+    });
+  });
+
+  it("does not merge the tracked target into an explicitly-passed options argument", async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(jsonResponse([SESSION]))
+      .mockResolvedValueOnce(jsonResponse(HISTORY))
+      .mockResolvedValueOnce(
+        sseResponse([`event: done\ndata: ${JSON.stringify(BOSS_REPLY)}\n\n`]),
+      ) // startMentoring's send
+      .mockResolvedValueOnce(
+        sseResponse([`event: done\ndata: ${JSON.stringify(BOSS_REPLY)}\n\n`]),
+      ); // explicit-options send
+    vi.stubGlobal("fetch", fetchMock);
+
+    const { result } = renderHook(() => useChat());
+    await waitFor(() => expect(result.current.status).toBe("ready"));
+
+    await act(async () => {
+      await result.current.startMentoring({ id: 42, title: "資料を作る" });
+    });
+    await act(async () => {
+      await result.current.send("今の進め方を見てほしい", { mentoring: true });
+    });
+
+    const body = JSON.parse(
+      fetchMock.mock.calls[3][1].body as string,
+    ) as Record<string, unknown>;
+    expect(body).toEqual({
+      content: "今の進め方を見てほしい",
+      mentoring: true,
+    });
+  });
+
+  it("does not set the target nor send while a message send is already in flight (sendingRef)", async () => {
+    let resolvePost: (value: unknown) => void = () => {};
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(jsonResponse([])) // mount: no adhoc session
+      .mockImplementationOnce(
+        () => new Promise((resolve) => { resolvePost = resolve; }),
+      ); // createSession("adhoc") pending
+    vi.stubGlobal("fetch", fetchMock);
+
+    const { result } = renderHook(() => useChat());
+    await waitFor(() => expect(result.current.status).toBe("ready"));
+
+    let sendPromise: Promise<void>;
+    act(() => {
+      sendPromise = result.current.send("送信中に開始を試みる");
+    });
+
+    await act(async () => {
+      await result.current.startMentoring({ id: 42, title: "資料を作る" });
+    });
+
+    // No extra request was issued, and the target was never set (decision
+    // 10: setting it here without the send actually going through would
+    // leave the display and the requests disagreeing).
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(result.current.mentoringTarget).toBeNull();
+
+    resolvePost(jsonResponse(SESSION, 201));
+    await act(async () => {
+      await sendPromise;
+    });
+  });
+
+  it("does not set the target nor send while a session switch is already in flight (switchingRef)", async () => {
+    let resolveList: (value: unknown) => void = () => {};
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(jsonResponse([])) // mount: no adhoc session
+      .mockImplementationOnce(
+        () => new Promise((resolve) => { resolveList = resolve; }),
+      ); // startSession's list lookup pending
+    vi.stubGlobal("fetch", fetchMock);
+
+    const { result } = renderHook(() => useChat());
+    await waitFor(() => expect(result.current.status).toBe("ready"));
+
+    let switchPromise: Promise<void>;
+    act(() => {
+      switchPromise = result.current.startSession("morning");
+    });
+
+    await act(async () => {
+      await result.current.startMentoring({ id: 42, title: "資料を作る" });
+    });
+
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(result.current.mentoringTarget).toBeNull();
+
+    resolveList(jsonResponse(MORNING_SESSION_TODAY, 201));
+    await act(async () => {
+      await switchPromise;
+    });
+  });
+
+  it("clears the mentoring target when startSession is called (decision 11)", async () => {
+    const fetchMock = routedFetch({
+      sessions: [SESSION],
+      messages: { 1: [] },
+      created: MORNING_SESSION_TODAY,
+      stream: sseResponse([`event: done\ndata: ${JSON.stringify(BOSS_REPLY)}\n\n`]),
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const { result } = renderHook(() => useChat());
+    await waitFor(() => expect(result.current.status).toBe("ready"));
+
+    await act(async () => {
+      await result.current.startMentoring({ id: 42, title: "資料を作る" });
+    });
+    expect(result.current.mentoringTarget).toEqual({
+      id: 42,
+      title: "資料を作る",
+    });
+
+    await act(async () => {
+      await result.current.startSession("morning");
+    });
+
+    expect(result.current.mentoringTarget).toBeNull();
+    expect(result.current.sessionType).toBe("morning");
+  });
+
+  it("keeps the mentoring target when starting a meeting fails and the chat stays adhoc", async () => {
+    const fetchMock = routedFetch({
+      sessions: [SESSION],
+      messages: { 1: [] },
+      createError: {
+        status: 409,
+        error: "今日の夕会は既に終了しています",
+      },
+      stream: sseResponse([`event: done\ndata: ${JSON.stringify(BOSS_REPLY)}\n\n`]),
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const { result } = renderHook(() => useChat());
+    await waitFor(() => expect(result.current.status).toBe("ready"));
+
+    await act(async () => {
+      await result.current.startMentoring({ id: 42, title: "資料を作る" });
+    });
+    await act(async () => {
+      await result.current.startSession("evening");
+    });
+
+    expect(result.current.sessionType).toBe("adhoc");
+    expect(result.current.error).not.toBeNull();
+    expect(result.current.mentoringTarget).toEqual({
+      id: 42,
+      title: "資料を作る",
+    });
+  });
+
+  it("clears the mentoring target when endSession is called, and the next send carries no mentoring keys (decision 11)", async () => {
+    const state: RoutedFetchState = {
+      sessions: [MORNING_SESSION_TODAY, SESSION],
+      messages: { 20: MORNING_HISTORY, 1: [] },
+      stream: sseResponse([`event: done\ndata: ${JSON.stringify(BOSS_REPLY)}\n\n`]),
+    };
+    const fetchMock = routedFetch(state);
+    vi.stubGlobal("fetch", fetchMock);
+
+    const { result } = renderHook(() => useChat());
+    await waitFor(() => expect(result.current.status).toBe("ready"));
+    expect(result.current.sessionType).toBe("morning");
+
+    await act(async () => {
+      await result.current.startMentoring({ id: 42, title: "資料を作る" });
+    });
+    expect(result.current.mentoringTarget).toEqual({
+      id: 42,
+      title: "資料を作る",
+    });
+
+    await act(async () => {
+      await result.current.endSession();
+    });
+
+    expect(result.current.mentoringTarget).toBeNull();
+    expect(result.current.sessionType).toBe("adhoc");
+
+    // 解除後の発言は対象タスクにもメンタリングにも紐づかない（fetch 境界の body）。
+    state.stream = sseResponse([
+      `event: done\ndata: ${JSON.stringify(BOSS_REPLY)}\n\n`,
+    ]);
+    await act(async () => {
+      await result.current.send("会の後の発言です");
+    });
+    const postCalls = fetchMock.mock.calls.filter(
+      ([url, init]) =>
+        url === "/api/sessions/1/messages" &&
+        (init as { method?: string } | undefined)?.method === "POST",
+    );
+    expect(postCalls).toHaveLength(1);
+    expect(
+      JSON.parse((postCalls[0][1] as { body: string }).body) as unknown,
+    ).toEqual({ content: "会の後の発言です" });
+  });
+
+  it("clears the mentoring target via clearMentoringTarget", async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(jsonResponse([SESSION]))
+      .mockResolvedValueOnce(jsonResponse(HISTORY))
+      .mockResolvedValueOnce(
+        sseResponse([`event: done\ndata: ${JSON.stringify(BOSS_REPLY)}\n\n`]),
+      );
+    vi.stubGlobal("fetch", fetchMock);
+
+    const { result } = renderHook(() => useChat());
+    await waitFor(() => expect(result.current.status).toBe("ready"));
+
+    await act(async () => {
+      await result.current.startMentoring({ id: 42, title: "資料を作る" });
+    });
+    expect(result.current.mentoringTarget).not.toBeNull();
+
+    act(() => {
+      result.current.clearMentoringTarget();
+    });
+
+    expect(result.current.mentoringTarget).toBeNull();
+  });
+
+  it("does not add mentoring keys to a rewrite even when a target is set (rewrite is a separate send path)", async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(jsonResponse([SESSION]))
+      .mockResolvedValueOnce(jsonResponse(HISTORY))
+      .mockResolvedValueOnce(
+        sseResponse([`event: done\ndata: ${JSON.stringify(BOSS_REPLY)}\n\n`]),
+      ) // startMentoring's send
+      .mockResolvedValueOnce(
+        sseResponse([`event: done\ndata: ${JSON.stringify(BOSS_REPLY)}\n\n`]),
+      ) // rewrite's POST
+      .mockResolvedValueOnce(jsonResponse([SESSION])) // refreshTimeline: fetchSessions
+      .mockResolvedValueOnce(jsonResponse(HISTORY)); // refreshTimeline: fetchSessionMessages
+    vi.stubGlobal("fetch", fetchMock);
+
+    const { result } = renderHook(() => useChat());
+    await waitFor(() => expect(result.current.status).toBe("ready"));
+
+    await act(async () => {
+      await result.current.startMentoring({ id: 42, title: "資料を作る" });
+    });
+
+    await act(async () => {
+      await result.current.rewrite(1, "書き直した内容");
+    });
+
+    const body = JSON.parse(
+      fetchMock.mock.calls[3][1].body as string,
+    ) as Record<string, unknown>;
+    expect(body).toEqual({
+      content: "書き直した内容",
+      replaceFromMessageId: 1,
+    });
+  });
+});

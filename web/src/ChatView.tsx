@@ -253,6 +253,8 @@ function ChatView({ chatState }: ChatViewProps) {
     error,
     mentoringRequired,
     activeSessionId,
+    mentoringTarget,
+    clearMentoringTarget,
     draft,
     setDraft,
     send,
@@ -512,12 +514,18 @@ function ChatView({ chatState }: ChatViewProps) {
             {/* 随時メンタリングの導線（Issue #411, 親 #276 判断6）。`adhoc`
                 （会でない区間）のときだけ表示する — 朝会・夕会の会中は、その
                 会のフロー指示が既に会話を主導しているため、ここに置かない
-                （「画面・API設計」）。 */}
+                （「画面・API設計」）。
+                Issue #476（S1b, 決定11）: タスク起点の「相談中」が残っている
+                と、この全日単位の送信へ古い対象タスクが持ち越されてしまう
+                ため（確証 (I)）、送信の前に必ず解除する。送信の形自体
+                （`mentoring: true` のみ・`mentoringTaskId` 無し）は変えない
+                （#491 の範囲）。 */}
             <button
               type="button"
-              onClick={() =>
-                void send(MENTORING_MESSAGE_CONTENT, { mentoring: true })
-              }
+              onClick={() => {
+                clearMentoringTarget();
+                void send(MENTORING_MESSAGE_CONTENT, { mentoring: true });
+              }}
               disabled={switching || sending || editingMessageId !== null}
             >
               {MENTORING_BUTTON_LABEL}
@@ -538,6 +546,19 @@ function ChatView({ chatState }: ChatViewProps) {
           </>
         )}
       </div>
+      {/* 「相談中」の状態表示（Issue #476, S1b, 決定10）。会話ではなく状態
+          なので `chat-timeline`（タイムライン）へは混ぜず、セッションバーの
+          直下に置く（既存の `chat-mentoring-blocked` と同じ帯）。タイトルは
+          `startMentoring` 呼び出し時に受け取った値をそのまま使う（決定9と
+          同じ規律でタスク一覧の再検索をしない）。 */}
+      {mentoringTarget !== null && (
+        <div className="chat-mentoring-target" role="status">
+          <span>「{mentoringTarget.title}」について相談中</span>
+          <button type="button" onClick={clearMentoringTarget}>
+            相談を終える
+          </button>
+        </div>
+      )}
       {/* AC-39/AC-40: `code` から導出された `mentoringRequired` だけで出す
           （`error` の文言は使わない）。逃げ道（設定でオフ）を必ず併記する
           文言は上の定数側で固定している。`role="status"` は非侵入的な通知

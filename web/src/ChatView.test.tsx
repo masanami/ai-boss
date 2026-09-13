@@ -1,5 +1,11 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import {
+  fireEvent,
+  render,
+  screen,
+  waitFor,
+  within,
+} from "@testing-library/react";
 import ChatView from "./ChatView";
 import { useChat, type UseChatResult } from "./use-chat";
 import type { ChatEntry, ChatMessage, ChatSession } from "./chat";
@@ -157,6 +163,9 @@ function makeChatState(overrides: Partial<UseChatResult> = {}): UseChatResult {
     error: null,
     mentoringRequired: false,
     activeSessionId: null,
+    mentoringTarget: null,
+    startMentoring: vi.fn(),
+    clearMentoringTarget: vi.fn(),
     draft: "",
     setDraft: vi.fn(),
     send: vi.fn(),
@@ -1717,5 +1726,98 @@ describe("ChatView mentoring (Issue #411)", () => {
     );
 
     expect(screen.queryByRole("status")).not.toBeInTheDocument();
+  });
+});
+
+// Issue #476 (S1b・決定10・決定11): 「相談中」の可視化と解除導線。表示位置は
+// セッションヘッダの帯（chat-timeline の外）で、発言としてタイムラインへは
+// 混ざらない。
+describe("ChatView 相談中 state (Issue #476, S1b)", () => {
+  it("shows the target task's title and a clear affordance when mentoringTarget is set", () => {
+    render(
+      <ChatView
+        chatState={makeChatState({
+          mentoringTarget: { id: 42, title: "資料を作る" },
+        })}
+      />,
+    );
+
+    expect(screen.getByText("「資料を作る」について相談中")).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: "相談を終える" }),
+    ).toBeInTheDocument();
+  });
+
+  it("does not show the 相談中 state when mentoringTarget is null", () => {
+    render(<ChatView chatState={makeChatState({ mentoringTarget: null })} />);
+
+    expect(
+      screen.queryByText(/について相談中/),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: "相談を終える" }),
+    ).not.toBeInTheDocument();
+  });
+
+  it("calls clearMentoringTarget when the clear affordance is clicked", () => {
+    const clearMentoringTarget = vi.fn();
+    render(
+      <ChatView
+        chatState={makeChatState({
+          mentoringTarget: { id: 42, title: "資料を作る" },
+          clearMentoringTarget,
+        })}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "相談を終える" }));
+
+    expect(clearMentoringTarget).toHaveBeenCalledTimes(1);
+  });
+
+  // 決定10の画面仕様: 状態であって発言ではないので、会話の並び
+  // （aria-label="会話履歴" のリスト）には混ざらない。
+  it("renders the 相談中 state outside the conversation timeline list", () => {
+    render(
+      <ChatView
+        chatState={makeChatState({
+          mentoringTarget: { id: 42, title: "資料を作る" },
+        })}
+      />,
+    );
+
+    const timeline = screen.getByRole("list", { name: "会話履歴" });
+    expect(
+      within(timeline).queryByText("「資料を作る」について相談中"),
+    ).not.toBeInTheDocument();
+    expect(screen.getByText("「資料を作る」について相談中")).toBeInTheDocument();
+  });
+
+  // 決定11: 全日単位メンタリングボタンは対象タスク無しの状態へ解除する。
+  // 送信自体の形（`mentoring: true` のみ・`mentoringTaskId` 無し）は
+  // #491 の範囲で変えない。
+  it("clears the mentoring target when the header 全日単位 mentoring button is clicked, without changing what it sends", () => {
+    const clearMentoringTarget = vi.fn();
+    const send = vi.fn();
+    render(
+      <ChatView
+        chatState={makeChatState({
+          sessionType: "adhoc",
+          mentoringTarget: { id: 42, title: "資料を作る" },
+          clearMentoringTarget,
+          send,
+        })}
+      />,
+    );
+
+    fireEvent.click(
+      screen.getByRole("button", { name: "進め方を点検してもらう" }),
+    );
+
+    expect(clearMentoringTarget).toHaveBeenCalledTimes(1);
+    expect(send).toHaveBeenCalledTimes(1);
+    expect(send).toHaveBeenCalledWith("今の進め方を見てほしい", {
+      mentoring: true,
+    });
   });
 });
