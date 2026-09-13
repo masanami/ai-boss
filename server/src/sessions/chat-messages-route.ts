@@ -158,7 +158,10 @@ export function registerChatMessageRoute(
 
     const session = findSessionById(db, id);
     if (!session) {
-      return c.json({ error: `session ${rawId} not found` }, 404);
+      return c.json(
+        { error: "セッションが見つかりません", code: "session_not_found" },
+        404,
+      );
     }
 
     const body = await readJsonBody(c);
