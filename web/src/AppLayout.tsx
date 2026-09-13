@@ -215,7 +215,14 @@ function AppLayout() {
         )}
         {activeView === "chat" && (
           <main className="app-main" aria-label="ボスとの対話">
-            <ChatView chatState={chatState} />
+            {/* Issue #513 (S1, 決定1・決定2): タスク一覧をそのまま渡し、
+                ボスの確定済み返信中の `#<id>` にタスク名をホバー表示する。
+                取得は増やさず、`AppLayout` が既に持つ `tasksState` を渡すだけ。 */}
+            <ChatView
+              chatState={chatState}
+              tasks={tasksState.tasks}
+              tasksStatus={tasksState.status}
+            />
           </main>
         )}
         {activeView === "tasks" && (
@@ -229,7 +236,9 @@ function AppLayout() {
         )}
         {activeView === "decisions" && (
           <main className="app-main" aria-label="決定ログ">
-            <DecisionLog />
+            {/* Issue #513 (S1, 決定2): 追加の取得はせず既存の tasksState を渡す
+                だけ（`groupDecisionsByTask` の見出し・タイトルは従来どおり）。 */}
+            <DecisionLog tasks={tasksState.tasks} tasksStatus={tasksState.status} />
           </main>
         )}
         {activeView === "reports" && (

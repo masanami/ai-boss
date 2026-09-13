@@ -1,7 +1,11 @@
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import type { UseChatResult } from "./use-chat";
+import type { TasksLoadStatus } from "./use-tasks";
 import type { ChatEntry, ChatToolEvent, MeetingSessionType } from "./chat";
 import { selectRewriteRange, type RewriteRange } from "./select-rewrite-range";
+import type { Task } from "./task";
+import TaskReferenceText from "./TaskReferenceText";
+import { referenceableTasks } from "./task-id-references";
 import "./ChatView.css";
 
 const ROLE_LABELS = { user: "自分", boss: "ボス" } as const;
@@ -101,6 +105,14 @@ interface ChatEntryItemProps {
   /** Non-null for exactly the single entry currently being edited; `null`
    * for every other entry, including every non-message entry. */
   rewriteForm: ChatRewriteFormProps | null;
+  /**
+   * Issue #513 (S1, 決定1): the task list to resolve `#<id>` references
+   * against in a confirmed boss reply's content, or `null` when the list is
+   * unavailable (loading/error) — every `#<id>` then renders undecorated.
+   * The same value is passed to every entry: excluding the user's own
+   * messages is done solely by the `role === "boss"` branch below.
+   */
+  taskReferenceTasks: readonly Task[] | null;
 }
 
 function ChatEntryItem({
@@ -109,6 +121,7 @@ function ChatEntryItem({
   isHighlighted,
   onStartEdit,
   rewriteForm,
+  taskReferenceTasks,
 }: ChatEntryItemProps) {
   if (entry.kind === "tool") {
     return (
@@ -209,7 +222,13 @@ function ChatEntryItem({
       }${isHighlighted ? " chat-rewrite-target" : ""}`}
     >
       <span className="chat-message-role">{ROLE_LABELS[entry.role]}</span>
-      <p className="chat-message-content">{entry.content}</p>
+      <p className="chat-message-content">
+        {entry.role === "boss" ? (
+          <TaskReferenceText text={entry.content} tasks={taskReferenceTasks} />
+        ) : (
+          entry.content
+        )}
+      </p>
       {entry.interrupted === true && (
         <span className="chat-message-interrupted-label">
           ここで停止しました
@@ -239,9 +258,21 @@ interface ChatViewProps {
    * receiving `tasksState`, Issue #70).
    */
   chatState: UseChatResult;
+  /**
+   * Issue #513 (S1, 決定1・決定2): the task list (`AppLayout`'s `tasksState`,
+   * decomposed into these two fields rather than the whole `UseTasksResult`
+   * since this component only ever reads the list, never mutates it) used to
+   * resolve `#<id>` references in confirmed boss replies. Both optional and
+   * defaulting to "no decoration" (as if `tasksStatus` were never `"ready"`)
+   * so every pre-existing caller in this file's tests — which render
+   * `<ChatView chatState={...} />` without these — keeps compiling and
+   * behaving exactly as before.
+   */
+  tasks?: Task[];
+  tasksStatus?: TasksLoadStatus;
 }
 
-function ChatView({ chatState }: ChatViewProps) {
+function ChatView({ chatState, tasks, tasksStatus }: ChatViewProps) {
   const {
     entries,
     status,
@@ -265,6 +296,9 @@ function ChatView({ chatState }: ChatViewProps) {
   } = chatState;
   const timelineRef = useRef<HTMLUListElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
+
+  // Issue #513 (決定3): `#<id>` only resolves once the list has actually loaded.
+  const taskReferenceTasks = referenceableTasks(tasks, tasksStatus);
 
   // Inline edit state (Issue #379, #255 決定6). Kept local to `ChatView`
   // rather than lifted into `useChat`/`AppLayout`: an in-progress edit is
@@ -607,6 +641,7 @@ function ChatView({ chatState }: ChatViewProps) {
               entry={entry}
               canEdit={canEdit}
               isHighlighted={isHighlighted}
+              taskReferenceTasks={taskReferenceTasks}
               onStartEdit={() => {
                 if (entry.kind === "message" && entry.messageId !== undefined) {
                   startEdit(entry.messageId, entry.content);
