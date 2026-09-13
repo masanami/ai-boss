@@ -492,6 +492,99 @@ describe("tasks routes", () => {
         expect(res.status).toBe(201);
       });
     });
+
+    // 機能仕様 docs/features/task-start-commitment.md 決定1・2（#523）
+    describe("committed_start_at（着手の約束・#523）", () => {
+      it("normalizes an offset ISO datetime to UTC ISO on create", async () => {
+        const app = createApp(db);
+
+        const res = await app.request("/api/tasks", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            title: "タスク",
+            committed_start_at: "2026-09-14T20:00:00+09:00",
+          }),
+        });
+
+        expect(res.status).toBe(201);
+        const body = await readJson<Task>(res);
+        expect(body.committed_start_at).toBe("2026-09-14T11:00:00.000Z");
+      });
+
+      it("sets committed_at to created_at when committed_start_at is included (mutation: leaves committed_at null on create)", async () => {
+        const app = createApp(db);
+
+        const res = await app.request("/api/tasks", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            title: "タスク",
+            committed_start_at: "2026-09-14T20:00:00+09:00",
+          }),
+        });
+
+        expect(res.status).toBe(201);
+        const body = await readJson<Task>(res);
+        expect(body.committed_at).toBe(body.created_at);
+        expect(body.committed_at).not.toBeNull();
+      });
+
+      it("ignores the input committed_at on create (mutation: persists the input committed_at)", async () => {
+        const app = createApp(db);
+
+        const res = await app.request("/api/tasks", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            title: "タスク",
+            committed_at: "2000-01-01T00:00:00.000Z",
+          }),
+        });
+
+        expect(res.status).toBe(201);
+        const body = await readJson<Task>(res);
+        expect(body.committed_at).toBeNull();
+      });
+
+      it("defaults committed_start_at to null when omitted", async () => {
+        const app = createApp(db);
+
+        const res = await app.request("/api/tasks", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ title: "タスク" }),
+        });
+
+        expect(res.status).toBe(201);
+        const body = await readJson<Task>(res);
+        expect(body.committed_start_at).toBeNull();
+        expect(body.committed_at).toBeNull();
+      });
+
+      it("returns 400 when committed_start_at is not a valid offset ISO 8601 datetime", async () => {
+        const app = createApp(db);
+
+        for (const invalid of [
+          "20:00",
+          "2026-09-14",
+          "2026-09-14T20:00",
+          "2026-02-30T10:00:00+09:00",
+          "not-a-date",
+          12345,
+        ]) {
+          const res = await app.request("/api/tasks", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ title: "タスク", committed_start_at: invalid }),
+          });
+
+          expect(res.status, JSON.stringify(invalid)).toBe(400);
+          const body = await readJson<ErrorBody>(res);
+          expect(typeof body.error).toBe("string");
+        }
+      });
+    });
   });
 
   describe("PATCH /api/tasks/:id", () => {
@@ -954,6 +1047,334 @@ describe("tasks routes", () => {
         expect(res.status).toBe(200);
         const body = await readJson<Task>(res);
         expect(body.evidence_required).toBe(false);
+      });
+    });
+
+    // 機能仕様 docs/features/task-start-commitment.md 決定1〜3（#523）
+    describe("committed_start_at（着手の約束・#523）", () => {
+      async function createPlainTask(app: ReturnType<typeof createApp>) {
+        const res = await app.request("/api/tasks", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ title: "タスク" }),
+        });
+        return readJson<Task>(res);
+      }
+
+      function taskUpdateNotes(): (string | null)[] {
+        return (
+          db
+            .prepare(
+              "SELECT note FROM activity_events WHERE type = 'task_update' ORDER BY id ASC",
+            )
+            .all() as { note: string | null }[]
+        ).map((row) => row.note);
+      }
+
+      it("normalizes an offset ISO datetime to UTC ISO on patch, reflected in both the response and GET (AC: 決定2)", async () => {
+        const app = createApp(db);
+        const created = await createPlainTask(app);
+
+        const res = await app.request(`/api/tasks/${created.id}`, {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ committed_start_at: "2026-09-14T20:00:00+09:00" }),
+        });
+
+        expect(res.status).toBe(200);
+        const body = await readJson<Task>(res);
+        expect(body.committed_start_at).toBe("2026-09-14T11:00:00.000Z");
+
+        // "Z" 付きの入力も同じ値に正規化される
+        const zRes = await app.request(`/api/tasks/${created.id}`, {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ committed_start_at: "2026-09-14T11:00:00Z" }),
+        });
+        expect((await readJson<Task>(zRes)).committed_start_at).toBe(
+          "2026-09-14T11:00:00.000Z",
+        );
+
+        const getRes = await app.request("/api/tasks");
+        const [fetched] = await readJson<Task[]>(getRes);
+        expect(fetched.committed_start_at).toBe("2026-09-14T11:00:00.000Z");
+      });
+
+      it("sets committed_at to updated_at when committed_start_at is set from null to a value (mutation: leaves committed_at null)", async () => {
+        const app = createApp(db);
+        const created = await createPlainTask(app);
+        expect(created.committed_at).toBeNull();
+
+        const res = await app.request(`/api/tasks/${created.id}`, {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ committed_start_at: "2026-09-14T20:00:00+09:00" }),
+        });
+
+        expect(res.status).toBe(200);
+        const body = await readJson<Task>(res);
+        expect(body.committed_at).toBe(body.updated_at);
+        expect(body.committed_at).not.toBeNull();
+      });
+
+      it("updates committed_at when committed_start_at changes to a different value (mutation: only writes committed_at on the first set)", async () => {
+        const app = createApp(db);
+        vi.useFakeTimers();
+        vi.setSystemTime(new Date(2026, 8, 14, 10, 0));
+        const created = await createPlainTask(app);
+
+        vi.setSystemTime(new Date(2026, 8, 14, 10, 1));
+        const first = await app.request(`/api/tasks/${created.id}`, {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ committed_start_at: "2026-09-14T20:00:00+09:00" }),
+        });
+        const firstBody = await readJson<Task>(first);
+        const committedAtT1 = firstBody.committed_at;
+
+        vi.setSystemTime(new Date(2026, 8, 14, 10, 2));
+        const second = await app.request(`/api/tasks/${created.id}`, {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ committed_start_at: "2026-09-14T21:00:00+09:00" }),
+        });
+
+        expect(second.status).toBe(200);
+        const secondBody = await readJson<Task>(second);
+        expect(secondBody.committed_at).toBe(secondBody.updated_at);
+        expect(secondBody.committed_at).not.toBe(committedAtT1);
+      });
+
+      it("does not update committed_at when committed_start_at is sent unchanged (mutation: writes committed_at on every send)", async () => {
+        const app = createApp(db);
+        vi.useFakeTimers();
+        vi.setSystemTime(new Date(2026, 8, 14, 10, 0));
+        const created = await createPlainTask(app);
+
+        vi.setSystemTime(new Date(2026, 8, 14, 10, 1));
+        const first = await app.request(`/api/tasks/${created.id}`, {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ committed_start_at: "2026-09-14T20:00:00+09:00" }),
+        });
+        const firstBody = await readJson<Task>(first);
+
+        vi.setSystemTime(new Date(2026, 8, 14, 10, 2));
+        const second = await app.request(`/api/tasks/${created.id}`, {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ committed_start_at: "2026-09-14T20:00:00+09:00" }),
+        });
+
+        expect(second.status).toBe(200);
+        const secondBody = await readJson<Task>(second);
+        expect(secondBody.committed_at).toBe(firstBody.committed_at);
+        expect(secondBody.updated_at).not.toBe(firstBody.updated_at);
+      });
+
+      it("ignores the input committed_at on patch (mutation: persists the input committed_at)", async () => {
+        const app = createApp(db);
+        const created = await createPlainTask(app);
+
+        const res = await app.request(`/api/tasks/${created.id}`, {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            title: "改題",
+            committed_at: "2000-01-01T00:00:00.000Z",
+          }),
+        });
+
+        expect(res.status).toBe(200);
+        const body = await readJson<Task>(res);
+        expect(body.committed_at).toBeNull();
+      });
+
+      it("clears committed_start_at when patched to null", async () => {
+        const app = createApp(db);
+        const created = await createPlainTask(app);
+        await app.request(`/api/tasks/${created.id}`, {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ committed_start_at: "2026-09-14T20:00:00+09:00" }),
+        });
+
+        const res = await app.request(`/api/tasks/${created.id}`, {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ committed_start_at: null }),
+        });
+
+        expect(res.status).toBe(200);
+        const body = await readJson<Task>(res);
+        expect(body.committed_start_at).toBeNull();
+      });
+
+      it("clears committed_at when committed_start_at is cancelled to null (mutation: leaves committed_at behind)", async () => {
+        const app = createApp(db);
+        const created = await createPlainTask(app);
+        await app.request(`/api/tasks/${created.id}`, {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ committed_start_at: "2026-09-14T20:00:00+09:00" }),
+        });
+
+        const res = await app.request(`/api/tasks/${created.id}`, {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ committed_start_at: null }),
+        });
+
+        expect(res.status).toBe(200);
+        const body = await readJson<Task>(res);
+        expect(body.committed_at).toBeNull();
+      });
+
+      it("returns 400 when committed_start_at is patched to an invalid offset ISO 8601 datetime", async () => {
+        const app = createApp(db);
+        const created = await createPlainTask(app);
+
+        for (const invalid of [
+          "20:00",
+          "2026-09-14",
+          "2026-09-14T20:00",
+          "2026-02-30T10:00:00+09:00",
+          "not-a-date",
+          12345,
+        ]) {
+          const res = await app.request(`/api/tasks/${created.id}`, {
+            method: "PATCH",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ committed_start_at: invalid }),
+          });
+
+          expect(res.status, JSON.stringify(invalid)).toBe(400);
+        }
+      });
+
+      it("writes nothing (including no task_update event) when a patch is rejected for an invalid committed_start_at, even with other fields present", async () => {
+        const app = createApp(db);
+        const created = await createPlainTask(app);
+
+        const res = await app.request(`/api/tasks/${created.id}`, {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            title: "改題されるはずがない",
+            committed_start_at: "not-a-date",
+          }),
+        });
+
+        expect(res.status).toBe(400);
+
+        const getRes = await app.request("/api/tasks");
+        const [fetched] = await readJson<Task[]>(getRes);
+        expect(fetched.title).toBe("タスク");
+        expect(fetched.committed_start_at).toBeNull();
+        expect(taskUpdateNotes()).toEqual([]);
+      });
+
+      it("records the before/after in the task_update note when committed_start_at is newly set (unset -> set)", async () => {
+        const app = createApp(db);
+        const created = await createPlainTask(app);
+
+        await app.request(`/api/tasks/${created.id}`, {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ committed_start_at: "2026-09-14T20:00:00+09:00" }),
+        });
+
+        const notes = taskUpdateNotes();
+        expect(notes).toHaveLength(1);
+        expect(notes[0]).toContain("null");
+        expect(notes[0]).toContain("2026-09-14T11:00:00.000Z");
+      });
+
+      it("records the before/after in the task_update note when committed_start_at changes to a different value", async () => {
+        const app = createApp(db);
+        const created = await createPlainTask(app);
+        await app.request(`/api/tasks/${created.id}`, {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ committed_start_at: "2026-09-14T20:00:00+09:00" }),
+        });
+
+        await app.request(`/api/tasks/${created.id}`, {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ committed_start_at: "2026-09-14T21:00:00+09:00" }),
+        });
+
+        const notes = taskUpdateNotes();
+        expect(notes).toHaveLength(2);
+        expect(notes[1]).toContain("2026-09-14T11:00:00.000Z");
+        expect(notes[1]).toContain("2026-09-14T12:00:00.000Z");
+      });
+
+      it("records the before/after in the task_update note when committed_start_at is cancelled to null", async () => {
+        const app = createApp(db);
+        const created = await createPlainTask(app);
+        await app.request(`/api/tasks/${created.id}`, {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ committed_start_at: "2026-09-14T20:00:00+09:00" }),
+        });
+
+        await app.request(`/api/tasks/${created.id}`, {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ committed_start_at: null }),
+        });
+
+        const notes = taskUpdateNotes();
+        expect(notes).toHaveLength(2);
+        expect(notes[1]).toContain("2026-09-14T11:00:00.000Z");
+        expect(notes[1]).toContain("null");
+      });
+
+      it("includes both evidence_required and committed_start_at changes in a single task_update note when both change in one patch (mutation: drops one side)", async () => {
+        const app = createApp(db);
+        const res = await app.request("/api/tasks", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ title: "タスク", evidence_required: false }),
+        });
+        const created = await readJson<Task>(res);
+
+        await app.request(`/api/tasks/${created.id}`, {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            evidence_required: true,
+            committed_start_at: "2026-09-14T20:00:00+09:00",
+          }),
+        });
+
+        const notes = taskUpdateNotes();
+        expect(notes).toHaveLength(1);
+        expect(notes[0]).not.toBeNull();
+        expect(notes[0]).toContain("必須");
+        expect(notes[0]).toContain("2026-09-14T11:00:00.000Z");
+      });
+
+      it("leaves the task_update note null when committed_start_at is sent but unchanged", async () => {
+        const app = createApp(db);
+        const created = await createPlainTask(app);
+        await app.request(`/api/tasks/${created.id}`, {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ committed_start_at: "2026-09-14T20:00:00+09:00" }),
+        });
+
+        await app.request(`/api/tasks/${created.id}`, {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ committed_start_at: "2026-09-14T20:00:00+09:00" }),
+        });
+
+        const notes = taskUpdateNotes();
+        expect(notes).toHaveLength(2);
+        expect(notes[1]).toBeNull();
       });
     });
   });

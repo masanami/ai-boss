@@ -48,6 +48,14 @@ export interface NewTaskRecord {
    * ここを省略可能にして無用な波及を避ける（軽微・可逆な判断）。
    */
   evidence_required?: boolean;
+  /**
+   * 着手の約束の日時（機能仕様 docs/features/task-start-commitment.md
+   * 決定1・2）。省略時は `null`（約束なし）と同じ扱い。省略可能にするのは
+   * `evidence_required` と同じ理由（既存呼び出し元への波及を避けるため）。
+   * `committed_at`（約束を置いた時刻）はここに含めない —
+   * `insertTask` が `now` から内部で導出する（決定1: 入力として受け付けない）。
+   */
+  committed_start_at?: string | null;
 }
 
 export function findTaskById(
@@ -76,14 +84,19 @@ export function insertTask(
 ): Task {
   const now = new Date().toISOString();
   const completedAt = record.status === "done" ? now : null;
+  // 決定1: committed_start_at が非 null なら committed_at はこの insert の
+  // now（created_at と同じ値）。入力として受け付けないため、常にここで導出
+  // する。
+  const committedStartAt = record.committed_start_at ?? null;
+  const committedAt = committedStartAt !== null ? now : null;
 
   const result = db
     .prepare(
       `INSERT INTO tasks (
         title, description, category, priority, due_at, status,
         boss_comment, estimated_minutes, created_at, updated_at, completed_at,
-        evidence_required
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        evidence_required, committed_start_at, committed_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     )
     .run(
       record.title,
@@ -98,6 +111,8 @@ export function insertTask(
       now,
       completedAt,
       record.evidence_required ? 1 : 0,
+      committedStartAt,
+      committedAt,
     );
 
   const task = findTaskById(db, Number(result.lastInsertRowid));
@@ -116,6 +131,13 @@ export interface TaskPatch {
   boss_comment?: string | null;
   estimated_minutes?: number | null;
   evidence_required?: boolean;
+  /**
+   * 着手の約束の日時（決定1・2）。`undefined`（キー自体を含めない）は
+   * 「変更しない」、`null` は「取り消す」、文字列は「設定・変更する」を
+   * 表す。`committed_at` はここに含めない（決定1: 入力として受け付けない。
+   * `updateTask` が値が変わる更新のときだけ `now` から導出する）。
+   */
+  committed_start_at?: string | null;
 }
 
 /**
@@ -179,6 +201,43 @@ function buildEvidenceRequiredChangeNote(
   const before = EVIDENCE_REQUIRED_LABELS[existing ? "true" : "false"];
   const after = EVIDENCE_REQUIRED_LABELS[patchValue ? "true" : "false"];
   return `エビデンス要否を ${before} から ${after} に変更`;
+}
+
+/**
+ * Builds the `task_update` activity event's `note` fragment for a `PATCH`
+ * that changes `committed_start_at`（機能仕様
+ * docs/features/task-start-commitment.md 決定3: 変更の前後を `note` に
+ * 残す）。Returns `null` when the patch doesn't change the value — either
+ * because it omits `committed_start_at` entirely, or includes it unchanged
+ * (同じ「値が変わる場合のみ」の解釈を `buildEvidenceRequiredChangeNote` と
+ * 揃える)。値は保存形の ISO 文字列そのまま、`null` は文字列 `"null"` にする
+ * （決定3）。
+ *
+ * 退役（ステータス変更による約束の消去、決定3-2）の `note` はこの関数の
+ * 対象外 — 後続チケット（T2）がこの層に手を入れやすいよう、意図的に別の
+ * 関数として分けておく。
+ */
+function buildCommittedStartAtChangeNote(
+  existing: string | null,
+  patchValue: string | null | undefined,
+): string | null {
+  if (patchValue === undefined || patchValue === existing) {
+    return null;
+  }
+  return `着手の約束を ${existing ?? "null"} から ${patchValue ?? "null"} に変更`;
+}
+
+/**
+ * Combines the `task_update` `note` fragments produced by the individual
+ * `build*ChangeNote` helpers above into the single `note` string persisted
+ * on the activity event（決定3: "1回の更新で両方が変わる場合は両方を1つの
+ * `note` に含める"）。Fragments that are `null` (the corresponding field
+ * didn't change) are dropped; if nothing changed, returns `null` (not an
+ * empty string) so callers can keep treating "no note" as `null`.
+ */
+function combineChangeNotes(...fragments: (string | null)[]): string | null {
+  const nonNull = fragments.filter((fragment): fragment is string => fragment !== null);
+  return nonNull.length > 0 ? nonNull.join(" / ") : null;
 }
 
 /**
@@ -254,12 +313,33 @@ export function updateTask(
     patch.evidence_required,
   );
 
+  // 着手の約束（決定1・3）: committed_start_at がこの patch で実際に変わる
+  // ときだけ committed_at をこの更新の now に書き換える（取り消し = null な
+  // ら committed_at も null）。値が変わらなければ committed_at も note も
+  // 変えない。
+  const committedStartAtChanged =
+    patch.committed_start_at !== undefined &&
+    patch.committed_start_at !== existing.committed_start_at;
+  const committedAt = committedStartAtChanged
+    ? patch.committed_start_at === null
+      ? null
+      : now
+    : existing.committed_at;
+  const committedStartAtChangeNote = buildCommittedStartAtChangeNote(
+    existing.committed_start_at,
+    patch.committed_start_at,
+  );
+  const note = combineChangeNotes(
+    evidenceRequiredChangeNote,
+    committedStartAtChangeNote,
+  );
+
   const applyUpdate = db.transaction(() => {
     db.prepare(
       `UPDATE tasks SET
         title = ?, description = ?, priority = ?, due_at = ?, status = ?,
         boss_comment = ?, estimated_minutes = ?, updated_at = ?, completed_at = ?,
-        evidence_required = ?
+        evidence_required = ?, committed_start_at = ?, committed_at = ?
       WHERE id = ?`,
     ).run(
       next.title,
@@ -272,6 +352,8 @@ export function updateTask(
       now,
       completedAt,
       next.evidence_required ? 1 : 0,
+      next.committed_start_at,
+      committedAt,
       id,
     );
 
@@ -279,7 +361,7 @@ export function updateTask(
       recordActivityEvent(db, {
         type: "task_update",
         task_id: id,
-        note: evidenceRequiredChangeNote,
+        note,
       });
     }
   });

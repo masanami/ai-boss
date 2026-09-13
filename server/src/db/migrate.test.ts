@@ -173,8 +173,8 @@ describe("runMigrations", () => {
     expect(tableNames(db)).not.toContain("appeals");
   });
 
-  it("advances user_version to the latest known version (8: appeals dropped, decisions.kind added)", () => {
-    expect(db.pragma("user_version", { simple: true })).toBe(8);
+  it("advances user_version to the latest known version (9: committed_start_at/committed_at added)", () => {
+    expect(db.pragma("user_version", { simple: true })).toBe(9);
   });
 
   it("creates the settings table", () => {
@@ -387,7 +387,7 @@ describe("runMigrations", () => {
     expect(tableNames(v2Db)).toContain("daily_reports");
     // runMigrations always advances to the latest known version (v3 adds
     // daily_reports on the way; later versions add further schema changes).
-    expect(v2Db.pragma("user_version", { simple: true })).toBe(8);
+    expect(v2Db.pragma("user_version", { simple: true })).toBe(9);
     // existing tables/rows are untouched
     expect(tableNames(v2Db)).toContain("tasks");
 
@@ -414,7 +414,7 @@ describe("runMigrations", () => {
 
     runMigrations(v3Db);
 
-    expect(v3Db.pragma("user_version", { simple: true })).toBe(8);
+    expect(v3Db.pragma("user_version", { simple: true })).toBe(9);
     expect(tableNames(v3Db)).toContain("tasks");
     expect(tableNames(v3Db)).toContain("activity_events");
 
@@ -518,7 +518,7 @@ describe("runMigrations", () => {
 
     runMigrations(v4Db);
 
-    expect(v4Db.pragma("user_version", { simple: true })).toBe(8);
+    expect(v4Db.pragma("user_version", { simple: true })).toBe(9);
     const message = v4Db
       .prepare("SELECT role, content, interrupted FROM messages WHERE id = ?")
       .get(messageId) as { role: string; content: string; interrupted: number };
@@ -575,7 +575,7 @@ describe("runMigrations", () => {
 
     runMigrations(v5Db);
 
-    expect(v5Db.pragma("user_version", { simple: true })).toBe(8);
+    expect(v5Db.pragma("user_version", { simple: true })).toBe(9);
     const notification = v5Db
       .prepare(
         "SELECT type, rule_key, escalation_level, body, sent_at, delivered, channel FROM notifications WHERE id = ?",
@@ -700,7 +700,7 @@ describe("runMigrations", () => {
 
       runMigrations(v6Db);
 
-      expect(v6Db.pragma("user_version", { simple: true })).toBe(8);
+      expect(v6Db.pragma("user_version", { simple: true })).toBe(9);
       expect(tableNames(v6Db)).toContain("task_evidences");
       expect(columnNames(v6Db, "tasks")).toContain("evidence_required");
 
@@ -802,7 +802,7 @@ describe("runMigrations", () => {
 
       runMigrations(preV8Db);
 
-      expect(preV8Db.pragma("user_version", { simple: true })).toBe(8);
+      expect(preV8Db.pragma("user_version", { simple: true })).toBe(9);
       const row = preV8Db
         .prepare("SELECT kind FROM decisions WHERE id = ?")
         .get(decisionId) as { kind: string };
@@ -847,9 +847,73 @@ describe("runMigrations", () => {
       expect(() => runMigrations(preV8Db)).not.toThrow();
 
       expect(tableNames(preV8Db)).not.toContain("appeals");
-      expect(preV8Db.pragma("user_version", { simple: true })).toBe(8);
+      expect(preV8Db.pragma("user_version", { simple: true })).toBe(9);
 
       preV8Db.close();
+    });
+  });
+
+  // 着手の約束（#523 / docs/features/task-start-commitment.md 決定1、
+  // マイグレーション v9）: tasks に committed_start_at と committed_at の
+  // 2列を追加する。どちらも NULL 許容・既定なしで、既存行は両方とも NULL
+  // になる。
+  describe("committed_start_at and committed_at (v9, #523)", () => {
+    it("gives tasks nullable committed_start_at and committed_at columns", () => {
+      expect(columnNames(db, "tasks")).toEqual(
+        expect.arrayContaining(["committed_start_at", "committed_at"]),
+      );
+    });
+
+    it("defaults committed_start_at and committed_at to NULL for a newly inserted task", () => {
+      const taskId = Number(
+        db
+          .prepare(
+            "INSERT INTO tasks (title, status, created_at, updated_at) VALUES (?, ?, ?, ?)",
+          )
+          .run("タスク", "todo", NOW, NOW).lastInsertRowid,
+      );
+
+      const task = db
+        .prepare(
+          "SELECT committed_start_at, committed_at FROM tasks WHERE id = ?",
+        )
+        .get(taskId) as { committed_start_at: string | null; committed_at: string | null };
+      expect(task).toEqual({ committed_start_at: null, committed_at: null });
+    });
+
+    it("upgrades a v8 database to v9, leaving pre-existing tasks' committed_start_at and committed_at NULL", () => {
+      // v1〜v3 のスキーマ（committed_start_at/committed_at 列が無い）を土台に、
+      // 既存タスクを1件作ってから完全なマイグレーションを走らせる。v4〜v8 は
+      // これらの列に触れないため、この経路で v9 到達時点の遡及有無を確認できる。
+      const v8Db = openDatabase(":memory:");
+      v8Db.exec(V1_THROUGH_V3_SQL);
+      v8Db.pragma("user_version = 3");
+
+      const taskId = Number(
+        v8Db
+          .prepare(
+            "INSERT INTO tasks (title, status, created_at, updated_at) VALUES (?, ?, ?, ?)",
+          )
+          .run("v9以前からのタスク", "todo", NOW, NOW).lastInsertRowid,
+      );
+      expect(columnNames(v8Db, "tasks")).not.toContain("committed_start_at");
+      expect(columnNames(v8Db, "tasks")).not.toContain("committed_at");
+
+      runMigrations(v8Db);
+
+      expect(v8Db.pragma("user_version", { simple: true })).toBe(9);
+      expect(columnNames(v8Db, "tasks")).toEqual(
+        expect.arrayContaining(["committed_start_at", "committed_at"]),
+      );
+
+      const task = v8Db
+        .prepare(
+          "SELECT committed_start_at, committed_at FROM tasks WHERE id = ?",
+        )
+        .get(taskId) as { committed_start_at: string | null; committed_at: string | null };
+      expect(task).toEqual({ committed_start_at: null, committed_at: null });
+
+      v8Db.close();
     });
   });
 
