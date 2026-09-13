@@ -1,6 +1,7 @@
 import { TASK_PRIORITIES, TASK_STATUSES } from "./task.js";
 import type { NewTaskRecord, TaskPatch } from "./tasks-repository.js";
 import { normalizeDueAtToDateKey } from "./due-at.js";
+import { isValidIsoDateTime } from "../lib/iso-date.js";
 
 export type ValidationResult<T> =
   | { valid: true; data: T }
@@ -56,6 +57,39 @@ function isNullableNonNegativeInteger(value: unknown): value is number | null {
 const DUE_AT_FORMAT_ERROR =
   'due_at must be an ISO 8601 date ("YYYY-MM-DD") or date-time';
 
+// 着手の約束（機能仕様 docs/features/task-start-commitment.md 決定2・#523）:
+// 時刻とオフセット（`Z` または `±HH:MM`）を必須とする ISO 8601 日時のみ受理
+// する。`lib/iso-date.ts` の `isValidIsoDateTime` はオフセットを省略しても
+// 通すため、オフセット必須の検査をこのパターンで別に行い、暦の実在の検査は
+// `isValidIsoDateTime` に委ねる（決定2「書式と暦の実在は別に検査する」）。
+const COMMITTED_START_AT_OFFSET_PATTERN =
+  /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(?::\d{2}(?:\.\d+)?)?(?:Z|[+-]\d{2}:\d{2})$/;
+
+const COMMITTED_START_AT_FORMAT_ERROR =
+  'committed_start_at must be an ISO 8601 date-time with an offset (e.g. "2026-09-14T20:00:00+09:00"), or null';
+
+function isValidCommittedStartAt(value: unknown): value is string {
+  return (
+    typeof value === "string" &&
+    COMMITTED_START_AT_OFFSET_PATTERN.test(value) &&
+    isValidIsoDateTime(value)
+  );
+}
+
+/**
+ * 受理した `committed_start_at` を保存形式（UTC ISO）へ正規化する
+ * （決定2）。`value` は事前に `isValidCommittedStartAt` を通っているか、
+ * 省略/`null`（＝約束なし）のいずれかであることを呼び出し側が保証する。
+ */
+function normalizeCommittedStartAt(
+  value: string | null | undefined,
+): string | null {
+  if (value === null || value === undefined) {
+    return null;
+  }
+  return new Date(value).toISOString();
+}
+
 function validateOptionalFieldTypes(
   body: Record<string, unknown>,
 ): string | null {
@@ -96,6 +130,15 @@ function validateOptionalFieldTypes(
     !isNullableNonNegativeInteger(body.estimated_minutes)
   ) {
     return "estimated_minutes must be a non-negative integer or null";
+  }
+  // 着手の約束（決定2）: null か、時刻とオフセットを含む ISO 8601 日時の
+  // どちらでもない値は拒否する。POST・PATCH の両経路がこの関数を通る。
+  if (
+    "committed_start_at" in body &&
+    body.committed_start_at !== null &&
+    !isValidCommittedStartAt(body.committed_start_at)
+  ) {
+    return COMMITTED_START_AT_FORMAT_ERROR;
   }
   return null;
 }
@@ -156,6 +199,12 @@ export function validateCreateTaskInput(
       estimated_minutes:
         (body.estimated_minutes as number | null | undefined) ?? null,
       evidence_required: evidenceRequired,
+      // 着手の約束（決定1・2）。入力の committed_at は受け付けない（無視する
+      // ことで拒否と同じ効果になる。NewTaskRecord に committed_at フィールド
+      // 自体が存在しない）。
+      committed_start_at: normalizeCommittedStartAt(
+        (body.committed_start_at as string | null | undefined) ?? null,
+      ),
     },
   };
 }
@@ -169,6 +218,7 @@ const PATCHABLE_FIELDS = [
   "boss_comment",
   "estimated_minutes",
   "evidence_required",
+  "committed_start_at",
 ] as const;
 
 /**
@@ -232,6 +282,13 @@ export function validatePatchTaskInput(
   if ("due_at" in body) {
     patch.due_at = normalizeDueAtToDateKey(
       (body.due_at as string | null | undefined) ?? null,
+    );
+  }
+  // 着手の約束（決定1・2）。`committed_at` は PATCHABLE_FIELDS に含めない
+  // ため、入力の値は無視される（決定1）。
+  if ("committed_start_at" in body) {
+    patch.committed_start_at = normalizeCommittedStartAt(
+      (body.committed_start_at as string | null | undefined) ?? null,
     );
   }
 

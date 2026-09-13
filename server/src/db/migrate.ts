@@ -309,6 +309,25 @@ const MIGRATIONS: Record<number, MigrationEntry> = {
     ALTER TABLE decisions ADD COLUMN kind TEXT NOT NULL DEFAULT 'decision'
       CHECK (kind IN ('decision', 'mentoring'));
   `,
+  // 着手の約束（#523 / docs/features/task-start-commitment.md 決定1）:
+  // tasks に committed_start_at（約束の日時）と committed_at（その約束を
+  // 置いた時刻）を追加する。どちらも NULL 許容・既定なしで、既存行は両方
+  // とも NULL になる（後退・遡及なし）。`ALTER TABLE ... ADD COLUMN` はテーブル
+  // 再構築を伴わないため、v4（`migrateToV4`）と異なり `PRAGMA foreign_keys`
+  // のトグルを必要とせず、文字列エントリのまま「version 単位の単一トランザ
+  // クション」で原子適用できる。
+  //
+  // - `committed_start_at`: 約束の日時（UTC ISO に正規化して保存）。`NULL`
+  //   は「約束なし」
+  // - `committed_at`: その約束を置いた（更新した）時刻。`committed_start_at`
+  //   と一緒に NULL/非NULL が揃う（不変条件はアプリ層で担保）
+  //
+  // 既存 version は書き換えず新しい version として追加する
+  // （docs/adr/0005-sqlite-schema-policy.md 決定 4）。
+  9: `
+    ALTER TABLE tasks ADD COLUMN committed_start_at TEXT;
+    ALTER TABLE tasks ADD COLUMN committed_at TEXT;
+  `,
 };
 
 /**
