@@ -250,40 +250,45 @@ describe("TOOL_ZOD_SHAPES.update_task committed_start_at (決定6)", () => {
   // 失敗し、この検証を通った入力が存在しなくなる（下の assert が落ちる）。
   it("clears committed_start_at and committed_at when the Zod-validated { id, committed_start_at: null } input is executed via executeBossTool", () => {
     const db = openDatabase(":memory:");
-    runMigrations(db);
-    const sessionId = insertSession(db, { type: "adhoc" }).id;
-    const task = insertTask(db, {
-      title: "資料作成",
-      description: null,
-      category: "work",
-      priority: null,
-      due_at: null,
-      status: "todo",
-      boss_comment: null,
-      estimated_minutes: null,
-    });
-    executeBossTool(db, sessionId, "update_task", {
-      id: task.id,
-      committed_start_at: "2026-09-14T20:00:00+09:00",
-    });
+    try {
+      runMigrations(db);
+      const sessionId = insertSession(db, { type: "adhoc" }).id;
+      const task = insertTask(db, {
+        title: "資料作成",
+        description: null,
+        category: "work",
+        priority: null,
+        due_at: null,
+        status: "todo",
+        boss_comment: null,
+        estimated_minutes: null,
+      });
+      const setup = executeBossTool(db, sessionId, "update_task", {
+        id: task.id,
+        committed_start_at: "2026-09-14T20:00:00+09:00",
+      });
+      // 前準備で約束が実際に置かれたことを固定する（置けていないと、最初から
+      // null のタスクへの取り消しが緑になり、取り消しを何も証明しない）。
+      expect(setup.isError).toBe(false);
+      expect(JSON.parse(setup.content).committed_start_at).toBe("2026-09-14T11:00:00.000Z");
 
-    const parsed = z
-      .object(TOOL_ZOD_SHAPES.update_task)
-      .safeParse({ id: task.id, committed_start_at: null });
-    expect(parsed.success).toBe(true);
-    if (!parsed.success) {
+      const parsed = z
+        .object(TOOL_ZOD_SHAPES.update_task)
+        .safeParse({ id: task.id, committed_start_at: null });
+      expect(parsed.success).toBe(true);
+      if (!parsed.success) {
+        return;
+      }
+
+      const result = executeBossTool(db, sessionId, "update_task", parsed.data);
+
+      expect(result.isError).toBe(false);
+      const updated = JSON.parse(result.content);
+      expect(updated.committed_start_at).toBeNull();
+      expect(updated.committed_at).toBeNull();
+    } finally {
       db.close();
-      return;
     }
-
-    const result = executeBossTool(db, sessionId, "update_task", parsed.data);
-
-    expect(result.isError).toBe(false);
-    const updated = JSON.parse(result.content);
-    expect(updated.committed_start_at).toBeNull();
-    expect(updated.committed_at).toBeNull();
-
-    db.close();
   });
 });
 

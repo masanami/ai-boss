@@ -108,10 +108,14 @@ describe("executeBossTool", () => {
         boss_comment: null,
         estimated_minutes: null,
       });
-      executeBossTool(db, sessionId, "update_task", {
+      const setup = executeBossTool(db, sessionId, "update_task", {
         id: task.id,
         committed_start_at: "2026-09-14T20:00:00+09:00",
       });
+      // 前準備で約束が実際に置かれたことを固定する（置けていないと、最初から
+      // null のタスクへの取り消しが緑になり、取り消しを何も証明しない）。
+      expect(setup.isError).toBe(false);
+      expect(JSON.parse(setup.content).committed_start_at).toBe("2026-09-14T11:00:00.000Z");
 
       const result = executeBossTool(db, sessionId, "update_task", {
         id: task.id,

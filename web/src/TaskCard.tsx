@@ -4,6 +4,7 @@ import { TASK_STATUSES } from "./task";
 import type { Task, TaskPatchInput, TaskPriority, TaskStatus } from "./task";
 import { TASK_DRAG_DATA_TYPE } from "./task-dnd";
 import type { TaskEvidence } from "./task-evidence";
+import { toDateKey } from "./to-date-key";
 import { useTaskEvidences } from "./use-task-evidences";
 
 interface TaskCardProps {
@@ -82,12 +83,10 @@ function formatCommittedStart(committedStartAt: string | null): string | null {
   if (Number.isNaN(date.getTime())) {
     return null;
   }
-  const year = date.getFullYear();
-  const month = zeroPad(date.getMonth() + 1);
-  const day = zeroPad(date.getDate());
+  // 暦日はローカル暦日の既存ユーティリティに委ねる（ADR 0007 の規約を 1 箇所に保つ）
   const hours = zeroPad(date.getHours());
   const minutes = zeroPad(date.getMinutes());
-  return `${year}-${month}-${day} ${hours}:${minutes}`;
+  return `${toDateKey(date)} ${hours}:${minutes}`;
 }
 
 /** エビデンス一覧の表示ラベル（決定 1-c-ii の画像・PDF がプレビュー、それ以外は

@@ -3,6 +3,7 @@ import type Database from "better-sqlite3";
 import { TASK_PRIORITIES, TASK_STATUSES } from "../tasks/task.js";
 import { insertTask, updateTask } from "../tasks/tasks-repository.js";
 import {
+  COMMITMENT_REQUIRES_TODO_ERROR,
   validateCreateTaskInput,
   validatePatchTaskInput,
 } from "../tasks/tasks-validation.js";
@@ -147,7 +148,7 @@ function executeUpdateTask(
       // 決定3-2（Issue #527）: ボスがツール結果を見て言い直せるよう、理由の
       // 文言を isError: true で返す。
       return {
-        content: "着手の約束はステータスが todo のタスクにだけ設定できます。",
+        content: `${COMMITMENT_REQUIRES_TODO_ERROR}。`,
         isError: true,
       };
     }
