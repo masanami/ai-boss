@@ -222,6 +222,7 @@ S1 は統合ブランチ `feat/issue-{親Issue番号}` に集約し、次の 4 �
 - [ ] `POST /api/tasks` は `committed_start_at` が上記のいずれかの値のとき 400 を返す
 - [ ] `PATCH /api/tasks/:id` が `committed_start_at` を理由に 400 を返したとき、同じリクエストに含まれる他のフィールドも含めてタスクは更新されず、`task_update` イベントも記録されない
 - [ ] `committed_start_at` の値が変わる更新（未設定 → 設定・変更・取り消しの 3 通り）では、記録される `task_update` イベントの `note` に変更前と変更後の値が含まれる
+- [ ] `evidence_required` と `committed_start_at` を 1 回の `PATCH /api/tasks/:id` で同時に変更すると、記録される 1 件の `task_update` イベントの `note` に両方の変更前と変更後が含まれる（変異: 片方の `note` だけを採用して他方を捨てる — 入力「`evidence_required: false → true` と `committed_start_at: null → "2026-09-14T20:00:00+09:00"` を同時に送る」でどちらかの変更前後が `note` から消える）
 - [ ] `committed_start_at` を送ったが値が変わらない更新では、`task_update` イベントの `note` が `null` のままである
 
 ### 検知（決定 4）
@@ -260,7 +261,7 @@ S1 は統合ブランチ `feat/issue-{親Issue番号}` に集約し、次の 4 �
 
 ### 画面（決定 7）
 
-- [ ] `TaskCard` は、`committed_start_at` を持つタスクに「着手の約束」とそのローカル日時（入力 `new Date(2026, 8, 14, 20, 0).toISOString()` のとき `2026-09-14 20:00`）を 1 行表示し、`null` のタスクには「着手の約束」を表示しない
+- [ ] `TaskCard` は、`committed_start_at` を持つタスクに `ボス決定: 着手の約束 YYYY-MM-DD HH:mm`（ローカル日時。入力 `new Date(2026, 8, 14, 20, 0).toISOString()` のとき `ボス決定: 着手の約束 2026-09-14 20:00`）の 1 行を表示し、`null` のタスクには「着手の約束」を表示しない
 
 ### 横断
 
