@@ -403,6 +403,30 @@ describe("POST /api/checkins", () => {
       ).toBe(true);
     });
 
+    // 機能仕様 docs/features/task-start-commitment.md 決定3-2（Issue #527）:
+    // 退役は全経路が共有する updateTask 層に置くため、チェックイン経路
+    // （task_start）でも効く（変異: 退役を PATCH のルートハンドラにだけ置く）
+    it("clears committed_start_at and committed_at when task_start transitions a committed todo task to in_progress", async () => {
+      const app = createApp(db);
+      const task = insertWorkTask(db, {
+        status: "todo",
+        committed_start_at: "2026-09-14T11:00:00.000Z",
+      });
+
+      const res = await app.request("/api/checkins", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ type: "task_start", task_id: task.id }),
+      });
+      expect(res.status).toBe(201);
+
+      const updated = db
+        .prepare("SELECT committed_start_at, committed_at FROM tasks WHERE id = ?")
+        .get(task.id) as { committed_start_at: string | null; committed_at: string | null };
+      expect(updated.committed_start_at).toBeNull();
+      expect(updated.committed_at).toBeNull();
+    });
+
     it("rolls back the task_start event when the status update fails, leaving no partial write", async () => {
       const app = createApp(db);
       const task = insertWorkTask(db, { status: "todo" });

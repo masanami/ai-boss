@@ -584,6 +584,42 @@ describe("tasks routes", () => {
           expect(typeof body.error).toBe("string");
         }
       });
+
+      // 機能仕様 docs/features/task-start-commitment.md 決定3-2（Issue #527）
+      it("returns 400 with code commitment_requires_todo when status is not todo and committed_start_at is set (mutation: skip the create-time rejection)", async () => {
+        const app = createApp(db);
+
+        const res = await app.request("/api/tasks", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            title: "タスク",
+            status: "in_progress",
+            committed_start_at: "2026-09-14T20:00:00+09:00",
+          }),
+        });
+
+        expect(res.status).toBe(400);
+        const body = await readJson<ErrorBody>(res);
+        expect(body.code).toBe("commitment_requires_todo");
+      });
+
+      it("does not create a task row when rejected for commitment_requires_todo (mutation: create despite the rejection)", async () => {
+        const app = createApp(db);
+
+        await app.request("/api/tasks", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            title: "タスク",
+            status: "done",
+            committed_start_at: "2026-09-14T20:00:00+09:00",
+          }),
+        });
+
+        const res = await app.request("/api/tasks");
+        expect(await readJson<Task[]>(res)).toHaveLength(0);
+      });
     });
   });
 
@@ -1375,6 +1411,223 @@ describe("tasks routes", () => {
         const notes = taskUpdateNotes();
         expect(notes).toHaveLength(2);
         expect(notes[1]).toBeNull();
+      });
+    });
+
+    // 機能仕様 docs/features/task-start-commitment.md 決定3-2（Issue #527）
+    describe("committed_start_at の退役・拒否（決定3-2）", () => {
+      async function createTaskWithStatus(
+        app: ReturnType<typeof createApp>,
+        status: string,
+      ): Promise<Task> {
+        const res = await app.request("/api/tasks", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ title: "タスク", status }),
+        });
+        return readJson<Task>(res);
+      }
+
+      function taskUpdateNotes(): (string | null)[] {
+        return (
+          db
+            .prepare(
+              "SELECT note FROM activity_events WHERE type = 'task_update' ORDER BY id ASC",
+            )
+            .all() as { note: string | null }[]
+        ).map((row) => row.note);
+      }
+
+      describe("拒否", () => {
+        it("returns 400 with code commitment_requires_todo when status is omitted and the task is not todo (mutation: skip the rejection)", async () => {
+          const app = createApp(db);
+          const created = await createTaskWithStatus(app, "in_progress");
+
+          const res = await app.request(`/api/tasks/${created.id}`, {
+            method: "PATCH",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ committed_start_at: "2026-09-14T20:00:00+09:00" }),
+          });
+
+          expect(res.status).toBe(400);
+          const body = await readJson<ErrorBody>(res);
+          expect(body.code).toBe("commitment_requires_todo");
+        });
+
+        it("returns 400 when status is set to a non-todo value together with committed_start_at, even from a todo source (mutation: judge by the pre-update status)", async () => {
+          const app = createApp(db);
+          const created = await createTaskWithStatus(app, "todo");
+
+          const res = await app.request(`/api/tasks/${created.id}`, {
+            method: "PATCH",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              status: "in_progress",
+              committed_start_at: "2026-09-14T20:00:00+09:00",
+            }),
+          });
+
+          expect(res.status).toBe(400);
+          const body = await readJson<ErrorBody>(res);
+          expect(body.code).toBe("commitment_requires_todo");
+        });
+
+        it("does not update the task or record a task_update event when rejected, even with other fields present (mutation: write before checking)", async () => {
+          const app = createApp(db);
+          const created = await createTaskWithStatus(app, "in_progress");
+
+          const res = await app.request(`/api/tasks/${created.id}`, {
+            method: "PATCH",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              title: "改題",
+              committed_start_at: "2026-09-14T20:00:00+09:00",
+            }),
+          });
+
+          expect(res.status).toBe(400);
+          const getRes = await app.request("/api/tasks");
+          const [fetched] = await readJson<Task[]>(getRes);
+          expect(fetched.title).toBe("タスク");
+          const events = db
+            .prepare("SELECT * FROM activity_events WHERE type = 'task_update'")
+            .all();
+          expect(events).toHaveLength(0);
+        });
+
+        it("accepts status: 'todo' together with committed_start_at on a non-todo task (mutation: judge by the pre-update status)", async () => {
+          const app = createApp(db);
+          const created = await createTaskWithStatus(app, "in_progress");
+
+          const res = await app.request(`/api/tasks/${created.id}`, {
+            method: "PATCH",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              status: "todo",
+              committed_start_at: "2026-09-14T20:00:00+09:00",
+            }),
+          });
+
+          expect(res.status).toBe(200);
+          const body = await readJson<Task>(res);
+          expect(body.committed_start_at).toBe("2026-09-14T11:00:00.000Z");
+        });
+
+        it("does not reject committed_start_at: null on a non-todo task (mutation: reject regardless of value presence)", async () => {
+          const app = createApp(db);
+          const created = await createTaskWithStatus(app, "in_progress");
+
+          const res = await app.request(`/api/tasks/${created.id}`, {
+            method: "PATCH",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ committed_start_at: null }),
+          });
+
+          expect(res.status).toBe(200);
+        });
+      });
+
+      describe("退役", () => {
+        it.each(["in_progress", "paused", "done", "dropped"])(
+          "clears committed_start_at and committed_at, reflected in the response and GET, when a todo task with a commitment changes to %s",
+          async (status) => {
+            const app = createApp(db);
+            const created = await createTaskWithStatus(app, "todo");
+            await app.request(`/api/tasks/${created.id}`, {
+              method: "PATCH",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ committed_start_at: "2026-09-14T20:00:00+09:00" }),
+            });
+
+            const res = await app.request(`/api/tasks/${created.id}`, {
+              method: "PATCH",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ status }),
+            });
+
+            expect(res.status).toBe(200);
+            const body = await readJson<Task>(res);
+            expect(body.committed_start_at).toBeNull();
+            expect(body.committed_at).toBeNull();
+
+            const getRes = await app.request("/api/tasks");
+            const [fetched] = await readJson<Task[]>(getRes);
+            expect(fetched.committed_start_at).toBeNull();
+            expect(fetched.committed_at).toBeNull();
+          },
+        );
+
+        it("records a note describing the retirement with the before/after values (mutation: write no note on retirement)", async () => {
+          const app = createApp(db);
+          const created = await createTaskWithStatus(app, "todo");
+          await app.request(`/api/tasks/${created.id}`, {
+            method: "PATCH",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ committed_start_at: "2026-09-14T20:00:00+09:00" }),
+          });
+
+          await app.request(`/api/tasks/${created.id}`, {
+            method: "PATCH",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ status: "in_progress" }),
+          });
+
+          const notes = taskUpdateNotes();
+          expect(notes).toHaveLength(2);
+          expect(notes[1]).toContain("約束の退役（ステータス変更による）");
+          expect(notes[1]).toContain("2026-09-14T11:00:00.000Z");
+          expect(notes[1]).toContain("null");
+        });
+
+        it("does not retire when the status does not change (mutation: retire on any patch touching a commitment-bearing task)", async () => {
+          const app = createApp(db);
+          const created = await createTaskWithStatus(app, "todo");
+          await app.request(`/api/tasks/${created.id}`, {
+            method: "PATCH",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ committed_start_at: "2026-09-14T20:00:00+09:00" }),
+          });
+
+          const res = await app.request(`/api/tasks/${created.id}`, {
+            method: "PATCH",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ title: "改題" }),
+          });
+
+          const body = await readJson<Task>(res);
+          expect(body.committed_start_at).toBe("2026-09-14T11:00:00.000Z");
+        });
+
+        it("does not retire when the evidence gate rejects the same update (mutation: retire before the gate check)", async () => {
+          enableEnforcement(db);
+          const app = createApp(db);
+          const res = await app.request("/api/tasks", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              title: "タスク",
+              status: "todo",
+              evidence_required: true,
+            }),
+          });
+          const created = await readJson<Task>(res);
+          await app.request(`/api/tasks/${created.id}`, {
+            method: "PATCH",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ committed_start_at: "2026-09-14T20:00:00+09:00" }),
+          });
+
+          const patchRes = await app.request(`/api/tasks/${created.id}`, {
+            method: "PATCH",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ status: "done" }),
+          });
+
+          expect(patchRes.status).toBe(409);
+          const getRes = await app.request("/api/tasks");
+          const [fetched] = await readJson<Task[]>(getRes);
+          expect(fetched.committed_start_at).toBe("2026-09-14T11:00:00.000Z");
+        });
       });
     });
   });

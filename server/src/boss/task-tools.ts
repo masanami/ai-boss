@@ -143,6 +143,14 @@ function executeUpdateTask(
     if (updateResult.reason === "not_found") {
       return { content: `task ${input.id} not found`, isError: true };
     }
+    if (updateResult.reason === "commitment_requires_todo") {
+      // 決定3-2（Issue #527）: ボスがツール結果を見て言い直せるよう、理由の
+      // 文言を isError: true で返す。
+      return {
+        content: "着手の約束はステータスが todo のタスクにだけ設定できます。",
+        isError: true,
+      };
+    }
     // 決定 2-e: ボスチャット経由の拒否は既存のエラー返却様式で理由文字列を
     // 返すだけでよい（専用の仕組みを足さない）。ツール結果は会話へ戻るため、
     // この文言をボスがそのままユーザーへ伝える形になる。

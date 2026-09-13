@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type Database from "better-sqlite3";
 import { openDatabase } from "../db/connection.js";
 import { runMigrations } from "../db/migrate.js";
-import { insertTask } from "../tasks/tasks-repository.js";
+import { insertTask, updateTask } from "../tasks/tasks-repository.js";
 import { recordActivityEvent } from "../activity/activity-events-repository.js";
 import { insertSession } from "../sessions/sessions-repository.js";
 import type { SessionType } from "../sessions/session.js";
@@ -520,6 +520,71 @@ describe("createTicker().tick", () => {
       escalation_level: 1,
     });
     expect(recorded[0].body).toContain("資料作成");
+    db.close();
+  });
+
+  // 機能仕様 docs/features/task-start-commitment.md 決定3-2（Issue #527）:
+  // 退役は全経路が共有する updateTask 層に置くため、ステータス変更で退役
+  // すれば commitment_missed も発火しない（変異: 退役処理を外す）。
+  it("does not record commitment_missed when the commitment was retired by a status change and the task later returns to todo (T2)", async () => {
+    const committedStartAt = new Date(2026, 6, 5, 14, 0).toISOString();
+    const task = insertTask(db, {
+      title: "資料作成",
+      description: null,
+      category: "work",
+      priority: "high",
+      due_at: null,
+      status: "todo",
+      boss_comment: null,
+      estimated_minutes: null,
+      committed_start_at: committedStartAt,
+    });
+    markTodaysMeetingsDone(db);
+
+    // task_start チェックイン相当（todo -> in_progress）で約束が退役する。
+    updateTask(db, task.id, { status: "in_progress" });
+    // PATCH /api/tasks/:id 相当で todo に戻しても、退役済みの約束は復活
+    // しない（決定3-2「退役した約束は、後でタスクを todo に戻しても復活
+    // しない」）。
+    updateTask(db, task.id, { status: "todo" });
+
+    vi.setSystemTime(new Date(2026, 6, 5, 14, 30));
+
+    const execFile = vi.fn().mockImplementation(ok);
+    const ticker = createTicker({ db, env, execFile });
+    await ticker.tick();
+
+    const recorded = listNotificationsSince(db, "1970-01-01T00:00:00.000Z");
+    expect(recorded.filter((n) => n.type === "commitment_missed")).toHaveLength(0);
+    db.close();
+  });
+
+  // 上のテストの対（肯定側）: 退役させなければ、同じ約束の時刻・評価時刻の
+  // 入力で commitment_missed が記録されることを確かめ、上の 0 件アサーション
+  // が空振りでないことを示す。
+  it("records commitment_missed for the same commitment input when the commitment is not retired (control for the test above)", async () => {
+    const committedStartAt = new Date(2026, 6, 5, 14, 0).toISOString();
+    insertTask(db, {
+      title: "資料作成",
+      description: null,
+      category: "work",
+      priority: "high",
+      due_at: null,
+      status: "todo",
+      boss_comment: null,
+      estimated_minutes: null,
+      committed_start_at: committedStartAt,
+    });
+    markTodaysMeetingsDone(db);
+
+    vi.setSystemTime(new Date(2026, 6, 5, 14, 30));
+
+    const execFile = vi.fn().mockImplementation(ok);
+    const ticker = createTicker({ db, env, execFile });
+    await ticker.tick();
+
+    const recorded = listNotificationsSince(db, "1970-01-01T00:00:00.000Z");
+    expect(recorded.filter((n) => n.type === "commitment_missed")).toHaveLength(1);
     db.close();
   });
 

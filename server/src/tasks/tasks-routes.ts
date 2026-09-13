@@ -19,6 +19,12 @@ import { createTaskEvidencesRouter } from "./task-evidences-routes.js";
 const EVIDENCE_REQUIRED_ERROR_MESSAGE =
   "エビデンスが添付されていないため、このタスクを完了にできません";
 
+// 機能仕様 docs/features/task-start-commitment.md 決定3-2（Issue #527）の
+// エラー文言。`updateTask` が返す reason: "commitment_requires_todo" の
+// PATCH 応答に使う（POST 側は tasks-validation.ts の同趣旨の文言を使う）。
+const COMMITMENT_REQUIRES_TODO_ERROR_MESSAGE =
+  "着手の約束はステータスが todo のタスクにだけ設定できます";
+
 /**
  * Creates the tasks sub-router, mounted under `/api/tasks` by the caller.
  *
@@ -46,7 +52,10 @@ export function createTasksRouter(db: Database.Database, evidenceDir = ""): Hono
 
     const result = validateCreateTaskInput(body);
     if (!result.valid) {
-      return c.json({ error: result.error }, 400);
+      return c.json(
+        result.code ? { error: result.error, code: result.code } : { error: result.error },
+        400,
+      );
     }
 
     // 決定 2-h: POST /api/tasks が status: "done" を直接受け付ける「第5の
@@ -82,6 +91,12 @@ export function createTasksRouter(db: Database.Database, evidenceDir = ""): Hono
     if (!updateResult.ok) {
       if (updateResult.reason === "not_found") {
         return c.json({ error: `task ${id} not found` }, 404);
+      }
+      if (updateResult.reason === "commitment_requires_todo") {
+        return c.json(
+          { error: COMMITMENT_REQUIRES_TODO_ERROR_MESSAGE, code: "commitment_requires_todo" },
+          400,
+        );
       }
       return c.json(
         { error: EVIDENCE_REQUIRED_ERROR_MESSAGE, code: "evidence_required" },
