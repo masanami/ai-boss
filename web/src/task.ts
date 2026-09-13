@@ -30,6 +30,17 @@ export interface Task {
    * の `mapTaskRow` が変換する）。
    */
   evidence_required: boolean;
+  /**
+   * 着手の約束（機能仕様 docs/features/task-start-commitment.md 決定1・7）。
+   * `null` は「約束なし」。`todo` 以外のタスクでは常に `null`（決定3-2）。
+   * 入力・変更の UI はこの web には無い（決定7・ボスの会話経由でのみ変わる）。
+   */
+  committed_start_at: string | null;
+  /**
+   * その約束を置いた時刻（同上・決定1）。画面には表示しない
+   * （`committed_start_at` の識別用の内部項目）。
+   */
+  committed_at: string | null;
 }
 
 export interface NewTaskInput {

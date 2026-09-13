@@ -17,6 +17,8 @@ const SAMPLE_TASK: Task = {
   updated_at: "2026-07-05T00:00:00.000Z",
   completed_at: null,
   evidence_required: false,
+  committed_start_at: null,
+  committed_at: null,
 };
 
 describe("useTasks", () => {
@@ -182,6 +184,48 @@ describe("useTasks", () => {
     });
 
     expect(result.current.tasks).toEqual([updated]);
+  });
+
+  // Issue #526（#519 決定7）のAC「タスクボードでステータスを todo 以外へ変え、
+  // 更新の応答の committed_start_at が null のとき…」の実体。send した patch
+  // には committed_start_at を含めない（ステータス変更のみ）ため、応答ではなく
+  // 送った patch を手元のタスクへマージする実装だと、退役前の約束が残って
+  // しまう。変異: `{ ...task, ...patch }` でマージし応答を使わない — 入力
+  // 「約束 2026-09-14T20:00:00.000Z を持つ todo のタスクへ { status:
+  // "in_progress" } を送り、応答の committed_start_at は null」で
+  // committed_start_at が古い値のまま残る。
+  it("uses the response's committed_start_at, not a local merge of the sent patch, after editTask resolves (#526)", async () => {
+    const committed: Task = {
+      ...SAMPLE_TASK,
+      committed_start_at: new Date(2026, 8, 14, 20, 0).toISOString(),
+    };
+    const updated: Task = {
+      ...committed,
+      status: "in_progress",
+      committed_start_at: null,
+    };
+    const fetchMock = vi.fn();
+    fetchMock.mockResolvedValueOnce({
+      ok: true,
+      status: 200,
+      json: () => Promise.resolve([committed]),
+    });
+    fetchMock.mockResolvedValueOnce({
+      ok: true,
+      status: 200,
+      json: () => Promise.resolve(updated),
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const { result } = renderHook(() => useTasks());
+    await waitFor(() => expect(result.current.tasks).toEqual([committed]));
+
+    await act(async () => {
+      await result.current.editTask(1, { status: "in_progress" });
+    });
+
+    expect(result.current.tasks).toEqual([updated]);
+    expect(result.current.tasks[0].committed_start_at).toBeNull();
   });
 
   // AC-72（機能仕様 決定 2-f）の実体はここにある: editTask は楽観更新をせず、
