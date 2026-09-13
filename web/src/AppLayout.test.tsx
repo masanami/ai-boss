@@ -1721,6 +1721,9 @@ describe("AppLayout", () => {
 
         render(<AppLayout />);
         await startDayMentoringFromHeader(bodies);
+        expect(
+          screen.getByText("今日の進め方について相談中"),
+        ).toBeInTheDocument();
 
         fireEvent.click(screen.getByRole("button", { name: "朝会を開始" }));
         await waitFor(() =>

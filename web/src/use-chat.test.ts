@@ -3617,6 +3617,7 @@ describe("useChat 全日単位の相談中 (Issue #503)", () => {
     await act(async () => {
       await result.current.startDayMentoring();
     });
+    expect(result.current.mentoringTarget).toEqual({ kind: "day" });
     act(() => {
       result.current.clearMentoringTarget();
     });
@@ -3646,6 +3647,7 @@ describe("useChat 全日単位の相談中 (Issue #503)", () => {
     await act(async () => {
       await result.current.startDayMentoring();
     });
+    expect(result.current.mentoringTarget).toEqual({ kind: "day" });
     await act(async () => {
       await result.current.startSession("morning");
     });

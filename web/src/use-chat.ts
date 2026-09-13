@@ -88,7 +88,9 @@ export interface UseChatResult {
   mentoringTarget: MentoringConsultation | null;
   /**
    * Starts (or replaces) 相談中 for `task` (Issue #476, S1b): sets
-   * `mentoringTarget` to `task`, then sends the same task-origin message
+   * `mentoringTarget` to `{ kind: "task", id: task.id, title: task.title }`
+   * (replacing a 全日単位 consultation too, Issue #503), then sends the same
+   * task-origin message
    * `send` always has (`「${task.title}」の進め方を見てほしい` with
    * `{ mentoring: true, mentoringTaskId: task.id }`, unchanged from S1/S1a).
    * No-op (does not set the target, does not send) while `sendingRef.current
@@ -133,14 +135,14 @@ export interface UseChatResult {
    * - `options.mentoring` requests 随時メンタリング (Issue #411, 親 #276
    *   判断6): `true` makes the sent message add `mentoring: true` to the
    *   request body, which queues `MENTORING_FLOW_INSTRUCTION` for this turn
-   *   server-side regardless of session type or the 強制 setting. Only
-   *   `ChatView`'s dedicated "進め方を点検してもらう" button and the
-   *   task-card mentoring button (Issue #470) pass `true` — the plain send
-   *   path (submitting the draft input) omits it, unchanged from before
-   *   Issue #411.
+   *   server-side regardless of session type or the 強制 setting. Only the
+   *   two mentoring openers — `startDayMentoring` (the "進め方を点検して
+   *   もらう" button) and `startMentoring` (the task-card button, Issue #470)
+   *   — pass `true` explicitly; the plain send path (submitting the draft
+   *   input) omits `options` and gets it only while 相談中 (below).
    * - `options.mentoringTaskId` attributes the send to a task's card (Issue
-   *   #470, 親 #444 決定3) — only the task-card mentoring button passes
-   *   this.
+   *   #470, 親 #444 決定3) — only `startMentoring` (the task-card mentoring
+   *   button) passes this explicitly.
    *
    * **When `options` is omitted and `mentoringTarget` is non-null** (Issue
    * #476, S1b, 決定10; Issue #503), `send` adds the 相談中 context itself
@@ -798,7 +800,9 @@ export function useChat(): UseChatResult {
         // `setMentoringRequired(false)` と違い試行前には置かない: 開始に失敗
         // して adhoc に留まる場合（夕会の 409 など）は、相談もそのまま続く
         // のが正しい。切替中は `send` のガードが効くので、ここまで解除が
-        // 遅れても会のセッションへ対象タスクが載ることはない。
+        // 遅れても会のセッションへ対象タスクが載ることはない。全日単位の
+        // 相談中（#503）も同じく解除する — 残すと会中の送信に
+        // `mentoring: true` が載り続ける。
         setMentoringTarget(null);
         ifMounted(() => {
           setSessionType(type);
@@ -836,6 +840,7 @@ export function useChat(): UseChatResult {
     setMentoringRequired(false);
     // 決定11: 会の終了でも相談中を解除する（会中に別のメンタリングを開始
     // していた場合、adhoc へ戻ったあとにその対象が持ち越されないため）。
+    // 全日単位の相談中（#503）も同じく解除する。
     setMentoringTarget(null);
     try {
       await endSessionRequest(id);
