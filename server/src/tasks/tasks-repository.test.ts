@@ -317,15 +317,20 @@ describe("updateTask", () => {
   // 機能仕様 docs/features/task-start-commitment.md 決定3-2（Issue #527）
   describe("committed_start_at の退役・拒否（決定3-2）", () => {
     describe("拒否", () => {
-      it("rejects with reason 'commitment_requires_todo' when the resulting status is not todo and committed_start_at is set (mutation: drop the rejection)", () => {
-        const task = insertWorkTask(db, { status: "in_progress" });
+      // 受入基準は in_progress・paused・done・dropped の「いずれか」なので 4 つ
+      // すべてで試す（1 つだけだと「拒否を in_progress に限る」誤りを検出できない）。
+      it.each(["in_progress", "paused", "done", "dropped"] as const)(
+        "rejects with reason 'commitment_requires_todo' when the resulting status is %s and committed_start_at is set (mutation: drop the rejection / limit it to in_progress)",
+        (status) => {
+          const task = insertWorkTask(db, { status });
 
-        const result = updateTask(db, task.id, {
-          committed_start_at: "2026-09-14T11:00:00.000Z",
-        });
+          const result = updateTask(db, task.id, {
+            committed_start_at: "2026-09-14T11:00:00.000Z",
+          });
 
-        expect(result).toEqual({ ok: false, reason: "commitment_requires_todo" });
-      });
+          expect(result).toEqual({ ok: false, reason: "commitment_requires_todo" });
+        },
+      );
 
       it("rejects even when the transition source is todo (status included in the same patch, mutation: judge by the pre-update status)", () => {
         const task = insertWorkTask(db, { status: "todo" });
@@ -350,6 +355,25 @@ describe("updateTask", () => {
           .prepare("SELECT title, committed_start_at FROM tasks WHERE id = ?")
           .get(task.id) as { title: string; committed_start_at: string | null };
         expect(after.title).toBe("元のタイトル");
+        expect(after.committed_start_at).toBeNull();
+        expect(listTaskUpdateEvents(db)).toHaveLength(0);
+      });
+
+      it("writes nothing on rejection for status set to a non-todo value together with committed_start_at (todo source): other fields are not applied and no task_update event is recorded", () => {
+        const task = insertWorkTask(db, { status: "todo", title: "元のタイトル" });
+
+        const result = updateTask(db, task.id, {
+          title: "改題",
+          status: "in_progress",
+          committed_start_at: "2026-09-14T11:00:00.000Z",
+        });
+
+        expect(result).toEqual({ ok: false, reason: "commitment_requires_todo" });
+        const after = db
+          .prepare("SELECT title, status, committed_start_at FROM tasks WHERE id = ?")
+          .get(task.id) as { title: string; status: string; committed_start_at: string | null };
+        expect(after.title).toBe("元のタイトル");
+        expect(after.status).toBe("todo");
         expect(after.committed_start_at).toBeNull();
         expect(listTaskUpdateEvents(db)).toHaveLength(0);
       });

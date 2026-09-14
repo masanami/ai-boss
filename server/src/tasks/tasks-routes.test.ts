@@ -1439,20 +1439,25 @@ describe("tasks routes", () => {
       }
 
       describe("拒否", () => {
-        it("returns 400 with code commitment_requires_todo when status is omitted and the task is not todo (mutation: skip the rejection)", async () => {
-          const app = createApp(db);
-          const created = await createTaskWithStatus(app, "in_progress");
+        // 受入基準は in_progress・paused・done・dropped の「いずれか」なので 4 つ
+        // すべてで試す（1 つだけだと「拒否を in_progress に限る」誤りを検出できない）。
+        it.each(["in_progress", "paused", "done", "dropped"])(
+          "returns 400 with code commitment_requires_todo when status is omitted and the task is %s (mutation: skip the rejection / limit it to in_progress)",
+          async (status) => {
+            const app = createApp(db);
+            const created = await createTaskWithStatus(app, status);
 
-          const res = await app.request(`/api/tasks/${created.id}`, {
-            method: "PATCH",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ committed_start_at: "2026-09-14T20:00:00+09:00" }),
-          });
+            const res = await app.request(`/api/tasks/${created.id}`, {
+              method: "PATCH",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ committed_start_at: "2026-09-14T20:00:00+09:00" }),
+            });
 
-          expect(res.status).toBe(400);
-          const body = await readJson<ErrorBody>(res);
-          expect(body.code).toBe("commitment_requires_todo");
-        });
+            expect(res.status).toBe(400);
+            const body = await readJson<ErrorBody>(res);
+            expect(body.code).toBe("commitment_requires_todo");
+          },
+        );
 
         it("returns 400 when status is set to a non-todo value together with committed_start_at, even from a todo source (mutation: judge by the pre-update status)", async () => {
           const app = createApp(db);
@@ -1489,6 +1494,34 @@ describe("tasks routes", () => {
           const getRes = await app.request("/api/tasks");
           const [fetched] = await readJson<Task[]>(getRes);
           expect(fetched.title).toBe("タスク");
+          const events = db
+            .prepare("SELECT * FROM activity_events WHERE type = 'task_update'")
+            .all();
+          expect(events).toHaveLength(0);
+        });
+
+        // 受入基準「上の 2 つの拒否では…書き込まれない」の 2 つ目（status に todo
+        // 以外を同時に送る拒否。遷移元 todo）。
+        it("does not update the task or record a task_update event when rejected for status set to a non-todo value together with committed_start_at, even with other fields present (mutation: write before checking)", async () => {
+          const app = createApp(db);
+          const created = await createTaskWithStatus(app, "todo");
+
+          const res = await app.request(`/api/tasks/${created.id}`, {
+            method: "PATCH",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              title: "改題",
+              status: "in_progress",
+              committed_start_at: "2026-09-14T20:00:00+09:00",
+            }),
+          });
+
+          expect(res.status).toBe(400);
+          const getRes = await app.request("/api/tasks");
+          const [fetched] = await readJson<Task[]>(getRes);
+          expect(fetched.title).toBe("タスク");
+          expect(fetched.status).toBe("todo");
+          expect(fetched.committed_start_at).toBeNull();
           const events = db
             .prepare("SELECT * FROM activity_events WHERE type = 'task_update'")
             .all();
