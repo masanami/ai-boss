@@ -54,6 +54,61 @@ describe("TASK_TOOLS", () => {
       expect(description).not.toContain("日時");
     },
   );
+
+  // 機能仕様 docs/features/task-start-commitment.md 決定6
+  describe("committed_start_at（着手の約束）", () => {
+    it("create_task のスキーマは committed_start_at (type: string) を持ち、説明文が ISO 8601・オフセットを明示する", () => {
+      const createTaskTool = TASK_TOOLS.find((tool) => tool.name === "create_task");
+      const properties = createTaskTool?.input_schema.properties as
+        | Record<string, { type?: unknown; description?: string } | undefined>
+        | undefined;
+      const committedStartAt = properties?.committed_start_at;
+
+      expect(committedStartAt?.type).toBe("string");
+      expect(typeof committedStartAt?.description).toBe("string");
+      expect(committedStartAt?.description).toContain("ISO 8601");
+      expect(committedStartAt?.description).toContain("オフセット");
+    });
+
+    it("update_task のスキーマは committed_start_at (type: string) を持ち、説明文が ISO 8601・オフセットを明示する", () => {
+      const updateTaskTool = TASK_TOOLS.find((tool) => tool.name === "update_task");
+      const properties = updateTaskTool?.input_schema.properties as
+        | Record<string, { type?: unknown; description?: string } | undefined>
+        | undefined;
+      const committedStartAt = properties?.committed_start_at;
+
+      expect(typeof committedStartAt?.description).toBe("string");
+      expect(committedStartAt?.description).toContain("ISO 8601");
+      expect(committedStartAt?.description).toContain("オフセット");
+    });
+
+    // 決定6: update_task の committed_start_at は null で取り消せる。JSON Schema
+    // は type: ["string", "null"] で null を許容する（変異: type を "string" だけ
+    // に戻す）。
+    it("update_task のスキーマの committed_start_at は null を含む型を持ち、説明文が null での取り消しを明示する", () => {
+      const updateTaskTool = TASK_TOOLS.find((tool) => tool.name === "update_task");
+      const properties = updateTaskTool?.input_schema.properties as
+        | Record<string, { type?: unknown; description?: string } | undefined>
+        | undefined;
+      const committedStartAt = properties?.committed_start_at;
+
+      expect(committedStartAt?.type).toEqual(["string", "null"]);
+      expect(committedStartAt?.description).toContain("null");
+      expect(committedStartAt?.description).toContain("取り消す");
+    });
+
+    // create_task の committed_start_at は値のみ（決定6: 作成時に取り消す約束は
+    // 無い）。null 取り消し文言を持たないことを update_task と区別して担保する。
+    it("create_task のスキーマの committed_start_at の説明文は null での取り消しに言及しない", () => {
+      const createTaskTool = TASK_TOOLS.find((tool) => tool.name === "create_task");
+      const properties = createTaskTool?.input_schema.properties as
+        | Record<string, { type?: unknown; description?: string } | undefined>
+        | undefined;
+      const committedStartAt = properties?.committed_start_at;
+
+      expect(committedStartAt?.description).not.toContain("取り消す");
+    });
+  });
 });
 
 describe("executeTaskTool", () => {
@@ -365,6 +420,85 @@ describe("executeTaskTool", () => {
           .all() as ActivityEvent[];
         expect(events).toHaveLength(0);
       });
+    });
+  });
+
+  // 機能仕様 docs/features/task-start-commitment.md 決定6
+  describe("committed_start_at（着手の約束、Issue #525）", () => {
+    it("returns isError: true and does not update the task when committed_start_at cannot be parsed (e.g. \"20:00\")", () => {
+      const task = insertTask(db, {
+        title: "資料作成",
+        description: null,
+        category: "work",
+        priority: null,
+        due_at: null,
+        status: "todo",
+        boss_comment: null,
+        estimated_minutes: null,
+      });
+
+      const result = executeTaskTool(db, "update_task", {
+        id: task.id,
+        committed_start_at: "20:00",
+      });
+
+      expect(result.isError).toBe(true);
+      const events = db
+        .prepare("SELECT * FROM activity_events WHERE type = 'task_update'")
+        .all() as ActivityEvent[];
+      expect(events).toHaveLength(0);
+    });
+  });
+
+  // 機能仕様 docs/features/task-start-commitment.md 決定3-2（Issue #527）
+  describe("committed_start_at の退役・拒否（決定3-2、Issue #527）", () => {
+    it("returns isError: true and does not update the task when the target status is not todo (mutation: skip the rejection)", () => {
+      const task = insertTask(db, {
+        title: "資料作成",
+        description: null,
+        category: "work",
+        priority: null,
+        due_at: null,
+        status: "paused",
+        boss_comment: null,
+        estimated_minutes: null,
+      });
+
+      const result = executeTaskTool(db, "update_task", {
+        id: task.id,
+        committed_start_at: "2026-09-14T20:00:00+09:00",
+      });
+
+      expect(result.isError).toBe(true);
+      expect(result.content).toContain("約束");
+      const events = db
+        .prepare("SELECT * FROM activity_events WHERE type = 'task_update'")
+        .all() as ActivityEvent[];
+      expect(events).toHaveLength(0);
+    });
+
+    it("clears committed_start_at when a status change on a committed todo task retires the commitment (mutation: limit retirement to the PATCH route handler)", () => {
+      const task = insertTask(db, {
+        title: "資料作成",
+        description: null,
+        category: "work",
+        priority: null,
+        due_at: null,
+        status: "todo",
+        boss_comment: null,
+        estimated_minutes: null,
+        committed_start_at: "2026-09-14T11:00:00.000Z",
+      });
+
+      const result = executeTaskTool(db, "update_task", {
+        id: task.id,
+        status: "in_progress",
+      });
+
+      expect(result.isError).toBe(false);
+      const updated = JSON.parse(result.content);
+      expect(updated.committed_start_at).toBeNull();
+      expect(updated.committed_at).toBeNull();
     });
   });
 

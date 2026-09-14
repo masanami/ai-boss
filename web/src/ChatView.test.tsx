@@ -1921,6 +1921,8 @@ describe("ChatView task-id hover (Issue #513)", () => {
       updated_at: new Date(2026, 6, 5).toISOString(),
       completed_at: null,
       evidence_required: false,
+      committed_start_at: null,
+      committed_at: null,
       ...overrides,
     };
   }

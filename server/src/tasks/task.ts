@@ -24,4 +24,18 @@ export interface Task {
    * （0/1）で持ち、変換は `tasks-repository.ts` の 1 箇所に閉じる。
    */
   evidence_required: boolean;
+  /**
+   * 着手の約束の日時（機能仕様 docs/features/task-start-commitment.md
+   * 決定1・決定2）。UTC ISO 8601（`new Date(value).toISOString()`）に正規化
+   * して保存する。`null` は「約束なし」。1 タスクにつき約束は 0 件または
+   * 1 件。
+   */
+  committed_start_at: string | null;
+  /**
+   * `committed_start_at` を置いた（変更した）時刻（UTC ISO。`updated_at` と
+   * 同じ形）。約束のインスタンスを識別するために使う（決定1）。
+   * `committed_start_at` と両方 `NULL` か両方非 `NULL` のどちらかである
+   * （不変条件）。API の応答には含めるが、入力としては受け付けない。
+   */
+  committed_at: string | null;
 }

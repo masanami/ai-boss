@@ -4,6 +4,7 @@ import { TASK_STATUSES } from "./task";
 import type { Task, TaskPatchInput, TaskPriority, TaskStatus } from "./task";
 import { TASK_DRAG_DATA_TYPE } from "./task-dnd";
 import type { TaskEvidence } from "./task-evidence";
+import { toDateKey } from "./to-date-key";
 import { useTaskEvidences } from "./use-task-evidences";
 
 interface TaskCardProps {
@@ -65,6 +66,29 @@ function toDateInputValue(dueAt: string | null): string {
   return (dueAt ?? "").slice(0, 10);
 }
 
+function zeroPad(value: number): string {
+  return String(value).padStart(2, "0");
+}
+
+/**
+ * 着手の約束をローカル日時 `YYYY-MM-DD HH:mm` に整形する（機能仕様 決定7）。
+ * 解釈できない値・`null` は `null` を返し、呼び出し元は行自体を出さない
+ * （防御）。
+ */
+function formatCommittedStart(committedStartAt: string | null): string | null {
+  if (committedStartAt === null) {
+    return null;
+  }
+  const date = new Date(committedStartAt);
+  if (Number.isNaN(date.getTime())) {
+    return null;
+  }
+  // 暦日はローカル暦日の既存ユーティリティに委ねる（ADR 0007 の規約を 1 箇所に保つ）
+  const hours = zeroPad(date.getHours());
+  const minutes = zeroPad(date.getMinutes());
+  return `${toDateKey(date)} ${hours}:${minutes}`;
+}
+
 /** エビデンス一覧の表示ラベル（決定 1-c-ii の画像・PDF がプレビュー、それ以外は
  * ダウンロードになる旨は個々のブラウザ挙動に委ねる。明示的な仮定9: 独自
  * ビューアは作らず、常に遷移させる）。 */
@@ -94,6 +118,8 @@ function TaskCard({
   );
 
   const [linkUrl, setLinkUrl] = useState("");
+
+  const committedStart = formatCommittedStart(task.committed_start_at);
 
   // タスク詳細（編集 UI）のエビデンス一覧・追加・削除（AC-67〜71）。IO は
   // フックが所有し、このコンポーネントは表示に徹する（この web/ の既存規約）。
@@ -342,6 +368,9 @@ function TaskCard({
       )}
       {task.due_at !== null && (
         <p>ボス決定: 締切 {toDateInputValue(task.due_at)}</p>
+      )}
+      {committedStart !== null && (
+        <p>ボス決定: 着手の約束 {committedStart}</p>
       )}
       {task.boss_comment !== null && <p>ボスコメント: {task.boss_comment}</p>}
       <label>

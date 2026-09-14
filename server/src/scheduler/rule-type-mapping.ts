@@ -20,6 +20,9 @@ const RULE_TYPE_MAP: Record<DetectionRuleType, RuleType> = {
   deadline_overdue: "deadline_overdue",
   morning_meeting: "morning_meeting",
   evening_meeting: "evening_meeting",
+  // Issue #524（親 #519 T3）: 着手の約束の催促。detection 側・notification-body
+  // 側のどちらも同名で追加したため改名不要。
+  commitment_missed: "commitment_missed",
 };
 
 export function mapToNotificationRuleType(ruleType: DetectionRuleType): RuleType {

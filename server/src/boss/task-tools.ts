@@ -3,6 +3,7 @@ import type Database from "better-sqlite3";
 import { TASK_PRIORITIES, TASK_STATUSES } from "../tasks/task.js";
 import { insertTask, updateTask } from "../tasks/tasks-repository.js";
 import {
+  COMMITMENT_REQUIRES_TODO_ERROR,
   validateCreateTaskInput,
   validatePatchTaskInput,
 } from "../tasks/tasks-validation.js";
@@ -53,6 +54,18 @@ export const TASK_TOOLS: Anthropic.Tool[] = [
           description:
             "完了報告にエビデンス（ファイル添付・リンク）を必須にするか。省略時は false。",
         },
+        // 着手の約束（機能仕様 docs/features/task-start-commitment.md 決定6）。
+        // 作成時は値のみ受け付ける（取り消す約束が無いため null は扱わない）。
+        //
+        // claude-code-backend.ts の Zod shape と同じ文言を**あえて二重に**書く
+        // （due_at と同じ作法。上のコメント参照。同ファイルのテストが description
+        // 一致を検証しており、定数を共有するとその検証が恒真になるため）。
+        committed_start_at: {
+          type: "string",
+          description:
+            '着手の約束（時刻とオフセットを含む ISO 8601 の日時。例: "2026-09-14T20:00:00+09:00"）。' +
+            "ユーザーが確認した着手日時のみを設定すること。",
+        },
       },
       required: ["title"],
     },
@@ -72,6 +85,16 @@ export const TASK_TOOLS: Anthropic.Tool[] = [
         status: { type: "string", enum: [...TASK_STATUSES] },
         boss_comment: { type: "string" },
         estimated_minutes: { type: "integer" },
+        // 着手の約束（決定6）。null は「取り消す」— 約束の編集 UI が無いため、
+        // ボスの update_task がオーナーの取り消し要求を反映できる唯一の経路
+        // （claude-code-backend.ts の Zod shape も同じく nullable にする必要が
+        // ある。片方だけが null を弾くと、そのバックエンドでは取り消せなくなる）。
+        committed_start_at: {
+          type: ["string", "null"],
+          description:
+            '着手の約束（時刻とオフセットを含む ISO 8601 の日時。例: "2026-09-14T20:00:00+09:00"）。' +
+            "ユーザーが確認した着手日時のみを設定すること。null を指定すると約束を取り消す。",
+        },
       },
       required: ["id"],
     },
@@ -120,6 +143,14 @@ function executeUpdateTask(
   if (!updateResult.ok) {
     if (updateResult.reason === "not_found") {
       return { content: `task ${input.id} not found`, isError: true };
+    }
+    if (updateResult.reason === "commitment_requires_todo") {
+      // 決定3-2（Issue #527）: ボスがツール結果を見て言い直せるよう、理由の
+      // 文言を isError: true で返す。
+      return {
+        content: `${COMMITMENT_REQUIRES_TODO_ERROR}。`,
+        isError: true,
+      };
     }
     // 決定 2-e: ボスチャット経由の拒否は既存のエラー返却様式で理由文字列を
     // 返すだけでよい（専用の仕組みを足さない）。ツール結果は会話へ戻るため、

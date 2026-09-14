@@ -11,6 +11,7 @@ import {
   type BossTextBlock,
 } from "../llm/claude-client.js";
 import type { Task } from "../tasks/task.js";
+import { toLocalDateTimeKey } from "../detection/time-utils.js";
 
 /**
  * 通知文面生成。人格プロンプト生成器（purpose: "notification"）＋ Claude
@@ -36,6 +37,9 @@ export const RULE_TYPES = [
   "deadline_overdue",
   "morning_meeting",
   "evening_meeting",
+  // Issue #524（親 #519 T3）: 着手の約束の催促（機能仕様
+  // docs/features/task-start-commitment.md 決定 5）。追加のみ・改名なし。
+  "commitment_missed",
 ] as const;
 export type RuleType = (typeof RULE_TYPES)[number];
 
@@ -63,6 +67,7 @@ const RULE_TYPE_LABELS: Record<RuleType, string> = {
   deadline_overdue: "締切超過",
   morning_meeting: "朝会未実施",
   evening_meeting: "夕会未実施",
+  commitment_missed: "約束の時刻を過ぎても未着手",
 };
 
 const ESCALATION_LEVEL_LABELS: Record<EscalationLevel, string> = {
@@ -79,6 +84,13 @@ function buildUserInstruction(request: NotificationBodyRequest): string {
     request.ruleType === "silence" && request.escalationLevel === 1
       ? "\n無音検知の初回は詰問ではなく確認から入ること（例:「今何をやっている？」）。"
       : "";
+  // 機能仕様 docs/features/task-start-commitment.md 決定 5: commitment_missed
+  // のときだけ、約束の時刻をローカル日時で依頼文に含める（「約束を破った」こと
+  // が伝わるようにするため）。
+  const commitmentLine =
+    request.ruleType === "commitment_missed" && request.task?.committed_start_at
+      ? `\n約束の時刻: ${toLocalDateTimeKey(new Date(request.task.committed_start_at))}`
+      : "";
 
   return [
     "催促通知の文面を1つ生成せよ。",
@@ -86,7 +98,8 @@ function buildUserInstruction(request: NotificationBodyRequest): string {
     `エスカレーションレベル: L${request.escalationLevel}（${ESCALATION_LEVEL_LABELS[request.escalationLevel]}）`,
     taskLine,
     "出力は通知本文のみとし、前置き・説明・カギ括弧などの装飾は付けないこと。1〜2文の短い文章にすること。" +
-      silenceHint,
+      silenceHint +
+      commitmentLine,
   ].join("\n");
 }
 
@@ -138,6 +151,11 @@ const FALLBACK_TEMPLATES: Record<
     1: () => "夕会の時間だ。今日の進捗を報告してくれ。",
     2: () => "夕会がまだだ。早く進捗を報告しろ。",
     3: () => "夕会を無視し続けているぞ。今すぐ進捗を報告しろ。",
+  },
+  commitment_missed: {
+    1: (title) => `${title}、約束の時刻を過ぎているぞ。早く着手しよう。`,
+    2: (title) => `${title}、約束の時刻をとっくに過ぎているな。すぐ着手しろ。`,
+    3: (title) => `${title}の約束を無視し続けているぞ。今すぐ着手しろ。`,
   },
 };
 

@@ -50,6 +50,8 @@ function makeTask(overrides: Partial<Task>): Task {
     updated_at: localIso(2026, 8, 1),
     completed_at: null,
     evidence_required: false,
+    committed_start_at: null,
+    committed_at: null,
     ...overrides,
   };
 }

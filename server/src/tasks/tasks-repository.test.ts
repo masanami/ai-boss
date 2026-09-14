@@ -313,6 +313,175 @@ describe("updateTask", () => {
       expect(raw.evidence_required).toBe(1);
     });
   });
+
+  // 機能仕様 docs/features/task-start-commitment.md 決定3-2（Issue #527）
+  describe("committed_start_at の退役・拒否（決定3-2）", () => {
+    describe("拒否", () => {
+      // 受入基準は in_progress・paused・done・dropped の「いずれか」なので 4 つ
+      // すべてで試す（1 つだけだと「拒否を in_progress に限る」誤りを検出できない）。
+      it.each(["in_progress", "paused", "done", "dropped"] as const)(
+        "rejects with reason 'commitment_requires_todo' when the resulting status is %s and committed_start_at is set (mutation: drop the rejection / limit it to in_progress)",
+        (status) => {
+          const task = insertWorkTask(db, { status });
+
+          const result = updateTask(db, task.id, {
+            committed_start_at: "2026-09-14T11:00:00.000Z",
+          });
+
+          expect(result).toEqual({ ok: false, reason: "commitment_requires_todo" });
+        },
+      );
+
+      it("rejects even when the transition source is todo (status included in the same patch, mutation: judge by the pre-update status)", () => {
+        const task = insertWorkTask(db, { status: "todo" });
+
+        const result = updateTask(db, task.id, {
+          status: "in_progress",
+          committed_start_at: "2026-09-14T11:00:00.000Z",
+        });
+
+        expect(result).toEqual({ ok: false, reason: "commitment_requires_todo" });
+      });
+
+      it("writes nothing on rejection: other fields in the same patch are not applied and no task_update event is recorded", () => {
+        const task = insertWorkTask(db, { status: "in_progress", title: "元のタイトル" });
+
+        updateTask(db, task.id, {
+          title: "改題",
+          committed_start_at: "2026-09-14T11:00:00.000Z",
+        });
+
+        const after = db
+          .prepare("SELECT title, committed_start_at FROM tasks WHERE id = ?")
+          .get(task.id) as { title: string; committed_start_at: string | null };
+        expect(after.title).toBe("元のタイトル");
+        expect(after.committed_start_at).toBeNull();
+        expect(listTaskUpdateEvents(db)).toHaveLength(0);
+      });
+
+      it("writes nothing on rejection for status set to a non-todo value together with committed_start_at (todo source): other fields are not applied and no task_update event is recorded", () => {
+        const task = insertWorkTask(db, { status: "todo", title: "元のタイトル" });
+
+        const result = updateTask(db, task.id, {
+          title: "改題",
+          status: "in_progress",
+          committed_start_at: "2026-09-14T11:00:00.000Z",
+        });
+
+        expect(result).toEqual({ ok: false, reason: "commitment_requires_todo" });
+        const after = db
+          .prepare("SELECT title, status, committed_start_at FROM tasks WHERE id = ?")
+          .get(task.id) as { title: string; status: string; committed_start_at: string | null };
+        expect(after.title).toBe("元のタイトル");
+        expect(after.status).toBe("todo");
+        expect(after.committed_start_at).toBeNull();
+        expect(listTaskUpdateEvents(db)).toHaveLength(0);
+      });
+
+      it("does not reject committed_start_at: null regardless of status (mutation: reject regardless of value presence)", () => {
+        const task = insertWorkTask(db, { status: "in_progress" });
+
+        const result = updateTask(db, task.id, { committed_start_at: null });
+
+        expect(result.ok).toBe(true);
+      });
+
+      it("accepts status: 'todo' together with committed_start_at on a non-todo task (mutation: judge by the pre-update status)", () => {
+        const task = insertWorkTask(db, { status: "in_progress" });
+
+        const result = updateTask(db, task.id, {
+          status: "todo",
+          committed_start_at: "2026-09-14T11:00:00.000Z",
+        });
+
+        expect(result.ok).toBe(true);
+        if (result.ok) {
+          expect(result.task.committed_start_at).toBe("2026-09-14T11:00:00.000Z");
+        }
+      });
+    });
+
+    describe("退役", () => {
+      it("clears committed_start_at and committed_at when a todo task with a commitment changes status away from todo (mutation: drop retirement)", () => {
+        const task = insertWorkTask(db, {
+          status: "todo",
+          committed_start_at: "2026-09-14T11:00:00.000Z",
+        });
+
+        const result = updateTask(db, task.id, { status: "in_progress" });
+
+        expect(result.ok).toBe(true);
+        if (result.ok) {
+          expect(result.task.committed_start_at).toBeNull();
+          expect(result.task.committed_at).toBeNull();
+        }
+      });
+
+      it("retires regardless of the transition source (paused -> in_progress, mutation: limit retirement to a todo source)", () => {
+        // paused かつ約束を持つタスクは拒否（T2）があると API 経由では作れない
+        // ため、DB へ直接書いて作る（Issue #527 本文の指示）。
+        const task = insertWorkTask(db, { status: "todo" });
+        const committedAt = "2026-09-14T02:00:00.000Z";
+        db.prepare(
+          "UPDATE tasks SET status = 'paused', committed_start_at = ?, committed_at = ? WHERE id = ?",
+        ).run("2026-09-14T11:00:00.000Z", committedAt, task.id);
+
+        const result = updateTask(db, task.id, { status: "in_progress" });
+
+        expect(result.ok).toBe(true);
+        if (result.ok) {
+          expect(result.task.committed_start_at).toBeNull();
+          expect(result.task.committed_at).toBeNull();
+        }
+      });
+
+      it("records a note describing the retirement with the before/after values (mutation: write no note on retirement)", () => {
+        const task = insertWorkTask(db, {
+          status: "todo",
+          committed_start_at: "2026-09-14T11:00:00.000Z",
+        });
+
+        updateTask(db, task.id, { status: "in_progress" });
+
+        const events = listTaskUpdateEvents(db);
+        expect(events).toHaveLength(1);
+        expect(events[0].note).toBe(
+          "約束の退役（ステータス変更による）: 着手の約束を 2026-09-14T11:00:00.000Z から null に変更",
+        );
+      });
+
+      it("does not retire when the status does not change (mutation: retire on any patch that includes a commitment-bearing task)", () => {
+        const task = insertWorkTask(db, {
+          status: "todo",
+          committed_start_at: "2026-09-14T11:00:00.000Z",
+        });
+
+        const result = updateTask(db, task.id, { title: "改題" });
+
+        expect(result.ok).toBe(true);
+        if (result.ok) {
+          expect(result.task.committed_start_at).toBe("2026-09-14T11:00:00.000Z");
+        }
+      });
+
+      it("does not retire when the evidence gate rejects the update (mutation: retire before the gate check)", () => {
+        enableEnforcement(db);
+        const task = insertWorkTask(db, {
+          status: "todo",
+          evidence_required: true,
+          committed_start_at: "2026-09-14T11:00:00.000Z",
+        });
+
+        const result = updateTask(db, task.id, { status: "done" });
+
+        expect(result).toEqual({ ok: false, reason: "evidence_required" });
+        const after = db
+          .prepare("SELECT committed_start_at FROM tasks WHERE id = ?")
+          .get(task.id) as { committed_start_at: string | null };
+        expect(after.committed_start_at).toBe("2026-09-14T11:00:00.000Z");
+      });
+    });
+  });
 });
 
 describe("insertTask evidence_required (AC-12/AC-13)", () => {

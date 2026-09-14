@@ -8,6 +8,7 @@ import {
   updateTask,
 } from "./tasks-repository.js";
 import {
+  COMMITMENT_REQUIRES_TODO_ERROR,
   validateCreateTaskInput,
   validatePatchTaskInput,
 } from "./tasks-validation.js";
@@ -46,7 +47,10 @@ export function createTasksRouter(db: Database.Database, evidenceDir = ""): Hono
 
     const result = validateCreateTaskInput(body);
     if (!result.valid) {
-      return c.json({ error: result.error }, 400);
+      return c.json(
+        result.code ? { error: result.error, code: result.code } : { error: result.error },
+        400,
+      );
     }
 
     // 決定 2-h: POST /api/tasks が status: "done" を直接受け付ける「第5の
@@ -82,6 +86,12 @@ export function createTasksRouter(db: Database.Database, evidenceDir = ""): Hono
     if (!updateResult.ok) {
       if (updateResult.reason === "not_found") {
         return c.json({ error: `task ${id} not found` }, 404);
+      }
+      if (updateResult.reason === "commitment_requires_todo") {
+        return c.json(
+          { error: COMMITMENT_REQUIRES_TODO_ERROR, code: "commitment_requires_todo" },
+          400,
+        );
       }
       return c.json(
         { error: EVIDENCE_REQUIRED_ERROR_MESSAGE, code: "evidence_required" },

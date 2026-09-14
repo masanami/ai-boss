@@ -19,6 +19,8 @@ function makeTask(overrides: Partial<Task> & { id: number }): Task {
     updated_at: new Date(2026, 6, 25, 9).toISOString(),
     completed_at: null,
     evidence_required: false,
+    committed_start_at: null,
+    committed_at: null,
     ...overrides,
   };
 }

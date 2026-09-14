@@ -48,6 +48,8 @@ function makeTask(overrides: Partial<Task> = {}): Task {
     updated_at: "2026-07-05T00:00:00+09:00",
     completed_at: null,
     evidence_required: false,
+    committed_start_at: null,
+    committed_at: null,
     ...overrides,
   };
 }
@@ -420,5 +422,85 @@ describe("generateNotificationBody", () => {
     });
 
     expect(l1).not.toBe(l3);
+  });
+
+  // 機能仕様 docs/features/task-start-commitment.md 決定 5（Issue #524／親 #519
+  // T3）。固定時刻は new Date(y, m, d, h, min) 由来のローカル日時から導出する
+  // （ADR 0007 決定 5・TZ 非依存）。
+  describe("commitment_missed (Issue #524)", () => {
+    it("includes the committed task's local commitment date/time in the user instruction", async () => {
+      streamBossMessageMock.mockResolvedValue(fakeTextMessage("着手しろ"));
+
+      await generateNotificationBody(db, env, {
+        ruleType: "commitment_missed",
+        escalationLevel: 1,
+        task: makeTask({
+          title: "資料作成",
+          committed_start_at: new Date(2026, 8, 14, 20, 0).toISOString(),
+        }),
+        now,
+      });
+
+      const request = streamBossMessageMock.mock.calls[0][1];
+      const userMessage = request.messages[0].content as string;
+      expect(userMessage).toContain("2026-09-14 20:00");
+    });
+
+    it("does not include a commitment line for other rule types", async () => {
+      streamBossMessageMock.mockResolvedValue(fakeTextMessage("着手しろ"));
+
+      await generateNotificationBody(db, env, {
+        ruleType: "todo_stall",
+        escalationLevel: 1,
+        task: makeTask({
+          committed_start_at: new Date(2026, 8, 14, 20, 0).toISOString(),
+        }),
+        now,
+      });
+
+      const request = streamBossMessageMock.mock.calls[0][1];
+      const userMessage = request.messages[0].content as string;
+      expect(userMessage).not.toContain("2026-09-14 20:00");
+    });
+
+    it.each([1, 2, 3] as const)(
+      "falls back to a non-empty template containing the task title at L%i when the LLM call fails",
+      async (escalationLevel) => {
+        createClaudeClientMock.mockImplementationOnce(() => {
+          throw new MissingApiKeyError();
+        });
+
+        const body = await generateNotificationBody(db, env, {
+          ruleType: "commitment_missed",
+          escalationLevel,
+          task: makeTask({ title: "見積書作成" }),
+          now,
+        });
+
+        expect(body.length).toBeGreaterThan(0);
+        expect(body).toContain("見積書作成");
+      },
+    );
+
+    it("produces different fallback text across escalation levels for commitment_missed", async () => {
+      createClaudeClientMock.mockImplementation(() => {
+        throw new MissingApiKeyError();
+      });
+
+      const l1 = await generateNotificationBody(db, env, {
+        ruleType: "commitment_missed",
+        escalationLevel: 1,
+        task: makeTask(),
+        now,
+      });
+      const l3 = await generateNotificationBody(db, env, {
+        ruleType: "commitment_missed",
+        escalationLevel: 3,
+        task: makeTask(),
+        now,
+      });
+
+      expect(l1).not.toBe(l3);
+    });
   });
 });

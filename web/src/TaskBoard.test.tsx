@@ -39,6 +39,8 @@ function makeTask(overrides: Partial<Task>): Task {
     updated_at: "2026-07-05T00:00:00.000Z",
     completed_at: null,
     evidence_required: false,
+    committed_start_at: null,
+    committed_at: null,
     ...overrides,
   };
 }
@@ -261,6 +263,62 @@ describe("TaskBoard", () => {
         status: "in_progress",
       }),
     );
+  });
+
+  // Issue #526 (#519 決定7・AC「タスクボードでステータスを todo 以外へ変え…」):
+  // 更新の応答の committed_start_at が null なら、そのカードから約束の行が
+  // 消える。TaskBoard は use-tasks の editTask（サーバ応答をそのままタスクに
+  // 置き換える）を経由するため、画面側でパッチをローカルマージしてはならない
+  // （変異は下記コメントのとおり）。
+  it("clears the start commitment line from the card after a drop when the update response's committed_start_at is null (#526)", async () => {
+    const committedTask = makeTask({
+      id: 1,
+      title: "約束を持つタスク",
+      status: "todo",
+      committed_start_at: new Date(2026, 8, 14, 20, 0).toISOString(),
+    });
+    const tasksState = makeTasksState({ tasks: [committedTask] });
+
+    const { rerender } = render(<TaskBoard tasksState={tasksState} />);
+
+    expect(
+      screen.getByText("ボス決定: 着手の約束 2026-09-14 20:00"),
+    ).toBeInTheDocument();
+
+    const dataTransfer = makeDataTransfer(1);
+    const inProgressColumn = screen.getByRole("region", { name: "進行中" });
+    fireEvent.dragOver(inProgressColumn, { dataTransfer });
+    fireEvent.drop(inProgressColumn, { dataTransfer });
+
+    await waitFor(() =>
+      expect(tasksState.editTask).toHaveBeenCalledWith(1, {
+        status: "in_progress",
+      }),
+    );
+
+    // サーバ応答（committed_start_at: null）で手元のタスクを置き換えた結果の
+    // 再描画。このテストの tasksState はモックなので、「送ったパッチを手元の
+    // タスクへマージし応答を使わない」変異（use-tasks.ts の editTask）は
+    // ここでは検出できない。その変異は use-tasks.test.ts の
+    // "uses the response's committed_start_at, ..." が検出する。ここが担保する
+    // のは「応答の committed_start_at が null なら画面から行が消える」表示側。
+    rerender(
+      <TaskBoard
+        tasksState={makeTasksState({
+          tasks: [
+            {
+              ...committedTask,
+              status: "in_progress",
+              committed_start_at: null,
+            },
+          ],
+        })}
+      />,
+    );
+
+    expect(
+      screen.queryByText(/ボス決定: 着手の約束/),
+    ).not.toBeInTheDocument();
   });
 
   it("does not call editTask when a card is dropped into its own column", () => {

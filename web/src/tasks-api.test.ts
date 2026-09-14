@@ -29,6 +29,8 @@ const SAMPLE_TASK: Task = {
   updated_at: "2026-07-05T00:00:00.000Z",
   completed_at: null,
   evidence_required: false,
+  committed_start_at: null,
+  committed_at: null,
 };
 
 describe("fetchTasks", () => {
