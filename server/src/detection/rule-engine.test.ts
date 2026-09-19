@@ -252,7 +252,8 @@ describe("evaluateRules", () => {
 
     expect(result).toContainEqual({
       ruleType: "morning_meeting",
-      ruleKey: "morning_meeting:2026-07-05",
+      // #433: rule_key に実効時刻（この入力では既定の 09:00）が埋め込まれる
+      ruleKey: "morning_meeting:2026-07-05@09:00",
       escalationLevel: 1,
       taskId: null,
     });
