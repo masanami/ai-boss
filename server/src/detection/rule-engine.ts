@@ -11,7 +11,7 @@ import { hasRecentActivityOnOtherTasks } from "./avoidance.js";
 import { getActiveBreak, isBreakOverrun } from "./break-overrun.js";
 import { isSilent } from "./silence.js";
 import { findOverdueTasks } from "./deadline-overdue.js";
-import { buildMeetingRuleKey, isMeetingDue } from "./meeting.js";
+import { buildMeetingRuleKey, isMeetingDue, type MeetingSessionType } from "./meeting.js";
 import {
   buildCommitmentMissedRuleKey,
   findMissedCommitmentTasks,
@@ -114,13 +114,20 @@ export function evaluateRules(input: DetectionInput): FiringNotification[] {
     }
   }
 
-  // 朝会・夕会定時通知は勤務時間帯ゲート・休憩ゲートの対象外
-  if (isMeetingDue(now, settings.morningMeetingTime, "morning", todaysSessionTypes)) {
-    tryFire("morning_meeting", buildMeetingRuleKey("morning", now), null);
+  // 朝会・夕会定時通知は勤務時間帯ゲート・休憩ゲートの対象外。
+  // `meetingTime` を1回だけ束縛して isMeetingDue / buildMeetingRuleKey の
+  // 両方へ渡すことで、両者に別々の実効時刻が渡ってしまう（rule_key が
+  // 発火判定と食い違い、履歴の紐付けが静かに壊れる）余地を無くす。
+  function tryFireMeeting(
+    sessionType: MeetingSessionType,
+    ruleType: DetectionRuleType,
+    meetingTime: string,
+  ): void {
+    if (!isMeetingDue(now, meetingTime, sessionType, todaysSessionTypes)) return;
+    tryFire(ruleType, buildMeetingRuleKey(sessionType, now, meetingTime), null);
   }
-  if (isMeetingDue(now, settings.eveningMeetingTime, "evening", todaysSessionTypes)) {
-    tryFire("evening_meeting", buildMeetingRuleKey("evening", now), null);
-  }
+  tryFireMeeting("morning", "morning_meeting", settings.morningMeetingTime);
+  tryFireMeeting("evening", "evening_meeting", settings.eveningMeetingTime);
 
   return firing;
 }

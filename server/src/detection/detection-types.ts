@@ -86,9 +86,16 @@ export interface DetectionSettings {
   /** 回避検知: 他タスクへの活動を「直近」とみなす窓（分） */
   avoidanceWindowMinutes: number;
   escalation: EscalationIntervalSettings;
-  /** 朝会の設定時刻 "HH:mm" */
+  /**
+   * 朝会の設定時刻 "HH:mm"。`loadDetectionSettings` 直後は恒常設定の値だが、
+   * スケジューラ経路（`scheduler-tick.ts` の `buildTickInput`）では当日限りの
+   * 上書き（#432/#433）が合成された実効時刻に差し替えられてから
+   * `evaluateRules` へ渡る。恒常値そのものが必要な場合（例:
+   * `meeting-schedule-routes.ts` の `defaultTime`）は、この差し替えより
+   * 前の値（`loadDetectionSettings` の戻り値）を直接使うこと。
+   */
   morningMeetingTime: string;
-  /** 夕会の設定時刻 "HH:mm" */
+  /** 夕会の設定時刻 "HH:mm"。上記 `morningMeetingTime` と同じ注記が適用される */
   eveningMeetingTime: string;
 }
 

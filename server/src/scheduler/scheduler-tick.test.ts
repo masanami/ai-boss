@@ -12,6 +12,7 @@ import { toDateKey } from "../detection/time-utils.js";
 import { ACTIVITY_EVENT_TYPES, type ActivityEventType } from "../activity/activity-event.js";
 import { loadDetectionSettings } from "./detection-settings.js";
 import { toNotificationHistory } from "./notification-history.js";
+import { upsertOverride } from "../meeting-schedule/meeting-schedule-repository.js";
 
 const {
   createClaudeClientMock,
@@ -1233,17 +1234,205 @@ describe("createTicker().tick", () => {
 
           await ticker.tick();
 
+          // #433: rule_key に実効時刻が埋め込まれる。ここでは当日の上書きが
+          // 無いため、恒常設定の既定時刻（morning: 09:00 / evening: 18:00）
+          // がそのまま実効時刻になる。
+          const expectedMeetingTime = sessionType === "morning" ? "09:00" : "18:00";
           const recorded = listNotificationsSince(db, "1970-01-01T00:00:00.000Z");
           expect(recorded).toHaveLength(1);
           expect(recorded[0]).toMatchObject({
             type: ruleType,
-            rule_key: `${sessionType}_meeting:2026-07-05`,
+            rule_key: `${sessionType}_meeting:2026-07-05@${expectedMeetingTime}`,
           });
         } finally {
           db.close();
         }
       },
     );
+  });
+
+  // #433 (docs/features/today-meeting-time-override.md): 当日限りの朝会・
+  // 夕会の時刻変更（#432 の保存層・純粋関数・API）が、実際の発火判定
+  // （buildTickInput での合成・rule_key への実効時刻埋め込み）へ反映される
+  // ことを tick 経由で検証する。
+  describe("today's meeting time overrides affect firing via tick (#433)", () => {
+    const BASE_TIME = new Date(2026, 6, 5, 9, 0, 0);
+    const TODAY_KEY = toDateKey(BASE_TIME);
+
+    it("does not fire the evening meeting at 20:59 when today's evening override postpones it to 21:00 (AC-15)", async () => {
+      vi.setSystemTime(BASE_TIME);
+      insertSession(db, { type: "morning" });
+      upsertOverride(db, TODAY_KEY, "evening", "21:00");
+
+      vi.setSystemTime(new Date(2026, 6, 5, 20, 59, 0));
+      const execFile = vi.fn().mockImplementation(ok);
+      await createTicker({ db, env, execFile }).tick();
+
+      const recorded = listNotificationsSince(db, "1970-01-01T00:00:00.000Z");
+      expect(recorded.filter((n) => n.type === "evening_meeting")).toHaveLength(0);
+    });
+
+    it("fires the evening meeting at 21:00 when today's evening override postpones it to 21:00 (AC-16)", async () => {
+      vi.setSystemTime(BASE_TIME);
+      insertSession(db, { type: "morning" });
+      upsertOverride(db, TODAY_KEY, "evening", "21:00");
+
+      vi.setSystemTime(new Date(2026, 6, 5, 21, 0, 0));
+      const execFile = vi.fn().mockImplementation(ok);
+      await createTicker({ db, env, execFile }).tick();
+
+      const recorded = listNotificationsSince(db, "1970-01-01T00:00:00.000Z");
+      expect(recorded).toHaveLength(1);
+      expect(recorded[0]).toMatchObject({
+        type: "evening_meeting",
+        rule_key: `evening_meeting:${TODAY_KEY}@21:00`,
+        escalation_level: 1,
+      });
+    });
+
+    it("fires the morning meeting at 07:00 when today's morning override moves it earlier to 07:00 (AC-17)", async () => {
+      vi.setSystemTime(BASE_TIME);
+      insertSession(db, { type: "evening" });
+      upsertOverride(db, TODAY_KEY, "morning", "07:00");
+
+      vi.setSystemTime(new Date(2026, 6, 5, 7, 0, 0));
+      const execFile = vi.fn().mockImplementation(ok);
+      await createTicker({ db, env, execFile }).tick();
+
+      const recorded = listNotificationsSince(db, "1970-01-01T00:00:00.000Z");
+      expect(recorded).toHaveLength(1);
+      expect(recorded[0]).toMatchObject({
+        type: "morning_meeting",
+        rule_key: `morning_meeting:${TODAY_KEY}@07:00`,
+        escalation_level: 1,
+      });
+    });
+
+    it("fires at the standing setting's time when the only override row on file is dated yesterday (AC-18)", async () => {
+      vi.setSystemTime(BASE_TIME);
+      insertSession(db, { type: "morning" });
+      const yesterdayKey = toDateKey(
+        new Date(BASE_TIME.getFullYear(), BASE_TIME.getMonth(), BASE_TIME.getDate() - 1),
+      );
+      // Yesterday's leftover override row must not leak into today's
+      // resolution (findOverridesByDate is scoped by date).
+      upsertOverride(db, yesterdayKey, "evening", "21:00");
+
+      // Standing default evening time (18:00) still applies today.
+      vi.setSystemTime(new Date(2026, 6, 5, 18, 0, 0));
+      const execFile = vi.fn().mockImplementation(ok);
+      await createTicker({ db, env, execFile }).tick();
+
+      const recorded = listNotificationsSince(db, "1970-01-01T00:00:00.000Z");
+      expect(recorded).toHaveLength(1);
+      expect(recorded[0]).toMatchObject({
+        type: "evening_meeting",
+        rule_key: `evening_meeting:${TODAY_KEY}@18:00`,
+      });
+    });
+
+    it("keeps the morning meeting firing at the standing setting's time when only today's evening meeting has an override (AC-19)", async () => {
+      vi.setSystemTime(BASE_TIME);
+      insertSession(db, { type: "evening" });
+      upsertOverride(db, TODAY_KEY, "evening", "21:00");
+
+      // Standing default morning time (09:00), unaffected by the evening-only
+      // override.
+      vi.setSystemTime(new Date(2026, 6, 5, 9, 0, 0));
+      const execFile = vi.fn().mockImplementation(ok);
+      await createTicker({ db, env, execFile }).tick();
+
+      const recorded = listNotificationsSince(db, "1970-01-01T00:00:00.000Z");
+      expect(recorded).toHaveLength(1);
+      expect(recorded[0]).toMatchObject({
+        type: "morning_meeting",
+        rule_key: `morning_meeting:${TODAY_KEY}@09:00`,
+      });
+    });
+
+    // 機能仕様の決定6の核心: rule_key に実効時刻を埋め込むことで、延期後の
+    // 初回発火が必ず L1 から再開する（履歴を消さず、かつ経路に依存しない）。
+    // rule_key に時刻を埋め込み忘れると、この延期は同一 rule_key の続きとして
+    // 扱われ、経過180分（> level1ToLevel2Minutes=15）により L2 から再開して
+    // しまう（今回の実装が壊れたときにこのテストで検出できるようにする）。
+    it("restarts at escalation_level 1 for the first firing after postponing the evening meeting past its already-fired standing time (AC-20)", async () => {
+      vi.setSystemTime(BASE_TIME);
+      insertSession(db, { type: "morning" });
+
+      // Standing time (18:00) fires first, recorded at L1.
+      vi.setSystemTime(new Date(2026, 6, 5, 18, 0, 0));
+      const execFile = vi.fn().mockImplementation(ok);
+      const ticker = createTicker({ db, env, execFile });
+      await ticker.tick();
+
+      let recorded = listNotificationsSince(db, "1970-01-01T00:00:00.000Z");
+      expect(recorded).toHaveLength(1);
+      expect(recorded[0]).toMatchObject({
+        type: "evening_meeting",
+        rule_key: `evening_meeting:${TODAY_KEY}@18:00`,
+        escalation_level: 1,
+      });
+
+      // Postpone today's evening meeting to 21:00, 180 minutes after the
+      // 18:00 firing above (> level1ToLevel2Minutes's default 15 minutes),
+      // with no activity signal recorded in between.
+      upsertOverride(db, TODAY_KEY, "evening", "21:00");
+      vi.setSystemTime(new Date(2026, 6, 5, 21, 0, 0));
+      await ticker.tick();
+
+      recorded = listNotificationsSince(db, "1970-01-01T00:00:00.000Z");
+      expect(recorded).toHaveLength(2);
+      expect(recorded[1]).toMatchObject({
+        type: "evening_meeting",
+        rule_key: `evening_meeting:${TODAY_KEY}@21:00`,
+        escalation_level: 1,
+      });
+    });
+
+    // 決定3: 当日変更の対象は朝会・夕会の定時催促の時刻のみ。work_end（勤務
+    // 時間帯ゲート）は当日変更の影響を受けない。
+    it("does not fire silence at 19:00 despite today's evening override extending to 21:00 — the working-hours gate (work_end 18:00) is unaffected (AC-21)", async () => {
+      // Positive control: the exact same elapsed-silence setup, evaluated
+      // while still within the standing working hours (17:59), fires —
+      // ruling out "silence just never fires here" as the reason the 19:00
+      // case below records nothing.
+      try {
+        vi.setSystemTime(BASE_TIME);
+        recordActivityEvent(db, { type: "checkin" });
+        insertSession(db, { type: "morning" });
+        upsertOverride(db, TODAY_KEY, "evening", "21:00");
+
+        vi.setSystemTime(new Date(2026, 6, 5, 17, 59, 0));
+        const controlExecFile = vi.fn().mockImplementation(ok);
+        await createTicker({ db, env, execFile: controlExecFile }).tick();
+
+        const firedWithinHours = listNotificationsSince(db, "1970-01-01T00:00:00.000Z");
+        expect(firedWithinHours.filter((n) => n.type === "silence")).toHaveLength(1);
+      } finally {
+        db.close();
+      }
+
+      const outsideDb = openDatabase(":memory:");
+      try {
+        runMigrations(outsideDb);
+        vi.setSystemTime(BASE_TIME);
+        recordActivityEvent(outsideDb, { type: "checkin" });
+        insertSession(outsideDb, { type: "morning" });
+        upsertOverride(outsideDb, TODAY_KEY, "evening", "21:00");
+
+        // Past the standing work_end (18:00) but still before the postponed
+        // evening meeting (21:00): silence must stay suppressed by the
+        // (unchanged) working-hours gate.
+        vi.setSystemTime(new Date(2026, 6, 5, 19, 0, 0));
+        const execFile = vi.fn().mockImplementation(ok);
+        await createTicker({ db: outsideDb, env, execFile }).tick();
+
+        const recorded = listNotificationsSince(outsideDb, "1970-01-01T00:00:00.000Z");
+        expect(recorded.filter((n) => n.type === "silence")).toHaveLength(0);
+      } finally {
+        outsideDb.close();
+      }
+    });
   });
 
   // GAP-01 (#196, #240): エスカレーションの L1 リセット（escalation.ts の
