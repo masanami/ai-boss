@@ -1925,4 +1925,297 @@ describe("CheckinPanel", () => {
       );
     });
   });
+
+  // #430: 今日の活動ログの表示（既定は最新 20 件＋「全件表示する」ボタン）。
+  // 行の折り返し（決定 1・2）は jsdom が CSS を適用せずレイアウトもしない
+  // ため自動テストでは扱わず、/demo のオーナー目視に委ねる（決定 7）。
+  // ここで固定するのは件数・DOM 構造・aria-expanded・ラベル文言に限る。
+  describe("activity log display (#430)", () => {
+    /** 活動イベントを count 件作る。created_at は new Date(y, m, d, h, m) 由来で
+     * 組み、実行環境の TZ に依存しないようにする（CLAUDE.md テスト方針）。 */
+    function makeActivityEvents(count: number): ActivityEvent[] {
+      return Array.from({ length: count }, (_, index) =>
+        makeEvent({
+          id: index + 1,
+          type: "chat_message",
+          note: `活動${index + 1}`,
+          created_at: new Date(2026, 8, 5, 9, index).toISOString(),
+        }),
+      );
+    }
+
+    const TOGGLE_NAME_PATTERN = /^全件表示する（全 \d+ 件）$/;
+
+    function renderPanel(events: ActivityEvent[]) {
+      vi.stubGlobal("fetch", createFetchMock({ events }));
+      return render(
+        <CheckinPanel
+          tasksState={makeTasksState([makeTask({ id: 1, title: "資料作成" })])}
+        />,
+      );
+    }
+
+    it("shows only the latest 20 activities by default when there are more than 20", async () => {
+      renderPanel(makeActivityEvents(25));
+
+      const list = await screen.findByRole("list");
+      await waitFor(() =>
+        expect(within(list).getAllByRole("listitem")).toHaveLength(20),
+      );
+    });
+
+    it("keeps the newest 20 in API order and drops the oldest ones", async () => {
+      renderPanel(makeActivityEvents(25));
+
+      const list = await screen.findByRole("list");
+      await waitFor(() =>
+        expect(within(list).getAllByRole("listitem")).toHaveLength(20),
+      );
+      const items = within(list).getAllByRole("listitem");
+      // API は昇順（created_at ASC, id ASC）で返し、フロントは並べ替えない。
+      // 既定表示は末尾 20 件（活動6〜活動25）で、切り落とされるのは古い側。
+      expect(items[0]).toHaveTextContent("活動6");
+      expect(items[19]).toHaveTextContent("活動25");
+      expect(within(list).queryByText("活動5")).not.toBeInTheDocument();
+      expect(items.map((item) => item.textContent)).toEqual(
+        Array.from({ length: 20 }, (_, index) =>
+          expect.stringContaining(`活動${index + 6}`),
+        ),
+      );
+    });
+
+    it("does not show the toggle when there are exactly 20 activities", async () => {
+      renderPanel(makeActivityEvents(20));
+
+      const list = await screen.findByRole("list");
+      await waitFor(() =>
+        expect(within(list).getAllByRole("listitem")).toHaveLength(20),
+      );
+      expect(
+        screen.queryByRole("button", { name: TOGGLE_NAME_PATTERN }),
+      ).not.toBeInTheDocument();
+    });
+
+    it("shows the toggle when there are 21 activities", async () => {
+      renderPanel(makeActivityEvents(21));
+
+      expect(
+        await screen.findByRole("button", { name: TOGGLE_NAME_PATTERN }),
+      ).toBeInTheDocument();
+    });
+
+    it("does not show the toggle and keeps the empty message when there are no activities", async () => {
+      renderPanel([]);
+
+      expect(await screen.findByText("まだ活動はありません")).toBeInTheDocument();
+      expect(
+        screen.queryByRole("button", { name: TOGGLE_NAME_PATTERN }),
+      ).not.toBeInTheDocument();
+    });
+
+    it("labels the toggle with the total activity count", async () => {
+      renderPanel(makeActivityEvents(47));
+
+      expect(
+        await screen.findByRole("button", { name: "全件表示する（全 47 件）" }),
+      ).toBeInTheDocument();
+    });
+
+    it("renders the toggle as a non-submitting button without the primary button class", async () => {
+      renderPanel(makeActivityEvents(21));
+
+      const toggle = await screen.findByRole("button", {
+        name: TOGGLE_NAME_PATTERN,
+      });
+      expect(toggle.tagName).toBe("BUTTON");
+      expect(toggle).toHaveAttribute("type", "button");
+      // #244 の「主操作だけが checkin-primary-button を持つ」全数固定を壊さない。
+      expect(toggle).not.toHaveClass("checkin-primary-button");
+    });
+
+    it("places the toggle before the activity list in DOM order", async () => {
+      renderPanel(makeActivityEvents(21));
+
+      const toggle = await screen.findByRole("button", {
+        name: TOGGLE_NAME_PATTERN,
+      });
+      const list = screen.getByRole("list");
+      // 切り落とされるのは古い側＝一覧の上なので、開くボタンも上に置く（決定 6）。
+      expect(
+        toggle.compareDocumentPosition(list) &
+          Node.DOCUMENT_POSITION_FOLLOWING,
+      ).toBeTruthy();
+    });
+
+    it("starts collapsed and expands to the full list when the toggle is clicked", async () => {
+      renderPanel(makeActivityEvents(25));
+
+      const toggle = await screen.findByRole("button", {
+        name: TOGGLE_NAME_PATTERN,
+      });
+      expect(toggle).toHaveAttribute("aria-expanded", "false");
+
+      fireEvent.click(toggle);
+
+      expect(toggle).toHaveAttribute("aria-expanded", "true");
+      const list = screen.getByRole("list");
+      expect(within(list).getAllByRole("listitem")).toHaveLength(25);
+      expect(within(list).getByText("活動1")).toBeInTheDocument();
+    });
+
+    it("collapses back to 20 items when the toggle is clicked again", async () => {
+      renderPanel(makeActivityEvents(25));
+
+      const toggle = await screen.findByRole("button", {
+        name: TOGGLE_NAME_PATTERN,
+      });
+      fireEvent.click(toggle);
+      expect(
+        within(screen.getByRole("list")).getAllByRole("listitem"),
+      ).toHaveLength(25);
+
+      fireEvent.click(toggle);
+
+      expect(toggle).toHaveAttribute("aria-expanded", "false");
+      expect(
+        within(screen.getByRole("list")).getAllByRole("listitem"),
+      ).toHaveLength(20);
+    });
+
+    it("keeps the toggle label unchanged after expanding", async () => {
+      renderPanel(makeActivityEvents(25));
+
+      const toggle = await screen.findByRole("button", {
+        name: "全件表示する（全 25 件）",
+      });
+      fireEvent.click(toggle);
+
+      // 状態は aria-expanded だけで伝え、ラベルは変えない（画面・API設計）。
+      expect(toggle).toHaveTextContent("全件表示する（全 25 件）");
+      expect(
+        screen.getByRole("button", { name: "全件表示する（全 25 件）" }),
+      ).toBe(toggle);
+    });
+
+    it("keeps the expanded state across a refetch triggered by a checkin", async () => {
+      let events = makeActivityEvents(21);
+      const fetchMock = vi.fn((url: string, init?: RequestInit) => {
+        if (url === "/api/activity/today") {
+          return Promise.resolve({
+            ok: true,
+            status: 200,
+            json: () => Promise.resolve(events),
+          });
+        }
+        if (url === "/api/checkins" && init?.method === "POST") {
+          events = makeActivityEvents(22);
+          return Promise.resolve({
+            ok: true,
+            status: 201,
+            json: () =>
+              Promise.resolve(makeEvent({ id: 22, type: "task_start", task_id: 1 })),
+          });
+        }
+        return Promise.reject(new Error(`unexpected fetch call: ${url}`));
+      });
+      vi.stubGlobal("fetch", fetchMock);
+
+      render(
+        <CheckinPanel
+          tasksState={makeTasksState([makeTask({ id: 1, title: "資料作成" })])}
+        />,
+      );
+
+      fireEvent.click(
+        await screen.findByRole("button", { name: "全件表示する（全 21 件）" }),
+      );
+      expect(
+        screen.getByRole("button", { name: "全件表示する（全 21 件）" }),
+      ).toHaveAttribute("aria-expanded", "true");
+
+      fireEvent.click(screen.getByRole("button", { name: "着手" }));
+
+      // 再取得で総件数が 22 になっても、展開状態は畳まれない（決定 4）。
+      const toggle = await screen.findByRole("button", {
+        name: "全件表示する（全 22 件）",
+      });
+      expect(toggle).toHaveAttribute("aria-expanded", "true");
+      expect(
+        within(screen.getByRole("list")).getAllByRole("listitem"),
+      ).toHaveLength(22);
+    });
+
+    it("returns to the collapsed default after a remount", async () => {
+      const { unmount } = renderPanel(makeActivityEvents(25));
+
+      fireEvent.click(
+        await screen.findByRole("button", { name: TOGGLE_NAME_PATTERN }),
+      );
+      expect(
+        screen.getByRole("button", { name: TOGGLE_NAME_PATTERN }),
+      ).toHaveAttribute("aria-expanded", "true");
+      unmount();
+
+      renderPanel(makeActivityEvents(25));
+
+      const toggle = await screen.findByRole("button", {
+        name: TOGGLE_NAME_PATTERN,
+      });
+      expect(toggle).toHaveAttribute("aria-expanded", "false");
+      expect(
+        within(screen.getByRole("list")).getAllByRole("listitem"),
+      ).toHaveLength(20);
+    });
+
+    it("hides the toggle when a refetch fails after 21 activities were loaded", async () => {
+      let activityCalls = 0;
+      const fetchMock = vi.fn((url: string, init?: RequestInit) => {
+        if (url === "/api/activity/today") {
+          activityCalls += 1;
+          if (activityCalls === 1) {
+            return Promise.resolve({
+              ok: true,
+              status: 200,
+              json: () => Promise.resolve(makeActivityEvents(21)),
+            });
+          }
+          return Promise.reject(new Error("network down"));
+        }
+        if (url === "/api/checkins" && init?.method === "POST") {
+          return Promise.resolve({
+            ok: true,
+            status: 201,
+            json: () =>
+              Promise.resolve(makeEvent({ id: 99, type: "task_start", task_id: 1 })),
+          });
+        }
+        return Promise.reject(new Error(`unexpected fetch call: ${url}`));
+      });
+      vi.stubGlobal("fetch", fetchMock);
+
+      render(
+        <CheckinPanel
+          tasksState={makeTasksState([makeTask({ id: 1, title: "資料作成" })])}
+        />,
+      );
+
+      expect(
+        await screen.findByRole("button", { name: TOGGLE_NAME_PATTERN }),
+      ).toBeInTheDocument();
+
+      fireEvent.click(screen.getByRole("button", { name: "着手" }));
+
+      // events は前回成功時の 21 件を保持したままだが、一覧は描画されない。
+      // ボタンだけが孤立して残らないこと（画面・API設計）。
+      await waitFor(() =>
+        expect(
+          screen.getByText("活動の取得に失敗しました"),
+        ).toBeInTheDocument(),
+      );
+      expect(
+        screen.queryByRole("button", { name: TOGGLE_NAME_PATTERN }),
+      ).not.toBeInTheDocument();
+      expect(screen.queryByRole("list")).not.toBeInTheDocument();
+    });
+  });
 });

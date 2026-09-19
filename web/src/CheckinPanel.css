@@ -68,7 +68,11 @@
   margin-bottom: 0.5rem;
 }
 
-.checkin-time-input-toggle button {
+/* 補助操作のリンク風ボタン。「時刻を指定して記録」と「全件表示する（#430
+   決定6）」はいずれも主操作（.checkin-primary-button）ではない補助操作で、
+   同じ見た目を共有する。 */
+.checkin-time-input-toggle button,
+.checkin-activity-toggle button {
   background: none;
   border: none;
   padding: 0;
@@ -107,6 +111,33 @@
 
 .checkin-activity-list li {
   display: flex;
+  /* 1 件の中の 4 つの span（時刻／操作ラベル／タスク名／ひとこと）が 1 行に
+     収まらないとき、折り返しを許して長い span を次の行へ送る（#430 決定1）。
+     折り返しが無いと 4 つとも自動最小サイズ（日本語では 1 文字幅）まで縮み、
+     1 文字ずつ縦に積まれてしまう。 */
+  flex-wrap: wrap;
   gap: 0.4rem;
   color: var(--color-text);
+}
+
+/* 時刻と操作ラベルは縮めず、幅がいくつでもそのまま読めるようにする
+   （#430 決定1）。flex-shrink: 0 で max-content 幅に据わるため
+   white-space: nowrap は付けない。 */
+.checkin-activity-time,
+.checkin-activity-label {
+  flex-shrink: 0;
+}
+
+/* 縮む側はタスク名・ひとことに寄せる。min-width: 0 で自動最小サイズ
+   （日本語では 1 文字幅）の下限を外す。省略（ellipsis）はせず折り返して
+   全文を見せる（#430 決定2）。 */
+.checkin-activity-task,
+.checkin-activity-note {
+  min-width: 0;
+}
+
+/* 全件表示ボタンのラッパ（#430 決定6）。切り落とされる古い側は一覧の上に
+   あるため、開くボタンも一覧の上に置く。 */
+.checkin-activity-toggle {
+  margin-bottom: 0.5rem;
 }
