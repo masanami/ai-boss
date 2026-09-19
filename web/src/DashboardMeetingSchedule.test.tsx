@@ -194,9 +194,16 @@ describe("DashboardMeetingSchedule", () => {
       expect(scope.getByText("夕会 21:00")).toBeInTheDocument(),
     );
     expect(fetchMock).toHaveBeenCalledTimes(2);
+    // body まで固定する。method だけを見ると、ユーザーが入力した値ではなく
+    // 元の実効時刻を送る実装（例: evening: schedule.evening.time）へ退行しても
+    // 表示はスタブ応答から来るため緑のままになり、AC-47 が恒真になる。
+    // 「既定に戻す」側（AC-51）が既に body を固定しているのと同じ強さに揃える。
     expect(fetchMock).toHaveBeenLastCalledWith(
       `/api/meeting-schedule/${TODAY}`,
-      expect.objectContaining({ method: "PUT" }),
+      expect.objectContaining({
+        method: "PUT",
+        body: JSON.stringify({ morning: "09:00", evening: "21:00" }),
+      }),
     );
   });
 
