@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { render, screen, waitFor } from "@testing-library/react";
 import Dashboard from "./Dashboard";
 import type { DashboardResponse } from "./dashboard-response";
+import type { MeetingScheduleResponse } from "./meeting-schedule";
 
 function makeDashboard(
   overrides: Partial<DashboardResponse> = {},
@@ -17,13 +18,47 @@ function makeDashboard(
   };
 }
 
+/**
+ * `Dashboard` はダッシュボード本体（`/api/dashboard`）に加え、今日の会の
+ * 予定時刻セクション（`DashboardMeetingSchedule`、Issue #434）が
+ * `/api/meeting-schedule/:date` を独立に読む。このファイルのテストは
+ * ダッシュボード本体の表示だけを検証するため、後者には固定の非上書き値を
+ * 返す最小限のスタブで応答する（決定9: 2つのセクションは別エンドポイント）。
+ */
+function makeMeetingSchedule(): MeetingScheduleResponse {
+  return {
+    date: "2026-07-06",
+    morning: {
+      time: "09:00",
+      defaultTime: "09:00",
+      overridden: false,
+      latestAllowedTime: "12:00",
+    },
+    evening: {
+      time: "18:00",
+      defaultTime: "18:00",
+      overridden: false,
+      latestAllowedTime: "21:00",
+    },
+  };
+}
+
 function stubFetchOnce(dashboard: DashboardResponse) {
   vi.stubGlobal(
     "fetch",
-    vi.fn().mockResolvedValue({
-      ok: true,
-      status: 200,
-      json: () => Promise.resolve(dashboard),
+    vi.fn((url: string) => {
+      if (typeof url === "string" && url.startsWith("/api/meeting-schedule/")) {
+        return Promise.resolve({
+          ok: true,
+          status: 200,
+          json: () => Promise.resolve(makeMeetingSchedule()),
+        });
+      }
+      return Promise.resolve({
+        ok: true,
+        status: 200,
+        json: () => Promise.resolve(dashboard),
+      });
     }),
   );
 }
