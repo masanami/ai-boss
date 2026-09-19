@@ -17,6 +17,15 @@ export default tseslint.config(
     },
   },
   {
+    // エージェント用ハーネス（run-ai-boss スキルのドライバ）。Node で直接実行する
+    // スクリプトなので node グローバルを許可する。プロダクトコードではないが、
+    // `eslint .` の対象からは外さず lint は通す。
+    files: [".claude/skills/**/*.mjs"],
+    languageOptions: {
+      globals: globals.node,
+    },
+  },
+  {
     files: ["web/**/*.{ts,tsx}"],
     languageOptions: {
       globals: globals.browser,

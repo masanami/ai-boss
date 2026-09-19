@@ -24,3 +24,6 @@ server/data/
 
 # OS
 .DS_Store
+
+# run-ai-boss スキルのドライバ出力（スクリーンショット・隔離DB・server ログ）
+.driver-out/
