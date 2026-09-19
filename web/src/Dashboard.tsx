@@ -2,6 +2,7 @@ import BossAvatar from "./BossAvatar";
 import { resolveBossExpression } from "./boss-expression";
 import { toBossExpressionContext } from "./to-boss-expression-context";
 import { resolveProgressLevel } from "./dashboard-progress-level";
+import DashboardMeetingSchedule from "./DashboardMeetingSchedule";
 import {
   resolveEveningEvaluationTone,
   type EveningEvaluationTone,
@@ -69,6 +70,8 @@ function Dashboard() {
           {progress.done} / {progress.total} 件完了（{percentage}%）
         </p>
       </section>
+
+      <DashboardMeetingSchedule />
 
       {eveningSessionHeld && (
         <section

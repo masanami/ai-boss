@@ -141,6 +141,29 @@ function createRoutedFetchMock(options: {
     if (url === "/api/activity/today") {
       return jsonResponse(200, []);
     }
+    // Issue #434: the dashboard's meeting-schedule section reads this
+    // endpoint independently of GET /api/dashboard (decision 9). These
+    // integration tests don't exercise that section's own behavior (covered
+    // by DashboardMeetingSchedule.test.tsx), so a fixed non-overridden
+    // response is enough to let the dashboard view mount without an
+    // "unexpected fetch call" rejection.
+    if (/^\/api\/meeting-schedule\/\d{4}-\d{2}-\d{2}$/.test(url) && method === "GET") {
+      return jsonResponse(200, {
+        date: "2026-07-27",
+        morning: {
+          time: "09:00",
+          defaultTime: "09:00",
+          overridden: false,
+          latestAllowedTime: "12:00",
+        },
+        evening: {
+          time: "18:00",
+          defaultTime: "18:00",
+          overridden: false,
+          latestAllowedTime: "21:00",
+        },
+      });
+    }
     if (url === "/api/decisions" && method === "GET") {
       return jsonResponse(200, decisions);
     }
