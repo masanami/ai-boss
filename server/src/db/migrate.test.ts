@@ -173,8 +173,8 @@ describe("runMigrations", () => {
     expect(tableNames(db)).not.toContain("appeals");
   });
 
-  it("advances user_version to the latest known version (9: committed_start_at/committed_at added)", () => {
-    expect(db.pragma("user_version", { simple: true })).toBe(9);
+  it("advances user_version to the latest known version (10: meeting_time_overrides added)", () => {
+    expect(db.pragma("user_version", { simple: true })).toBe(10);
   });
 
   it("creates the settings table", () => {
@@ -228,6 +228,7 @@ describe("runMigrations", () => {
         "activity_events",
         "daily_reports",
         "task_evidences",
+        "meeting_time_overrides",
         "sqlite_sequence",
       ].sort(),
     );
@@ -387,7 +388,7 @@ describe("runMigrations", () => {
     expect(tableNames(v2Db)).toContain("daily_reports");
     // runMigrations always advances to the latest known version (v3 adds
     // daily_reports on the way; later versions add further schema changes).
-    expect(v2Db.pragma("user_version", { simple: true })).toBe(9);
+    expect(v2Db.pragma("user_version", { simple: true })).toBe(10);
     // existing tables/rows are untouched
     expect(tableNames(v2Db)).toContain("tasks");
 
@@ -414,7 +415,7 @@ describe("runMigrations", () => {
 
     runMigrations(v3Db);
 
-    expect(v3Db.pragma("user_version", { simple: true })).toBe(9);
+    expect(v3Db.pragma("user_version", { simple: true })).toBe(10);
     expect(tableNames(v3Db)).toContain("tasks");
     expect(tableNames(v3Db)).toContain("activity_events");
 
@@ -518,7 +519,7 @@ describe("runMigrations", () => {
 
     runMigrations(v4Db);
 
-    expect(v4Db.pragma("user_version", { simple: true })).toBe(9);
+    expect(v4Db.pragma("user_version", { simple: true })).toBe(10);
     const message = v4Db
       .prepare("SELECT role, content, interrupted FROM messages WHERE id = ?")
       .get(messageId) as { role: string; content: string; interrupted: number };
@@ -575,7 +576,7 @@ describe("runMigrations", () => {
 
     runMigrations(v5Db);
 
-    expect(v5Db.pragma("user_version", { simple: true })).toBe(9);
+    expect(v5Db.pragma("user_version", { simple: true })).toBe(10);
     const notification = v5Db
       .prepare(
         "SELECT type, rule_key, escalation_level, body, sent_at, delivered, channel FROM notifications WHERE id = ?",
@@ -700,7 +701,7 @@ describe("runMigrations", () => {
 
       runMigrations(v6Db);
 
-      expect(v6Db.pragma("user_version", { simple: true })).toBe(9);
+      expect(v6Db.pragma("user_version", { simple: true })).toBe(10);
       expect(tableNames(v6Db)).toContain("task_evidences");
       expect(columnNames(v6Db, "tasks")).toContain("evidence_required");
 
@@ -802,7 +803,7 @@ describe("runMigrations", () => {
 
       runMigrations(preV8Db);
 
-      expect(preV8Db.pragma("user_version", { simple: true })).toBe(9);
+      expect(preV8Db.pragma("user_version", { simple: true })).toBe(10);
       const row = preV8Db
         .prepare("SELECT kind FROM decisions WHERE id = ?")
         .get(decisionId) as { kind: string };
@@ -847,7 +848,7 @@ describe("runMigrations", () => {
       expect(() => runMigrations(preV8Db)).not.toThrow();
 
       expect(tableNames(preV8Db)).not.toContain("appeals");
-      expect(preV8Db.pragma("user_version", { simple: true })).toBe(9);
+      expect(preV8Db.pragma("user_version", { simple: true })).toBe(10);
 
       preV8Db.close();
     });
@@ -901,7 +902,7 @@ describe("runMigrations", () => {
 
       runMigrations(v8Db);
 
-      expect(v8Db.pragma("user_version", { simple: true })).toBe(9);
+      expect(v8Db.pragma("user_version", { simple: true })).toBe(10);
       expect(columnNames(v8Db, "tasks")).toEqual(
         expect.arrayContaining(["committed_start_at", "committed_at"]),
       );
@@ -914,6 +915,91 @@ describe("runMigrations", () => {
       expect(task).toEqual({ committed_start_at: null, committed_at: null });
 
       v8Db.close();
+    });
+  });
+
+  describe("meeting_time_overrides (v10, #432)", () => {
+    it("creates the meeting_time_overrides table", () => {
+      expect(tableNames(db)).toContain("meeting_time_overrides");
+    });
+
+    it("gives meeting_time_overrides the expected columns", () => {
+      expect(columnNames(db, "meeting_time_overrides")).toEqual(
+        expect.arrayContaining([
+          "id",
+          "date",
+          "meeting_type",
+          "meeting_time",
+          "created_at",
+          "updated_at",
+        ]),
+      );
+    });
+
+    it("rejects a meeting_type outside 'morning' / 'evening'", () => {
+      expect(() =>
+        db
+          .prepare(
+            "INSERT INTO meeting_time_overrides (date, meeting_type, meeting_time, created_at, updated_at) VALUES (?, ?, ?, ?, ?)",
+          )
+          .run("2026-09-20", "afternoon", "12:00", NOW, NOW),
+      ).toThrow(/CHECK constraint failed/);
+    });
+
+    it("enforces UNIQUE (date, meeting_type): a second insert for the same day and type fails", () => {
+      db.prepare(
+        "INSERT INTO meeting_time_overrides (date, meeting_type, meeting_time, created_at, updated_at) VALUES (?, ?, ?, ?, ?)",
+      ).run("2026-09-20", "evening", "21:00", NOW, NOW);
+
+      expect(() =>
+        db
+          .prepare(
+            "INSERT INTO meeting_time_overrides (date, meeting_type, meeting_time, created_at, updated_at) VALUES (?, ?, ?, ?, ?)",
+          )
+          .run("2026-09-20", "evening", "22:00", NOW, NOW),
+      ).toThrow(/UNIQUE constraint failed/);
+    });
+
+    it("allows the same date with different meeting_type values", () => {
+      db.prepare(
+        "INSERT INTO meeting_time_overrides (date, meeting_type, meeting_time, created_at, updated_at) VALUES (?, ?, ?, ?, ?)",
+      ).run("2026-09-20", "morning", "07:00", NOW, NOW);
+      db.prepare(
+        "INSERT INTO meeting_time_overrides (date, meeting_type, meeting_time, created_at, updated_at) VALUES (?, ?, ?, ?, ?)",
+      ).run("2026-09-20", "evening", "21:00", NOW, NOW);
+
+      const rows = db
+        .prepare("SELECT meeting_type FROM meeting_time_overrides WHERE date = ?")
+        .all("2026-09-20") as { meeting_type: string }[];
+      expect(rows.map((r) => r.meeting_type).sort()).toEqual(["evening", "morning"]);
+    });
+
+    it("upgrades a v9 database to v10, leaving existing tables untouched", () => {
+      // 直上の v8→v9 のテストと同じ土台の取り方。v1〜v3 のスキーマから完全な
+      // マイグレーションを走らせる——v4〜v9 は meeting_time_overrides に触れ
+      // ないため、この経路で v10 到達時点の新規テーブル追加と既存データの
+      // 保全をまとめて確認できる。
+      const v9Db = openDatabase(":memory:");
+      v9Db.exec(V1_THROUGH_V3_SQL);
+      v9Db.pragma("user_version = 3");
+      const taskId = Number(
+        v9Db
+          .prepare(
+            "INSERT INTO tasks (title, status, created_at, updated_at) VALUES (?, ?, ?, ?)",
+          )
+          .run("v10以前からのタスク", "todo", NOW, NOW).lastInsertRowid,
+      );
+
+      runMigrations(v9Db);
+
+      expect(v9Db.pragma("user_version", { simple: true })).toBe(10);
+      expect(tableNames(v9Db)).toContain("meeting_time_overrides");
+      const task = v9Db
+        .prepare("SELECT title FROM tasks WHERE id = ?")
+        .get(taskId) as { title: string };
+      expect(task.title).toBe("v10以前からのタスク");
+
+      v9Db.close();
     });
   });
 
