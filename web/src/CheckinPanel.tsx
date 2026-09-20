@@ -14,6 +14,13 @@ const REPORT_REGENERATION_NOTE = "（日報を生成済みなら再生成が必�
 const BREAK_PRESET_MINUTES = [5, 15, 30] as const;
 const DEFAULT_BREAK_MINUTES = 15;
 
+/**
+ * 「今日の活動」の既定表示件数（#430 決定3）。チャット発言 1 通ごとに活動が
+ * 1 件増えるため、チャット主体の日は 50〜100 件規模へ伸びる。既定はこの件数
+ * まで（新しい側）に絞り、全件表示ボタンで全件へ展開できるようにする。
+ */
+const DEFAULT_ACTIVITY_DISPLAY_COUNT = 20;
+
 const EVENT_TYPE_LABEL: Record<ActivityEvent["type"], string> = {
   task_start: "着手",
   break_start: "休憩開始",
@@ -79,6 +86,11 @@ function CheckinPanel({ tasksState }: CheckinPanelProps) {
   const [customMinutes, setCustomMinutes] = useState("");
   const [feedback, setFeedback] = useState<string | null>(null);
 
+  // 「今日の活動」の全件表示トグル（#430 決定4）。再取得をまたいで保持され、
+  // 再マウント時のみ既定（折りたたみ）へ戻る。展開中にチェックインを記録
+  // しても勝手に畳まれないよう、畳み直す useEffect は意図的に置かない。
+  const [showAllActivity, setShowAllActivity] = useState(false);
+
   // 「時刻を指定して記録」の展開式トグル（#243 判断0・画面設計）。折りたたみ時
   // (timeExpanded === false) は既存の操作・見た目を一切変えない（AC-30）。
   const [timeExpanded, setTimeExpanded] = useState(false);
@@ -115,6 +127,13 @@ function CheckinPanel({ tasksState }: CheckinPanelProps) {
     tasks.forEach((task) => map.set(task.id, task.title));
     return map;
   }, [tasks]);
+
+  // 既定は新しい側の DEFAULT_ACTIVITY_DISPLAY_COUNT 件だけを描画する。活動は
+  // 昇順（created_at ASC, id ASC）で届くため「最新 N 件」は末尾 N 件であり、
+  // 並べ替えは行わない（#430 決定3・決定6）。
+  const visibleEvents = showAllActivity
+    ? events
+    : events.slice(-DEFAULT_ACTIVITY_DISPLAY_COUNT);
 
   const noteOrNull = (): string | null =>
     note.trim() === "" ? null : note.trim();
@@ -565,23 +584,46 @@ function CheckinPanel({ tasksState }: CheckinPanelProps) {
       {status === "loading" && <p>読み込み中…</p>}
       {status === "error" && <p role="alert">活動の取得に失敗しました</p>}
       {status === "ready" && (
-        <ul className="checkin-activity-list">
-          {events.length === 0 && <li>まだ活動はありません</li>}
-          {events.map((event) => (
-            <li key={event.id}>
-              <span>{formatTime(event.created_at)}</span>{" "}
-              <span>{EVENT_TYPE_LABEL[event.type]}</span>{" "}
-              {event.task_id !== null && (
-                <span>
-                  {taskTitleById.get(event.task_id) ?? `タスク#${event.task_id}`}
-                </span>
-              )}
-              {event.note !== null && event.note !== "" && (
-                <span>{event.note}</span>
-              )}
-            </li>
-          ))}
-        </ul>
+        <>
+          {events.length > DEFAULT_ACTIVITY_DISPLAY_COUNT && (
+            // 活動は昇順（古い順）で、切り落とされるのは一覧の上（古い側）
+            // なので、それを開くボタンも一覧の上に置く（#430 決定6）。
+            // status === "ready" の内側に置くのは、再取得に失敗すると events
+            // は前回値を保持したまま <ul> だけが消えるため、外に置くと
+            // 「一覧は無いのにボタンだけ残る」孤立状態が生じるため。
+            <div className="checkin-activity-toggle">
+              <button
+                type="button"
+                aria-expanded={showAllActivity}
+                onClick={() => setShowAllActivity((shown) => !shown)}
+              >
+                {`全件表示する（全 ${events.length} 件）`}
+              </button>
+            </div>
+          )}
+          <ul className="checkin-activity-list">
+            {events.length === 0 && <li>まだ活動はありません</li>}
+            {visibleEvents.map((event) => (
+              <li key={event.id}>
+                <span className="checkin-activity-time">
+                  {formatTime(event.created_at)}
+                </span>{" "}
+                <span className="checkin-activity-label">
+                  {EVENT_TYPE_LABEL[event.type]}
+                </span>{" "}
+                {event.task_id !== null && (
+                  <span className="checkin-activity-task">
+                    {taskTitleById.get(event.task_id) ??
+                      `タスク#${event.task_id}`}
+                  </span>
+                )}
+                {event.note !== null && event.note !== "" && (
+                  <span className="checkin-activity-note">{event.note}</span>
+                )}
+              </li>
+            ))}
+          </ul>
+        </>
       )}
     </section>
   );
