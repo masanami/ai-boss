@@ -259,7 +259,7 @@ export function normalizeDueAtToDateKey(dueAt: string | null): string | null;
 | **S1** | `due_at` を暦日へ一本化し、不正値を読み出し側でガードする（`server/src/tasks/due-at.ts` の新設・書き込み時の正規化・検知エンジン 2 本の切り替え・ボスのツール説明文の変更） | (2)(3) | AC-5〜AC-16 | なし |
 | **S2** | ダッシュボードのひとことのフィンガープリントを `Task` 全フィールドへ広げる | (1) | AC-1〜AC-4 | なし（S1 と独立・並列可） |
 
-実装対象: S1
+実装対象: S2
 
 - **最小スライスは S1** とする。論点(2)(3) はどちらも `server/src/tasks/due-at.ts` の中身であり、(3) だけを先に出すと「旧解釈で `toDueAtInstant` を書いて直後に書き換える」手戻りになる。また本改訂の起点はオーナーの論点(2) 決定であり、価値の出方も S1 が先である。
 - S2 は S1 と共有ファイルが無く（`server/src/dashboard/task-fingerprint.ts` のみ）、並列で進めても衝突しない。

@@ -3,7 +3,7 @@ import type Database from "better-sqlite3";
 import type Anthropic from "@anthropic-ai/sdk";
 import { openDatabase } from "../db/connection.js";
 import { runMigrations } from "../db/migrate.js";
-import { insertTask } from "../tasks/tasks-repository.js";
+import { insertTask, updateTask } from "../tasks/tasks-repository.js";
 import { getCachedBossComment } from "./boss-comment-cache.js";
 import { computeTaskFingerprint } from "./task-fingerprint.js";
 
@@ -263,7 +263,8 @@ describe("getOrGenerateBossComment", () => {
 
   // Issue #121 (reproduces #98): the cache key used to be date-only, so a
   // task created after the first same-day request kept serving the stale
-  // "no tasks" comment. The fingerprint (id, updated_at) must change once a
+  // "no tasks" comment. The fingerprint (then (id, updated_at); widened to
+  // every Task field in #542) must change once a
   // task exists, invalidating the cache even though the date hasn't changed.
   it("regenerates on the same day once a task is created (Issue #121, reproduces #98)", async () => {
     const first = new Date(2026, 6, 6, 8, 0);
@@ -311,6 +312,86 @@ describe("getOrGenerateBossComment", () => {
     const first = new Date(2026, 6, 6, 8, 0);
     const second = new Date(2026, 6, 6, 20, 0);
     createBossMessageMock.mockResolvedValue(fakeTextMessage("今日も一日決めた通りにやれ"));
+
+    const firstComment = await getOrGenerateBossComment(db, env, first);
+    const secondComment = await getOrGenerateBossComment(db, env, second);
+
+    expect(secondComment).toBe(firstComment);
+    expect(createBossMessageMock).toHaveBeenCalledTimes(1);
+  });
+
+  // Issue #542（親 #340 スライス S2 / 機能仕様 決定 1）: `updateTask` は
+  // `new Date().toISOString()` をそのまま `updated_at` に入れ、単調増加を
+  // 保証しない。同一ミリ秒内に更新が入ると `updated_at` が据え置きのまま
+  // 内容だけが変わるため、射影が `(id, updated_at)` だけだとフィンガー
+  // プリントが動かず、古いひとことがキャッシュヒットとして返っていた。
+  // 射影を `Task` 全フィールドへ広げたことで、`updated_at` が同値でも
+  // 内容が変われば再生成されることを固定する。
+  it("AC-2: regenerates when task content changes while updated_at stays identical", async () => {
+    const now = new Date(2026, 6, 6, 8, 0);
+    createBossMessageMock
+      .mockResolvedValueOnce(fakeTextMessage("変更前のひとこと"))
+      .mockResolvedValueOnce(fakeTextMessage("変更後のひとこと"));
+
+    // 時計を同一ミリ秒に固定したまま insert → update する。beforeEach の
+    // fake timer は shouldAdvanceTime: true（await が実タイマー待ちで
+    // 止まらないようにするため）なので、書き込みの直前ごとに固定し直す。
+    vi.setSystemTime(now);
+    const inserted = insertTask(db, {
+      title: "変更前のタイトル",
+      description: null,
+      category: "work",
+      priority: null,
+      due_at: null,
+      status: "todo",
+      boss_comment: null,
+      estimated_minutes: null,
+    });
+
+    const firstComment = await getOrGenerateBossComment(db, env, now);
+
+    vi.setSystemTime(now);
+    const updated = updateTask(db, inserted.id, { title: "変更後のタイトル" });
+
+    // 狙った経路（updated_at が動かないまま内容だけが変わる）を実際に
+    // 踏んでいることの表明。ここが同値でなければ AC-2 は何も検証していない。
+    expect(updated.ok).toBe(true);
+    if (!updated.ok) {
+      throw new Error(`updateTask failed: ${updated.reason}`);
+    }
+    expect(updated.task.updated_at).toBe(inserted.updated_at);
+    expect(updated.task.title).not.toBe(inserted.title);
+
+    const secondComment = await getOrGenerateBossComment(db, env, now);
+
+    expect(firstComment).toBe("変更前のひとこと");
+    expect(secondComment).toBe("変更後のひとこと");
+    expect(createBossMessageMock).toHaveBeenCalledTimes(2);
+  });
+
+  // Issue #542: AC-3（既存挙動の非退行）。射影を全フィールドへ広げても、
+  // 暦日も内容も変わっていない連続リクエストはキャッシュを返し LLM を
+  // 呼ばない。既存の非退行テストは値がほぼ null のタスクを使っているため、
+  // ここでは全フィールドに非既定値が入ったタスクで確認する（広げた射影の
+  // どのフィールドも、変化していないのに揺れたりしないこと）。
+  it("AC-3: serves the cache without calling the LLM when neither the date nor any task field changed", async () => {
+    const first = new Date(2026, 6, 6, 8, 0);
+    const second = new Date(2026, 6, 6, 20, 0);
+    createBossMessageMock.mockResolvedValue(fakeTextMessage("今日も一日決めた通りにやれ"));
+
+    vi.setSystemTime(first);
+    insertTask(db, {
+      title: "全フィールドが埋まったタスク",
+      description: "説明",
+      category: "private",
+      priority: "high",
+      due_at: "2026-07-07",
+      status: "todo",
+      boss_comment: "まずこれをやれ",
+      estimated_minutes: 30,
+      evidence_required: true,
+      committed_start_at: new Date(2026, 6, 6, 10, 0).toISOString(),
+    });
 
     const firstComment = await getOrGenerateBossComment(db, env, first);
     const secondComment = await getOrGenerateBossComment(db, env, second);
