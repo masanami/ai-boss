@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { selectTodayTasks } from "./today-tasks";
+import { partitionTodayTasks, selectTodayTasks } from "./today-tasks";
 import type { Task } from "./task";
 
 // テストの時刻はローカル日付基準で組み立て、TZ に依存しない値にする。
@@ -77,5 +77,71 @@ describe("selectTodayTasks", () => {
     });
 
     expect(selectTodayTasks([doneWithoutTimestamp], NOW)).toEqual([]);
+  });
+});
+
+describe("partitionTodayTasks", () => {
+  it("puts todo, in_progress and paused tasks into pending (AC-17)", () => {
+    const todo = makeTask({ id: 1, status: "todo" });
+    const inProgress = makeTask({ id: 2, status: "in_progress" });
+    const paused = makeTask({ id: 3, status: "paused" });
+
+    const { pending, done } = partitionTodayTasks([todo, inProgress, paused]);
+
+    expect(pending).toEqual([todo, inProgress, paused]);
+    expect(done).toEqual([]);
+  });
+
+  it("puts done tasks into done (AC-18)", () => {
+    const doneTask = makeTask({
+      id: 1,
+      status: "done",
+      completed_at: new Date(2026, 6, 27, 9).toISOString(),
+    });
+
+    const { pending, done } = partitionTodayTasks([doneTask]);
+
+    expect(pending).toEqual([]);
+    expect(done).toEqual([doneTask]);
+  });
+
+  it("keeps each group's order matching the input order (AC-19)", () => {
+    const todo = makeTask({ id: 1, status: "todo" });
+    const doneFirst = makeTask({
+      id: 2,
+      status: "done",
+      completed_at: new Date(2026, 6, 27, 9).toISOString(),
+    });
+    const inProgress = makeTask({ id: 3, status: "in_progress" });
+    const doneSecond = makeTask({
+      id: 4,
+      status: "done",
+      completed_at: new Date(2026, 6, 27, 10).toISOString(),
+    });
+
+    const { pending, done } = partitionTodayTasks([
+      todo,
+      doneFirst,
+      inProgress,
+      doneSecond,
+    ]);
+
+    expect(pending).toEqual([todo, inProgress]);
+    expect(done).toEqual([doneFirst, doneSecond]);
+  });
+
+  it("does not mutate the input array (AC-20)", () => {
+    const todo = makeTask({ id: 1, status: "todo" });
+    const doneTask = makeTask({
+      id: 2,
+      status: "done",
+      completed_at: new Date(2026, 6, 27, 9).toISOString(),
+    });
+    const tasks = [todo, doneTask];
+    const snapshot = [...tasks];
+
+    partitionTodayTasks(tasks);
+
+    expect(tasks).toEqual(snapshot);
   });
 });
