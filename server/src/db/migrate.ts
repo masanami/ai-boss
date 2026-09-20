@@ -328,6 +328,41 @@ const MIGRATIONS: Record<number, MigrationEntry> = {
     ALTER TABLE tasks ADD COLUMN committed_start_at TEXT;
     ALTER TABLE tasks ADD COLUMN committed_at TEXT;
   `,
+  // 当日限りの朝会・夕会の時刻変更（#432 /
+  // docs/features/today-meeting-time-override.md 決定1）: その日だけ朝会・
+  // 夕会の定時催促の時刻をずらすための上書き行を持つ meeting_time_overrides
+  // テーブルを新設する。日付をキーに持つことで「翌日は行が無い＝既定へ戻る」
+  // が自動的に成立し、過去日の上書き行を消すクリーンアップ処理も不要になる
+  // （決定1・機能要件）。
+  //
+  // - `date`: ローカル日付キー（`toDateKey` 形式）。当日判定はアプリ層
+  //   （`meeting-schedule-routes.ts`）が担う
+  // - `meeting_type`: 'morning' | 'evening'
+  // - `meeting_time`: "HH:mm"（書式検証はアプリ層。DB の CHECK では縛らない
+  //   —— `task_evidences.kind` と同じ整理、ADR 0005 決定 5）
+  // - `UNIQUE (date, meeting_type)`: 同じ日・同じ種別の上書きは高々1行
+  //   （`daily_reports.date UNIQUE`〔v3〕と同様の先行例）
+  //
+  // 外部キーを持たないため、v4（`migrateToV4`）のような `PRAGMA foreign_keys`
+  // のトグルは不要。文字列エントリのまま「version 単位の単一トランザクション」
+  // で原子適用できる。
+  //
+  // 既存 version は書き換えず新しい version として追加する
+  // （docs/adr/0005-sqlite-schema-policy.md 決定 4）。Issue #432 本文・機能
+  // 仕様は「version 9」と記載しているが、その執筆時点から version 9 が
+  // #519（着手の約束）に割り当て済みとなったため version 10 を採る
+  // （既存 version 1〜9 は無改変のまま維持する）。
+  10: `
+    CREATE TABLE IF NOT EXISTS meeting_time_overrides (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      date TEXT NOT NULL,
+      meeting_type TEXT NOT NULL CHECK (meeting_type IN ('morning', 'evening')),
+      meeting_time TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      UNIQUE (date, meeting_type)
+    );
+  `,
 };
 
 /**

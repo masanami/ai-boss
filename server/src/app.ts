@@ -11,6 +11,7 @@ import { createDashboardRouter } from "./dashboard/dashboard-routes.js";
 import { createReportsRouter } from "./reports/reports-routes.js";
 import { createWorkLogsRouter } from "./reports/work-logs-routes.js";
 import { createSettingsRouter } from "./settings/settings-routes.js";
+import { createMeetingScheduleRouter } from "./meeting-schedule/meeting-schedule-routes.js";
 import { resolveLlmBackend, type LlmBackend } from "./config.js";
 
 function checkDatabaseConnection(db: Database.Database): boolean {
@@ -94,6 +95,7 @@ export function createApp(
   api.route("/reports", createReportsRouter(db, env));
   api.route("/work-logs", createWorkLogsRouter(db));
   api.route("/settings", createSettingsRouter(db));
+  api.route("/meeting-schedule", createMeetingScheduleRouter(db));
 
   const app = new Hono();
   app.route("/api", api);

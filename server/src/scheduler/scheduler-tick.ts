@@ -1,6 +1,10 @@
 import type Database from "better-sqlite3";
 import { evaluateRules } from "../detection/rule-engine.js";
-import type { DetectionInput, FiringNotification } from "../detection/detection-types.js";
+import type {
+  DetectionInput,
+  DetectionSettings,
+  FiringNotification,
+} from "../detection/detection-types.js";
 import { listTasks, findTaskById } from "../tasks/tasks-repository.js";
 import { listEventsSince } from "../activity/activity-events-repository.js";
 import {
@@ -18,6 +22,9 @@ import { loadDetectionSettings } from "./detection-settings.js";
 import { listTodaysSessionTypes } from "./todays-sessions.js";
 import { toNotificationHistory } from "./notification-history.js";
 import { mapToNotificationRuleType, toEscalationLevel } from "./rule-type-mapping.js";
+import { toDateKey } from "../detection/time-utils.js";
+import { findOverridesByDate } from "../meeting-schedule/meeting-schedule-repository.js";
+import { resolveEffectiveMeetingTimes } from "../meeting-schedule/meeting-schedule.js";
 
 /**
  * Lower bound for `listEventsSince` / `listNotificationsSince`: this ticket
@@ -53,8 +60,38 @@ export interface TickDeps {
   notificationUrl?: string;
 }
 
+/**
+ * 当日限りの朝会・夕会の時刻変更（#432 / #433）を恒常設定へ合成する。
+ * 合成規則そのものは #432 の純粋関数 `resolveEffectiveMeetingTimes` に委ね、
+ * ここでは「DB から既定と当日の上書きを読む → 渡す → 実効時刻で
+ * `settings.morningMeetingTime` / `settings.eveningMeetingTime` を置き換える」
+ * だけを行う（機能仕様 docs/features/today-meeting-time-override.md 決定2）。
+ *
+ * `DetectionInput` の型・`evaluateRules`・`isMeetingDue` は無改変のまま
+ * （決定2: ADR 0004 の帰結「検知エンジンに新しい入力経路を足さない」との
+ * 字面上の衝突を避けるため）。`work_start`/`work_end`（勤務時間帯ゲート）は
+ * 当日変更の対象外（決定3）なので、ここでは触れない。
+ */
+function resolveTodaysMeetingSettings(
+  db: Database.Database,
+  base: DetectionSettings,
+  now: Date,
+): DetectionSettings {
+  const overrides = findOverridesByDate(db, toDateKey(now));
+  const effective = resolveEffectiveMeetingTimes(
+    { morning: base.morningMeetingTime, evening: base.eveningMeetingTime },
+    overrides,
+  );
+  return {
+    ...base,
+    morningMeetingTime: effective.morning,
+    eveningMeetingTime: effective.evening,
+  };
+}
+
 async function buildTickInput(deps: TickDeps, now: Date): Promise<DetectionInput> {
-  const settings = loadDetectionSettings(deps.db);
+  const baseSettings = loadDetectionSettings(deps.db);
+  const settings = resolveTodaysMeetingSettings(deps.db, baseSettings, now);
   return {
     now,
     tasks: listTasks(deps.db),
