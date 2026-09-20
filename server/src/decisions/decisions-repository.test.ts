@@ -10,6 +10,7 @@ import {
   findDecisionById,
   insertDecision,
   listDecisions,
+  listDecisionsByTaskId,
   listRecentDecisions,
 } from "./decisions-repository.js";
 
@@ -17,7 +18,10 @@ import {
  * (ordering assertions) — distinct from the `insertDecision` repository
  * function under test, which manages `created_at` itself. `kind` defaults to
  * `'decision'` (the column's own DEFAULT) so existing callers are unaffected;
- * #408 tests pass `kind: "mentoring"` explicitly to build mixed fixtures. */
+ * #408 tests pass `kind: "mentoring"` explicitly to build mixed fixtures.
+ * `rationale` was added for #545's `listDecisionsByTaskId` fixtures — it
+ * trails as an optional 7th param so every existing positional call site
+ * (taskId/kind only) keeps working unchanged. */
 function insertRawDecision(
   db: Database.Database,
   sessionId: number,
@@ -25,11 +29,12 @@ function insertRawDecision(
   createdAt: string,
   taskId: number | null = null,
   kind: "decision" | "mentoring" = "decision",
+  rationale: string | null = null,
 ): void {
   db.prepare(
     `INSERT INTO decisions (session_id, task_id, content, rationale, kind, status, created_at)
-     VALUES (?, ?, ?, NULL, ?, 'active', ?)`,
-  ).run(sessionId, taskId, content, kind, createdAt);
+     VALUES (?, ?, ?, ?, ?, 'active', ?)`,
+  ).run(sessionId, taskId, content, rationale, kind, createdAt);
 }
 
 /** Minimal task fixture — only `title` matters to the decision log, the rest
@@ -425,5 +430,117 @@ describe("countMentoringDecisionsBySessionId", () => {
     insertRawDecision(db, session.id, "結論2", localIso(2026, 7, 5, 10), null, "mentoring");
 
     expect(countMentoringDecisionsBySessionId(db, session.id)).toBe(2);
+  });
+});
+
+// S2b・Issue #545（親 #438 決定17）: 対象タスクの過去記録をメンタリングの
+// システムプロンプトへ積むための新規クエリ。`listRecentDecisions` とは別
+// 経路で、`kind` を絞らず `task_id` だけで絞る。
+describe("listDecisionsByTaskId", () => {
+  let db: Database.Database;
+
+  beforeEach(() => {
+    db = openDatabase(":memory:");
+    runMigrations(db);
+  });
+
+  afterEach(() => {
+    db.close();
+  });
+
+  it("returns an empty array when the task has no decisions", () => {
+    const task = insertTask(db, newTask("資料作成"));
+
+    expect(listDecisionsByTaskId(db, task.id, 5)).toEqual([]);
+  });
+
+  it("returns only rows for the given task_id, excluding other tasks' rows and task_id IS NULL rows", () => {
+    const session = insertSession(db, { type: "adhoc" });
+    const target = insertTask(db, newTask("対象タスク"));
+    const other = insertTask(db, newTask("別タスク"));
+    insertRawDecision(db, session.id, "対象の決定", localIso(2026, 7, 5, 9), target.id);
+    insertRawDecision(db, session.id, "別タスクの決定", localIso(2026, 7, 5, 10), other.id);
+    insertRawDecision(db, session.id, "タスク紐づけ無しの決定", localIso(2026, 7, 5, 11), null);
+
+    const result = listDecisionsByTaskId(db, target.id, 5);
+
+    expect(result.map((r) => r.content)).toEqual(["対象の決定"]);
+  });
+
+  it("returns both kind='decision' and kind='mentoring' rows for the task", () => {
+    const session = insertSession(db, { type: "adhoc" });
+    const task = insertTask(db, newTask("対象タスク"));
+    insertRawDecision(db, session.id, "通常の決定", localIso(2026, 7, 5, 9), task.id, "decision");
+    insertRawDecision(
+      db,
+      session.id,
+      "メンタリングの結論",
+      localIso(2026, 7, 5, 10),
+      task.id,
+      "mentoring",
+    );
+
+    const result = listDecisionsByTaskId(db, task.id, 5);
+
+    expect(result.map((r) => r.kind).sort()).toEqual(["decision", "mentoring"]);
+  });
+
+  it("orders newest first (created_at descending, id descending on ties)", () => {
+    const session = insertSession(db, { type: "adhoc" });
+    const task = insertTask(db, newTask("対象タスク"));
+    insertRawDecision(db, session.id, "古い", localIso(2026, 7, 1, 9));
+    insertRawDecision(db, session.id, "新しい", localIso(2026, 7, 5, 9));
+    // 上の2件は task_id 未指定 -> 対象外。task_id を明示した2件で並び順を見る。
+    const sameInstant = localIso(2026, 7, 5, 12);
+    insertRawDecision(db, session.id, "先に入れた", sameInstant, task.id);
+    insertRawDecision(db, session.id, "後に入れた", sameInstant, task.id);
+    insertRawDecision(db, session.id, "最も古い", localIso(2026, 7, 1, 8), task.id);
+
+    const result = listDecisionsByTaskId(db, task.id, 10);
+
+    expect(result.map((r) => r.content)).toEqual(["後に入れた", "先に入れた", "最も古い"]);
+  });
+
+  it("caps the result at the given limit, keeping the newest ones (older rows dropped)", () => {
+    const session = insertSession(db, { type: "adhoc" });
+    const task = insertTask(db, newTask("対象タスク"));
+    for (let i = 0; i < 7; i++) {
+      insertRawDecision(db, session.id, `記録${i}`, localIso(2026, 7, i + 1, 9), task.id);
+    }
+
+    const result = listDecisionsByTaskId(db, task.id, 5);
+
+    expect(result.map((r) => r.content)).toEqual([
+      "記録6",
+      "記録5",
+      "記録4",
+      "記録3",
+      "記録2",
+    ]);
+  });
+
+  it("maps content/rationale/kind/created_at to the TaskRelatedRecord shape (recordedAt)", () => {
+    const session = insertSession(db, { type: "adhoc" });
+    const task = insertTask(db, newTask("対象タスク"));
+    insertRawDecision(
+      db,
+      session.id,
+      "締切を延ばす",
+      "2026-07-05T00:00:00.000Z",
+      task.id,
+      "decision",
+      "他タスクが優先のため",
+    );
+
+    const result = listDecisionsByTaskId(db, task.id, 5);
+
+    expect(result).toEqual([
+      {
+        content: "締切を延ばす",
+        rationale: "他タスクが優先のため",
+        kind: "decision",
+        recordedAt: "2026-07-05T00:00:00.000Z",
+      },
+    ]);
   });
 });

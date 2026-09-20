@@ -2,10 +2,12 @@ import { describe, expect, it } from "vitest";
 import {
   CHAT_PLAIN_TEXT_INSTRUCTION,
   DEFAULT_PERSONA_SETTINGS,
+  MAX_TASK_RELATED_RECORDS_TOTAL_LENGTH,
   MAX_TODAYS_ADHOC_MESSAGES_TOTAL_LENGTH,
   MENTORING_TARGET_TASK_INSTRUCTION,
   buildPersonaPrompt,
   type PersonaSettings,
+  type TaskRelatedRecord,
 } from "./persona-prompt.js";
 import type { Task } from "../tasks/task.js";
 import { toDateKey, toLocalOffset } from "../detection/time-utils.js";
@@ -1372,6 +1374,335 @@ describe("buildPersonaPrompt", () => {
       expect(prompt).toContain("仕事の進め方のメンタリング");
       expect(prompt).toContain("限定");
       expect(prompt).toContain("実際の連絡");
+    });
+  });
+
+  // S2b・Issue #545（親 #438 決定16〜19）: 対象タスクに紐づく過去の決定・
+  // メンタリング記録をメンタリングのシステムプロンプトへ積む。呼び出し側
+  // （チャットルート）が `listDecisionsByTaskId` で引いた結果を新しい順で
+  // 渡す前提（`TaskRelatedRecord` の JSDoc）。
+  describe("対象タスクの過去記録（taskRelatedRecords, Issue #545）", () => {
+    const targetTask = makeTask({
+      id: 7,
+      title: "設計レビュー",
+      status: "in_progress",
+      priority: "high",
+    });
+
+    function record(overrides: Partial<TaskRelatedRecord> = {}): TaskRelatedRecord {
+      return {
+        content: "締切を延ばす",
+        rationale: "他タスクが優先のため",
+        kind: "decision",
+        recordedAt: "2026-07-05T00:00:00.000Z",
+        ...overrides,
+      };
+    }
+
+    it("mentoring: true・mentoringTaskId が tasks に存在・記録1件以上がすべて揃うとき、対象タスクの過去記録セクションが現れる（AC-7）", () => {
+      const prompt = buildPersonaPrompt(DEFAULT_PERSONA_SETTINGS, {
+        tasks: [targetTask],
+        recentDecisions: [],
+        now,
+        mentoring: true,
+        mentoringTaskId: 7,
+        taskRelatedRecords: [record()],
+      });
+
+      expect(prompt).toContain("対象タスクの過去記録");
+    });
+
+    it("セクションの順序は「対象タスク」→ MENTORING_TARGET_TASK_INSTRUCTION → 過去記録の順で、過去記録が前2つの間に挟まらない（AC-8）", () => {
+      const prompt = buildPersonaPrompt(DEFAULT_PERSONA_SETTINGS, {
+        tasks: [targetTask],
+        recentDecisions: [],
+        now,
+        mentoring: true,
+        mentoringTaskId: 7,
+        taskRelatedRecords: [record()],
+      });
+
+      const targetTaskIdx = prompt.indexOf("対象タスク:");
+      const instructionIdx = prompt.indexOf(MENTORING_TARGET_TASK_INSTRUCTION);
+      const recordsIdx = prompt.indexOf("対象タスクの過去記録:");
+
+      expect(targetTaskIdx).toBeGreaterThan(-1);
+      expect(instructionIdx).toBeGreaterThan(targetTaskIdx);
+      expect(recordsIdx).toBeGreaterThan(instructionIdx);
+    });
+
+    it("各記録の content がプロンプトに含まれる（AC-9）", () => {
+      const prompt = buildPersonaPrompt(DEFAULT_PERSONA_SETTINGS, {
+        tasks: [targetTask],
+        recentDecisions: [],
+        now,
+        mentoring: true,
+        mentoringTaskId: 7,
+        taskRelatedRecords: [record({ content: "スコープを縮小する" })],
+      });
+
+      expect(prompt).toContain("スコープを縮小する");
+    });
+
+    it("rationale を持つ記録の行にその rationale が含まれる（AC-10）", () => {
+      const prompt = buildPersonaPrompt(DEFAULT_PERSONA_SETTINGS, {
+        tasks: [targetTask],
+        recentDecisions: [],
+        now,
+        mentoring: true,
+        mentoringTaskId: 7,
+        taskRelatedRecords: [record({ rationale: "顧客都合のため" })],
+      });
+
+      expect(prompt).toContain("顧客都合のため");
+    });
+
+    it("rationale が null の記録の行には根拠を表す句が現れない（AC-11）", () => {
+      const prompt = buildPersonaPrompt(DEFAULT_PERSONA_SETTINGS, {
+        tasks: [targetTask],
+        recentDecisions: [],
+        now,
+        mentoring: true,
+        mentoringTaskId: 7,
+        taskRelatedRecords: [record({ content: "指摘なしの記録", rationale: null })],
+      });
+
+      const line = prompt
+        .split("\n")
+        .find((l) => l.includes("指摘なしの記録"));
+      expect(line).toBeDefined();
+      expect(line).not.toContain("根拠");
+    });
+
+    it("各記録の行に種別ラベルが含まれる（decision→「決定」、mentoring→「メンタリング」, AC-12）", () => {
+      const prompt = buildPersonaPrompt(DEFAULT_PERSONA_SETTINGS, {
+        tasks: [targetTask],
+        recentDecisions: [],
+        now,
+        mentoring: true,
+        mentoringTaskId: 7,
+        taskRelatedRecords: [
+          record({ content: "一本目の記録内容", kind: "decision" }),
+          record({ content: "二本目の記録内容", kind: "mentoring", rationale: null }),
+        ],
+      });
+
+      // self-review 指摘: content にラベル語（決定/メンタリング）を含めると、
+      // ラベル自体を削除してもテストが緑のまま通る恒真アサーションになる
+      // （content 側の部分一致で満たされてしまう）。ラベルは `[...]` で
+      // 括られる書式（formatTaskRelatedRecordLine）なので、ブラケット込みで
+      // 照合し、かつ他方のラベルを含まないことも確認する。
+      const decisionLine = prompt.split("\n").find((l) => l.includes("一本目の記録内容"));
+      const mentoringLine = prompt.split("\n").find((l) => l.includes("二本目の記録内容"));
+      expect(decisionLine).toContain("[決定]");
+      expect(decisionLine).not.toContain("[メンタリング]");
+      expect(mentoringLine).toContain("[メンタリング]");
+      expect(mentoringLine).not.toContain("[決定]");
+    });
+
+    it("記録の日時は既存の「直近の決定」と同じ書式で含まれる（AC-13）", () => {
+      const sharedTimestamp = "2026-07-05T00:00:00.000Z";
+      const prompt = buildPersonaPrompt(DEFAULT_PERSONA_SETTINGS, {
+        tasks: [targetTask],
+        recentDecisions: [{ content: "直近の決定の内容", decidedAt: sharedTimestamp }],
+        now,
+        mentoring: true,
+        mentoringTaskId: 7,
+        taskRelatedRecords: [record({ content: "過去記録の内容", recordedAt: sharedTimestamp })],
+      });
+
+      const decisionLine = prompt.split("\n").find((l) => l.includes("直近の決定の内容"));
+      const recordLine = prompt.split("\n").find((l) => l.includes("過去記録の内容"));
+      expect(decisionLine).toBeDefined();
+      expect(recordLine).toBeDefined();
+
+      // 「直近の決定」の行頭日時部分（"- "の直後から": "の前まで）と同じ
+      // 日時文字列が過去記録の行にも現れることを確認する（書式の二重管理が
+      // 起きていないことの検証。ADR 0007・formatStoredDateTime 共用が前提）。
+      const dateTimePart = decisionLine!.replace(/^- /, "").split(":")[0] +
+        ":" + decisionLine!.replace(/^- /, "").split(":")[1];
+      expect(recordLine).toContain(dateTimePart);
+    });
+
+    it("記録が0件のときセクションが現れない（見出しだけを積まない, AC-14）", () => {
+      const prompt = buildPersonaPrompt(DEFAULT_PERSONA_SETTINGS, {
+        tasks: [targetTask],
+        recentDecisions: [],
+        now,
+        mentoring: true,
+        mentoringTaskId: 7,
+        taskRelatedRecords: [],
+      });
+
+      expect(prompt).not.toContain("対象タスクの過去記録");
+    });
+
+    it("mentoring が偽のターンでは、記録が渡されてもセクションが現れない（AC-15）", () => {
+      const prompt = buildPersonaPrompt(DEFAULT_PERSONA_SETTINGS, {
+        tasks: [targetTask],
+        recentDecisions: [],
+        now,
+        mentoring: false,
+        mentoringTaskId: 7,
+        taskRelatedRecords: [record()],
+      });
+
+      expect(prompt).not.toContain("対象タスクの過去記録");
+    });
+
+    it("mentoringTaskId が tasks に存在しない id のときセクションが現れない（AC-16）", () => {
+      const prompt = buildPersonaPrompt(DEFAULT_PERSONA_SETTINGS, {
+        tasks: [targetTask],
+        recentDecisions: [],
+        now,
+        mentoring: true,
+        mentoringTaskId: 999,
+        taskRelatedRecords: [record()],
+      });
+
+      expect(prompt).not.toContain("対象タスクの過去記録");
+    });
+
+    it("このセクションの追加によって既存の「直近の決定」セクションの内容が変わらない（AC-17）", () => {
+      const prompt = buildPersonaPrompt(DEFAULT_PERSONA_SETTINGS, {
+        tasks: [targetTask],
+        recentDecisions: [{ content: "既存の決定内容", decidedAt: "2026-07-01T00:00:00.000Z" }],
+        now,
+        mentoring: true,
+        mentoringTaskId: 7,
+        taskRelatedRecords: [record()],
+      });
+
+      expect(prompt).toContain("既存の決定内容");
+      expect(prompt).toContain("直近の決定:");
+    });
+
+    it("このセクションの追加によって既存の「対象タスク」セクションの内容が変わらない（AC-18）", () => {
+      const prompt = buildPersonaPrompt(DEFAULT_PERSONA_SETTINGS, {
+        tasks: [targetTask],
+        recentDecisions: [],
+        now,
+        mentoring: true,
+        mentoringTaskId: 7,
+        taskRelatedRecords: [record()],
+      });
+
+      expect(prompt).toContain("対象タスク:");
+      expect(prompt).toContain("設計レビュー");
+      expect(prompt).toContain("#7");
+    });
+
+    describe("合計文字数の上限（MAX_TASK_RELATED_RECORDS_TOTAL_LENGTH）による切り詰め", () => {
+      it("合計が上限を超えるとき、新しい側の記録が残り古い側が落ちる（AC-19）", () => {
+        const older = record({
+          content: "a".repeat(MAX_TASK_RELATED_RECORDS_TOTAL_LENGTH),
+          rationale: null,
+          recordedAt: "2026-07-01T00:00:00.000Z",
+        });
+        const newer = record({
+          content: "新しい記録の内容",
+          rationale: null,
+          recordedAt: "2026-07-05T00:00:00.000Z",
+        });
+        const prompt = buildPersonaPrompt(DEFAULT_PERSONA_SETTINGS, {
+          tasks: [targetTask],
+          recentDecisions: [],
+          now,
+          mentoring: true,
+          mentoringTaskId: 7,
+          taskRelatedRecords: [newer, older],
+        });
+
+        expect(prompt).toContain("新しい記録の内容");
+        expect(prompt).not.toContain(older.content);
+      });
+
+      it("省略・切り詰めが起きたとき、その旨の通知がセクション内に現れる（AC-20）", () => {
+        const older = record({
+          content: "a".repeat(MAX_TASK_RELATED_RECORDS_TOTAL_LENGTH),
+          rationale: null,
+          recordedAt: "2026-07-01T00:00:00.000Z",
+        });
+        const newer = record({
+          content: "新しい記録の内容",
+          rationale: null,
+          recordedAt: "2026-07-05T00:00:00.000Z",
+        });
+        const prompt = buildPersonaPrompt(DEFAULT_PERSONA_SETTINGS, {
+          tasks: [targetTask],
+          recentDecisions: [],
+          now,
+          mentoring: true,
+          mentoringTaskId: 7,
+          taskRelatedRecords: [newer, older],
+        });
+
+        expect(prompt).toContain("一部省略");
+      });
+
+      it("省略・切り詰めが起きていないとき、その通知は現れない（AC-21）", () => {
+        const prompt = buildPersonaPrompt(DEFAULT_PERSONA_SETTINGS, {
+          tasks: [targetTask],
+          recentDecisions: [],
+          now,
+          mentoring: true,
+          mentoringTaskId: 7,
+          taskRelatedRecords: [record({ content: "短い記録", rationale: null })],
+        });
+
+        expect(prompt).not.toContain("一部省略");
+      });
+
+      it("最新の1件が単独で上限を超えるとき、生成が失敗せず切り詰めて現れる（記録1件のみ, AC-22）", () => {
+        const huge = record({
+          content: "c".repeat(MAX_TASK_RELATED_RECORDS_TOTAL_LENGTH + 500),
+          rationale: null,
+        });
+        const prompt = buildPersonaPrompt(DEFAULT_PERSONA_SETTINGS, {
+          tasks: [targetTask],
+          recentDecisions: [],
+          now,
+          mentoring: true,
+          mentoringTaskId: 7,
+          taskRelatedRecords: [huge],
+        });
+
+        expect(prompt).toContain("対象タスクの過去記録");
+        expect(prompt).toContain("一部省略");
+        // 元の全文がそのままは含まれない（切り詰められている）
+        expect(prompt).not.toContain(huge.content);
+        // セクション全体の長さが「上限＋整形分の妥当な余裕」に収まる
+        // （配分の細部は固定しない）
+        const sectionStart = prompt.indexOf("対象タスクの過去記録:");
+        const section = prompt.slice(sectionStart);
+        expect(section.length).toBeLessThan(MAX_TASK_RELATED_RECORDS_TOTAL_LENGTH + 500);
+      });
+
+      it("最新の1件が単独で上限を超えるとき、複数件あっても生成が失敗せず切り詰めて現れる（AC-22）", () => {
+        const huge = record({
+          content: "d".repeat(MAX_TASK_RELATED_RECORDS_TOTAL_LENGTH + 500),
+          rationale: null,
+          recordedAt: "2026-07-05T00:00:00.000Z",
+        });
+        const older = record({
+          content: "セカンダリの記録内容",
+          rationale: null,
+          recordedAt: "2026-07-01T00:00:00.000Z",
+        });
+        const prompt = buildPersonaPrompt(DEFAULT_PERSONA_SETTINGS, {
+          tasks: [targetTask],
+          recentDecisions: [],
+          now,
+          mentoring: true,
+          mentoringTaskId: 7,
+          taskRelatedRecords: [huge, older],
+        });
+
+        expect(prompt).toContain("対象タスクの過去記録");
+        expect(prompt).toContain("一部省略");
+        expect(prompt).not.toContain(huge.content);
+        expect(prompt).not.toContain("セカンダリの記録内容");
+      });
     });
   });
 

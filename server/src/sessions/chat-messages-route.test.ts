@@ -1025,6 +1025,139 @@ describe("POST /api/sessions/:id/messages", () => {
     });
   });
 
+  // S2b・Issue #545（親 #438 決定16・17）: 対象タスクに紐づく過去記録を
+  // listDecisionsByTaskId（listRecentDecisions とは別経路）で引き、
+  // buildPersonaPrompt へ結線する。件数上限は #545 決定16 のこのルートの
+  // 責務（TASK_RELATED_RECORD_LIMIT）。
+  describe("対象タスクの過去記録（Issue #545, 親 #438 決定16・17）", () => {
+    /** created_at を明示制御する生SQLヘルパ（decisions-repository.test.ts の
+     * insertRawDecision と同じ作法。順序・件数上限のアサーションに必要）。 */
+    function insertRawDecisionForTask(
+      sessionId: number,
+      taskId: number | null,
+      content: string,
+      createdAt: string,
+      kind: "decision" | "mentoring" = "decision",
+    ): void {
+      db.prepare(
+        `INSERT INTO decisions (session_id, task_id, content, rationale, kind, status, created_at)
+         VALUES (?, ?, ?, NULL, ?, 'active', ?)`,
+      ).run(sessionId, taskId, content, kind, createdAt);
+    }
+
+    /** ローカル暦日から created_at（ISO文字列）を導出する（ADR 0007 決定5と
+     * 同じ作法。TZ 非依存）。 */
+    function localIso(year: number, month: number, day: number, hour: number): string {
+      return new Date(year, month - 1, day, hour).toISOString();
+    }
+
+    it("mentoring: true と有効な mentoringTaskId を伴うリクエストで、対象タスクの過去記録が最大5件プロンプトへ渡される（AC-24）", async () => {
+      const task = insertTask(db, {
+        title: "資料作成",
+        description: null,
+        category: "work",
+        priority: null,
+        due_at: null,
+        status: "todo",
+        boss_comment: null,
+        estimated_minutes: null,
+      });
+      const session = await createSession();
+      // kind: "mentoring" を使う — listRecentDecisions は kind='decision' しか
+      // 拾わない（#408 AC-42）ため、ここでの出現が新規クエリ
+      // （listDecisionsByTaskId）由来であることを構造的に保証する
+      // （既存の「直近の決定」セクション経由での偽陽性を避ける）。
+      for (let i = 0; i < 6; i++) {
+        insertRawDecisionForTask(
+          session.id,
+          task.id,
+          `記録${i}`,
+          localIso(2026, 7, i + 1, 9),
+          "mentoring",
+        );
+      }
+      streamBossMessageMock.mockResolvedValue(fakeTextMessage("了解した"));
+      const app = createApp(db, env);
+
+      const res = await app.request(`/api/sessions/${session.id}/messages`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          content: "進め方を見てほしい",
+          mentoring: true,
+          mentoringTaskId: task.id,
+        }),
+      });
+      await res.text();
+
+      expect(res.status).toBe(200);
+      const system = streamBossMessageMock.mock.calls[0][1].system as string;
+      // 新しい5件（記録5〜記録1）は含まれ、最も古い記録0は含まれない
+      expect(system).toContain("記録5");
+      expect(system).toContain("記録1");
+      expect(system).not.toContain("記録0");
+    });
+
+    it("mentoringTaskId を伴わないメンタリングのターンでは対象タスクの過去記録セクションが現れない（AC-25）", async () => {
+      const task = insertTask(db, {
+        title: "資料作成",
+        description: null,
+        category: "work",
+        priority: null,
+        due_at: null,
+        status: "todo",
+        boss_comment: null,
+        estimated_minutes: null,
+      });
+      const session = await createSession();
+      // このコンテンツは listRecentDecisions（別経路・task_id で絞らない）にも
+      // 拾われるため、AC-25 の検証は見出しの有無に限定する（AC-17 が保証する
+      // とおり「直近の決定」への出現は非回帰の対象・重複は受容する契約）。
+      insertRawDecisionForTask(session.id, task.id, "対象タスクの記録", localIso(2026, 7, 5, 9));
+      streamBossMessageMock.mockResolvedValue(fakeTextMessage("了解した"));
+      const app = createApp(db, env);
+
+      const res = await app.request(`/api/sessions/${session.id}/messages`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ content: "進め方を見てほしい", mentoring: true }),
+      });
+      await res.text();
+
+      expect(res.status).toBe(200);
+      const system = streamBossMessageMock.mock.calls[0][1].system as string;
+      expect(system).not.toContain("対象タスクの過去記録");
+    });
+
+    it("メンタリングでない通常のターンでは対象タスクの過去記録セクションが現れない（AC-26）", async () => {
+      const task = insertTask(db, {
+        title: "資料作成",
+        description: null,
+        category: "work",
+        priority: null,
+        due_at: null,
+        status: "todo",
+        boss_comment: null,
+        estimated_minutes: null,
+      });
+      const session = await createSession();
+      insertRawDecisionForTask(session.id, task.id, "対象タスクの記録", localIso(2026, 7, 5, 9));
+      streamBossMessageMock.mockResolvedValue(fakeTextMessage("了解した"));
+      const app = createApp(db, env);
+
+      const res = await app.request(`/api/sessions/${session.id}/messages`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ content: "普通のチャット" }),
+      });
+      await res.text();
+
+      expect(res.status).toBe(200);
+      const system = streamBossMessageMock.mock.calls[0][1].system as string;
+      expect(system).not.toContain("対象タスクの過去記録");
+    });
+  });
+
   it("AC-2: includes a saved session summary in the system prompt so the boss can refer to recent reports without re-explanation", async () => {
     const app = createApp(db, env);
     const priorSession = await readJson<Session>(

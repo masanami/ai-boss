@@ -1,9 +1,16 @@
 import type Database from "better-sqlite3";
-import type { RecentDecision } from "../boss/persona-prompt.js";
+import type { RecentDecision, TaskRelatedRecord } from "../boss/persona-prompt.js";
 import type { Decision, DecisionKind, DecisionListItem } from "./decision.js";
 
 interface DecisionRow {
   content: string;
+  created_at: string;
+}
+
+interface TaskRelatedRecordRow {
+  content: string;
+  rationale: string | null;
+  kind: DecisionKind;
   created_at: string;
 }
 
@@ -112,6 +119,31 @@ export function listRecentDecisions(
   return rows.map((row) => ({
     content: row.content,
     decidedAt: row.created_at,
+  }));
+}
+
+/**
+ * 対象タスクに紐づく決定・メンタリング記録を新しい順に最大 `limit` 件返す
+ * （S2b・Issue #545, 親 #438 決定17）。`listRecentDecisions` とは別経路で、
+ * `kind` で絞らない（決定とメンタリングの両方を返す）。`listRecentDecisions`
+ * には一切触れないため #408 AC-42 の契約は構造的に保たれる。
+ */
+export function listDecisionsByTaskId(
+  db: Database.Database,
+  taskId: number,
+  limit: number,
+): TaskRelatedRecord[] {
+  const rows = db
+    .prepare(
+      "SELECT content, rationale, kind, created_at FROM decisions WHERE task_id = ? ORDER BY created_at DESC, id DESC LIMIT ?",
+    )
+    .all(taskId, limit) as TaskRelatedRecordRow[];
+
+  return rows.map((row) => ({
+    content: row.content,
+    rationale: row.rationale,
+    kind: row.kind,
+    recordedAt: row.created_at,
   }));
 }
 
