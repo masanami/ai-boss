@@ -1389,12 +1389,18 @@ describe("buildPersonaPrompt", () => {
       priority: "high",
     });
 
+    /** ローカル暦日から `recordedAt`（保存形式＝UTC ISO）を導出する。UTC 文字列を
+     * ベタ書きしないのは ADR 0007 決定5 と同じ作法（TZ 非依存に組む）。 */
+    function localIso(year: number, month: number, day: number, hour = 9): string {
+      return new Date(year, month - 1, day, hour).toISOString();
+    }
+
     function record(overrides: Partial<TaskRelatedRecord> = {}): TaskRelatedRecord {
       return {
         content: "締切を延ばす",
         rationale: "他タスクが優先のため",
         kind: "decision",
-        recordedAt: "2026-07-05T00:00:00.000Z",
+        recordedAt: localIso(2026, 7, 5),
         ...overrides,
       };
     }
@@ -1501,7 +1507,7 @@ describe("buildPersonaPrompt", () => {
     });
 
     it("記録の日時は既存の「直近の決定」と同じ書式で含まれる（AC-13）", () => {
-      const sharedTimestamp = "2026-07-05T00:00:00.000Z";
+      const sharedTimestamp = localIso(2026, 7, 5);
       const prompt = buildPersonaPrompt(DEFAULT_PERSONA_SETTINGS, {
         tasks: [targetTask],
         recentDecisions: [{ content: "直近の決定の内容", decidedAt: sharedTimestamp }],
@@ -1566,7 +1572,7 @@ describe("buildPersonaPrompt", () => {
     it("このセクションの追加によって既存の「直近の決定」セクションの内容が変わらない（AC-17）", () => {
       const prompt = buildPersonaPrompt(DEFAULT_PERSONA_SETTINGS, {
         tasks: [targetTask],
-        recentDecisions: [{ content: "既存の決定内容", decidedAt: "2026-07-01T00:00:00.000Z" }],
+        recentDecisions: [{ content: "既存の決定内容", decidedAt: localIso(2026, 7, 1) }],
         now,
         mentoring: true,
         mentoringTaskId: 7,
@@ -1597,12 +1603,12 @@ describe("buildPersonaPrompt", () => {
         const older = record({
           content: "a".repeat(MAX_TASK_RELATED_RECORDS_TOTAL_LENGTH),
           rationale: null,
-          recordedAt: "2026-07-01T00:00:00.000Z",
+          recordedAt: localIso(2026, 7, 1),
         });
         const newer = record({
           content: "新しい記録の内容",
           rationale: null,
-          recordedAt: "2026-07-05T00:00:00.000Z",
+          recordedAt: localIso(2026, 7, 5),
         });
         const prompt = buildPersonaPrompt(DEFAULT_PERSONA_SETTINGS, {
           tasks: [targetTask],
@@ -1621,12 +1627,12 @@ describe("buildPersonaPrompt", () => {
         const older = record({
           content: "a".repeat(MAX_TASK_RELATED_RECORDS_TOTAL_LENGTH),
           rationale: null,
-          recordedAt: "2026-07-01T00:00:00.000Z",
+          recordedAt: localIso(2026, 7, 1),
         });
         const newer = record({
           content: "新しい記録の内容",
           rationale: null,
-          recordedAt: "2026-07-05T00:00:00.000Z",
+          recordedAt: localIso(2026, 7, 5),
         });
         const prompt = buildPersonaPrompt(DEFAULT_PERSONA_SETTINGS, {
           tasks: [targetTask],
@@ -1672,22 +1678,29 @@ describe("buildPersonaPrompt", () => {
         // 元の全文がそのままは含まれない（切り詰められている）
         expect(prompt).not.toContain(huge.content);
         // セクション全体の長さが「上限＋整形分の妥当な余裕」に収まる
-        // （配分の細部は固定しない）
+        // （配分の細部は固定しない）。セクションはプロンプト全体ではなく
+        // 次のセクション境界（"\n\n"）までで切り出す — 末尾の他セクションを
+        // 含めてしまうと、切り詰めと無関係な指示文の追記でこの上限に当たって
+        // 赤くなる（self-review 残指摘）。
         const sectionStart = prompt.indexOf("対象タスクの過去記録:");
-        const section = prompt.slice(sectionStart);
-        expect(section.length).toBeLessThan(MAX_TASK_RELATED_RECORDS_TOTAL_LENGTH + 500);
+        const sectionEnd = prompt.indexOf("\n\n", sectionStart);
+        const section = prompt.slice(
+          sectionStart,
+          sectionEnd === -1 ? undefined : sectionEnd,
+        );
+        expect(section.length).toBeLessThan(MAX_TASK_RELATED_RECORDS_TOTAL_LENGTH + 200);
       });
 
       it("最新の1件が単独で上限を超えるとき、複数件あっても生成が失敗せず切り詰めて現れる（AC-22）", () => {
         const huge = record({
           content: "d".repeat(MAX_TASK_RELATED_RECORDS_TOTAL_LENGTH + 500),
           rationale: null,
-          recordedAt: "2026-07-05T00:00:00.000Z",
+          recordedAt: localIso(2026, 7, 5),
         });
         const older = record({
           content: "セカンダリの記録内容",
           rationale: null,
-          recordedAt: "2026-07-01T00:00:00.000Z",
+          recordedAt: localIso(2026, 7, 1),
         });
         const prompt = buildPersonaPrompt(DEFAULT_PERSONA_SETTINGS, {
           tasks: [targetTask],
@@ -1702,6 +1715,60 @@ describe("buildPersonaPrompt", () => {
         expect(prompt).toContain("一部省略");
         expect(prompt).not.toContain(huge.content);
         expect(prompt).not.toContain("セカンダリの記録内容");
+      });
+
+      it("件数上限（5件）に収まっていても、文字数上限を超える分は落ちる（AC-23）", () => {
+        // 5件（件数上限内）だが 806 文字 × 5 = 4,030 で合計が上限を超える。
+        // 新しい2件（1,612 文字）までが収まり、3件目で打ち切られる。
+        const records = [0, 1, 2, 3, 4].map((i) =>
+          record({
+            content: `記録${i}の本文${"x".repeat(800)}`,
+            rationale: null,
+            recordedAt: localIso(2026, 7, 5 - i),
+          }),
+        );
+        const prompt = buildPersonaPrompt(DEFAULT_PERSONA_SETTINGS, {
+          tasks: [targetTask],
+          recentDecisions: [],
+          now,
+          mentoring: true,
+          mentoringTaskId: 7,
+          taskRelatedRecords: records,
+        });
+
+        expect(prompt).toContain("記録0の本文");
+        expect(prompt).toContain("記録1の本文");
+        expect(prompt).not.toContain("記録2の本文");
+        expect(prompt).not.toContain("記録4の本文");
+        expect(prompt).toContain("一部省略");
+      });
+
+      it("呼び出し側が誤って古い順で渡しても、上限超過時に残るのは新しい側である（防御的整列）", () => {
+        // `taskRelatedRecords` の契約は「新しい順」（listDecisionsByTaskId の
+        // ORDER BY がこれを満たす）だが、契約違反で古い順に渡された場合でも
+        // 最新側ではなく最古側が残る逆転が起きないことを担保する
+        // （sortByDescendingRecordedAt の変異検出: 整列を外すと赤になる）。
+        const older = record({
+          content: "a".repeat(MAX_TASK_RELATED_RECORDS_TOTAL_LENGTH),
+          rationale: null,
+          recordedAt: localIso(2026, 7, 1),
+        });
+        const newer = record({
+          content: "新しい記録の内容",
+          rationale: null,
+          recordedAt: localIso(2026, 7, 5),
+        });
+        const prompt = buildPersonaPrompt(DEFAULT_PERSONA_SETTINGS, {
+          tasks: [targetTask],
+          recentDecisions: [],
+          now,
+          mentoring: true,
+          mentoringTaskId: 7,
+          taskRelatedRecords: [older, newer],
+        });
+
+        expect(prompt).toContain("新しい記録の内容");
+        expect(prompt).not.toContain(older.content);
       });
     });
   });

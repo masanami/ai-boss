@@ -598,6 +598,14 @@ export const MAX_TASK_RELATED_RECORDS_TOTAL_LENGTH = 2_000;
 // workspaces で server/web が分かれており共有経路が無く、共有を作ると
 // 「web に差分を作らない」制約に反するため、同じ文字列リテラルをここにも置く
 // （DRY より本チケットのスコープ制約を優先。#545）。
+//
+// kind は resolveStrictnessDescription / resolveSessionTypeLabel のような
+// 防御的フォールバックを取らない —— ADHOC_ROLE_LABELS と同じ判断で、
+// decisions.kind は列の CHECK 制約（migrate.ts v8:
+// `CHECK (kind IN ('decision', 'mentoring'))`）が閉じた集合を担保しており、
+// 想定外の値が実行時に紛れ込む経路が無いため Record の網羅性チェック
+// （コンパイルエラー）に委ねる。フォールバックを持つ settings 由来の
+// strictness（CHECK 制約なし）とはこの点で条件が異なる。
 const TASK_RELATED_RECORD_KIND_LABELS: Record<DecisionKind, string> = {
   decision: "決定",
   mentoring: "メンタリング",
@@ -633,14 +641,16 @@ function truncateSingleRecord(record: TaskRelatedRecord): TaskRelatedRecord {
       ? `${record.content.slice(0, contentBudget - 1)}…`
       : record.content;
 
+  // `content` が上限を使い切ったら `rationale` は丸ごと落とす（`remaining` が
+  // 0 のとき）。余った分にだけ `rationale` を充て、入り切らなければ
+  // `content` と同じ作法（省略記号1文字込みで残り予算ちょうど）で切り詰める。
   const remaining = MAX_TASK_RELATED_RECORDS_TOTAL_LENGTH - contentBudget;
-  let truncatedRationale: string | null;
-  if (remaining <= 0 || record.rationale === null) {
-    truncatedRationale = remaining <= 0 ? null : record.rationale;
-  } else if (record.rationale.length <= remaining) {
-    truncatedRationale = record.rationale;
-  } else {
-    truncatedRationale = `${record.rationale.slice(0, remaining - 1)}…`;
+  let truncatedRationale: string | null = null;
+  if (record.rationale !== null && remaining > 0) {
+    truncatedRationale =
+      record.rationale.length <= remaining
+        ? record.rationale
+        : `${record.rationale.slice(0, remaining - 1)}…`;
   }
 
   return { ...record, content: truncatedContent, rationale: truncatedRationale };
