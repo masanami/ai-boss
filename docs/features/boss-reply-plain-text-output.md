@@ -6,7 +6,14 @@
 
 **HTML は (1)+(2) の 2 層で覆い、Markdown は (1) の 1 層のみで覆う**（Markdown を表示側で機械的に剥がすと正当な `**`・行頭 `- `・`1. ` を壊すため）。この非対称は意図的であり、下記「対策の層構成と LLM 依存範囲」に明記する。
 
+**S1 は出荷済み**（PR #467・2026-09-10 マージ。子 Issue #459 / #460 / #461 / #462）。残るスライスは次の 2 本で、**2026-09-20 にコード読解にもとづいて要否を判定した**（初版が予定していた「S1 出荷後のデータの実測にもとづく判定」は実行不能と判明した。下記「S2 / S3 の要否判定（2026-09-20）」）。
+
+- **S2**: 会話履歴をプロンプトへ写す `toClaudeMessages` で、ボスの過去発言を正規化する。**根拠は「表示と履歴の一致」であり、初版が置いていた few-shot 仮説ではない**（下記「保存 `content` がプロンプトへ戻る経路」）
+- **S3**: `purpose="notification"` へ Markdown 装飾を使わない旨を追記する。**通知 purpose の Markdown は現状 0 層**である（下記「対策の層構成と LLM 依存範囲」）
+
 ## 背景・目的
+
+> **本節は Issue #439 起票時点（S1 出荷前）の状態の記録である。** 行番号・「チャットには形式指示が無い」という記述は当時のもので、S1 出荷後の `main` には `CHAT_PLAIN_TEXT_INSTRUCTION`（`persona-prompt.ts:651-655` → `:772`）が入っている。**`purpose="notification"` が長さのみを指示している点は 2026-09-20 時点でも変わっておらず**（`persona-prompt.ts:736-739`）、それが S3 の対象である。
 
 チャットのボス応答は `web/src/ChatView.tsx:213` が `<p className="chat-message-content">{entry.content}</p>` として描画する。JSX の文字列補間は React がエスケープするため **HTML として解釈されることはなく、タグが文字として画面に出る**（`dangerouslySetInnerHTML` は `web/src` 全体で 0 件）。CSS は `.chat-message-content { white-space: pre-wrap }`（`ChatView.css`）で改行と連続空白だけが保持される。
 
@@ -48,7 +55,7 @@ Issue #439 は 2026-09-10 起票で、本文の記述は外部由来・未検証
 | 6 | 保存 `content` を書き換えるとリライト機能（`select-rewrite-range.ts`）に影響する | **`select-rewrite-range.ts` は `server/src` ではなく `web/src` にあり、`content` を一切読まない。** `messageId` / `sessionId` / `role` / `key` だけで動く純粋関数である | **Issue の前提が誤り**（保存 `content` の書き換えはリライト機能に影響しない） |
 | 7 | （Issue に記述なし） | **チャットの描画点は 2 箇所ある。** 確定メッセージ（`ChatView.tsx:213`）に加え、**ストリーミング中の吹き出し（`ChatView.tsx:608` の `{streamingText}`）**も同じ経路で描画される | **Issue の前提が不足** |
 | 8 | （Issue に記述なし） | **LLM 由来テキストの表示面は 5 系統あり、正規化を掛けうる境界は 6 箇所ある**（下表）。うち **macOS 通知本文は React が介在しない**ため、web の表示層に正規化を置いても覆えない | **Issue の前提が不足** |
-| 9 | （Issue に記述なし） | **保存 `content` が次ターンのプロンプトへ戻る経路が 2 本ある**（下記） | **Issue の前提が不足** |
+| 9 | （Issue に記述なし） | **LLM が書いた保存テキストが次ターンのプロンプトへ生のまま戻る経路が 4 本ある**（下記。初版は 2 本と書いていたが、2026-09-20 の再読解で決定ログ・報告履歴の 2 本を追加で確認した） | **Issue の前提が不足** |
 
 ### 表示面と、正規化を掛けうる境界
 
@@ -63,12 +70,30 @@ LLM 由来テキストの表示面は **5 系統**（チャット／macOS 通知
 | ダッシュボードのボスコメント | `boss-comment.ts:100`（`purpose:"notification"`）→ `Dashboard.tsx:49` | あり | **覆う** |
 | 決定ログ / 作業ログ | `record_decision` / activity-log ツール引数 → `DecisionLog.tsx:25` / `WorkLogView.tsx:67` | あり | **覆わない**（下記「やらないこと」） |
 
-### 保存 `content` がプロンプトへ戻る 2 経路
+### 保存 `content` がプロンプトへ戻る経路（4 本）
 
-1. **`toClaudeMessages`（`chat-messages-route.ts:62-73`）** — `messages` を `role: "assistant"` に写して**同一セッションの会話履歴**として渡す。ボスの過去発言が生の `content` のまま毎ターン戻る
-2. **`collectTodaysAdhocContext` → `todaysAdhocMessages`（`persona-prompt.ts`）** — **別セッション**の当日の随時チャットを参考情報ブロックとして渡す
+S1 は正規化を**表示直前の境界にのみ**置き、保存値は LLM の生出力のまま残す決定を採った（後述「クリティカル設計決定 § 保存 `content` の扱い」）。その帰結として、**LLM が書いた保存テキストが生のまま次ターンのプロンプトへ戻る経路が 4 本ある**（行番号は 2026-09-20 に `main` で再取得した）。
 
-保存 `content` に HTML を残すと、この 2 経路を通じて few-shot 的に HTML 出力を強化しうる。**ただしこれは現時点で仮説であり検証されていない。** 対策は S2 として切り出し、S1 の受入基準には含めない（後述「クリティカル設計決定 § 保存 `content` の扱い」）。
+| # | 経路 | 何を戻すか | S2 で覆うか |
+|---|---|---|---|
+| 1 | **`toClaudeMessages`（`chat-messages-route.ts:63-74`・呼び出しは `:328`）** | `messages` を `role: "assistant"` に写した**同一セッションの会話履歴**。`content: message.content` をそのまま渡しており、ボスの過去発言が生のまま毎ターン戻る | **覆う** |
+| 2 | **`collectTodaysAdhocContext` → `todaysAdhocMessages`（`chat-messages-route.ts:92-105` → `persona-prompt.ts:460-466`）** | **別セッション**の当日の随時チャットを参考情報ブロックとして渡す。掛かるのは区切りマーカーの無害化（`neutralizeDelimiterLookalikes`）だけ | **覆わない**（理由は下記 S2 の決定） |
+| 3 | `formatDecisionSection` / `formatDecisionLine`（`persona-prompt.ts:325-333`） | `record_decision` でボスが書いた決定の `content` | **覆わない**（本仕様では扱わない。下記「未決の論点」） |
+| 4 | `formatSessionSummaryLine`（`persona-prompt.ts:425-431`） | `submit_evening_summary` 由来の報告履歴（夕会要約） | **覆わない**（同上） |
+
+**初版はこの経路を「few-shot 的に HTML 出力を強化しうる」という仮説への対策として S2 に置いていたが、この根拠は 2026-09-20 に差し替えた。** 差し替えの経緯と現在の根拠は下記「S2 / S3 の要否判定（2026-09-20）」に記録する。
+
+### S2 / S3 の要否判定（2026-09-20）
+
+初版のスライス表は S2・S3 の出荷条件を「S1 がマージされてから」とし、**S1 出荷後に保存されたデータの実測**で要否を決める想定だった。この判定方式は次の理由で**実行不能と判明した**。
+
+- S1 出荷（PR #467・2026-09-10 17:44 マージ）より後に保存された行は `messages`・`notifications` とも **0 件**（読み取り専用で確認）
+- **Issue #439 の事象は別の端末で発生した**ものであり、このローカル DB は「データが貯まっていない」のではなく**観測地点が違う**。待っても本件の実測はできない
+
+したがって**完了条件をコード読解にもとづく判定へ変更**し（2026-09-20 オーナー決定）、次の 2 点を実コードで確定させた。
+
+- **経路1・2 はいまも開いている**（上表）。S1 は保存前に正規化していないため、DB に HTML が入れば必ずプロンプトへ戻る
+- **`purpose="notification"` の指示は長さのみ**（`persona-prompt.ts:736-739`）。HTML 禁止も Markdown 禁止も無く、`stripHtmlTags` は設計上 Markdown に触らないため、**通知 purpose の Markdown は 0 層**である
 
 ## ユーザーストーリー
 
@@ -76,31 +101,52 @@ LLM 由来テキストの表示面は **5 系統**（チャット／macOS 通知
 
 ## 機能要件
 
-- [ ] 通常チャット（`purpose="chat"`）のシステムプロンプトに、HTML タグを使わない旨の指示が含まれる
-- [ ] 通常チャット（`purpose="chat"`）のシステムプロンプトに、Markdown の装飾を使わない旨の指示が含まれる
-- [ ] `purpose="notification"` のシステムプロンプトは変更しない
-- [ ] `purpose="daily-report"` のシステムプロンプトは変更しない
-- [ ] server 側に、文字列から HTML タグを落とす純粋関数を新設する
-- [ ] チャットのストリーミング送出（SSE `text` イベント）へその純粋関数を適用する
-- [ ] チャットの応答完了時の送出（SSE `done` イベントの `content`）へその純粋関数を適用する
-- [ ] チャットのタイムライン読み出し（`GET /api/sessions/:id/messages`）へその純粋関数を適用する
-- [ ] macOS 通知本文（`generateNotificationBody` の戻り値）へその純粋関数を適用する
-- [ ] ダッシュボードのボスコメントへその純粋関数を適用する
-- [ ] 正規化はボスの発言にのみ掛け、ユーザーの発言には掛けない
-- [ ] DB に保存する `messages.content` は書き換えない（LLM の生出力のまま残す）
-- [ ] 決定ログの表示は正規化の対象外とする（本スライスでは覆わない範囲として明示する）
-- [ ] 作業ログの表示は正規化の対象外とする（本スライスでは覆わない範囲として明示する）
+### S1（出荷済み・PR #467）
+
+- [x] 通常チャット（`purpose="chat"`）のシステムプロンプトに、HTML タグを使わない旨の指示が含まれる
+- [x] 通常チャット（`purpose="chat"`）のシステムプロンプトに、Markdown の装飾を使わない旨の指示が含まれる
+- [x] `purpose="notification"` のシステムプロンプトは変更しない（**S1 の範囲での話**。S3 が Markdown 禁止を追記する）
+- [x] `purpose="daily-report"` のシステムプロンプトは変更しない
+- [x] server 側に、文字列から HTML タグを落とす純粋関数を新設する
+- [x] チャットのストリーミング送出（SSE `text` イベント）へその純粋関数を適用する
+- [x] チャットの応答完了時の送出（SSE `done` イベントの `content`）へその純粋関数を適用する
+- [x] チャットのタイムライン読み出し（`GET /api/sessions/:id/messages`）へその純粋関数を適用する
+- [x] macOS 通知本文（`generateNotificationBody` の戻り値）へその純粋関数を適用する
+- [x] ダッシュボードのボスコメントへその純粋関数を適用する
+- [x] 正規化はボスの発言にのみ掛け、ユーザーの発言には掛けない
+- [x] DB に保存する `messages.content` は書き換えない（LLM の生出力のまま残す）
+- [x] 決定ログの表示は正規化の対象外とする（本スライスでは覆わない範囲として明示する）
+- [x] 作業ログの表示は正規化の対象外とする（本スライスでは覆わない範囲として明示する）
+
+### S3（実装対象）
+
+- [ ] `purpose="notification"` のシステムプロンプトに、Markdown の装飾を使わない旨の指示が含まれる
+- [ ] `purpose="notification"` の既存の「要点を絞り、短く簡潔な文章にすること」の指示は残る
+- [ ] `purpose="notification"` へ HTML タグを使わない旨の指示は**追加しない**（S3 のスコープ外。「未決の論点」論点2）
+- [ ] `purpose="chat"` のシステムプロンプトは S3 の前後で変わらない
+- [ ] `purpose="daily-report"` のシステムプロンプトは S3 の前後で変わらない
+
+### S2（S3 のマージ後に起票）
+
+- [ ] 会話履歴をプロンプトへ写す `toClaudeMessages` で、`role="boss"` の `content` が正規化される
+- [ ] `toClaudeMessages` で `role="user"` の `content` は正規化されない
+- [ ] DB に保存する `messages.content` は S2 の前後でも書き換えない（LLM の生出力のまま残す）
+- [ ] 当日の随時チャットの参考情報ブロック（`collectTodaysAdhocContext` 経路）は正規化の対象外とする（覆わない範囲として明示する）
 
 ## 技術的な制約・方針
 
-- **変更対象**:
+- **変更対象（S1・出荷済み）**:
   - `server/src/lib/strip-html-tags.ts`（新規・純粋関数）／`server/src/lib/strip-html-tags.test.ts`（新規）
   - `server/src/boss/persona-prompt.ts`（chat 分岐へ平文指示を追加）＋ 既存テスト
   - `server/src/sessions/chat-messages-route.ts`（SSE の `text` イベントと `done` イベントの両方へ適用）＋ 既存テスト
   - `server/src/sessions/sessions-routes.ts`（`GET /:id/messages` の応答へ適用）＋ 既存テスト
   - `server/src/notifications/notification-body.ts`（戻り値へ適用）＋ 既存テスト
-  - `server/src/dashboard/boss-comment.ts`（生成結果へ適用）＋ 既存テスト
-- **変更しない**: `web/` 配下すべて（正規化は server 側に集約する）、`server/src/db/` 配下（スキーマ変更なし）、`server/src/reports/evening-summary-tool.ts`、`server/src/sessions/messages-repository.ts` の書き込み経路
+  - `server/src/dashboard/boss-comment.ts`（戻り値へ適用）＋ 既存テスト
+- **変更対象（S3・実装対象）**:
+  - `server/src/boss/persona-prompt.ts`（`purpose="notification"` の分岐へ Markdown 禁止の指示を追加し、文字列を `export` する）＋ `server/src/boss/persona-prompt.test.ts`
+- **変更対象（S2・S3 のマージ後）**:
+  - `server/src/sessions/chat-messages-route.ts`（`toClaudeMessages` で `role==="boss"` にのみ `stripHtmlTags` を適用）＋ 既存テスト
+- **変更しない**: `web/` 配下すべて（正規化は server 側に集約する）、`server/src/db/` 配下（スキーマ変更なし）、`server/src/reports/evening-summary-tool.ts`、`server/src/sessions/messages-repository.ts` の書き込み経路、`server/src/lib/strip-html-tags.ts`（S2・S3 はいずれも正規化そのものの挙動を変えない）
 - **新規ファイルは `server/src/lib/` に置く**（前例: `server/src/lib/iso-date.ts`）。ファイル名は kebab-case、関数名は camelCase（CLAUDE.md 命名規則）
 - **純粋関数として実装する**（入力文字列 → 出力文字列のみ。DB・時刻・環境に依存しない）。ADR 0004 が検知ロジックに課しているのと同じ理由——テストで全数固定できる層に規則を置くため
 - **テストで Claude API・時刻・外部コマンドをモックする**（CLAUDE.md テスト方針）。時刻を固定する必要がある箇所では `new Date(y, m, d, h)` 由来で組み、UTC 文字列リテラルで固定しない（ADR 0007 決定 5）。本機能は日付境界に触らないため `npm run test:tz` の追加実行は必須ではないが、実行しても壊れないこと
@@ -158,14 +204,60 @@ LLM 由来テキストの表示面は **5 系統**（チャット／macOS 通知
 
 ### 対策の層構成と LLM 依存範囲（Issue の期待動作 2 つ目）
 
-| 対象 | プロンプト指示（LLM 依存） | 正規化（LLM 非依存） | 帰結 |
-|---|---|---|---|
-| **HTML タグ** | あり（S1） | あり（S1・上表の 5 箇所） | **2 層**。LLM が指示を破っても 5 箇所では表示されない |
-| **Markdown 記法** | あり（S1） | **なし**（意図的） | **1 層**。LLM が指示を破れば生のまま出る |
-| 決定ログ・作業ログの表示 | あり（chat プロンプト経由） | **なし**（S1 の範囲外） | **1 層**。HTML が出れば生のまま出る |
-| 通知・日報のプロンプト形式指示 | 既存のまま（変更しない） | あり（通知本文・ボスコメントのみ） | HTML は正規化で覆われる。Markdown は既存指示の範囲 |
+> **2026-09-20 訂正。** 初版の本表は最終行に「Markdown は既存指示の範囲」と書いていたが、**実コードに対して誤りだった**——`purpose="notification"` の指示は `persona-prompt.ts:736-739` の「要点を絞り、短く簡潔な文章にすること。」の 1 文のみで、**長さの制約しか無く Markdown にも HTML にも触れていない**。正はコードとテストであるため、実態に合わせて表を書き直した。この誤りが S3 を「急を要さない」と見積もらせていた。
+
+purpose ごとに層の数が違う。**チャット応答**（`purpose="chat"`）・**通知**（`purpose="notification"`。macOS 通知本文とダッシュボードのひとことが共用）・**日報の値抽出**（`purpose="daily-report"`）で状況が異なるため、purpose 別に示す。
+
+| purpose | 対象 | プロンプト指示（LLM 依存） | 正規化（LLM 非依存） | 層の数 |
+|---|---|---|---|---|
+| `chat` | **HTML タグ** | あり（S1・`CHAT_PLAIN_TEXT_INSTRUCTION`） | あり（S1・チャットの 3 境界） | **2 層** |
+| `chat` | **Markdown 記法** | あり（S1・同上） | **なし**（意図的） | **1 層**。LLM が指示を破れば生のまま出る |
+| `notification` | **HTML タグ** | **なし**（S1 の対象外） | あり（S1・通知本文とボスコメント） | **1 層** |
+| `notification` | **Markdown 記法** | **なし** | **なし**（正規化は Markdown に触れない） | **0 層**。**S3 が埋めるのはここ** |
+| `daily-report` | **Markdown 記法** | あり（既存 `DAILY_REPORT_INSTRUCTION`・`:674-678`） | なし | **1 層**（本仕様の対象外・変更しない） |
+| （purpose 横断） | 決定ログ・作業ログの表示 | あり（chat プロンプト経由） | **なし**（S1 の範囲外） | **1 層**。HTML が出れば生のまま出る |
 
 **Markdown を正規化の対象にしない理由**: 正当な `**`・行頭 `- `・`1. ` を機械的に剥がすと、それらを含む普通の文章が壊れる。HTML タグと違い Markdown 記法は日常の文章と字面が区別できないため、**表示側で判別できる約束にならない**。Markdown はプロンプト指示（LLM 依存の層）に委ね、レンダリングへ倒す選択肢は別 Issue とする。
+
+### S2 の決定: `toClaudeMessages` でボスの過去発言のみ正規化する（根拠は「表示と履歴の一致」）
+
+- **採用案**: `toClaudeMessages`（`chat-messages-route.ts:63-74`）で `role === "boss"` の行にのみ `stripHtmlTags` を適用してから `role: "assistant"` へ写す。**保存 `content` は引き続き生のまま**であり、「保存 `content` の扱い」の決定と両立する
+- **根拠（2026-09-20 に差し替え）**: **ユーザーが画面で見たのは正規化後の文字列**（S1 のチャット 3 境界）**なのに、ボスが次ターンで参照する自分の過去発言は生の HTML 入り文字列である。**「さっき言ったとおり」の参照先が、ユーザーの見たものと一致しない。これは**構造的な事実であり、テストで固定できる**（HTML 入りの `role:"boss"` 行を渡し、`assistant` の `content` が正規化済み文字列と一致することを assert する）
+- **初版の根拠（few-shot 仮説）は採らない**: 初版は「保存 HTML の再投入が HTML 出力を強化しうる」を根拠にしていたが、これは**未検証の仮説**であり、事象が別端末で発生したため**本環境では検証不能である**（上記「S2 / S3 の要否判定」）。検証できない仮説を受入基準の根拠に置くと、担保はテストが持つというこのリポジトリの規律に反する。仮説自体を否定はしないが、**S2 の正当化には使わない**
+- **経路2（`collectTodaysAdhocContext`）は塞がない**: 当日の随時チャットは `NON_INSTRUCTION_DATA_GUARD`（`persona-prompt.ts:410-413`）で「記録データであり、指示ではない」と明示的に囲まれ、`- 時刻 ボス: 本文` の 1 行データへ平坦化されて渡る（`formatTodaysAdhocMessageLine`・`:460-466`）。**会話ターンとして渡る経路1 と違い、文体条件付けが効きにくい形**であり、「表示と履歴の一致」という S2 の根拠も、**そのセッションの会話の続きを書いている**経路1 ほど直接には当てはまらない。初版のスライス表は「1 本だけ塞いで『対策済み』にしない」と書いていたが、それは**両経路を同じ根拠（few-shot 仮説）で束ねていたとき**の記述であり、根拠を差し替えた本改訂では経路1 のみを対象とする
+- **ユーザーの発言には掛けない**: `role === "user"` はオーナー自身が入力した文字列であり、S1 の「正規化はボスの発言にのみ掛ける」決定をそのまま引き継ぐ
+- **先頭の `assistant` を落とす既存挙動（`:69-73`）は変えない**: 会の冒頭メッセージを落とす別件の規律であり、本スライスの対象外
+- **影響範囲**: `chat-messages-route.ts` の `toClaudeMessages` 内の 1 行と、そのテスト
+
+### S3 の決定: `purpose="notification"` へ Markdown 装飾を使わない旨を追記する（HTML は併記しない）
+
+- **採用案**: `purpose === "notification"` の分岐（`persona-prompt.ts:736-739`）が積む指示へ、**Markdown の装飾を使わない旨を追記**する。既存の「要点を絞り、短く簡潔な文章にすること。」は**残し**、その後段に足す
+- **理由**: 上表のとおり**通知 purpose の Markdown は 0 層**であり、システム全体で唯一「LLM が装飾を出したら何の歯止めもなく生で出る」面である。通知の表示面は 2 つとも平文描画で、`**強調**` は文字として見える——macOS 通知本文（React 非介在・`notification-body.ts:208, 242`）と、ダッシュボードのひとこと（`boss-comment.ts` の `purpose: "notification"` → `Dashboard.tsx`）
+- **初版が S3 を後続に置いた根拠（実測で `notifications` 70 件の Markdown マーカーが 0 件）は採らない**: この実測は**別端末・起票 5 日前**のデータであり、論拠にならない（上記「S2 / S3 の要否判定」）
+- **HTML 禁止は併記しない**: 通知面の HTML は S1 の正規化（`notification-body.ts:242` / `boss-comment.ts:205`）で**既に 1 層覆われている**。S3 が埋めるのは 0 層の Markdown であり、HTML の併記は対称性のための追記にとどまる。また S1 の機能要件「`purpose="notification"` のシステムプロンプトは変更しない」のうち HTML に関する部分の改訂にあたり、**本スライスのスコープ外である**（下記「未決の論点」に残す）
+- **指示の文字列は `export` する**: テストが文言を重複記述して恒真にならないようにする（`CHAT_PLAIN_TEXT_INSTRUCTION` と同じ作法。`persona-prompt.ts:649-651` の JSDoc が同じ理由を記録している）
+- **`boss-comment.ts` の全角 80 字検証には影響しない**: 同ファイル `:130-134` は検証を**正規化前の生テキスト**に対して行い、「`stripHtmlTags` は文字数を増やさない」という性質に依存している。S3 はプロンプト指示の追記のみで正規化の挙動を変えないため、この前提は保たれる
+- **影響範囲**: `persona-prompt.ts` の指示 1 本と、そのテスト
+
+## 未決の論点（人間の決定待ち）
+
+> **論点1: `formatDecisionSection` / `formatSessionSummaryLine` の 2 経路も正規化するか。**
+> **本仕様では扱わない**（2026-09-20 決定。スコープ拡大にあたるため）。
+
+判断材料（実コード）:
+
+- 「LLM が書いた保存テキストが生のままプロンプトへ戻る」性質は、上表の経路3（`persona-prompt.ts:325-333`・`record_decision` の content）と経路4（`:425-431`・夕会要約）にも**同じように当てはまる**
+- ただし**決定ログは S1 が意図的に非正規化面として固定済み**であり（受入基準「決定ログとして読み出される `content` は、DB に保存された値と一致する」）、ここへ正規化を入れると表示側の決定と衝突する。プロンプト側だけ正規化すると、今度は S2 の根拠である「表示と履歴の一致」が決定ログでは逆向きに崩れる
+- 症状の報告は無い（Issue #439 はチャットの返信についての報告である）
+
+> **論点2: `purpose="notification"` へ HTML 禁止の指示も併記し、chat と同じ 2 層に揃えるか。**
+> **本仕様では決定しない**（S3 は 0 層の Markdown を埋めることに限る）。
+
+判断材料（実コード）:
+
+- 通知 purpose の HTML は**正規化 1 層のみ**で、chat の 2 層（指示＋正規化）と非対称である
+- 併記は S1 の機能要件「`purpose="notification"` のシステムプロンプトは変更しない」の改訂にあたる
+- 非対称を放置した場合の実害は、通知本文とボスコメントで**正規化がすり抜けたタグ**（許可リストに無いタグ名・大文字タグ）が文字として見えることに限られる
 
 ## 機能全体の設計
 
@@ -182,24 +274,38 @@ LLM 由来テキストの表示面は **5 系統**（チャット／macOS 通知
 export function stripHtmlTags(text: string): string;
 ```
 
-- 公開 API（HTTP のレスポンス形状・SSE のイベント名／ペイロード形状）は**変更しない**。`GET /api/sessions/:id/messages` は同じ JSON 形状を返し、`content` の値だけが正規化される
+S3 が新設するのは、通知 purpose の指示文字列 1 本だけである（文言そのものは実装者の裁量。定数名は実装時に決めてよい）。
+
+```ts
+// server/src/boss/persona-prompt.ts
+/** `purpose="notification"` の出力形式指示（Markdown 装飾を使わない旨）。 */
+export const <定数名>: string;
+```
+
+- `export` するのは**テストが文言を重複記述して恒真にならないようにする**ため（`CHAT_PLAIN_TEXT_INSTRUCTION` と同じ作法）
+- S2 は新しい公開 API を作らない（`toClaudeMessages` はモジュール内のローカル関数のまま）
+- 公開 API（HTTP のレスポンス形状・SSE のイベント名／ペイロード形状）は S1・S2・S3 のいずれでも**変更しない**。`GET /api/sessions/:id/messages` は同じ JSON 形状を返し、`content` の値だけが正規化される
 - DB スキーマの変更なし
 
 ### 実装計画（チケット分解の見通し）
 
-`/create-ticket` の実装分解モードで確定させる。見通しとしては「純粋関数＋そのテスト」→「5 箇所への適用」→「プロンプト指示」の 3 本に分けられるが、純粋関数が他 2 本の前提になるため直列性が強い。
+- **S1（出荷済み）**: 「純粋関数＋そのテスト」→「5 箇所への適用」→「プロンプト指示」の 3 本。実際には #460 →（#461 / #462）→ #459 として起票・実装された
+- **S3（実装対象）**: `persona-prompt.ts` の指示 1 本とそのテストのみ。**分解せず 1 チケットで足りる**
+- **S2（S3 のマージ後）**: `toClaudeMessages` の 1 行とそのテストのみ。**分解せず 1 チケットで足りる**
 
 ## スライス（出荷の単位）
 
 | スライス | 内容 | 触るファイル数（概算） | 出荷条件 |
 |---|---|---|---|
 | S1（最小） | ① `purpose="chat"` へ HTML＋Markdown を対象とした平文指示を追加 ② `stripHtmlTags` を新設し、チャット SSE の `text`／`done`・チャット読み出し・macOS 通知本文・ダッシュボードのボスコメントの 5 箇所へ適用 | 12-14 | これだけで価値が出る（HTML は 2 層・Markdown は 1 層で覆われ、Issue の期待動作 2 件を満たす） |
-| S2 | プロンプト組み立て時の正規化。**`toClaudeMessages`（`chat-messages-route.ts:62-73`・同一セッションの会話履歴）と `collectTodaysAdhocContext` → `todaysAdhocMessages`（`persona-prompt.ts`・別セッションの随時チャット）の 2 経路の両方**を覆う（1 本だけ塞いで「対策済み」にしない） | 4-6 | S1 がマージされてから |
-| S3 | `purpose="notification"` へ Markdown 装飾を使わない旨を追記する（現状は「短く簡潔に」＝長さのみ） | 2-3 | S1 がマージされてから |
+| S2 | 会話履歴をプロンプトへ写す `toClaudeMessages`（`chat-messages-route.ts:63-74`）で、**`role="boss"` の `content` のみ**正規化する。**経路2（`collectTodaysAdhocContext`）は覆わない** | 2-3 | **S3 の PR がマージされてから起票する** |
+| S3（実装対象） | `purpose="notification"` へ Markdown 装飾を使わない旨を追記する（現状は「短く簡潔に」＝長さのみ。**Markdown 0 層**） | 2-3 | S1 がマージされてから（済） |
 
-実装対象: S1
+実装対象: S3
 
-> S2 は「保存 HTML の再投入が出力を強化する」という**未検証の仮説**への対策である。S3 は、実測で `notifications` 70 件の Markdown マーカーが 0 件だったため急を要さないと判断して後続に置いた（ただしこの実測にも「DB の最終書き込みが起票の 5 日前」という限界が付くため、「通知では Markdown が出ない」と断定はしない）。
+**出荷順: S1（出荷済み）→ S3 → S2。** S3 を先にするのは、**層が 0 の欠落を埋めるほうが価値/費用比が高い**ため（S2 が直すのは 1 層＝表示側が既に覆われている面の、履歴との不一致である）。S2 の要件チケットは S3 の PR がマージされてから起票する。
+
+> **2026-09-20 改訂。** 初版の S2 は「保存 HTML の再投入が出力を強化する」という**未検証の仮説**への対策で、2 経路の両方を覆う（1 本だけ塞いで「対策済み」にしない）としていた。**仮説が本環境では検証不能と判明した**ため、根拠を「表示と履歴の一致」へ差し替え、その根拠が直接当てはまる経路1 のみへ範囲を縮小した（上記「クリティカル設計決定 § S2 の決定」）。初版の S3 が「急を要さない」とした根拠（実測で `notifications` 70 件の Markdown マーカーが 0 件）も、**別端末・起票 5 日前のデータであり論拠にならない**ため取り下げた。
 
 ## やらないこと
 
@@ -211,12 +317,15 @@ export function stripHtmlTags(text: string): string;
 - **ボス人格・トーンの指示内容そのものの変更**（理由: 本件は出力形式の話であり、`TONE_DESCRIPTIONS` や応答の規律は対象外）
 - **`web/` 配下への正規化の追加**（理由: macOS 通知を覆えないため server 側へ集約する決定を採った。両方に置くと同じ規則が二重管理になる）
 - **DB スキーマの変更**（理由: 正規化は境界で行うため保存形式は変わらない）
+- **当日の随時チャットの参考情報ブロック（`collectTodaysAdhocContext` 経路）の正規化**（理由: `NON_INSTRUCTION_DATA_GUARD` で囲まれた 1 行データへ平坦化されており、会話ターンとして渡る `toClaudeMessages` と違って文体条件付けが効きにくい。S2 の根拠である「表示と履歴の一致」も、そのセッションの会話の続きを書いている経路1 ほど直接には当てはまらない。上記「クリティカル設計決定 § S2 の決定」）
+- **直近の決定（`formatDecisionSection`）・報告履歴（`formatSessionSummaryLine`）の正規化**（理由: 同種の経路だがスコープ拡大にあたるため本仕様では扱わない。とくに決定ログは S1 が意図的に非正規化面として固定済みで、そこへ正規化を入れると S1 の決定と衝突する。上記「未決の論点」論点1）
+- **`purpose="notification"` への HTML 禁止指示の追記**（理由: 通知面の HTML は S1 の正規化で既に 1 層覆われており、S3 が埋めるのは 0 層の Markdown である。併記は S1 の機能要件の改訂にあたる。上記「未決の論点」論点2）
 
 ## 受入基準
 
-> 実装対象スライス S1 の範囲。
+> **実装対象スライスは S3。** 下記のうち「S3」の節が実装対象であり、「S1」の節は出荷済み（PR #467）の記録、「S2」の節は S3 のマージ後に起票するスライスの基準である。
 
-### 正規化の純粋関数
+### S1: 正規化の純粋関数（出荷済み）
 
 - [ ] 許可リストのブロック境界タグ（`br` `p` `div` `li` `ul` `ol` `h1`〜`h6` `tr` `hr` `table` `blockquote` `pre`）は、開始タグ・終了タグ・自己終了形のいずれも改行 1 個へ置換される
 - [ ] 許可リストのインラインタグ（`strong` `em` `b` `i` `span` `code` `a` `td` `th`）は、開始タグ・終了タグ・自己終了形のいずれも除去される
@@ -229,7 +338,7 @@ export function stripHtmlTags(text: string): string;
 - [ ] 正規化結果に対して先頭・末尾の空白除去（トリム）は行われない（`<p>甲</p>` の正規化結果は前後の改行を保った `\n甲\n` になる）
 - [ ] 正規化結果に対して連続する改行の畳み込みは行われない（`<p>甲</p><p>乙</p>` の正規化結果は `\n甲\n\n乙\n` になる）
 
-### 適用面
+### S1: 適用面（出荷済み）
 
 - [ ] `GET /api/sessions/:id/messages` が返す `role: "boss"` のメッセージは、`content` が正規化された値になる
 - [ ] `GET /api/sessions/:id/messages` が返す `role: "user"` のメッセージの `content` は、DB に保存された値と一致する（正規化されない）
@@ -242,9 +351,31 @@ export function stripHtmlTags(text: string): string;
 - [ ] 決定ログとして読み出される `content` は、DB に保存された値と一致する（正規化されない）
 - [ ] 作業ログとして読み出される `content` は、DB に保存された値と一致する（正規化されない）
 
-### プロンプト指示
+### S1: プロンプト指示（出荷済み）
 
 - [ ] `purpose="chat"` で組み立てたシステムプロンプトに、HTML タグを使わない旨の指示が含まれる
 - [ ] `purpose="chat"` で組み立てたシステムプロンプトに、Markdown の装飾を使わない旨の指示が含まれる
 - [ ] `purpose="notification"` で組み立てたシステムプロンプトは、本変更の前後で変わらない
 - [ ] `purpose="daily-report"` で組み立てたシステムプロンプトは、本変更の前後で変わらない
+
+### S3: 通知プロンプトへの Markdown 禁止指示（実装対象）
+
+- [ ] `purpose="notification"` で組み立てたシステムプロンプトに、Markdown の装飾を使わない旨の指示が含まれる
+- [ ] `purpose="notification"` で組み立てたシステムプロンプトに、既存の「要点を絞り、短く簡潔な文章にすること」の指示が引き続き含まれる
+- [ ] `purpose="notification"` で組み立てたシステムプロンプトに、**HTML タグを使わない旨の指示は含まれない**（S3 のスコープ外。「未決の論点」論点2）
+- [ ] 追記する指示の文字列は `persona-prompt.ts` から `export` されており、テストはその値を参照する（テスト側で文言を重複記述しない）
+- [ ] `purpose="chat"` で組み立てたシステムプロンプトは、S3 の前後で変わらない（とくに `CHAT_PLAIN_TEXT_INSTRUCTION` は 1 文字も変わらず、S3 で追記した指示は `purpose="chat"` のプロンプトに含まれない）
+- [ ] `purpose="daily-report"` で組み立てたシステムプロンプトは、S3 の前後で変わらない
+- [ ] `generateNotificationBody` が `buildPersonaPrompt` へ渡す `purpose` は `"notification"` のままで、macOS 通知本文の生成が S3 の指示を受け取る
+- [ ] ダッシュボードのひとこと（`boss-comment.ts`）が `buildPersonaPrompt` へ渡す `purpose` は `"notification"` のままで、ひとことの生成が S3 の指示を受け取る
+- [ ] `stripHtmlTags` の挙動と適用箇所は S3 の前後で変わらない（S3 はプロンプト指示のみの変更であり、正規化には触れない）
+
+### S2: 会話履歴の正規化（S3 のマージ後に起票）
+
+- [ ] `toClaudeMessages` へ HTML タグを含む `role: "boss"` の行を渡すと、対応する `role: "assistant"` の `content` が `stripHtmlTags` 適用後の文字列と一致する
+- [ ] `toClaudeMessages` へ HTML タグを含む `role: "user"` の行を渡すと、対応する `role: "user"` の `content` は入力と 1 文字も変わらない
+- [ ] 許可リストのタグに一致する箇所が 1 つも無い `role: "boss"` の行は、`content` が入力と 1 文字も変わらない
+- [ ] 先頭の `assistant` 行をすべて落とす既存挙動は、S2 の前後で変わらない
+- [ ] チャット応答の前後で `messages.content` に保存された値は LLM の生出力と一致する（S2 でも正規化されない）
+- [ ] 当日の随時チャットの参考情報ブロック（`collectTodaysAdhocContext` → `formatTodaysAdhocMessageSection`）に載る `content` は、DB に保存された値と一致する（S2 では正規化しない）
+- [ ] 直近の決定（`formatDecisionSection`）と報告履歴（`formatSessionSummaryLine`）に載る `content` は、DB に保存された値と一致する（「未決の論点」論点1）
