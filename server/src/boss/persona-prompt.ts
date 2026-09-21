@@ -1,6 +1,7 @@
 import type { Task } from "../tasks/task.js";
 import type { SessionType } from "../sessions/session.js";
 import type { MessageRole } from "../sessions/message.js";
+import type { DecisionKind } from "../decisions/decision.js";
 import { toDateKey, toLocalOffset } from "../detection/time-utils.js";
 import { isValidIsoDateTime } from "../lib/iso-date.js";
 
@@ -75,6 +76,20 @@ export interface TodaysAdhocMessage {
   sentAt: string;
 }
 
+/**
+ * 対象タスクに紐づく過去の決定・メンタリング記録（S2b・Issue #545, 親 #438
+ * 決定16〜19）。`RecentDecision` と同じ「呼び出し側でマッピングして渡す」
+ * 流儀。新しい順（`created_at` 降順）で渡される前提
+ * （`listDecisionsByTaskId` の並びがそのまま契約に一致する）。
+ */
+export interface TaskRelatedRecord {
+  content: string;
+  rationale: string | null;
+  kind: DecisionKind;
+  /** `decisions.created_at` をそのまま */
+  recordedAt: string;
+}
+
 export type PromptPurpose = "chat" | "notification" | "daily-report";
 
 export interface PersonaPromptContext {
@@ -145,6 +160,14 @@ export interface PersonaPromptContext {
    * （AC-20/AC-21）。省略時は undefined（対象タスクなしの従来どおりの挙動）。
    */
   mentoringTaskId?: number;
+  /**
+   * 対象タスクに紐づく過去記録（S2b・Issue #545, 親 #438 決定16〜19。新しい順
+   * を想定）。`mentoring` が真 かつ `mentoringTaskId` が `tasks` に在るときだけ
+   * セクションを出す（決定19。`resolveMentoringTargetTask` と同じ AND 条件）。
+   * 任意プロパティ: 既存の呼び出し元は当面これを渡さないため、未指定時は
+   * 空配列として扱う（後方互換）。
+   */
+  taskRelatedRecords?: TaskRelatedRecord[];
 }
 
 const TONE_DESCRIPTIONS: Record<TonePreset, string> = {
@@ -561,6 +584,163 @@ function formatTodaysAdhocMessageSection(messages: TodaysAdhocMessage[]): string
   return `${ADHOC_CHAT_START}\n${body}${noticeLine}\n${ADHOC_CHAT_END}\n${NON_INSTRUCTION_DATA_GUARD}`;
 }
 
+/**
+ * 対象タスクの過去記録ブロックの合計文字数上限（S2b・Issue #545, 親 #438
+ * 決定18）。対象は各記録の `content` と `rationale` の文字数の合計のみ
+ * （行頭の日時・種別ラベルなど整形部分は含めない。
+ * `MAX_TODAYS_ADHOC_MESSAGES_TOTAL_LENGTH` と同じ数え方）。
+ * 当日の随時チャットの上限（4,000）の半分 — 過去記録は補助的な参照情報であり、
+ * 進行中の会話と競合したときに譲る側だから。
+ */
+export const MAX_TASK_RELATED_RECORDS_TOTAL_LENGTH = 2_000;
+
+// 決定ログ画面（web/src/DecisionLog.tsx の KIND_LABEL）と同じ語彙。npm
+// workspaces で server/web が分かれており共有経路が無く、共有を作ると
+// 「web に差分を作らない」制約に反するため、同じ文字列リテラルをここにも置く
+// （DRY より本チケットのスコープ制約を優先。#545）。
+//
+// kind は resolveStrictnessDescription / resolveSessionTypeLabel のような
+// 防御的フォールバックを取らない —— ADHOC_ROLE_LABELS と同じ判断で、
+// decisions.kind は列の CHECK 制約（migrate.ts v8:
+// `CHECK (kind IN ('decision', 'mentoring'))`）が閉じた集合を担保しており、
+// 想定外の値が実行時に紛れ込む経路が無いため Record の網羅性チェック
+// （コンパイルエラー）に委ねる。フォールバックを持つ settings 由来の
+// strictness（CHECK 制約なし）とはこの点で条件が異なる。
+const TASK_RELATED_RECORD_KIND_LABELS: Record<DecisionKind, string> = {
+  decision: "決定",
+  mentoring: "メンタリング",
+};
+
+const TASK_RELATED_RECORDS_TRUNCATED_NOTICE =
+  "（上記より古い記録、または本文の一部は文字数上限のため一部省略しています）";
+
+/**
+ * 過去記録1件のコスト（切り詰め判定に使う文字数）。`content` と `rationale`
+ * の文字数の合計のみを数え、行頭の日時・種別ラベルは含めない
+ * （`MAX_TASK_RELATED_RECORDS_TOTAL_LENGTH` の定義と同じ数え方）。
+ */
+function taskRelatedRecordCost(record: TaskRelatedRecord): number {
+  return record.content.length + (record.rationale?.length ?? 0);
+}
+
+/**
+ * 1件が単独で上限を超えるときの切り詰め配分（**未決の論点・親の暫定決定**:
+ * Issue #545 では content/rationale のどちらを優先して残すかは未決のため、
+ * 呼び出し元の指示により `content` 優先で実装する。`content` は記録の結論
+ * そのもので、落ちると行の意味が成立しない。`rationale` は補助情報であり、
+ * 予算が余った分だけ残す。**この配分は意思決定者の決定が入り次第、合わせて
+ * 見直す**（配分を固定するテストは意図的に置いていない）。
+ */
+function truncateSingleRecord(record: TaskRelatedRecord): TaskRelatedRecord {
+  const contentBudget = Math.min(
+    record.content.length,
+    MAX_TASK_RELATED_RECORDS_TOTAL_LENGTH,
+  );
+  const truncatedContent =
+    record.content.length > contentBudget
+      ? `${record.content.slice(0, contentBudget - 1)}…`
+      : record.content;
+
+  // `content` が上限を使い切ったら `rationale` は丸ごと落とす（`remaining` が
+  // 0 のとき）。余った分にだけ `rationale` を充て、入り切らなければ
+  // `content` と同じ作法（省略記号1文字込みで残り予算ちょうど）で切り詰める。
+  const remaining = MAX_TASK_RELATED_RECORDS_TOTAL_LENGTH - contentBudget;
+  let truncatedRationale: string | null = null;
+  if (record.rationale !== null && remaining > 0) {
+    truncatedRationale =
+      record.rationale.length <= remaining
+        ? record.rationale
+        : `${record.rationale.slice(0, remaining - 1)}…`;
+  }
+
+  return { ...record, content: truncatedContent, rationale: truncatedRationale };
+}
+
+interface TaskRelatedRecordSelection {
+  /** 新しい順のまま採用した記録 */
+  selected: TaskRelatedRecord[];
+  truncated: boolean;
+}
+
+/**
+ * `recordedAt` 降順（新しい順）へ並べ替える。`taskRelatedRecords` は新しい順
+ * で渡される契約（`TaskRelatedRecord` の JSDoc。現在の唯一の呼び出し元
+ * `listDecisionsByTaskId` は `ORDER BY created_at DESC, id DESC` でこれを
+ * 満たす）だが、`sortByAscendingSentAt`（当日の随時チャット）と同じ防御的
+ * フォールバックの作法で、呼び出し側が誤って古い順で渡した場合に備えておく
+ * （self-review 指摘: 無防備だと上限超過時に最新側ではなく最古側が残る
+ * 逆転が、型でも実行時エラーでも検知されないまま静かに起きる）。
+ */
+function sortByDescendingRecordedAt(
+  records: TaskRelatedRecord[],
+): TaskRelatedRecord[] {
+  return [...records].sort(
+    (a, b) => Date.parse(b.recordedAt) - Date.parse(a.recordedAt),
+  );
+}
+
+/**
+ * 新しい側（index 0）から順に走査し、合計コストが上限に収まる間だけ採用する
+ * （`selectTodaysAdhocMessages` と同じ「最良詰め合わせをしない」作法）。
+ * 引数は新しい順（`sortByDescendingRecordedAt` 済み）である前提 — 当日の
+ * 随時チャットとは逆に、index 0 から順に走査すればそのまま「新しい側から
+ * 詰める」になる。1件も採用できない場合（最新の1件が単独で上限を超える
+ * 場合）は、最新の1件を `truncateSingleRecord` で切り詰めて採用する
+ * （ブロックが空になるのを防ぐ）。
+ */
+function selectTaskRelatedRecords(
+  records: TaskRelatedRecord[],
+): TaskRelatedRecordSelection {
+  const selected: TaskRelatedRecord[] = [];
+  let total = 0;
+  let index = 0;
+
+  for (; index < records.length; index++) {
+    const cost = taskRelatedRecordCost(records[index]);
+    if (total + cost > MAX_TASK_RELATED_RECORDS_TOTAL_LENGTH) {
+      break;
+    }
+    total += cost;
+    selected.push(records[index]);
+  }
+
+  const truncated = index < records.length;
+
+  if (selected.length === 0) {
+    return { selected: [truncateSingleRecord(records[0])], truncated: true };
+  }
+
+  return { selected, truncated };
+}
+
+function formatTaskRelatedRecordLine(record: TaskRelatedRecord): string {
+  const kindLabel = TASK_RELATED_RECORD_KIND_LABELS[record.kind];
+  const rationalePart =
+    record.rationale === null ? "" : `（根拠: ${record.rationale}）`;
+  return `- ${formatStoredDateTime(record.recordedAt)} [${kindLabel}] ${record.content}${rationalePart}`;
+}
+
+/**
+ * 対象タスクの過去記録セクション（S2b・Issue #545, 親 #438 決定16〜19）。
+ * `formatTodaysAdhocMessageSection` と同じ作法: 記録が0件なら**セクション
+ * 自体を出さない**（空文字列を返し、呼び出し側は空文字列なら push しない）。
+ * デリミタによる囲み・NON_INSTRUCTION_DATA_GUARD は付けない — これらの記録は
+ * ボス自身のツール呼び出し（record_decision/record_mentoring）に由来し、
+ * 既存の「直近の決定」セクションと同じ信頼レベルとして扱う（呼び出し元の
+ * 判断・#545）。
+ */
+function formatTaskRelatedRecordsSection(records: TaskRelatedRecord[]): string {
+  if (records.length === 0) {
+    return "";
+  }
+  const { selected, truncated } = selectTaskRelatedRecords(
+    sortByDescendingRecordedAt(records),
+  );
+  const body = selected.map(formatTaskRelatedRecordLine).join("\n");
+  const noticeLine = truncated ? `\n${TASK_RELATED_RECORDS_TRUNCATED_NOTICE}` : "";
+  return `${body}${noticeLine}`;
+}
+
 // 朝会/夕会のガイドはシステムプロンプトによる誘導のみで実現し、ステップ管理の
 // 状態機械はサーバーに持たない（Issue #47 明示的な仮定）。
 // 仕事の進め方のメンタリング（Issue #409, 親 #276, 機能仕様 判断4・8・9）。
@@ -757,6 +937,16 @@ export function buildPersonaPrompt(
           context.taskEvidenceCounts?.[targetTask.id] ?? 0;
         sections.push(formatTargetTaskSection(targetTask, evidenceCount));
         sections.push(MENTORING_TARGET_TASK_INSTRUCTION);
+        // S2b・Issue #545（親 #438 決定19）: 「対象タスク」セクションと
+        // MENTORING_TARGET_TASK_INSTRUCTION の間には絶対に挟まない
+        // （後者が「上の『対象タスク』セクション」という位置前提の文言を
+        // 持つため）。この位置に固定する。
+        const taskRelatedRecordsSection = formatTaskRelatedRecordsSection(
+          context.taskRelatedRecords ?? [],
+        );
+        if (taskRelatedRecordsSection) {
+          sections.push(`対象タスクの過去記録:\n${taskRelatedRecordsSection}`);
+        }
       }
     }
     const sessionFlowInstruction = resolveSessionFlowInstruction(

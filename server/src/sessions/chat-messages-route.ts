@@ -7,7 +7,10 @@ import { stripHtmlTags, splitPendingTagTail } from "../lib/strip-html-tags.js";
 import { recordActivityEvent } from "../activity/activity-events-repository.js";
 import { findTaskById, listTasks } from "../tasks/tasks-repository.js";
 import { countTaskEvidencesByTaskIds } from "../tasks/task-evidences-repository.js";
-import { listRecentDecisions } from "../decisions/decisions-repository.js";
+import {
+  listDecisionsByTaskId,
+  listRecentDecisions,
+} from "../decisions/decisions-repository.js";
 import { resolveBossSettings } from "../boss/boss-settings.js";
 import { resolveMorningMentoringRequired } from "../settings/mentoring-settings.js";
 import {
@@ -38,6 +41,14 @@ import type { SessionType } from "./session.js";
  * (which may contain request internals) per the critical API-key/error
  * handling requirement. */
 const GENERIC_STREAM_ERROR_MESSAGE = "ボスの応答中にエラーが発生しました";
+
+/**
+ * 対象タスクの過去記録としてプロンプトへ積む最大件数（S2b・Issue #545, 親
+ * #438 決定16）。`listRecentDecisions(db, 5)` と同じ「直近5件」の慣習
+ * （件数の指定はこのルートの責務。`listDecisionsByTaskId` 自身は limit を
+ * 受け取るだけで既定値を持たない）。
+ */
+const TASK_RELATED_RECORD_LIMIT = 5;
 
 /**
  * Maps stored messages to the Anthropic `MessageParam` shape, then drops any
@@ -308,6 +319,16 @@ export function registerChatMessageRoute(
     // ときにしか存在しない（決定7）ので、この時点では常に mentoring も
     // 真だが、契約として明示的に mentoring でゲートする。
     const mentoringTaskIdForTurn = mentoring ? mentoringTaskId : undefined;
+    // S2b・Issue #545（親 #438 決定16・17）: 対象タスクに紐づく過去の決定・
+    // メンタリング記録を、listRecentDecisions とは別経路
+    // （listDecisionsByTaskId、kind で絞らない）で引く。mentoringTaskIdForTurn
+    // が undefined のとき（mentoring が偽、または mentoringTaskId 未指定）は
+    // クエリ自体を発行しない — buildPersonaPrompt 側でも AND 条件でゲート
+    // されるが、無駄な DB アクセスを避ける。
+    const taskRelatedRecords =
+      mentoringTaskIdForTurn === undefined
+        ? undefined
+        : listDecisionsByTaskId(db, mentoringTaskIdForTurn, TASK_RELATED_RECORD_LIMIT);
     const system = buildPersonaPrompt(persona, {
       tasks,
       // 決定 3-a: ボスが自分の裁定（要否）と現状（添付件数）を参照できる
@@ -322,6 +343,8 @@ export function registerChatMessageRoute(
       mentoring,
       // Issue #468（親 #444 決定3）: 対象タスクをプロンプトへ積む結線。
       mentoringTaskId: mentoringTaskIdForTurn,
+      // Issue #545（親 #438 決定16・17）: 対象タスクの過去記録の結線。
+      taskRelatedRecords,
       // 「今何時か」「締切まであと何時間か」の主経路（Issue #288）
       includeCurrentDateTime: true,
     });
