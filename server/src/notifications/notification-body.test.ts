@@ -3,6 +3,7 @@ import type Database from "better-sqlite3";
 import type Anthropic from "@anthropic-ai/sdk";
 import { openDatabase } from "../db/connection.js";
 import { runMigrations } from "../db/migrate.js";
+import { NOTIFICATION_PLAIN_TEXT_INSTRUCTION } from "../boss/persona-prompt.js";
 import type { Task } from "../tasks/task.js";
 
 const { createClaudeClientMock, streamBossMessageMock } = vi.hoisted(() => ({
@@ -85,6 +86,24 @@ describe("generateNotificationBody", () => {
     const request = streamBossMessageMock.mock.calls[0][1];
     expect(request.system).toContain("スミス");
     expect(request.system).toContain("通知文面");
+  });
+
+  // Issue #546（親 #439 S3）: 通知文面の生成が S3 の Markdown 禁止指示を実際に
+  // 受け取ること（`buildPersonaPrompt` へ渡す purpose が "notification" のまま
+  // であること）のピン。persona-prompt.test.ts は「notification 分岐が指示を
+  // 積む」ことしか見られないため、経路の端まではこちらで固定する。
+  it("AC-S3-7: passes the notification Markdown-free instruction to the model (#546)", async () => {
+    streamBossMessageMock.mockResolvedValue(fakeTextMessage("着手しろ"));
+
+    await generateNotificationBody(db, env, {
+      ruleType: "todo_stall",
+      escalationLevel: 1,
+      task: makeTask(),
+      now,
+    });
+
+    const request = streamBossMessageMock.mock.calls[0][1];
+    expect(request.system).toContain(NOTIFICATION_PLAIN_TEXT_INSTRUCTION);
   });
 
   // Issue #288: 催促文面は現在日時を「出す」側。同じ purpose:"notification"

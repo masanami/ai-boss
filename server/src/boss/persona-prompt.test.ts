@@ -5,6 +5,7 @@ import {
   MAX_TASK_RELATED_RECORDS_TOTAL_LENGTH,
   MAX_TODAYS_ADHOC_MESSAGES_TOTAL_LENGTH,
   MENTORING_TARGET_TASK_INSTRUCTION,
+  NOTIFICATION_PLAIN_TEXT_INSTRUCTION,
   buildPersonaPrompt,
   type PersonaSettings,
   type TaskRelatedRecord,
@@ -915,8 +916,10 @@ describe("buildPersonaPrompt", () => {
       });
 
       expect(prompt).not.toContain(CHAT_PLAIN_TEXT_INSTRUCTION);
-      // 既存の通知向け指示は変わらず積まれている（本変更が
-      // notification 分岐に何も足していないこと・奪っていないこと）。
+      // 既存の通知向け指示は変わらず積まれている（#459 が notification 分岐に
+      // 何も足していないこと・奪っていないこと）。#459 時点の記述であり、
+      // その後 Issue #546（S3）が notification 分岐へ Markdown 禁止を 1 節
+      // 足している（下の describe）。
       expect(prompt).toContain("通知文面として使われる");
     });
 
@@ -942,6 +945,118 @@ describe("buildPersonaPrompt", () => {
     });
 
     expect(prompt).toContain("通知文面として使われる");
+  });
+
+  // Issue #546（親 #439 S3）: docs/features/boss-reply-plain-text-output.md
+  // 「対策の層構成と LLM 依存範囲」— 通知 purpose の Markdown は防御の層が **0**
+  // である（システム全体で唯一）。表示面は macOS 通知本文（React 非介在）と
+  // ダッシュボードのひとことの 2 つで、どちらも平文描画のため `**強調**` は文字
+  // としてそのまま見える。`stripHtmlTags` は設計上 Markdown に触れないため、
+  // 通知文面で Markdown を出させない責任はこの指示だけが負っている。
+  //
+  // 受入基準のうち AC-S3-4（指示文字列を export し、テストがその値を参照する）は
+  // 独立したテストを持たない——この describe が
+  // `NOTIFICATION_PLAIN_TEXT_INSTRUCTION` を import して参照していること自体が
+  // 担保である。AC-S3-7 / AC-S3-8（2 つの表示面が実際にこの指示を受け取る）は
+  // `notifications/notification-body.test.ts` と `dashboard/boss-comment.test.ts`
+  // が持つ。AC-S3-9（`stripHtmlTags` の挙動と適用箇所が変わらない）は S3 が
+  // それらを一切変更しないことと、既存の `lib/strip-html-tags.test.ts` ・
+  // 両呼び出し面の正規化テストが担保する。
+  describe("purpose が notification のときの Markdown 禁止指示（Issue #546 / 親 #439 S3）", () => {
+    function buildNotificationPrompt(): string {
+      return buildPersonaPrompt(DEFAULT_PERSONA_SETTINGS, {
+        tasks: [],
+        recentDecisions: [],
+        now,
+        purpose: "notification",
+      });
+    }
+
+    it("AC-S3-1: Markdown の装飾を使わない旨の指示を含む", () => {
+      expect(buildNotificationPrompt()).toContain(
+        NOTIFICATION_PLAIN_TEXT_INSTRUCTION,
+      );
+      expect(NOTIFICATION_PLAIN_TEXT_INSTRUCTION).toContain("Markdown");
+      // CHAT_PLAIN_TEXT_INSTRUCTION と同じ作法で、禁止する記法を名指しする
+      // （「Markdown を使うな」だけでは、どの記法が禁止なのか LLM に伝わる
+      // 保証が無い）。
+      expect(NOTIFICATION_PLAIN_TEXT_INSTRUCTION).toContain("**強調**");
+      expect(NOTIFICATION_PLAIN_TEXT_INSTRUCTION).toContain("箇条書き");
+      expect(NOTIFICATION_PLAIN_TEXT_INSTRUCTION).toContain("番号付きリスト");
+    });
+
+    it("AC-S3-2: 既存の「要点を絞り、短く簡潔な文章にすること」の指示が引き続き含まれる", () => {
+      // S3 は既存の長さ制約を置き換えず後段に足す。ここで文言を逐語で書くのは
+      // 恒真アサーションではなく「既存の指示が変わっていない」ことのピンである
+      // （実装側の文言を変えればこのテストが落ちる）。
+      expect(buildNotificationPrompt()).toContain(
+        "この応答は通知文面として使われる。要点を絞り、短く簡潔な文章にすること。",
+      );
+    });
+
+    it("Markdown 禁止の指示は既存の長さ制約の後段に積まれる", () => {
+      // 機能仕様の S3 決定「既存の…は残し、その後段に足す」を固定する
+      // （2 つの sections.push を入れ替えれば落ちる）。AC-S3-1 / AC-S3-2 は
+      // どちらも「含まれる」ことしか見ないため、順序は別に固定する。
+      const prompt = buildNotificationPrompt();
+
+      expect(prompt.indexOf("要点を絞り")).toBeLessThan(
+        prompt.indexOf(NOTIFICATION_PLAIN_TEXT_INSTRUCTION),
+      );
+    });
+
+    it("AC-S3-3: HTML タグを使わない旨の指示は含まれない（S3 のスコープ外・「未決の論点」論点2）", () => {
+      // 通知面の HTML は S1 の正規化で既に 1 層覆われており、指示の併記は S1 の
+      // 機能要件「purpose="notification" のシステムプロンプトは変更しない」の
+      // HTML 部分の改訂にあたる。S3 が埋めるのは 0 層の Markdown だけである。
+      expect(NOTIFICATION_PLAIN_TEXT_INSTRUCTION).not.toContain("HTML");
+      // 「HTML」の語を使わないタグ記法での禁止指示（例: `<p> <br> を使っては
+      // ならない`）も素通りさせない。
+      expect(NOTIFICATION_PLAIN_TEXT_INSTRUCTION).not.toMatch(/<[a-z]/i);
+      // プロンプト全体への否定は煙感知器（notification 分岐の他の節が HTML 禁止
+      // を持ち込んでも落ちる）。過剰検出は許容する。
+      expect(buildNotificationPrompt()).not.toContain("HTML");
+    });
+
+    it("AC-S3-5: purpose が chat のプロンプトには含まれず、chat の平文指示は 1 文字も変わらない", () => {
+      const chatPrompt = buildPersonaPrompt(DEFAULT_PERSONA_SETTINGS, {
+        tasks: [],
+        recentDecisions: [],
+        now,
+      });
+
+      expect(chatPrompt).not.toContain(NOTIFICATION_PLAIN_TEXT_INSTRUCTION);
+      // CHAT_PLAIN_TEXT_INSTRUCTION が S3 の前後で 1 文字も変わっていないこと
+      // のピン（AC-S3-5 が名指しで要求している）。
+      expect(CHAT_PLAIN_TEXT_INSTRUCTION).toBe(
+        "出力形式: 応答は平文で書くこと。HTMLタグ（<p> <br> <strong> など）を使ってはならない。" +
+          "Markdownの装飾（**強調**、見出しの #、箇条書きの行頭 - や *、番号付きリストの行頭 1. 、" +
+          "コードブロックの ``` 、表記法）も使ってはならない。列挙が必要なときは記号を使わず、" +
+          "改行と句読点だけで区切った普通の文章にすること。",
+      );
+      expect(chatPrompt).toContain(CHAT_PLAIN_TEXT_INSTRUCTION);
+    });
+
+    it("AC-S3-6: purpose が daily-report のプロンプトには含まれず、日報の指示は変わらない", () => {
+      const dailyReportPrompt = buildPersonaPrompt(DEFAULT_PERSONA_SETTINGS, {
+        tasks: [],
+        recentDecisions: [],
+        now,
+        purpose: "daily-report",
+      });
+
+      expect(dailyReportPrompt).not.toContain(
+        NOTIFICATION_PLAIN_TEXT_INSTRUCTION,
+      );
+      expect(dailyReportPrompt).toContain(
+        "この応答は日報生成のための夕会サマリ抽出に使われる。",
+      );
+      // daily-report が元から持つ平文指示。S3 はこれを置き換えも重複もしない
+      // （DAILY_REPORT_INSTRUCTION から削れば落ちる）。
+      expect(dailyReportPrompt).toContain(
+        "各値は平文の簡潔な文章とし、Markdown の見出し・箇条書き記号・装飾は使わないこと。",
+      );
+    });
   });
 
   it("purpose が daily-report のとき、submit_evening_summary ツールでの4値提出を促す指示を含み、Markdown構造を指示しない", () => {

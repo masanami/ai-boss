@@ -3,6 +3,7 @@ import type Database from "better-sqlite3";
 import type Anthropic from "@anthropic-ai/sdk";
 import { openDatabase } from "../db/connection.js";
 import { runMigrations } from "../db/migrate.js";
+import { NOTIFICATION_PLAIN_TEXT_INSTRUCTION } from "../boss/persona-prompt.js";
 import { insertTask, updateTask } from "../tasks/tasks-repository.js";
 import { getCachedBossComment } from "./boss-comment-cache.js";
 import { computeTaskFingerprint } from "./task-fingerprint.js";
@@ -172,6 +173,20 @@ describe("getOrGenerateBossComment", () => {
 
     const request = createBossMessageMock.mock.calls[0][1];
     expect(request.system).not.toContain("現在日時:");
+  });
+
+  // Issue #546（親 #439 S3）: ダッシュボードのひとことの生成が S3 の Markdown
+  // 禁止指示を実際に受け取ること（`buildPersonaPrompt` へ渡す purpose が
+  // "notification" のままであること）のピン。notification-body.ts 側と対で、
+  // 通知 purpose の 2 つの表示面の両方を端まで固定する。
+  it("AC-S3-8: passes the notification Markdown-free instruction to the model (#546)", async () => {
+    const now = new Date(2026, 6, 6, 8, 0);
+    createBossMessageMock.mockResolvedValue(fakeTextMessage("今日も一日決めた通りにやれ"));
+
+    await getOrGenerateBossComment(db, env, now);
+
+    const request = createBossMessageMock.mock.calls[0][1];
+    expect(request.system).toContain(NOTIFICATION_PLAIN_TEXT_INSTRUCTION);
   });
 
   // Issue #117 (D4): this route's small maxTokens is sized for the comment
