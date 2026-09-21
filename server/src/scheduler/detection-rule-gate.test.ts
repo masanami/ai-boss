@@ -189,10 +189,12 @@ describe("working-hours gate under a corrupted work_start/work_end pair (AC-10)"
 
   // 検出力の確認（恒真アサーション対策）: loadDetectionSettings を経由せず
   // 生の不正な組をそのまま evaluateRules に渡すと（＝#482 のガードが存在
-  // しないのと同じ状態）、稼働時間ゲート下のルールは 1 件も発火しない。
+  // しないのと同じ状態）、常に勤務時間帯の外と判定される。#550（S2）以降、
+  // 帯の外でもルールは発火するが、rule_key が暦日付きの「帯の外の 1 回だけ」
+  // の形になり、帯の中の rule_key（上のテストの期待値）は 1 件も出ない。
   // 上の「休憩中でない」テストと**同一の入力**で結果だけが変わることが、
   // それらが「ガードが効いているから緑」であることの担保になる。
-  it("control: the same inputs do NOT fire working-hours-gated rules when the raw corrupted pair bypasses the guard", () => {
+  it("control: the same inputs fire only the outside-working-hours form of the gated rules when the raw corrupted pair bypasses the guard", () => {
     const rawSettings: DetectionSettings = {
       ...DEFAULT_DETECTION_SETTINGS,
       workingHours: { ...CORRUPTED_WORKING_HOURS },
@@ -200,6 +202,9 @@ describe("working-hours gate under a corrupted work_start/work_end pair (AC-10)"
 
     const result = evaluateRules(notOnBreakScenario(rawSettings));
 
-    expect(result).toEqual([]);
+    const dayKey = toDateKey(NOW);
+    expect(result.map((r) => r.ruleKey).sort()).toEqual(
+      ["silence", "unstarted:1", "deadline_overdue:2"].map((key) => `${key}:${dayKey}`).sort(),
+    );
   });
 });

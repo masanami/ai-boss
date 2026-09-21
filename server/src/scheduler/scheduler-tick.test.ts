@@ -1065,16 +1065,17 @@ describe("createTicker().tick", () => {
     consoleErrorSpy.mockRestore();
   });
 
-  // GAP-02 / GAP-04 (#196, #239): 勤務時間帯外・休憩申告中の抑制を、個別ルール
+  // GAP-02 / GAP-04 (#196, #239): 勤務時間帯外の 1 回だけ発火（#550 以降。
+  // それ以前は全抑制）・休憩申告中の抑制を、個別ルール
   // 種別ごとに tick 経由（スケジューラ層）で検証する。rule-engine.test.ts が
   // 純粋関数レベルで既に担保している範囲を tick 経由でもなぞることで、
   // 「ゲートが本当にスケジューラ層まで貫通しているか」を確認する。
-  describe("working-hours gate suppresses each rule type outside working hours (tick-level; GAP-02/GAP-04 per #196, #239)", () => {
+  describe("working-hours gate limits each rule type to one L1 firing outside working hours (tick-level; GAP-02/GAP-04 per #196, #239; #550)", () => {
     const WORKING_HOURS_BASE_TIME = new Date("2026-07-05T09:00:00.000");
     const OUTSIDE_WORKING_HOURS_BASE_TIME = new Date("2026-07-05T20:00:00.000");
 
     it.each(RULE_GATE_SCENARIOS.map((s) => [s.ruleType, s.setup] as const))(
-      "fires %s within working hours (positive control) but suppresses it outside working hours",
+      "fires %s within working hours (positive control) and only once at L1 outside working hours",
       async (ruleType, setup) => {
         // Positive control: the exact same scenario, anchored inside working
         // hours, fires — this rules out "the scenario just never fires"
@@ -1095,20 +1096,32 @@ describe("createTicker().tick", () => {
           db.close();
         }
 
-        // Same scenario, anchored outside working hours: the working-hours
-        // gate must suppress it entirely. A separate db (rather than
-        // reopening `db`) keeps this half's state fully independent of the
-        // positive control above.
+        // Same scenario, anchored outside working hours: since #550 (S2) the
+        // rule fires once at L1 with a day-scoped rule_key, and a later tick
+        // past the L1→L2 interval does not escalate or re-fire it. A separate
+        // db (rather than reopening `db`) keeps this half's state fully
+        // independent of the positive control above.
         const outsideDb = openDatabase(":memory:");
         try {
           runMigrations(outsideDb);
-          setup(outsideDb, OUTSIDE_WORKING_HOURS_BASE_TIME);
+          const outsideRuleKey = setup(outsideDb, OUTSIDE_WORKING_HOURS_BASE_TIME);
+          const outsideDayKey = toDateKey(new Date());
           const outsideExecFile = vi.fn().mockImplementation(ok);
-          await createTicker({ db: outsideDb, env, execFile: outsideExecFile }).tick();
+          const outsideTicker = createTicker({ db: outsideDb, env, execFile: outsideExecFile });
+          await outsideTicker.tick();
+
+          // L1→L2 の既定間隔（15 分）を過ぎ、かつ avoidance の判定窓（30 分）の内側
+          vi.setSystemTime(new Date(Date.now() + 16 * 60_000));
+          await outsideTicker.tick();
 
           const firedOutside = listNotificationsSince(outsideDb, "1970-01-01T00:00:00.000Z");
-          expect(firedOutside).toHaveLength(0);
-          expect(outsideExecFile).not.toHaveBeenCalled();
+          expect(firedOutside).toHaveLength(1);
+          expect(firedOutside[0]).toMatchObject({
+            type: ruleType,
+            rule_key: `${outsideRuleKey}:${outsideDayKey}`,
+            escalation_level: 1,
+          });
+          expect(outsideExecFile).toHaveBeenCalledTimes(1);
         } finally {
           outsideDb.close();
         }
@@ -1391,7 +1404,7 @@ describe("createTicker().tick", () => {
 
     // 決定3: 当日変更の対象は朝会・夕会の定時催促の時刻のみ。work_end（勤務
     // 時間帯ゲート）は当日変更の影響を受けない。
-    it("does not fire silence at 19:00 despite today's evening override extending to 21:00 — the working-hours gate (work_end 18:00) is unaffected (AC-21)", async () => {
+    it("treats 19:00 as outside working hours for silence despite today's evening override extending to 21:00 — the working-hours gate (work_end 18:00) is unaffected (AC-21)", async () => {
       // Positive control: the exact same elapsed-silence setup, evaluated
       // while still within the standing working hours (17:59), fires —
       // ruling out "silence just never fires here" as the reason the 19:00
@@ -1421,14 +1434,18 @@ describe("createTicker().tick", () => {
         upsertOverride(outsideDb, TODAY_KEY, "evening", "21:00");
 
         // Past the standing work_end (18:00) but still before the postponed
-        // evening meeting (21:00): silence must stay suppressed by the
-        // (unchanged) working-hours gate.
+        // evening meeting (21:00): silence must be treated as outside the
+        // (unchanged) working-hours gate — since #550 (S2) that means the
+        // once-per-day L1 firing with a day-scoped rule_key, not the in-hours
+        // escalating `silence` rule_key.
         vi.setSystemTime(new Date(2026, 6, 5, 19, 0, 0));
         const execFile = vi.fn().mockImplementation(ok);
         await createTicker({ db: outsideDb, env, execFile }).tick();
 
         const recorded = listNotificationsSince(outsideDb, "1970-01-01T00:00:00.000Z");
-        expect(recorded.filter((n) => n.type === "silence")).toHaveLength(0);
+        const silence = recorded.filter((n) => n.type === "silence");
+        expect(silence).toHaveLength(1);
+        expect(silence[0]).toMatchObject({ rule_key: `silence:${TODAY_KEY}`, escalation_level: 1 });
       } finally {
         outsideDb.close();
       }
