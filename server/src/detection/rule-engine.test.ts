@@ -6,7 +6,6 @@ import {
   type FiringNotification,
   type NotificationHistoryEntry,
 } from "./detection-types.js";
-import { toDateKey } from "./time-utils.js";
 import { makeActivityEvent, makeTask } from "./detection-test-fixtures.js";
 import { buildCommitmentMissedRuleKey } from "./commitment-missed.js";
 
@@ -178,13 +177,14 @@ describe("evaluateRules", () => {
     });
 
     // (b) 締切超過は成立しているが始業前（勤務時間帯の外）。#550（S2）以降は
-    // 帯の外でも暦日ごとに 1 回だけ L1 で発火する（機能仕様
-    // docs/features/working-hours-intervals.md 決定 9・10）。
-    it("fires once at level 1 with a day-scoped rule_key after the deadline lapses but before working hours begin (#550)", () => {
+    // 帯の外でも帯外区間（終業〜翌始業）ごとに 1 回だけ L1 で発火する（機能仕様
+    // docs/features/working-hours-intervals.md 決定 9・10）。D+1 08:00 は D の
+    // 終業から始まった区間に属するので、rule_key の日付は D（7/5）になる。
+    it("fires once at level 1 with a period-scoped rule_key after the deadline lapses but before working hours begin (#550)", () => {
       expect(deadlineFirings(new Date(2026, 6, 6, 8))).toEqual([
         {
           ruleType: "deadline_overdue",
-          ruleKey: "deadline_overdue:1:2026-07-06",
+          ruleKey: "deadline_overdue:1:2026-07-05",
           escalationLevel: 1,
           taskId: 1,
         },
@@ -848,7 +848,8 @@ describe("evaluateRules", () => {
 
 // 機能仕様 docs/features/working-hours-intervals.md スライス S2（Issue #550・
 // 決定 9・10）。勤務時間帯ゲート下の 5 ルールは、帯の外では resolveEscalation を
-// 通さず、rule_key にローカル暦日を足して 1 日 1 回だけ L1 で発火する。
+// 通さず、rule_key に帯外区間（終業〜翌始業）の開始日（ローカル暦日）を足して
+// 区間ごとに 1 回だけ L1 で発火する（0 時をまたいでも同じ区間）。
 // 固定時刻はすべて new Date(2026, 8, D, h, min) 由来のローカル日時（ADR 0007
 // 決定 5。既定の勤務時間帯 09:00-18:00・エスカレーション間隔 15/10/10 分）。
 describe("evaluateRules outside working hours (Issue #550 S2)", () => {
@@ -898,17 +899,8 @@ describe("evaluateRules outside working hours (Issue #550 S2)", () => {
     return fired;
   }
 
-  function countByLocalDay(
-    fired: { at: Date; firing: FiringNotification }[],
-    ruleType: string,
-  ): Record<string, number> {
-    const counts: Record<string, number> = {};
-    for (const { at, firing } of fired) {
-      if (firing.ruleType !== ruleType) continue;
-      const key = toDateKey(at);
-      counts[key] = (counts[key] ?? 0) + 1;
-    }
-    return counts;
+  function firingsOf(fired: { at: Date; firing: FiringNotification }[], ruleType: string) {
+    return fired.filter((f) => f.firing.ruleType === ruleType);
   }
 
   describe("fires outside working hours", () => {
@@ -981,25 +973,50 @@ describe("evaluateRules outside working hours (Issue #550 S2)", () => {
     });
   });
 
-  describe("fires only once per local calendar day outside working hours", () => {
+  describe("fires only once per outside-working-hours period (end of work → next start of work)", () => {
     // 18:00 から翌 09:00 の直前（帯の外の最後の分 08:59）まで毎分評価する。
     const overnight = () =>
       sweep(DAY(18, 0), NEXT_DAY(9, 0), { tasks: [unstartedTask], activityEvents: [lastCheckin] });
 
-    it("fires silence once per calendar day across an 18:00 → 09:00 per-minute sweep", () => {
+    it("fires silence exactly once across an 18:00 → 09:00 per-minute sweep (no extra firing at midnight)", () => {
       const fired = overnight();
 
-      expect(countByLocalDay(fired, "silence")).toEqual({ [DAY_KEY]: 1, [NEXT_DAY_KEY]: 1 });
-      expect(fired.filter((f) => f.firing.ruleType === "silence").map((f) => f.at)).toEqual([
-        DAY(18, 0),
-        NEXT_DAY(0, 0),
+      expect(firingsOf(fired, "silence")).toEqual([
+        {
+          at: DAY(18, 0),
+          firing: { ruleType: "silence", ruleKey: `silence:${DAY_KEY}`, escalationLevel: 1, taskId: null },
+        },
       ]);
     });
 
-    it("fires unstarted once per calendar day across the same sweep", () => {
+    it("fires unstarted exactly once across the same sweep", () => {
       const fired = overnight();
 
-      expect(countByLocalDay(fired, "unstarted")).toEqual({ [DAY_KEY]: 1, [NEXT_DAY_KEY]: 1 });
+      expect(firingsOf(fired, "unstarted").map((f) => [f.at, f.firing.ruleKey])).toEqual([
+        [DAY(18, 0), `unstarted:1:${DAY_KEY}`],
+      ]);
+    });
+
+    it("does not fire again when the local date changes from 23:59 to 00:00 within the same period", () => {
+      // 前夜 18:00 に鳴った履歴だけがある状態で、0 時の前後と始業直前を評価する。
+      const notifications = [
+        { ruleKey: `silence:${DAY_KEY}`, escalationLevel: 1, sentAt: DAY(18, 0).toISOString() },
+      ];
+
+      for (const now of [DAY(23, 59), NEXT_DAY(0, 0), NEXT_DAY(8, 59)]) {
+        expect(evaluateRules(baseInput({ now, activityEvents: [lastCheckin], notifications }))).toEqual([]);
+      }
+    });
+
+    it("keys a pre-start-of-work time to the period that began the previous day, and an after-end-of-work time to the same day", () => {
+      // work_start <= work_end が保証されているため、帯の外は「当日の終業以降」
+      // か「当日の始業前」の 2 通りしかない。境界の分（18:00 と 08:59）で確かめる。
+      const at = (now: Date) =>
+        evaluateRules(baseInput({ now, activityEvents: [lastCheckin] })).map((r) => r.ruleKey);
+
+      expect(at(DAY(18, 0))).toEqual([`silence:${DAY_KEY}`]);
+      expect(at(NEXT_DAY(8, 59))).toEqual([`silence:${DAY_KEY}`]);
+      expect(at(NEXT_DAY(0, 0))).toEqual([`silence:${DAY_KEY}`]);
     });
 
     it("never escalates beyond level 1 outside working hours", () => {
@@ -1011,7 +1028,7 @@ describe("evaluateRules outside working hours (Issue #550 S2)", () => {
 
     it("does not re-fire the same rule_key on the same day after an activity signal is recorded", () => {
       // 20:00 に silence が鳴り、20:30 の活動で無音が解消し、21:15 に再び無音が成立する。
-      // 帯の中なら活動で L1 へリセットされて再発火するが、帯の外では同じ暦日のうちは鳴らない。
+      // 帯の中なら活動で L1 へリセットされて再発火するが、帯の外では同じ区間のうちは鳴らない。
       const fired = sweep(DAY(20, 0), DAY(23, 59), { activityEvents: [lastCheckin] }, [DAY(20, 30)]);
 
       expect(fired.map((f) => f.firing)).toEqual([
@@ -1057,7 +1074,7 @@ describe("evaluateRules outside working hours (Issue #550 S2)", () => {
       const fired = sweep(NEXT_DAY(8, 0), NEXT_DAY(9, 26), { tasks: [unstartedTask] });
 
       expect(fired.map((f) => [f.at, f.firing.ruleKey, f.firing.escalationLevel])).toEqual([
-        [NEXT_DAY(8, 0), `unstarted:1:${NEXT_DAY_KEY}`, 1],
+        [NEXT_DAY(8, 0), `unstarted:1:${DAY_KEY}`, 1],
         [NEXT_DAY(9, 0), "unstarted:1", 1],
         [NEXT_DAY(9, 15), "unstarted:1", 2],
         [NEXT_DAY(9, 25), "unstarted:1", 3],
@@ -1065,22 +1082,38 @@ describe("evaluateRules outside working hours (Issue #550 S2)", () => {
     });
   });
 
-  describe("resets the once-per-day allowance on the next calendar day", () => {
-    it("fires silence outside working hours again on the day after it fired", () => {
+  describe("resets the once-per-period allowance in the next outside-working-hours period", () => {
+    it("fires silence outside working hours again in the next day's period after it fired", () => {
       const notifications = [
         { ruleKey: `silence:${DAY_KEY}`, escalationLevel: 1, sentAt: DAY(20, 0).toISOString() },
       ];
 
-      const sameDay = evaluateRules(
-        baseInput({ now: DAY(23, 59), activityEvents: [lastCheckin], notifications }),
+      const samePeriod = evaluateRules(
+        baseInput({ now: NEXT_DAY(8, 59), activityEvents: [lastCheckin], notifications }),
       );
-      const nextDay = evaluateRules(
+      const nextPeriod = evaluateRules(
         baseInput({ now: NEXT_DAY(20, 0), activityEvents: [lastCheckin], notifications }),
       );
 
-      expect(sameDay).toEqual([]);
-      expect(nextDay).toEqual([
+      expect(samePeriod).toEqual([]);
+      expect(nextPeriod).toEqual([
         { ruleType: "silence", ruleKey: `silence:${NEXT_DAY_KEY}`, escalationLevel: 1, taskId: null },
+      ]);
+    });
+
+    it("fires silence outside working hours once per period across two consecutive nights (per-minute sweep)", () => {
+      // D 18:00 → D+2 09:00 を毎分評価する（間の D+1 の勤務時間帯も含む）。帯外の
+      // 発火（区間の日付付き rule_key）は各夜の終業直後の 1 回ずつだけで、0 時には増えない。
+      const DAY_AFTER_NEXT = (h: number, min: number) => new Date(2026, 8, 16, h, min);
+      const fired = sweep(DAY(18, 0), DAY_AFTER_NEXT(9, 0), { activityEvents: [lastCheckin] });
+
+      expect(
+        firingsOf(fired, "silence")
+          .filter((f) => f.firing.ruleKey !== "silence")
+          .map((f) => [f.at, f.firing.ruleKey]),
+      ).toEqual([
+        [DAY(18, 0), `silence:${DAY_KEY}`],
+        [NEXT_DAY(18, 0), `silence:${NEXT_DAY_KEY}`],
       ]);
     });
   });
