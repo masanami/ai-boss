@@ -1,5 +1,11 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import {
+  fireEvent,
+  render,
+  screen,
+  waitFor,
+  within,
+} from "@testing-library/react";
 import TaskCard from "./TaskCard";
 import type { Task } from "./task";
 import type { TaskEvidence } from "./task-evidence";
@@ -1031,6 +1037,146 @@ describe("TaskCard", () => {
       expect(
         screen.getByRole("button", { name: "編集" }),
       ).toBeInTheDocument();
+    });
+  });
+
+  // Issue #557 (S2a, 親 #438 決定14): タスクの記録を決定ログで読み返す導線。
+  // 表示モードのアクション行に置く。メンタリング起動と違い「読むだけ」なので、
+  // 会（朝会・夕会）の最中かどうか・記録があるかどうかでは出し分けない
+  // — このコンポーネントはどちらも知らず、ハンドラが渡されていれば出す。
+  describe("記録を見る 導線 (Issue #557, S2a)", () => {
+    it("shows a 記録を見る button in view mode when onShowTaskRecords is provided", () => {
+      render(
+        <TaskCard
+          task={BASE_TASK}
+          onStatusChange={vi.fn()}
+          onEdit={vi.fn()}
+          onShowTaskRecords={vi.fn()}
+        />,
+      );
+
+      expect(
+        screen.getByRole("button", { name: "記録を見る" }),
+      ).toBeInTheDocument();
+    });
+
+    // 会中は `onStartMentoring = null`（メンタリング起動は非表示）になるが、
+    // 振り返り導線はそれに連動しない（`adhoc` 限定にしない）。
+    it("still shows the button when onStartMentoring is null (meeting in progress)", () => {
+      render(
+        <TaskCard
+          task={BASE_TASK}
+          onStatusChange={vi.fn()}
+          onEdit={vi.fn()}
+          onStartMentoring={null}
+          onShowTaskRecords={vi.fn()}
+        />,
+      );
+
+      expect(
+        screen.getByRole("button", { name: "記録を見る" }),
+      ).toBeInTheDocument();
+      expect(
+        screen.queryByRole("button", { name: "メンタリングする" }),
+      ).not.toBeInTheDocument();
+    });
+
+    // 送信中・切替中の非活性（`startMentoringDisabled`）は発言の送信を守る
+    // ためのもので、何も送らない振り返り導線には及ぼさない。
+    it("stays enabled while startMentoringDisabled is true", () => {
+      render(
+        <TaskCard
+          task={BASE_TASK}
+          onStatusChange={vi.fn()}
+          onEdit={vi.fn()}
+          onStartMentoring={vi.fn()}
+          startMentoringDisabled
+          onShowTaskRecords={vi.fn()}
+        />,
+      );
+
+      expect(screen.getByRole("button", { name: "記録を見る" })).toBeEnabled();
+    });
+
+    it("calls onShowTaskRecords with the task itself when clicked", () => {
+      const onShowTaskRecords = vi.fn();
+      render(
+        <TaskCard
+          task={BASE_TASK}
+          onStatusChange={vi.fn()}
+          onEdit={vi.fn()}
+          onShowTaskRecords={onShowTaskRecords}
+        />,
+      );
+
+      fireEvent.click(screen.getByRole("button", { name: "記録を見る" }));
+
+      expect(onShowTaskRecords).toHaveBeenCalledTimes(1);
+      expect(onShowTaskRecords).toHaveBeenCalledWith(BASE_TASK);
+    });
+
+    it("does not show the button when onShowTaskRecords is null or not provided", () => {
+      const { rerender } = render(
+        <TaskCard task={BASE_TASK} onStatusChange={vi.fn()} onEdit={vi.fn()} />,
+      );
+      expect(
+        screen.queryByRole("button", { name: "記録を見る" }),
+      ).not.toBeInTheDocument();
+
+      rerender(
+        <TaskCard
+          task={BASE_TASK}
+          onStatusChange={vi.fn()}
+          onEdit={vi.fn()}
+          onShowTaskRecords={null}
+        />,
+      );
+      expect(
+        screen.queryByRole("button", { name: "記録を見る" }),
+      ).not.toBeInTheDocument();
+    });
+
+    // `onStartMentoring` と同じ理由（未保存の編集を抱えたまま画面が切り替わる
+    // 論点を避ける）で、編集モードには置かない。
+    it("does not show the button in edit mode", () => {
+      render(
+        <TaskCard
+          task={BASE_TASK}
+          onStatusChange={vi.fn()}
+          onEdit={vi.fn()}
+          onShowTaskRecords={vi.fn()}
+        />,
+      );
+
+      fireEvent.click(screen.getByRole("button", { name: "編集" }));
+
+      expect(
+        screen.queryByRole("button", { name: "記録を見る" }),
+      ).not.toBeInTheDocument();
+    });
+
+    it("does not change the existing view-mode actions (status select, edit button, メンタリングする)", () => {
+      render(
+        <TaskCard
+          task={BASE_TASK}
+          onStatusChange={vi.fn()}
+          onEdit={vi.fn()}
+          onStartMentoring={vi.fn()}
+          onShowTaskRecords={vi.fn()}
+        />,
+      );
+
+      expect(screen.getByLabelText("ステータス")).toBeInTheDocument();
+      // 並び順も含めて固定する: 既存の 2 つが先、導線は末尾に足すだけ。
+      const actions = screen.getByRole("button", { name: "編集" }).parentElement;
+      expect(
+        within(actions as HTMLElement)
+          .getAllByRole("button")
+          .map((button) => button.textContent),
+      ).toEqual(["編集", "メンタリングする", "記録を見る"]);
+      expect(
+        screen.getByRole("button", { name: "メンタリングする" }),
+      ).toBeEnabled();
     });
   });
 });

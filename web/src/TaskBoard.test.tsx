@@ -651,6 +651,56 @@ describe("TaskBoard", () => {
     });
   });
 
+  // Issue #557 (S2a, 親 #438 決定14): 振り返り導線も `onStartMentoring` と
+  // 同じく中継するだけで、判断には関与しない。
+  describe("onShowTaskRecords passthrough (Issue #557, S2a)", () => {
+    it("passes onShowTaskRecords through to the task card and calls it with the clicked task itself", () => {
+      const task = makeTask({ id: 7, title: "資料を作る", status: "todo" });
+      const onShowTaskRecords = vi.fn();
+
+      render(
+        <TaskBoard
+          tasksState={makeTasksState({ tasks: [task] })}
+          onShowTaskRecords={onShowTaskRecords}
+        />,
+      );
+
+      fireEvent.click(screen.getByRole("button", { name: "記録を見る" }));
+
+      expect(onShowTaskRecords).toHaveBeenCalledWith(task);
+    });
+
+    // 会中（`onStartMentoring = null`）でも導線の中継は止めない。
+    it("renders the button on every card even when onStartMentoring is null", () => {
+      const tasks = [
+        makeTask({ id: 7, title: "資料を作る", status: "todo" }),
+        makeTask({ id: 8, title: "レビューする", status: "in_progress" }),
+      ];
+
+      render(
+        <TaskBoard
+          tasksState={makeTasksState({ tasks })}
+          onStartMentoring={null}
+          onShowTaskRecords={vi.fn()}
+        />,
+      );
+
+      expect(screen.getAllByRole("button", { name: "記録を見る" })).toHaveLength(
+        2,
+      );
+    });
+
+    it("does not render the button when onShowTaskRecords is not provided", () => {
+      const task = makeTask({ id: 7, title: "資料を作る", status: "todo" });
+
+      render(<TaskBoard tasksState={makeTasksState({ tasks: [task] })} />);
+
+      expect(
+        screen.queryByRole("button", { name: "記録を見る" }),
+      ).not.toBeInTheDocument();
+    });
+  });
+
   // 「完了」「中止」列をローカル暦日で直近 7 日に絞る（Issue #428 / #437）。
   // now = 2026-09-10 のとき包含範囲は 2026-09-04〜2026-09-10。
   describe("完了/中止 列の直近ウィンドウ (#428)", () => {
