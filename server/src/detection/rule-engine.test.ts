@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { evaluateRules } from "./rule-engine.js";
 import {
   DEFAULT_DETECTION_SETTINGS,
@@ -1115,6 +1115,75 @@ describe("evaluateRules outside working hours (Issue #550 S2)", () => {
         [DAY(18, 0), `silence:${DAY_KEY}`],
         [NEXT_DAY(18, 0), `silence:${NEXT_DAY_KEY}`],
       ]);
+    });
+  });
+
+  // Issue #553: 帯外区間の開始日（rule_key 末尾のローカル暦日）の算出のうち、
+  // PR #552 の時点でテストが守っていなかった 2 点を、公開経路（evaluateRules が返す
+  // rule_key と「同じ区間では 2 回鳴らない」こと）で固定する。1 つは既存テストも通る
+  // 「始業前 → 前日」分岐の DST 下での正しさ、もう 1 つは未踏だった形式不正の
+  // work_start のフォールバック分岐。
+  describe("derives the period start date for an evaluation before the start of work (Issue #553)", () => {
+    // 米国の 2026 年の夏時間は 3 月第 2 日曜＝3 月 8 日 02:00 に始まる（その日は 23 時間）。
+    // 翌 3 月 9 日 00:30 の 24 時間前は 3 月 7 日 23:30 になるため、前日を固定ミリ秒差
+    // （now - 86400000）で求めると区間の開始日が 1 日前へずれる。
+    // **このテストが検出力を持つのは DST のあるタイムゾーン（npm run test:tz ＝
+    // TZ=America/New_York）で実行したときだけ**。DST の無いタイムゾーン（JST 等）では
+    // 3 月 8 日も 24 時間あるため固定ミリ秒差の実装でも通ってしまう。空回りを緑に
+    // 見せないよう、切替の無いタイムゾーンでは skipped として可視化する。
+    const hasSpringDstTransition =
+      new Date(2026, 2, 7, 12, 0).getTimezoneOffset() !== new Date(2026, 2, 9, 12, 0).getTimezoneOffset();
+
+    describe.runIf(hasSpringDstTransition)("on the day after the spring DST transition (detects only under a DST timezone, e.g. npm run test:tz)", () => {
+      const DST_DAY_KEY = "2026-03-08";
+      const DST_DAY = (h: number, min: number) => new Date(2026, 2, 8, h, min);
+      const DAY_AFTER_DST = (h: number, min: number) => new Date(2026, 2, 9, h, min);
+      const task = makeTask({ id: 1, status: "todo", created_at: DST_DAY(8, 0).toISOString() });
+
+      it("keys the 00:30 evaluation to the previous local calendar day, not to 24 hours earlier", () => {
+        const result = evaluateRules(baseInput({ now: DAY_AFTER_DST(0, 30), tasks: [task] }));
+
+        expect(result).toEqual([
+          { ruleType: "unstarted", ruleKey: `unstarted:1:${DST_DAY_KEY}`, escalationLevel: 1, taskId: 1 },
+        ]);
+      });
+
+      it("does not fire again at 00:30 when it already fired the evening of the transition day", () => {
+        const notifications = [
+          { ruleKey: `unstarted:1:${DST_DAY_KEY}`, escalationLevel: 1, sentAt: DST_DAY(20, 0).toISOString() },
+        ];
+
+        expect(
+          evaluateRules(baseInput({ now: DAY_AFTER_DST(0, 30), tasks: [task], notifications })),
+        ).toEqual([]);
+      });
+    });
+
+    describe("when work_start is malformed", () => {
+      // 形式不正の work_start は既定の 09:00 へ倒れる（isWithinWorkingHours と同じ扱い）。
+      // 08:59 は 09:00 より前なので前日に始まった区間に属する。08:59 以前へ倒す実装
+      // （例: 0:00）だと「始業以降」と判定されて当日の日付になる。
+      const PREVIOUS_DAY_KEY = "2026-09-13";
+      const PREVIOUS_DAY = (h: number, min: number) => new Date(2026, 8, 13, h, min);
+      const malformedStart = { ...settings, workingHours: { start: "9時", end: "18:00" } };
+      const task = makeTask({ id: 1, status: "todo", created_at: PREVIOUS_DAY(8, 0).toISOString() });
+
+      afterEach(() => {
+        vi.restoreAllMocks();
+      });
+
+      it("keys the 08:59 evaluation to the previous day, based on the default start of work 09:00", () => {
+        const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+
+        const result = evaluateRules(
+          baseInput({ now: DAY(8, 59), tasks: [task], settings: malformedStart }),
+        );
+
+        expect(result).toEqual([
+          { ruleType: "unstarted", ruleKey: `unstarted:1:${PREVIOUS_DAY_KEY}`, escalationLevel: 1, taskId: 1 },
+        ]);
+        expect(warnSpy).toHaveBeenCalled();
+      });
     });
   });
 
