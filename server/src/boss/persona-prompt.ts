@@ -834,6 +834,40 @@ export const CHAT_PLAIN_TEXT_INSTRUCTION =
   "コードブロックの ``` 、表記法）も使ってはならない。列挙が必要なときは記号を使わず、" +
   "改行と句読点だけで区切った普通の文章にすること。";
 
+/**
+ * 通知文面（`purpose: "notification"`）の Markdown 禁止指示（Issue #546 / 親 #439
+ * S3・`docs/features/boss-reply-plain-text-output.md`）。
+ *
+ * 通知 purpose の Markdown は**防御の層が 0** である（機能仕様「対策の層構成と
+ * LLM 依存範囲」）。表示面は macOS 通知本文（`notifications/notification-body.ts`・
+ * React 非介在）とダッシュボードのひとこと（`dashboard/boss-comment.ts`）の 2 つで、
+ * どちらも平文描画のため `**強調**` は文字としてそのまま見える。`stripHtmlTags` は
+ * 設計上 Markdown に触れないため、通知文面で Markdown を出させない責任はこの
+ * 文字列だけが負っている。
+ *
+ * **HTML 禁止は併記しない**: 通知面の HTML は S1 の正規化（`lib/strip-html-tags.ts`
+ * の適用）で既に 1 層覆われている。S3 が埋めるのは 0 層の Markdown だけであり、
+ * HTML 禁止の併記は S1 の機能要件「`purpose="notification"` のシステムプロンプトは
+ * 変更しない」の改訂にあたる（機能仕様「未決の論点」論点2 に残してある）。
+ *
+ * 既存の長さ制約（「要点を絞り、短く簡潔な文章にすること。」）は置き換えず、その
+ * 後段に別セクションとして積む（順序はテストで固定している）。
+ *
+ * 禁止記法の列挙は `CHAT_PLAIN_TEXT_INSTRUCTION` より意図的に短い——通知文面は
+ * 1〜2 文（`notification-body.ts` / `boss-comment.ts` のユーザー側指示）であり、
+ * 表記法や複数行にまたがる装飾はそもそも収まらないため、実測で boss 発言に出て
+ * いた記法（`**強調**`・見出し・箇条書き・番号付きリスト・コードブロック）に絞る。
+ * 長さ制約と同じセクション群に積む以上、指示自体も短いほうが効く。
+ *
+ * テストが文言を重複記述して恒真にならないよう export する
+ * （`CHAT_PLAIN_TEXT_INSTRUCTION` と同じ作法）。
+ */
+export const NOTIFICATION_PLAIN_TEXT_INSTRUCTION =
+  "出力形式: 通知文面はそのまま平文として表示され、Markdown記法は解釈されない。" +
+  "Markdownの装飾（**強調**、見出しの #、箇条書きの行頭 - や *、番号付きリストの行頭 1. 、" +
+  "コードブロックの ``` ）を使ってはならない。列挙が必要なときは記号を使わず、" +
+  "句読点で区切った普通の文章にすること。";
+
 const TASK_ESTIMATE_CONFIRMATION_INSTRUCTION =
   "チャットからタスクを新規作成するときは、所要時間の見積もりを提案し、ユーザーが確認（同意または修正）した値だけを" +
   "estimated_minutes に保存すること（確認前に保存してはならない）。";
@@ -917,6 +951,10 @@ export function buildPersonaPrompt(
     sections.push(
       "この応答は通知文面として使われる。要点を絞り、短く簡潔な文章にすること。",
     );
+    // Issue #546（親 #439 S3）: 上の長さ制約の後段へ Markdown 禁止を足す。
+    // chat 分岐の CHAT_PLAIN_TEXT_INSTRUCTION と違い HTML には触れない
+    // （通知面の HTML は S1 の正規化で既に覆われている）。
+    sections.push(NOTIFICATION_PLAIN_TEXT_INSTRUCTION);
   } else if (purpose === "daily-report") {
     sections.push(DAILY_REPORT_INSTRUCTION);
   } else {
