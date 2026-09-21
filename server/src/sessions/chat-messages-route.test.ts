@@ -3,10 +3,11 @@ import type Database from "better-sqlite3";
 import { openDatabase } from "../db/connection.js";
 import { runMigrations } from "../db/migrate.js";
 import { insertTask, listTasks } from "../tasks/tasks-repository.js";
-import { listDecisions } from "../decisions/decisions-repository.js";
+import { insertDecision, listDecisions } from "../decisions/decisions-repository.js";
 import { MENTORING_TARGET_TASK_INSTRUCTION } from "../boss/persona-prompt.js";
 import { updateSessionSummary } from "./sessions-repository.js";
 import { insertMessage } from "./messages-repository.js";
+import { stripHtmlTags } from "../lib/strip-html-tags.js";
 import type { Session } from "./session.js";
 import type { Message } from "./message.js";
 
@@ -489,6 +490,206 @@ describe("POST /api/sessions/:id/messages", () => {
       // 引数の個数まで固定するため、意図的な契約変更としてここも更新している。
       expect.objectContaining({ signal: expect.any(AbortSignal) }),
     );
+  });
+
+  // Issue #558（親 #446 S2）: docs/features/boss-reply-plain-text-output.md
+  // クリティカル設計決定「S2 の決定」— 会話履歴を LLM へ写す `toClaudeMessages`
+  // は `role: "boss"` の行にのみ `stripHtmlTags` を掛ける。根拠は「表示と履歴の
+  // 一致」（ユーザーが画面で見たボスの発言＝正規化済みと、ボスが続きを書く
+  // 履歴を揃える）。`toClaudeMessages` はモジュール内のローカル関数のままに
+  // するため（同仕様「S2 は新しい公開 API を作らない」）、AC-8 と同じく
+  // `streamBossMessage` へ渡った `messages` をルート経由で観測する。
+  describe("会話履歴のボスの過去発言の正規化（Issue #558, 親 #446 S2）", () => {
+    const RAW_BOSS_HTML = "<p>資料作成からだ</p><strong>優先しろ</strong>。";
+    const RAW_USER_HTML = "<p>報告です</p><br>レビュー依頼は <strong>明日</strong> 出します";
+
+    async function postMessage(sessionId: number, content: string): Promise<void> {
+      const app = createApp(db, env);
+      const res = await app.request(`/api/sessions/${sessionId}/messages`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ content }),
+      });
+      expect(res.status).toBe(200);
+      await res.text();
+    }
+
+    function lastRequest(): { system: string; messages: unknown[] } {
+      const calls = streamBossMessageMock.mock.calls;
+      return calls[calls.length - 1][1] as { system: string; messages: unknown[] };
+    }
+
+    function storedContents(sessionId: number): string[] {
+      const rows = db
+        .prepare("SELECT content FROM messages WHERE session_id = ? ORDER BY id ASC")
+        .all(sessionId) as { content: string }[];
+      return rows.map((row) => row.content);
+    }
+
+    it("HTML タグを含む boss の行は stripHtmlTags 適用後の文字列で assistant へ写る", async () => {
+      const session = await createSession();
+      insertMessage(db, { session_id: session.id, role: "user", content: "何から始めればいい？" });
+      insertMessage(db, { session_id: session.id, role: "boss", content: RAW_BOSS_HTML });
+      streamBossMessageMock.mockResolvedValue(fakeTextMessage("了解した"));
+
+      await postMessage(session.id, "わかりました");
+
+      // 期待値を直書きの文字列でも固定する: `stripHtmlTags(x)` との比較だけだと
+      // 「正規化が恒等になった」場合に両辺が同時に崩れて緑のまま残る。
+      expect(stripHtmlTags(RAW_BOSS_HTML)).toBe("\n資料作成からだ\n優先しろ。");
+      expect(lastRequest().messages).toEqual([
+        { role: "user", content: "何から始めればいい？" },
+        { role: "assistant", content: "\n資料作成からだ\n優先しろ。" },
+        { role: "user", content: "わかりました" },
+      ]);
+    });
+
+    it("HTML タグを含む user の行は 1 文字も変えずに user へ写る", async () => {
+      const session = await createSession();
+      insertMessage(db, { session_id: session.id, role: "user", content: RAW_USER_HTML });
+      insertMessage(db, { session_id: session.id, role: "boss", content: "了解した" });
+      streamBossMessageMock.mockResolvedValue(fakeTextMessage("了解した"));
+
+      // 履歴の行と、このターンで投稿される行の両方を観測する。
+      await postMessage(session.id, RAW_USER_HTML);
+
+      expect(stripHtmlTags(RAW_USER_HTML)).not.toBe(RAW_USER_HTML);
+      expect(lastRequest().messages).toEqual([
+        { role: "user", content: RAW_USER_HTML },
+        { role: "assistant", content: "了解した" },
+        { role: "user", content: RAW_USER_HTML },
+      ]);
+    });
+
+    it("許可リストのタグに一致する箇所が無い boss の行は 1 文字も変わらない", async () => {
+      // プレースホルダ記法・大文字ラベル・比較演算子・前後の空白と連続改行:
+      // いずれも `stripHtmlTags` が触らないと決めている形（トリムも畳み込みもしない）。
+      const untouched = "  `<タスク名>` の形式で報告しろ。<A> と <B> を比べ、a < b > c も見ろ。\n\n\n以上だ  ";
+      const session = await createSession();
+      insertMessage(db, { session_id: session.id, role: "user", content: "報告の形式は？" });
+      insertMessage(db, { session_id: session.id, role: "boss", content: untouched });
+      streamBossMessageMock.mockResolvedValue(fakeTextMessage("了解した"));
+
+      await postMessage(session.id, "わかりました");
+
+      expect(lastRequest().messages).toEqual([
+        { role: "user", content: "報告の形式は？" },
+        { role: "assistant", content: untouched },
+        { role: "user", content: "わかりました" },
+      ]);
+    });
+
+    it("先頭の assistant 行は HTML タグを含んでいてもすべて落とし、以降の boss の行だけ正規化する", async () => {
+      const session = await createSession();
+      insertMessage(db, { session_id: session.id, role: "boss", content: "<p>朝会が始まった</p>" });
+      insertMessage(db, { session_id: session.id, role: "boss", content: "<p>報告しろ</p>" });
+      insertMessage(db, { session_id: session.id, role: "user", content: "資料作成を進めています" });
+      insertMessage(db, { session_id: session.id, role: "boss", content: RAW_BOSS_HTML });
+      streamBossMessageMock.mockResolvedValue(fakeTextMessage("了解した"));
+
+      await postMessage(session.id, "わかりました");
+
+      expect(lastRequest().messages).toEqual([
+        { role: "user", content: "資料作成を進めています" },
+        { role: "assistant", content: "\n資料作成からだ\n優先しろ。" },
+        { role: "user", content: "わかりました" },
+      ]);
+    });
+
+    // 完了経路は `hasVisibleText` で弾くが、中断経路は生文字列の非空だけを見て
+    // 保存するため、`<strong>` の直後で停止すると「正規化すると何も残らない」
+    // boss の行が履歴に残りうる。これを空（または空白のみ）の assistant として
+    // 写すと、Anthropic Messages API は空 content を拒否するので、`api`
+    // バックエンドではそのセッションの以後の全ターンが落ち続ける。画面にも
+    // 何も見えていない行なので、履歴からも落とす（連続した user は API 側で
+    // 1 ターンに結合される）。
+    it.each([
+      { name: "インラインタグのみ（正規化後は空文字）", raw: "<strong>" },
+      { name: "ブロック境界タグのみ（正規化後は改行のみ）", raw: "<p></p><br>" },
+    ])("正規化すると可視テキストが残らない boss の行は履歴から落とす: $name", async ({ raw }) => {
+      const session = await createSession();
+      insertMessage(db, { session_id: session.id, role: "user", content: "何から始めればいい？" });
+      insertMessage(db, { session_id: session.id, role: "boss", content: raw, interrupted: true });
+      streamBossMessageMock.mockResolvedValue(fakeTextMessage("了解した"));
+
+      await postMessage(session.id, "もう一度お願いします");
+
+      expect(stripHtmlTags(raw).trim()).toBe("");
+      expect(lastRequest().messages).toEqual([
+        { role: "user", content: "何から始めればいい？" },
+        { role: "user", content: "もう一度お願いします" },
+      ]);
+      expect(storedContents(session.id)[1]).toBe(raw);
+    });
+
+    it("チャット応答の前後で messages.content は LLM の生出力のまま（履歴の正規化は保存値へ書き戻さない）", async () => {
+      const session = await createSession();
+      insertMessage(db, { session_id: session.id, role: "user", content: "何から始めればいい？" });
+      insertMessage(db, { session_id: session.id, role: "boss", content: RAW_BOSS_HTML });
+      const rawReply = "<p>次は<strong>レビュー依頼</strong>だ</p>";
+      streamBossMessageMock.mockImplementation(
+        async (_client, _request, callbacks: StreamBossMessageCallbacks) => {
+          callbacks.onTextDelta?.(rawReply);
+          return fakeTextMessage(rawReply);
+        },
+      );
+
+      await postMessage(session.id, RAW_USER_HTML);
+
+      expect(storedContents(session.id)).toEqual([
+        "何から始めればいい？",
+        RAW_BOSS_HTML,
+        RAW_USER_HTML,
+        rawReply,
+      ]);
+    });
+
+    it("当日の随時チャットの参考情報ブロックに載る content は DB の値と一致する（S2 では正規化しない）", async () => {
+      const adhocSession = await createSession();
+      insertMessage(db, { session_id: adhocSession.id, role: "user", content: "経費精算のことで相談したい" });
+      insertMessage(db, { session_id: adhocSession.id, role: "boss", content: RAW_BOSS_HTML });
+      const app = createApp(db, env);
+      const meeting = await readJson<Session>(
+        await app.request("/api/sessions", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ type: "morning" }),
+        }),
+      );
+      streamBossMessageMock.mockResolvedValue(fakeTextMessage("了解した"));
+
+      await postMessage(meeting.id, "報告します");
+
+      const system = lastRequest().system;
+      expect(system).toContain("---ADHOC-CHAT-START---");
+      expect(storedContents(adhocSession.id)).toEqual(["経費精算のことで相談したい", RAW_BOSS_HTML]);
+      expect(system).toContain(RAW_BOSS_HTML);
+    });
+
+    it("直近の決定と報告履歴に載る content は DB の値と一致する（正規化しない・「未決の論点」論点1）", async () => {
+      const app = createApp(db, env);
+      const priorSession = await readJson<Session>(
+        await app.request("/api/sessions", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ type: "morning" }),
+        }),
+      );
+      const rawDecision = "<p>資料作成を<strong>最優先</strong>にする</p>";
+      const rawSummary = "<p>資料作成を 13 時までに終わらせると<em>決定</em>した。</p>";
+      insertDecision(db, { session_id: priorSession.id, content: rawDecision });
+      updateSessionSummary(db, priorSession.id, rawSummary);
+      const session = await createSession();
+      streamBossMessageMock.mockResolvedValue(fakeTextMessage("了解した"));
+
+      await postMessage(session.id, "今日はどう進めればいい？");
+
+      const system = lastRequest().system;
+      expect(stripHtmlTags(rawDecision)).not.toBe(rawDecision);
+      expect(stripHtmlTags(rawSummary)).not.toBe(rawSummary);
+      expect(system).toContain(`: ${rawDecision}`);
+      expect(system).toContain(`: ${rawSummary}`);
+    });
   });
 
   it("builds the system prompt from persona settings/tasks and passes the two task tools", async () => {

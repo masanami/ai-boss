@@ -70,12 +70,32 @@ const TASK_RELATED_RECORD_LIMIT = 5;
  * assuming exactly one meeting-opening message can appear: correct even if
  * that assumption ever changes, and a no-op whenever the first message is
  * already `user` (the common case today).
+ *
+ * ボスの過去発言（`role: "boss"`）にのみ `stripHtmlTags` を掛けてから写す
+ * （Issue #558 / 親 #446 S2）。根拠は「表示と履歴の一致」——画面に出るボスの
+ * 発言は正規化済みなので、ボスが続きを書く会話履歴も同じ文字列に揃える。
+ * ユーザーの発言は本人が打った文字列そのものであり、触らない。保存された
+ * `messages.content` は生のまま残す（ここで変えるのは LLM へ渡す写しだけ）。
+ *
+ * 正規化すると可視テキストが残らないボスの行（例: `<strong>` の直後で停止
+ * された中断行。中断経路は生文字列の非空だけを見て保存する）は写さずに落とす。
+ * Anthropic Messages API は空・空白のみの content を拒否するため、写すと
+ * `api` バックエンドでそのセッションの以後の全ターンが落ち続ける。判定は
+ * 完了経路の `hasVisibleText` と同じ。連続した `user` は API 側で 1 ターンに
+ * 結合されるので、落としても要求の形は壊れない。
  */
 function toClaudeMessages(messages: Message[]): Anthropic.MessageParam[] {
-  const normalized: Anthropic.MessageParam[] = messages.map((message) => ({
-    role: message.role === "boss" ? "assistant" : "user",
-    content: message.content,
-  }));
+  const normalized: Anthropic.MessageParam[] = [];
+  for (const message of messages) {
+    if (message.role !== "boss") {
+      normalized.push({ role: "user", content: message.content });
+      continue;
+    }
+    const content = stripHtmlTags(message.content);
+    if (content.trim() !== "") {
+      normalized.push({ role: "assistant", content });
+    }
+  }
 
   let start = 0;
   while (start < normalized.length && normalized[start].role === "assistant") {
