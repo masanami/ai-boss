@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { evaluateRules } from "./rule-engine.js";
 import {
   DEFAULT_DETECTION_SETTINGS,
@@ -1183,6 +1183,54 @@ describe("evaluateRules outside working hours (Issue #550 S2)", () => {
           { ruleType: "unstarted", ruleKey: `unstarted:1:${PREVIOUS_DAY_KEY}`, escalationLevel: 1, taskId: 1 },
         ]);
         expect(warnSpy).toHaveBeenCalled();
+      });
+    });
+
+    // Issue #555: work_end だけが形式不正のときも、isWithinWorkingHours と同じく帯ごと
+    // 既定（09:00-18:00）へ倒す。start だけを見ると 08:00 始業で区間キーを算出し、
+    // 既定の帯では始業前（帯外）の 08:30 が当日キーになって同じ区間で 2 回鳴る。
+    describe("when only work_end is malformed (Issue #555)", () => {
+      const PREVIOUS_DAY_KEY = "2026-09-13";
+      const PREVIOUS_DAY = (h: number, min: number) => new Date(2026, 8, 13, h, min);
+      const malformedEnd = { ...settings, workingHours: { start: "08:00", end: "banana" } };
+      const task = makeTask({ id: 1, status: "todo", created_at: PREVIOUS_DAY(8, 0).toISOString() });
+
+      beforeEach(() => {
+        vi.spyOn(console, "warn").mockImplementation(() => undefined);
+      });
+
+      afterEach(() => {
+        vi.restoreAllMocks();
+      });
+
+      it("keys the 08:30 evaluation to the previous day, based on the default working hours as a whole", () => {
+        const result = evaluateRules(
+          baseInput({ now: DAY(8, 30), tasks: [task], settings: malformedEnd }),
+        );
+
+        expect(result).toEqual([
+          { ruleType: "unstarted", ruleKey: `unstarted:1:${PREVIOUS_DAY_KEY}`, escalationLevel: 1, taskId: 1 },
+        ]);
+      });
+
+      it("does not fire again at 08:30 when it already fired at 20:00 the previous evening", () => {
+        const first = evaluateRules(
+          baseInput({ now: PREVIOUS_DAY(20, 0), tasks: [task], settings: malformedEnd }),
+        );
+        const notifications = first.map((f) => ({
+          ruleKey: f.ruleKey,
+          escalationLevel: f.escalationLevel,
+          sentAt: PREVIOUS_DAY(20, 0).toISOString(),
+        }));
+
+        expect(first).toEqual([
+          { ruleType: "unstarted", ruleKey: `unstarted:1:${PREVIOUS_DAY_KEY}`, escalationLevel: 1, taskId: 1 },
+        ]);
+        expect(
+          evaluateRules(
+            baseInput({ now: DAY(8, 30), tasks: [task], settings: malformedEnd, notifications }),
+          ),
+        ).toEqual([]);
       });
     });
   });
