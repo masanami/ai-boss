@@ -1,3 +1,5 @@
+import { useEffect } from "react";
+import { decisionSectionId } from "./decision-section-id";
 import { useDecisions } from "./use-decisions";
 import { groupDecisionsByTask } from "./group-decisions-by-task";
 import type { DecisionSection } from "./group-decisions-by-task";
@@ -53,7 +55,7 @@ function DecisionTaskSection({
   taskReferenceTasks,
 }: DecisionTaskSectionProps) {
   return (
-    <section className="decision-section">
+    <section className="decision-section" id={decisionSectionId(section.taskId)}>
       <h3 className="decision-section-title">{section.title}</h3>
       <ul className="decision-list" aria-label={`${section.title}の記録`}>
         {section.records.map((decision) => (
@@ -80,6 +82,26 @@ interface DecisionLogProps {
    */
   tasks?: Task[];
   tasksStatus?: TasksLoadStatus;
+  /**
+   * Issue #557 (S2a, 親 #438 決定15): the task whose section to scroll into
+   * view once the log has loaded — set when the log was opened from a task
+   * card's 記録を見る button, `null`/omitted when opened from the navigation.
+   */
+  scrollTargetTaskId?: number | null;
+  /**
+   * Called once the target above has been consumed, i.e. as soon as the fetch
+   * has settled — **whether or not anything was scrolled** (no section for
+   * that task, empty log, fetch error, no `scrollIntoView` in this
+   * environment). The owner of the state (`AppLayout`) clears it in response;
+   * this component keeps no state of its own about it. If consumption were
+   * conditional on having scrolled, a stale target would survive this
+   * component's unmount and fire on a later reopen from the navigation.
+   *
+   * Must be referentially stable (it is an effect dependency): an inline
+   * arrow from a caller that does not clear the target would re-run the
+   * scroll on every parent render.
+   */
+  onScrollTargetConsumed?: () => void;
 }
 
 /**
@@ -90,8 +112,30 @@ interface DecisionLogProps {
  * days, so limiting the view to today would be a weak reference surface —
  * the dashboard and the daily report already cover today.
  */
-function DecisionLog({ tasks, tasksStatus }: DecisionLogProps = {}) {
+function DecisionLog({
+  tasks,
+  tasksStatus,
+  scrollTargetTaskId = null,
+  onScrollTargetConsumed,
+}: DecisionLogProps = {}) {
   const { decisions, status } = useDecisions();
+
+  // Runs after the commit that rendered the sections (or the empty/error
+  // state), so the target section — if there is one — is already in the DOM.
+  useEffect(() => {
+    if (status === "loading" || scrollTargetTaskId === null) {
+      return;
+    }
+    const section = document.getElementById(
+      decisionSectionId(scrollTargetTaskId),
+    );
+    // Defensive: jsdom (and, in principle, a very old browser) doesn't
+    // implement scrollIntoView. Same stance as AppLayout's setPointerCapture.
+    if (section !== null && typeof section.scrollIntoView === "function") {
+      section.scrollIntoView({ block: "start" });
+    }
+    onScrollTargetConsumed?.();
+  }, [status, scrollTargetTaskId, onScrollTargetConsumed]);
 
   if (status === "loading") {
     return <p className="decision-log-status">決定ログを読み込み中…</p>;

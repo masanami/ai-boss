@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useCallback, useState } from "react";
 import type { CSSProperties, KeyboardEvent, PointerEvent } from "react";
 import ChatView from "./ChatView";
 import CheckinPanel from "./CheckinPanel";
@@ -116,6 +116,42 @@ function AppLayout() {
   // `useChat` へリフトする必要が無い。
   const startMentoringDisabled = chatState.sending || chatState.switching;
 
+  // タスクカードの振り返り導線（Issue #557 / S2a, 親 #438 決定14・決定15）。
+  // 決定ログへ切り替えると同時に「どのタスクのセクションへ寄せるか」を持ち、
+  // `DecisionLog` へ prop で渡す。ハッシュフラグメントにしないのは、
+  // `DecisionLog` が条件レンダリングで、押した時点では移動先の DOM がまだ
+  // 無いためである（ルーティングも無いので URL にハッシュだけが残る）。
+  //
+  // 開始導線と違って `adhoc` でも `status` でもゲートしない: 読むだけで、
+  // 発言も記録も朝会ゲートも触らない。記録の有無でも出し分けない — それを
+  // 知るには決定ログの取得をここへ持ち上げる必要があり、持ち上げると
+  // 「アプリ起動時の 1 回きり」になってメンタリング直後の記録が映らなくなる。
+  //
+  // この state は `DecisionLog` がアンマウントされても残るので、消費されない
+  // と「導線から遷移 → 別ビュー → ナビゲーションから決定ログ」で再びスクロール
+  // してしまう。クリアの契機は `DecisionLog` の取得完了（スクロールの有無に
+  // かかわらず呼ばれる）で、更新者は state の持ち主であるここだけにする。
+  const [decisionLogScrollTaskId, setDecisionLogScrollTaskId] = useState<
+    number | null
+  >(null);
+  const showTaskRecords = (task: Task) => {
+    setDecisionLogScrollTaskId(task.id);
+    setActiveView("decisions");
+  };
+  const clearDecisionLogScrollTarget = useCallback(() => {
+    setDecisionLogScrollTaskId(null);
+  }, []);
+  // ナビゲーション経由の切替でも対象を捨てる（PR #559 の Codex P2 を受けた
+  // 2026-09-21 のオーナー決定）。消費の通知は取得完了が契機なので、取得が
+  // 終わる前に決定ログを離れると通知されないまま対象が残り、次にナビゲーション
+  // から開いたときにスクロールしてしまう。ナビゲーションは導線を経由しない
+  // 遷移なので、ここで捨てても導線側のスクロールの機会は奪わない（決定15 が
+  // 却下した「決定ログへの切替を検知してクリア」とは違い、競合しない）。
+  const navigateTo = (view: AppView) => {
+    clearDecisionLogScrollTarget();
+    setActiveView(view);
+  };
+
   function handleSplitterPointerDown(event: PointerEvent<HTMLDivElement>) {
     // Defensive: jsdom (and, in principle, a very old browser) doesn't
     // implement pointer capture. Fall back to no-op rather than throwing so
@@ -199,7 +235,7 @@ function AppLayout() {
                   onClick={
                     item.view === null
                       ? undefined
-                      : () => setActiveView(item.view as AppView)
+                      : () => navigateTo(item.view as AppView)
                   }
                 >
                   {item.label}
@@ -231,6 +267,7 @@ function AppLayout() {
               tasksState={tasksState}
               onStartMentoring={onStartMentoring}
               startMentoringDisabled={startMentoringDisabled}
+              onShowTaskRecords={showTaskRecords}
             />
           </main>
         )}
@@ -238,7 +275,12 @@ function AppLayout() {
           <main className="app-main" aria-label="決定ログ">
             {/* Issue #513 (S1, 決定2): 追加の取得はせず既存の tasksState を渡す
                 だけ（`groupDecisionsByTask` の見出し・タイトルは従来どおり）。 */}
-            <DecisionLog tasks={tasksState.tasks} tasksStatus={tasksState.status} />
+            <DecisionLog
+              tasks={tasksState.tasks}
+              tasksStatus={tasksState.status}
+              scrollTargetTaskId={decisionLogScrollTaskId}
+              onScrollTargetConsumed={clearDecisionLogScrollTarget}
+            />
           </main>
         )}
         {activeView === "reports" && (

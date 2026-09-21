@@ -44,6 +44,15 @@ interface TaskCardProps {
    * このコンポーネントではなく呼び出し元（`AppLayout`）が持つ。
    */
   startMentoringDisabled?: boolean;
+  /**
+   * このタスクの記録を決定ログで読み返す導線（Issue #557 / S2a, 親 #438
+   * 決定14）。`onStartMentoring` と同じ形（未提供・`null` なら描画しない）
+   * だが、表示条件は連動させない — 読むだけの導線は会（朝会・夕会）の最中
+   * にも、記録が 1 件も無いタスクにも出す（出し分けの判断材料をこの
+   * コンポーネントは持たないし、呼び出し元も出し分けない）。送信を伴わない
+   * ので `startMentoringDisabled` の対象にもしない。
+   */
+  onShowTaskRecords?: ((task: Task) => void) | null;
 }
 
 const PRIORITY_LABEL: Record<TaskPriority, string> = {
@@ -105,6 +114,7 @@ function TaskCard({
   onDraggingChange,
   onStartMentoring,
   startMentoringDisabled = false,
+  onShowTaskRecords,
 }: TaskCardProps) {
   const [isEditing, setIsEditing] = useState(false);
   const [title, setTitle] = useState(task.title);
@@ -399,6 +409,11 @@ function TaskCard({
             disabled={startMentoringDisabled}
           >
             メンタリングする
+          </button>
+        )}
+        {onShowTaskRecords !== null && onShowTaskRecords !== undefined && (
+          <button type="button" onClick={() => onShowTaskRecords(task)}>
+            記録を見る
           </button>
         )}
       </div>

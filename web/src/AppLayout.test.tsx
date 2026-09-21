@@ -96,8 +96,15 @@ function createRoutedFetchMock(options: {
    * その間 `chatState.switching` が真のままになる。
    */
   holdSessionsFetchAfterFirst?: Promise<void>;
-  /** Issue #513: `GET /api/decisions` の応答（決定ログ本文の `#<id>` の配線確認用）。 */
-  decisions?: DecisionRecord[];
+  /**
+   * Issue #513: `GET /api/decisions` の応答（決定ログ本文の `#<id>` の配線確認用）。
+   * Issue #557: 関数を渡すと取得のたびに呼ばれる（決定ログは開くたびに取得し
+   * 直すので、「1 回目は記録なし・2 回目は記録あり」を作れる）。Promise を返せば
+   * その取得を未解決のまま保留できる（取得完了前にビューを離れる窓を作る）。
+   */
+  decisions?:
+    | DecisionRecord[]
+    | (() => DecisionRecord[] | Promise<DecisionRecord[]>);
 } = {}) {
   const {
     tasks: initialTasks = [],
@@ -165,7 +172,9 @@ function createRoutedFetchMock(options: {
       });
     }
     if (url === "/api/decisions" && method === "GET") {
-      return jsonResponse(200, decisions);
+      return Promise.resolve(
+        typeof decisions === "function" ? decisions() : decisions,
+      ).then((body) => jsonResponse(200, body));
     }
     if (url === "/api/reports" && method === "GET") {
       return jsonResponse(200, []);
@@ -1868,6 +1877,340 @@ describe("AppLayout", () => {
     expect(
       screen.queryByRole("main", { name: "ボスとの対話" }),
     ).not.toBeInTheDocument();
+  });
+
+  // Issue #557 (S2a, 親 #438 決定14・決定15): タスクカードから決定ログの
+  // 当該タスクのセクションへ寄せる振り返り導線。「どのタスクへ寄せるか」は
+  // AppLayout が state に持ち、DecisionLog の消費通知でクリアする（単位レベル
+  // の確認は TaskCard / TaskBoard / DecisionLog の各テスト側に持つ）。
+  describe("タスクカードの振り返り導線 (Issue #557, S2a)", () => {
+    // jsdom は `scrollIntoView` を実装しないので、プロトタイプ側へスタブを
+    // 差して「どの要素に対して呼ばれたか」を観測する。
+    let scrolledElements: Element[] = [];
+
+    beforeEach(() => {
+      scrolledElements = [];
+      Object.defineProperty(Element.prototype, "scrollIntoView", {
+        configurable: true,
+        writable: true,
+        value: function scrollIntoView(this: Element) {
+          scrolledElements.push(this);
+        },
+      });
+    });
+
+    afterEach(() => {
+      delete (Element.prototype as { scrollIntoView?: unknown }).scrollIntoView;
+    });
+
+    const TASK = makeTask({ id: 5, title: "見積もり資料の作成" });
+    const OTHER_TASK = makeTask({ id: 8, title: "打ち合わせの準備" });
+
+    function makeRecord(overrides: Partial<DecisionRecord>): DecisionRecord {
+      return {
+        id: 1,
+        session_id: 7,
+        task_id: null,
+        task_title: null,
+        content: "根拠を先に固めろ",
+        rationale: null,
+        status: "active",
+        kind: "mentoring",
+        created_at: new Date(2026, 6, 5, 9, 0, 0).toISOString(),
+        ...overrides,
+      };
+    }
+
+    const TASK_RECORD = makeRecord({
+      id: 1,
+      task_id: TASK.id,
+      task_title: TASK.title,
+    });
+    const OTHER_TASK_RECORD = makeRecord({
+      id: 2,
+      task_id: OTHER_TASK.id,
+      task_title: OTHER_TASK.title,
+      created_at: new Date(2026, 6, 5, 10, 0, 0).toISOString(),
+    });
+
+    /** タスク画面を開き、指定タスクのカードが描画されるまで待って返す。 */
+    async function openTaskCard(title: string): Promise<HTMLElement> {
+      fireEvent.click(screen.getByRole("button", { name: "タスク" }));
+      const board = await screen.findByRole("main", { name: "タスクボード" });
+      const heading = await within(board).findByText(title);
+      const card = heading.closest(".task-card");
+      expect(card).not.toBeNull();
+      return card as HTMLElement;
+    }
+
+    async function findDecisionSection(title: string): Promise<HTMLElement> {
+      const log = await screen.findByRole("main", { name: "決定ログ" });
+      const heading = await within(log).findByRole("heading", {
+        level: 3,
+        name: title,
+      });
+      return heading.closest("section") as HTMLElement;
+    }
+
+    // タスク画面は決定ログを取得しない（＝記録の有無を知る材料を持たない）の
+    // で、記録のあるタスクと無いタスクのカードは同じ経路で描画される。ここで
+    // 固定しているのは「どのカードにも出る」ことで、出し分けを持ち込む変更
+    // （特定のタスクにだけハンドラを渡す等）を入れるとこのテストが落ちる。
+    it("shows the 記録を見る button on a task card, including one with no records at all", async () => {
+      vi.stubGlobal(
+        "fetch",
+        createRoutedFetchMock({
+          tasks: [TASK, OTHER_TASK],
+          decisions: [TASK_RECORD],
+        }),
+      );
+
+      render(<AppLayout />);
+
+      const cardWithRecords = await openTaskCard(TASK.title);
+      const cardWithoutRecords = await openTaskCard(OTHER_TASK.title);
+      expect(
+        within(cardWithRecords).getByRole("button", { name: "記録を見る" }),
+      ).toBeEnabled();
+      expect(
+        within(cardWithoutRecords).getByRole("button", { name: "記録を見る" }),
+      ).toBeEnabled();
+    });
+
+    // 開始導線（メンタリングする）は会中に消えるが、読むだけの導線は消えない。
+    it("keeps showing the 記録を見る button during a meeting (not adhoc-only)", async () => {
+      const morningSession: ChatSession = {
+        id: 20,
+        type: "morning",
+        started_at: new Date().toISOString(),
+        ended_at: null,
+        summary: null,
+      };
+      vi.stubGlobal(
+        "fetch",
+        createRoutedFetchMock({ tasks: [TASK], sessions: [morningSession] }),
+      );
+
+      render(<AppLayout />);
+      const card = await openTaskCard(TASK.title);
+
+      // 会の復元が済んだこと（＝メンタリングするが消えたこと）を待ってから
+      // 主張する。待たないと adhoc の初期値のまま通ってしまい恒真になる。
+      await waitFor(() =>
+        expect(
+          within(card).queryByRole("button", { name: "メンタリングする" }),
+        ).not.toBeInTheDocument(),
+      );
+      expect(
+        within(card).getByRole("button", { name: "記録を見る" }),
+      ).toBeEnabled();
+    });
+
+    it("switches to the decision log and scrolls that task's section into view", async () => {
+      vi.stubGlobal(
+        "fetch",
+        createRoutedFetchMock({
+          tasks: [TASK, OTHER_TASK],
+          decisions: [TASK_RECORD, OTHER_TASK_RECORD],
+        }),
+      );
+
+      render(<AppLayout />);
+      const card = await openTaskCard(TASK.title);
+      fireEvent.click(within(card).getByRole("button", { name: "記録を見る" }));
+
+      const section = await findDecisionSection(TASK.title);
+      expect(
+        screen.queryByRole("main", { name: "タスクボード" }),
+      ).not.toBeInTheDocument();
+      // `toBe`（同一性）で比べる: `toEqual` は DOM ノードを構造等価で比較する。
+      await waitFor(() => expect(scrolledElements).toHaveLength(1));
+      expect(scrolledElements[0]).toBe(section);
+    });
+
+    it("does not list decision or mentoring records on the task screen", async () => {
+      vi.stubGlobal(
+        "fetch",
+        createRoutedFetchMock({ tasks: [TASK], decisions: [TASK_RECORD] }),
+      );
+
+      render(<AppLayout />);
+      await openTaskCard(TASK.title);
+
+      const board = screen.getByRole("main", { name: "タスクボード" });
+      expect(within(board).queryByText(TASK_RECORD.content)).toBeNull();
+      expect(board.querySelector(".decision-card")).toBeNull();
+    });
+
+    it("opens the decision log without scrolling when the task has no records", async () => {
+      vi.stubGlobal(
+        "fetch",
+        createRoutedFetchMock({
+          tasks: [TASK, OTHER_TASK],
+          decisions: [OTHER_TASK_RECORD],
+        }),
+      );
+
+      render(<AppLayout />);
+      const card = await openTaskCard(TASK.title);
+      fireEvent.click(within(card).getByRole("button", { name: "記録を見る" }));
+
+      await findDecisionSection(OTHER_TASK.title);
+      expect(scrolledElements).toEqual([]);
+      expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+    });
+
+    it("does not scroll when the decision log is opened from the navigation", async () => {
+      vi.stubGlobal(
+        "fetch",
+        createRoutedFetchMock({ tasks: [TASK], decisions: [TASK_RECORD] }),
+      );
+
+      render(<AppLayout />);
+      await openTaskCard(TASK.title);
+      fireEvent.click(screen.getByRole("button", { name: "決定ログ" }));
+
+      await findDecisionSection(TASK.title);
+      expect(scrolledElements).toEqual([]);
+    });
+
+    it("consumes the target: reopening the decision log from the navigation afterwards does not scroll again", async () => {
+      vi.stubGlobal(
+        "fetch",
+        createRoutedFetchMock({ tasks: [TASK], decisions: [TASK_RECORD] }),
+      );
+
+      render(<AppLayout />);
+      const card = await openTaskCard(TASK.title);
+      fireEvent.click(within(card).getByRole("button", { name: "記録を見る" }));
+      await findDecisionSection(TASK.title);
+      await waitFor(() => expect(scrolledElements).toHaveLength(1));
+
+      fireEvent.click(screen.getByRole("button", { name: "設定" }));
+      await screen.findByRole("main", { name: "設定" });
+      fireEvent.click(screen.getByRole("button", { name: "決定ログ" }));
+
+      await findDecisionSection(TASK.title);
+      expect(scrolledElements).toHaveLength(1);
+    });
+
+    // 決定15: スクロールしなかった遷移でも対象は消費される。1 回目の取得では
+    // そのタスクの記録が無く、開き直したときには記録がある（＝消費されずに
+    // 残っていればここでスクロールしてしまう）状況を作って確かめる。
+    it("consumes the target even when nothing was scrolled: a record that appears later is not scrolled to on a navigation reopen", async () => {
+      let decisionsFetchCount = 0;
+      vi.stubGlobal(
+        "fetch",
+        createRoutedFetchMock({
+          tasks: [TASK, OTHER_TASK],
+          decisions: () => {
+            decisionsFetchCount += 1;
+            return decisionsFetchCount === 1
+              ? [OTHER_TASK_RECORD]
+              : [TASK_RECORD, OTHER_TASK_RECORD];
+          },
+        }),
+      );
+
+      render(<AppLayout />);
+      const card = await openTaskCard(TASK.title);
+      fireEvent.click(within(card).getByRole("button", { name: "記録を見る" }));
+      await findDecisionSection(OTHER_TASK.title);
+      expect(scrolledElements).toEqual([]);
+
+      fireEvent.click(screen.getByRole("button", { name: "設定" }));
+      await screen.findByRole("main", { name: "設定" });
+      fireEvent.click(screen.getByRole("button", { name: "決定ログ" }));
+
+      await findDecisionSection(TASK.title);
+      expect(decisionsFetchCount).toBe(2);
+      expect(scrolledElements).toEqual([]);
+    });
+
+    // 消費後は対象が `null` なので、決定ログを表示したまま `AppLayout` が
+    // 再レンダリングしても寄せ直さない（ユーザーのスクロール位置を奪わない）。
+    // ナビゲーション側のクリアが入った後は、消費通知の配線が外れたことを
+    // 開き直しのテストでは観測できないため、観測できるこの形で固定する。
+    it("does not scroll again when AppLayout re-renders while the decision log stays open", async () => {
+      vi.stubGlobal(
+        "fetch",
+        createRoutedFetchMock({ tasks: [TASK], decisions: [TASK_RECORD] }),
+      );
+
+      render(<AppLayout />);
+      const card = await openTaskCard(TASK.title);
+      fireEvent.click(within(card).getByRole("button", { name: "記録を見る" }));
+      await findDecisionSection(TASK.title);
+      await waitFor(() => expect(scrolledElements).toHaveLength(1));
+
+      // サイドパネル幅の変更は AppLayout 自身の再レンダリングを起こす。
+      const splitter = screen.getByRole("separator", {
+        name: "サイドパネルの幅",
+      });
+      const widthBefore = splitter.getAttribute("aria-valuenow");
+      fireEvent.keyDown(splitter, { key: "Home" });
+      fireEvent.keyDown(splitter, { key: "End" });
+      fireEvent.keyDown(splitter, { key: "ArrowRight" });
+      expect(splitter.getAttribute("aria-valuenow")).not.toBe(widthBefore);
+
+      expect(scrolledElements).toHaveLength(1);
+    });
+
+    // PR #559 Codex P2（2026-09-21 オーナー決定）: 消費の通知は取得完了が契機
+    // なので、取得が終わる前に決定ログを離れると `DecisionLog` は通知しないまま
+    // アンマウントされる。ナビゲーション経由の切替は導線を経由しない遷移
+    // なので、`AppLayout` がその場で対象を捨てる。
+    it("drops the target when the user navigates away before the decision log has loaded", async () => {
+      const firstFetch = createGate();
+      let decisionsFetchCount = 0;
+      vi.stubGlobal(
+        "fetch",
+        createRoutedFetchMock({
+          tasks: [TASK],
+          decisions: () => {
+            decisionsFetchCount += 1;
+            return decisionsFetchCount === 1
+              ? firstFetch.promise.then(() => [TASK_RECORD])
+              : [TASK_RECORD];
+          },
+        }),
+      );
+
+      render(<AppLayout />);
+      const card = await openTaskCard(TASK.title);
+      fireEvent.click(within(card).getByRole("button", { name: "記録を見る" }));
+      const log = await screen.findByRole("main", { name: "決定ログ" });
+      expect(within(log).getByText("決定ログを読み込み中…")).toBeInTheDocument();
+
+      // 取得は保留のまま、ナビゲーションで離れて開き直す。
+      fireEvent.click(screen.getByRole("button", { name: "設定" }));
+      await screen.findByRole("main", { name: "設定" });
+      fireEvent.click(screen.getByRole("button", { name: "決定ログ" }));
+
+      await findDecisionSection(TASK.title);
+      expect(decisionsFetchCount).toBe(2);
+      expect(scrolledElements).toEqual([]);
+
+      // 保留していた 1 回目の取得を解放して合流する（アンマウント済みの
+      // インスタンスは `cancelled` ガードで何もしない）。
+      firstFetch.open();
+      await firstFetch.promise;
+      expect(scrolledElements).toEqual([]);
+    });
+
+    it("does not throw where scrollIntoView does not exist", async () => {
+      delete (Element.prototype as { scrollIntoView?: unknown }).scrollIntoView;
+      vi.stubGlobal(
+        "fetch",
+        createRoutedFetchMock({ tasks: [TASK], decisions: [TASK_RECORD] }),
+      );
+
+      render(<AppLayout />);
+      const card = await openTaskCard(TASK.title);
+      fireEvent.click(within(card).getByRole("button", { name: "記録を見る" }));
+
+      expect(await findDecisionSection(TASK.title)).toBeInTheDocument();
+    });
   });
 });
 

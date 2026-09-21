@@ -1,6 +1,7 @@
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { render, screen, waitFor, within } from "@testing-library/react";
 import DecisionLog from "./DecisionLog";
+import { decisionSectionId } from "./decision-section-id";
 import type { DecisionRecord } from "./decision";
 import type { Task } from "./task";
 
@@ -358,5 +359,265 @@ describe("DecisionLog task-id hover (Issue #513)", () => {
     );
     const content = container.querySelector(".decision-content");
     expect(content!.textContent).toBe("#2 と #9999 を同時に見てほしい");
+  });
+});
+
+// Issue #557 (S2a, 親 #438 決定15): タスク別セクションの id と、タスクカードの
+// 導線から開いたときのプログラム的スクロール。`AppLayout` からの配線（state
+// のセットとクリア）は AppLayout.test.tsx が持つため、ここでは対象タスク id と
+// 消費コールバックを直接 props で与える。
+describe("DecisionLog section ids and scroll target (Issue #557, S2a)", () => {
+  // jsdom は `scrollIntoView` を実装しないので、呼び出しはプロトタイプ側へ
+  // スタブを差して観測する（ChatView.test.tsx の `scrollHeight` と同じ作法）。
+  // 元々 own property が無いので、後片付けは「消す」で元の状態に戻る。
+  let scrolledElements: Element[] = [];
+
+  function stubScrollIntoView(): void {
+    Object.defineProperty(Element.prototype, "scrollIntoView", {
+      configurable: true,
+      writable: true,
+      value: function scrollIntoView(this: Element) {
+        scrolledElements.push(this);
+      },
+    });
+  }
+
+  beforeEach(() => {
+    scrolledElements = [];
+  });
+
+  afterEach(() => {
+    delete (Element.prototype as { scrollIntoView?: unknown }).scrollIntoView;
+    vi.unstubAllGlobals();
+  });
+
+  const RECORDS = [
+    makeDecision({
+      id: 1,
+      task_id: 5,
+      task_title: "見積もり資料の作成",
+      created_at: at(9, 5, 9),
+    }),
+    makeDecision({
+      id: 2,
+      task_id: 8,
+      task_title: "打ち合わせの準備",
+      created_at: at(9, 5, 10),
+    }),
+    makeDecision({ id: 3, task_id: null, created_at: at(9, 5, 11) }),
+  ];
+
+  function sectionOf(title: string): HTMLElement {
+    const section = screen
+      .getByRole("heading", { level: 3, name: title })
+      .closest("section");
+    expect(section).not.toBeNull();
+    return section as HTMLElement;
+  }
+
+  it("gives each task section an id derived from its task id", async () => {
+    stubFetchWith(RECORDS);
+
+    render(<DecisionLog />);
+
+    await waitFor(() =>
+      expect(sectionOf("見積もり資料の作成")).toHaveAttribute(
+        "id",
+        decisionSectionId(5),
+      ),
+    );
+    expect(sectionOf("打ち合わせの準備")).toHaveAttribute(
+      "id",
+      decisionSectionId(8),
+    );
+    // タスク id 由来であること自体を固定する（ヘルパーの中身が決定 id や連番に
+    // すり替わっても、上の自己参照的な比較だけでは気づけないため）。
+    expect(decisionSectionId(5)).toBe("decision-section-task-5");
+    expect(decisionSectionId(8)).toBe("decision-section-task-8");
+  });
+
+  it("gives the section for records without a task_id a fixed id too", async () => {
+    stubFetchWith(RECORDS);
+
+    render(<DecisionLog />);
+
+    await waitFor(() =>
+      expect(sectionOf("タスクに紐づかない決定")).toHaveAttribute(
+        "id",
+        decisionSectionId(null),
+      ),
+    );
+    expect(decisionSectionId(null)).toBe("decision-section-unassigned");
+    expect(document.querySelectorAll("section[id]")).toHaveLength(3);
+    expect(
+      new Set(
+        Array.from(document.querySelectorAll("section[id]"), (el) => el.id),
+      ).size,
+    ).toBe(3);
+  });
+
+  it("scrolls the target task's section into view once the log has loaded, then reports the target as consumed", async () => {
+    stubScrollIntoView();
+    stubFetchWith(RECORDS);
+    const onScrollTargetConsumed = vi.fn();
+
+    render(
+      <DecisionLog
+        scrollTargetTaskId={5}
+        onScrollTargetConsumed={onScrollTargetConsumed}
+      />,
+    );
+
+    await waitFor(() => expect(onScrollTargetConsumed).toHaveBeenCalled());
+    // `toBe`（同一性）で比べる: `toEqual` は DOM ノードを構造等価で比較する
+    // ので、似たマークアップの別セクションへ寄せても通ってしまう。
+    expect(scrolledElements).toHaveLength(1);
+    expect(scrolledElements[0]).toBe(sectionOf("見積もり資料の作成"));
+  });
+
+  it("does not scroll or report anything while the log is still loading", () => {
+    stubScrollIntoView();
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(() => new Promise(() => {})),
+    );
+    const onScrollTargetConsumed = vi.fn();
+
+    render(
+      <DecisionLog
+        scrollTargetTaskId={5}
+        onScrollTargetConsumed={onScrollTargetConsumed}
+      />,
+    );
+
+    expect(screen.getByText("決定ログを読み込み中…")).toBeInTheDocument();
+    expect(onScrollTargetConsumed).not.toHaveBeenCalled();
+    expect(scrolledElements).toEqual([]);
+  });
+
+  // 決定15: 消費は「スクロールした場合」に限らない。条件を分岐させると、
+  // 漏れた経路に古い対象が残って次にナビゲーションから開いたときに動く。
+  it("reports the target as consumed without scrolling when the task has no records", async () => {
+    stubScrollIntoView();
+    stubFetchWith(RECORDS);
+    const onScrollTargetConsumed = vi.fn();
+
+    render(
+      <DecisionLog
+        scrollTargetTaskId={999}
+        onScrollTargetConsumed={onScrollTargetConsumed}
+      />,
+    );
+
+    await waitFor(() => expect(onScrollTargetConsumed).toHaveBeenCalled());
+    expect(scrolledElements).toEqual([]);
+    // 空セクションを作ったりエラーにしたりせず、いつもの一覧が出るだけ。
+    expect(sectionTitles()).toEqual([
+      "打ち合わせの準備",
+      "見積もり資料の作成",
+      "タスクに紐づかない決定",
+    ]);
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+  });
+
+  it("reports the target as consumed when the log is empty", async () => {
+    stubScrollIntoView();
+    stubFetchWith([]);
+    const onScrollTargetConsumed = vi.fn();
+
+    render(
+      <DecisionLog
+        scrollTargetTaskId={5}
+        onScrollTargetConsumed={onScrollTargetConsumed}
+      />,
+    );
+
+    await waitFor(() => expect(onScrollTargetConsumed).toHaveBeenCalled());
+    expect(scrolledElements).toEqual([]);
+    expect(screen.getByText("決定はまだありません")).toBeInTheDocument();
+  });
+
+  it("reports the target as consumed when the fetch fails", async () => {
+    stubScrollIntoView();
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockRejectedValue(new Error("network error")),
+    );
+    const onScrollTargetConsumed = vi.fn();
+
+    render(
+      <DecisionLog
+        scrollTargetTaskId={5}
+        onScrollTargetConsumed={onScrollTargetConsumed}
+      />,
+    );
+
+    await waitFor(() => expect(onScrollTargetConsumed).toHaveBeenCalled());
+    expect(scrolledElements).toEqual([]);
+  });
+
+  it("does not throw, and still reports the target as consumed, where scrollIntoView does not exist", async () => {
+    // スタブを差さない＝ jsdom の素の状態。前提が崩れたら（jsdom が実装したら）
+    // このテストは何も確かめなくなるので、前提そのものも固定する。
+    expect(
+      (Element.prototype as { scrollIntoView?: unknown }).scrollIntoView,
+    ).toBeUndefined();
+    stubFetchWith(RECORDS);
+    const onScrollTargetConsumed = vi.fn();
+
+    render(
+      <DecisionLog
+        scrollTargetTaskId={5}
+        onScrollTargetConsumed={onScrollTargetConsumed}
+      />,
+    );
+
+    await waitFor(() => expect(onScrollTargetConsumed).toHaveBeenCalled());
+    expect(sectionOf("見積もり資料の作成")).toBeInTheDocument();
+  });
+
+  it.each([undefined, null])(
+    "never scrolls when no target is given (scrollTargetTaskId = %s)",
+    async (scrollTargetTaskId) => {
+      stubScrollIntoView();
+      stubFetchWith(RECORDS);
+      const onScrollTargetConsumed = vi.fn();
+
+      render(
+        <DecisionLog
+          scrollTargetTaskId={scrollTargetTaskId}
+          onScrollTargetConsumed={onScrollTargetConsumed}
+        />,
+      );
+
+      await waitFor(() =>
+        expect(sectionOf("見積もり資料の作成")).toBeInTheDocument(),
+      );
+      expect(scrolledElements).toEqual([]);
+      expect(onScrollTargetConsumed).not.toHaveBeenCalled();
+    },
+  );
+
+  it("renders the same headings, order and record content whether or not a target is given", async () => {
+    stubScrollIntoView();
+    stubFetchWith(RECORDS);
+    const plain = render(<DecisionLog />);
+    await waitFor(() =>
+      expect(sectionOf("見積もり資料の作成")).toBeInTheDocument(),
+    );
+    const plainHtml = plain.container.innerHTML;
+    expect(sectionTitles()).toEqual([
+      "打ち合わせの準備",
+      "見積もり資料の作成",
+      "タスクに紐づかない決定",
+    ]);
+    plain.unmount();
+
+    const targeted = render(
+      <DecisionLog scrollTargetTaskId={5} onScrollTargetConsumed={vi.fn()} />,
+    );
+    await waitFor(() => expect(scrolledElements).toHaveLength(1));
+
+    expect(targeted.container.innerHTML).toBe(plainHtml);
   });
 });

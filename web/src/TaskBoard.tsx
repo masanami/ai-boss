@@ -74,12 +74,18 @@ interface TaskBoardProps {
    * `AppLayout` が持つ。
    */
   startMentoringDisabled?: boolean;
+  /**
+   * タスクの記録を決定ログで読み返す導線（Issue #557 / S2a）。これも
+   * `TaskCard` へそのまま渡すだけで、判断には関与しない。
+   */
+  onShowTaskRecords?: ((task: Task) => void) | null;
 }
 
 function TaskBoard({
   tasksState,
   onStartMentoring,
   startMentoringDisabled,
+  onShowTaskRecords,
 }: TaskBoardProps) {
   const { tasks, status, addTask, editTask, refresh } = tasksState;
   const [actionError, setActionError] = useState<string | null>(null);
@@ -265,6 +271,7 @@ function TaskBoard({
                         onDraggingChange={setDraggingTaskId}
                         onStartMentoring={onStartMentoring}
                         startMentoringDisabled={startMentoringDisabled}
+                        onShowTaskRecords={onShowTaskRecords}
                       />
                     </li>
                   ))}
