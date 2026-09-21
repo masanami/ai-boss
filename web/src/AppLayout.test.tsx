@@ -99,9 +99,12 @@ function createRoutedFetchMock(options: {
   /**
    * Issue #513: `GET /api/decisions` の応答（決定ログ本文の `#<id>` の配線確認用）。
    * Issue #557: 関数を渡すと取得のたびに呼ばれる（決定ログは開くたびに取得し
-   * 直すので、「1 回目は記録なし・2 回目は記録あり」を作れる）。
+   * 直すので、「1 回目は記録なし・2 回目は記録あり」を作れる）。Promise を返せば
+   * その取得を未解決のまま保留できる（取得完了前にビューを離れる窓を作る）。
    */
-  decisions?: DecisionRecord[] | (() => DecisionRecord[]);
+  decisions?:
+    | DecisionRecord[]
+    | (() => DecisionRecord[] | Promise<DecisionRecord[]>);
 } = {}) {
   const {
     tasks: initialTasks = [],
@@ -169,10 +172,9 @@ function createRoutedFetchMock(options: {
       });
     }
     if (url === "/api/decisions" && method === "GET") {
-      return jsonResponse(
-        200,
+      return Promise.resolve(
         typeof decisions === "function" ? decisions() : decisions,
-      );
+      ).then((body) => jsonResponse(200, body));
     }
     if (url === "/api/reports" && method === "GET") {
       return jsonResponse(200, []);
@@ -2122,6 +2124,77 @@ describe("AppLayout", () => {
 
       await findDecisionSection(TASK.title);
       expect(decisionsFetchCount).toBe(2);
+      expect(scrolledElements).toEqual([]);
+    });
+
+    // 消費後は対象が `null` なので、決定ログを表示したまま `AppLayout` が
+    // 再レンダリングしても寄せ直さない（ユーザーのスクロール位置を奪わない）。
+    // ナビゲーション側のクリアが入った後は、消費通知の配線が外れたことを
+    // 開き直しのテストでは観測できないため、観測できるこの形で固定する。
+    it("does not scroll again when AppLayout re-renders while the decision log stays open", async () => {
+      vi.stubGlobal(
+        "fetch",
+        createRoutedFetchMock({ tasks: [TASK], decisions: [TASK_RECORD] }),
+      );
+
+      render(<AppLayout />);
+      const card = await openTaskCard(TASK.title);
+      fireEvent.click(within(card).getByRole("button", { name: "記録を見る" }));
+      await findDecisionSection(TASK.title);
+      await waitFor(() => expect(scrolledElements).toHaveLength(1));
+
+      // サイドパネル幅の変更は AppLayout 自身の再レンダリングを起こす。
+      const splitter = screen.getByRole("separator", {
+        name: "サイドパネルの幅",
+      });
+      const widthBefore = splitter.getAttribute("aria-valuenow");
+      fireEvent.keyDown(splitter, { key: "Home" });
+      fireEvent.keyDown(splitter, { key: "End" });
+      fireEvent.keyDown(splitter, { key: "ArrowRight" });
+      expect(splitter.getAttribute("aria-valuenow")).not.toBe(widthBefore);
+
+      expect(scrolledElements).toHaveLength(1);
+    });
+
+    // PR #559 Codex P2（2026-09-21 オーナー決定）: 消費の通知は取得完了が契機
+    // なので、取得が終わる前に決定ログを離れると `DecisionLog` は通知しないまま
+    // アンマウントされる。ナビゲーション経由の切替は導線を経由しない遷移
+    // なので、`AppLayout` がその場で対象を捨てる。
+    it("drops the target when the user navigates away before the decision log has loaded", async () => {
+      const firstFetch = createGate();
+      let decisionsFetchCount = 0;
+      vi.stubGlobal(
+        "fetch",
+        createRoutedFetchMock({
+          tasks: [TASK],
+          decisions: () => {
+            decisionsFetchCount += 1;
+            return decisionsFetchCount === 1
+              ? firstFetch.promise.then(() => [TASK_RECORD])
+              : [TASK_RECORD];
+          },
+        }),
+      );
+
+      render(<AppLayout />);
+      const card = await openTaskCard(TASK.title);
+      fireEvent.click(within(card).getByRole("button", { name: "記録を見る" }));
+      const log = await screen.findByRole("main", { name: "決定ログ" });
+      expect(within(log).getByText("決定ログを読み込み中…")).toBeInTheDocument();
+
+      // 取得は保留のまま、ナビゲーションで離れて開き直す。
+      fireEvent.click(screen.getByRole("button", { name: "設定" }));
+      await screen.findByRole("main", { name: "設定" });
+      fireEvent.click(screen.getByRole("button", { name: "決定ログ" }));
+
+      await findDecisionSection(TASK.title);
+      expect(decisionsFetchCount).toBe(2);
+      expect(scrolledElements).toEqual([]);
+
+      // 保留していた 1 回目の取得を解放して合流する（アンマウント済みの
+      // インスタンスは `cancelled` ガードで何もしない）。
+      firstFetch.open();
+      await firstFetch.promise;
       expect(scrolledElements).toEqual([]);
     });
 

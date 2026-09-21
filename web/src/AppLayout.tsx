@@ -141,6 +141,16 @@ function AppLayout() {
   const clearDecisionLogScrollTarget = useCallback(() => {
     setDecisionLogScrollTaskId(null);
   }, []);
+  // ナビゲーション経由の切替でも対象を捨てる（PR #559 の Codex P2 を受けた
+  // 2026-09-21 のオーナー決定）。消費の通知は取得完了が契機なので、取得が
+  // 終わる前に決定ログを離れると通知されないまま対象が残り、次にナビゲーション
+  // から開いたときにスクロールしてしまう。ナビゲーションは導線を経由しない
+  // 遷移なので、ここで捨てても導線側のスクロールの機会は奪わない（決定15 が
+  // 却下した「決定ログへの切替を検知してクリア」とは違い、競合しない）。
+  const navigateTo = (view: AppView) => {
+    clearDecisionLogScrollTarget();
+    setActiveView(view);
+  };
 
   function handleSplitterPointerDown(event: PointerEvent<HTMLDivElement>) {
     // Defensive: jsdom (and, in principle, a very old browser) doesn't
@@ -225,7 +235,7 @@ function AppLayout() {
                   onClick={
                     item.view === null
                       ? undefined
-                      : () => setActiveView(item.view as AppView)
+                      : () => navigateTo(item.view as AppView)
                   }
                 >
                   {item.label}
