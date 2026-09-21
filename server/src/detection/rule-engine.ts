@@ -28,10 +28,14 @@ import {
  * 区間に属する（0 時をまたいでも同じ区間のまま）。
  */
 function outsideHoursPeriodKey(now: Date, workingHours: WorkingHours): string {
-  // 形式不正の値は isWithinWorkingHours と同じく既定の勤務時間帯へ倒す
+  // 形式不正の値は isWithinWorkingHours と同じく、start / end のどちらかが不正なら
+  // 帯ごと既定の勤務時間帯へ倒す（start だけ倒すと帯の内外判定と始業がずれる。#555）
+  const configuredStart = timeStringToMinutes(workingHours.start);
+  const configuredEnd = timeStringToMinutes(workingHours.end);
   const startMinutes =
-    timeStringToMinutes(workingHours.start) ??
-    (timeStringToMinutes(DEFAULT_DETECTION_SETTINGS.workingHours.start) as number);
+    configuredStart !== null && configuredEnd !== null
+      ? configuredStart
+      : (timeStringToMinutes(DEFAULT_DETECTION_SETTINGS.workingHours.start) as number);
   const nowMinutes = now.getHours() * 60 + now.getMinutes();
   if (nowMinutes < startMinutes) {
     // 前日のローカル暦日（固定ミリ秒差はサマータイムで壊れるため使わない）
