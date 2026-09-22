@@ -2212,6 +2212,178 @@ describe("AppLayout", () => {
       expect(await findDecisionSection(TASK.title)).toBeInTheDocument();
     });
   });
+  describe("メンタリング記録から当該会話を読み返す面 (Issue #564, S3)", () => {
+    const TASK = makeTask({ id: 42, title: "資料を作る", status: "todo" });
+    const MENTORING_RECORD: DecisionRecord = {
+      id: 1,
+      session_id: 7,
+      task_id: TASK.id,
+      task_title: TASK.title,
+      content: "根拠を先に固めろ",
+      rationale: null,
+      status: "active",
+      kind: "mentoring",
+      created_at: new Date(2026, 8, 21, 10, 0, 0).toISOString(),
+    };
+    const PAST_MESSAGES: ChatMessage[] = [
+      {
+        id: 71,
+        session_id: 7,
+        role: "user",
+        content: "昨日の進め方を見てほしい",
+        interrupted: 0,
+        created_at: new Date(2026, 8, 21, 9, 50, 0).toISOString(),
+      },
+      {
+        id: 72,
+        session_id: 7,
+        role: "boss",
+        content: "根拠を先に固めろ。",
+        interrupted: 0,
+        created_at: new Date(2026, 8, 21, 9, 51, 0).toISOString(),
+      },
+    ];
+
+    type FetchMock = ReturnType<typeof createRoutedFetchMock>;
+
+    /** Every non-GET call (method + url) made from index `from` onwards. */
+    function writesSince(fetchMock: FetchMock, from: number): string[] {
+      return fetchMock.mock.calls.slice(from).flatMap(([url, init]) => {
+        const method = (init as RequestInit | undefined)?.method ?? "GET";
+        return method === "GET" ? [] : [`${method} ${String(url)}`];
+      });
+    }
+
+    /** Opens the decision log, opens the transcript from the mentoring record,
+     * waits for the past conversation, then closes it. */
+    async function openAndCloseTranscript(): Promise<void> {
+      fireEvent.click(screen.getByRole("button", { name: "決定ログ" }));
+      const log = await screen.findByRole("main", { name: "決定ログ" });
+      fireEvent.click(
+        await within(log).findByRole("button", { name: "会話を読み返す" }),
+      );
+      const dialog = await screen.findByRole("dialog");
+      await within(dialog).findByText("昨日の進め方を見てほしい");
+      fireEvent.click(within(dialog).getByRole("button", { name: "閉じる" }));
+      expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+    }
+
+    it("keeps showing the transcript affordance during a meeting (not adhoc-only)", async () => {
+      const morningSession: ChatSession = {
+        id: 20,
+        type: "morning",
+        started_at: new Date().toISOString(),
+        ended_at: null,
+        summary: null,
+      };
+      const fetchMock = createRoutedFetchMock({
+        tasks: [TASK],
+        sessions: [morningSession],
+        decisions: [MENTORING_RECORD],
+      });
+      vi.stubGlobal("fetch", fetchMock);
+
+      render(<AppLayout />);
+      // 会の復元（会のセッションの発言取得）が済むまで待つ。待たないと
+      // adhoc の初期値のまま通ってしまい恒真になる。
+      await waitFor(() =>
+        expect(fetchMock.mock.calls.map(([url]) => String(url))).toContain(
+          "/api/sessions/20/messages",
+        ),
+      );
+      fireEvent.click(screen.getByRole("button", { name: "決定ログ" }));
+      const log = await screen.findByRole("main", { name: "決定ログ" });
+
+      expect(
+        await within(log).findByRole("button", { name: "会話を読み返す" }),
+      ).toBeEnabled();
+    });
+
+    it("keeps an active 相談中 (mentoringTarget) as it was, and sends/creates/ends nothing, while the transcript is open", async () => {
+      const bodies: { content: string; mentoring?: true; mentoringTaskId?: number }[] = [];
+      const fetchMock = createRoutedFetchMock({
+        tasks: [TASK],
+        decisions: [MENTORING_RECORD],
+        sessionMessages: { 7: PAST_MESSAGES },
+        onSendMessage: (sessionId, body) => {
+          bodies.push(body);
+          return {
+            id: 900 + bodies.length,
+            session_id: sessionId,
+            role: "boss",
+            content: "了解した。",
+            interrupted: 0,
+            created_at: new Date().toISOString(),
+          };
+        },
+      });
+      vi.stubGlobal("fetch", fetchMock);
+
+      render(<AppLayout />);
+      fireEvent.click(screen.getByRole("button", { name: "タスク" }));
+      fireEvent.click(
+        await screen.findByRole("button", { name: "メンタリングする" }),
+      );
+      await screen.findByText("「資料を作る」について相談中");
+      await waitFor(() => expect(bodies).toHaveLength(1));
+      await waitFor(() =>
+        expect(screen.getByLabelText("メッセージ")).toBeEnabled(),
+      );
+      const callsBeforeOpening = fetchMock.mock.calls.length;
+
+      await openAndCloseTranscript();
+
+      expect(writesSince(fetchMock, callsBeforeOpening)).toEqual([]);
+      fireEvent.click(screen.getByRole("button", { name: "チャット" }));
+      expect(
+        await screen.findByText("「資料を作る」について相談中"),
+      ).toBeInTheDocument();
+      // 状態の中身も同じまま: 次のターンは同じ対象タスクで送られる。
+      fireEvent.change(screen.getByLabelText("メッセージ"), {
+        target: { value: "続きです" },
+      });
+      fireEvent.click(screen.getByRole("button", { name: "送信" }));
+      await waitFor(() => expect(bodies).toHaveLength(2));
+      expect(bodies[1]).toEqual({
+        content: "続きです",
+        mentoring: true,
+        mentoringTaskId: TASK.id,
+      });
+    });
+
+    it("keeps a null mentoringTarget null, and sends/creates/ends nothing, while the transcript is open", async () => {
+      const fetchMock = createRoutedFetchMock({
+        tasks: [TASK],
+        decisions: [MENTORING_RECORD],
+        sessionMessages: { 7: PAST_MESSAGES },
+      });
+      vi.stubGlobal("fetch", fetchMock);
+
+      render(<AppLayout />);
+      fireEvent.click(screen.getByRole("button", { name: "チャット" }));
+      await waitFor(() =>
+        expect(screen.getByLabelText("メッセージ")).toBeEnabled(),
+      );
+      const callsBeforeOpening = fetchMock.mock.calls.length;
+
+      await openAndCloseTranscript();
+
+      expect(writesSince(fetchMock, callsBeforeOpening)).toEqual([]);
+      // 読み返した過去セッション（id 7）の発言は活性セッションの発言取得にも
+      // 使われない＝面はチャットの状態を読みも書きもしない。
+      fireEvent.click(screen.getByRole("button", { name: "チャット" }));
+      await waitFor(() =>
+        expect(screen.getByLabelText("メッセージ")).toBeEnabled(),
+      );
+      expect(screen.queryByText(/について相談中/)).not.toBeInTheDocument();
+      expect(
+        within(screen.getByRole("list", { name: "会話履歴" })).queryByText(
+          "昨日の進め方を見てほしい",
+        ),
+      ).not.toBeInTheDocument();
+    });
+  });
+
 });
 
 // jsdom's default window.innerWidth is 1024, giving an effective max of

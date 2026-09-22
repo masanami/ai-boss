@@ -1,0 +1,71 @@
+/* 読み取り専用の会話面（Issue #564 / 親 #438 S3）。決定ログの上に重ねる
+   モーダルにして、閉じたときに決定ログのスクロール位置がそのまま残るように
+   する（決定ログを描画し直さない）。 */
+.session-transcript-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 10;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 2rem;
+  background-color: rgba(0, 0, 0, 0.45);
+}
+
+.session-transcript {
+  display: flex;
+  flex-direction: column;
+  width: min(720px, 100%);
+  max-height: 100%;
+  background-color: var(--color-bg);
+  border: 1px solid var(--color-border);
+  border-radius: 10px;
+  overflow: hidden;
+}
+
+.session-transcript-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 1rem;
+  padding: 0.85rem 1rem;
+  border-bottom: 1px solid var(--color-border);
+}
+
+.session-transcript-origin {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  min-width: 0;
+}
+
+.session-transcript-title {
+  margin: 0;
+  font-size: 1rem;
+  font-weight: 600;
+}
+
+.session-transcript-recorded-at {
+  font-size: 0.75rem;
+  color: var(--color-text-muted);
+}
+
+.session-transcript-body {
+  flex: 1;
+  overflow-y: auto;
+  padding: 1rem;
+}
+
+.session-transcript-status {
+  margin: 0;
+  color: var(--color-text-muted);
+}
+
+.session-transcript-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+}

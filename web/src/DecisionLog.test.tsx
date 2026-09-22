@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { render, screen, waitFor, within } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import DecisionLog from "./DecisionLog";
 import { decisionSectionId } from "./decision-section-id";
 import type { DecisionRecord } from "./decision";
@@ -619,5 +619,357 @@ describe("DecisionLog section ids and scroll target (Issue #557, S2a)", () => {
     await waitFor(() => expect(scrolledElements).toHaveLength(1));
 
     expect(targeted.container.innerHTML).toBe(plainHtml);
+  });
+});
+
+describe("DecisionLog mentoring record → session transcript (Issue #564, S3)", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  const OPEN_LABEL = "会話を読み返す";
+
+  const TASK_MENTORING = makeDecision({
+    id: 1,
+    session_id: 7,
+    task_id: 5,
+    task_title: "見積もり資料の作成",
+    kind: "mentoring",
+    content: "根拠を先に固めろ",
+    rationale: "数字が弱い",
+    created_at: at(9, 5, 10),
+  });
+  const OTHER_TASK_MENTORING = makeDecision({
+    id: 2,
+    session_id: 7,
+    task_id: 8,
+    task_title: "打ち合わせの準備",
+    kind: "mentoring",
+    content: "議題を3つに絞れ",
+    rationale: null,
+    created_at: at(9, 5, 11),
+  });
+  const UNASSIGNED_MENTORING = makeDecision({
+    id: 3,
+    session_id: 4,
+    task_id: null,
+    task_title: null,
+    kind: "mentoring",
+    content: "午前は集中作業にあてろ",
+    rationale: null,
+    created_at: at(9, 4, 9),
+  });
+  const TASK_DECISION = makeDecision({
+    id: 4,
+    session_id: 7,
+    task_id: 5,
+    task_title: "見積もり資料の作成",
+    kind: "decision",
+    content: "今日はこれを最優先で片付けろ",
+    rationale: null,
+    created_at: at(9, 5, 9),
+  });
+  const UNASSIGNED_DECISION = makeDecision({
+    id: 5,
+    session_id: 4,
+    task_id: null,
+    kind: "decision",
+    content: "明日の朝会は9時半",
+    rationale: null,
+    created_at: at(9, 4, 8),
+  });
+  const RECORDS = [
+    TASK_MENTORING,
+    OTHER_TASK_MENTORING,
+    UNASSIGNED_MENTORING,
+    TASK_DECISION,
+    UNASSIGNED_DECISION,
+  ];
+
+  function message(
+    id: number,
+    sessionId: number,
+    role: "user" | "boss",
+    content: string,
+  ) {
+    return {
+      id,
+      session_id: sessionId,
+      role,
+      content,
+      interrupted: 0,
+      created_at: new Date(2026, 8, 5, 9, id).toISOString(),
+    };
+  }
+
+  const SESSION_MESSAGES: Record<number, unknown[]> = {
+    7: [
+      message(1, 7, "user", "見積もりの進め方を見てほしい"),
+      message(2, 7, "boss", "根拠を先に固めろ"),
+    ],
+    4: [message(3, 4, "boss", "午前は集中作業にあてろ")],
+  };
+
+  /** Routes `/api/decisions` and `/api/sessions/:id/messages`; anything else
+   * rejects so an unexpected call fails loudly. */
+  function stubRoutedFetch(records: DecisionRecord[] = RECORDS) {
+    const fetchMock = vi.fn((url: string, init?: RequestInit) => {
+      const method = init?.method ?? "GET";
+      const ok = (body: unknown) =>
+        Promise.resolve({
+          ok: true,
+          status: 200,
+          json: () => Promise.resolve(body),
+        });
+      if (url === "/api/decisions" && method === "GET") {
+        return ok(records);
+      }
+      const match = /^\/api\/sessions\/(\d+)\/messages$/.exec(url);
+      if (match && method === "GET") {
+        return ok(SESSION_MESSAGES[Number(match[1])] ?? []);
+      }
+      return Promise.reject(new Error(`unexpected fetch: ${method} ${url}`));
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    return fetchMock;
+  }
+
+  function cardOf(content: string): HTMLElement {
+    const card = screen.getByText(content).closest("li");
+    expect(card).not.toBeNull();
+    return card as HTMLElement;
+  }
+
+  async function renderLoaded(): Promise<void> {
+    render(<DecisionLog />);
+    await screen.findByText("根拠を先に固めろ");
+  }
+
+  it("shows the transcript affordance on a mentoring record card", async () => {
+    stubRoutedFetch();
+    await renderLoaded();
+
+    expect(
+      within(cardOf("根拠を先に固めろ")).getByRole("button", { name: OPEN_LABEL }),
+    ).toBeInTheDocument();
+  });
+
+  it("shows it on a mentoring record with no task_id too (「タスクに紐づかない決定」 section)", async () => {
+    stubRoutedFetch();
+    await renderLoaded();
+
+    const section = screen.getByLabelText("タスクに紐づかない決定の記録");
+    const card = within(section).getByText("午前は集中作業にあてろ").closest("li");
+    expect(
+      within(card as HTMLElement).getByRole("button", { name: OPEN_LABEL }),
+    ).toBeInTheDocument();
+  });
+
+  it("does not show it on decision (kind='decision') record cards", async () => {
+    stubRoutedFetch();
+    await renderLoaded();
+
+    for (const content of ["今日はこれを最優先で片付けろ", "明日の朝会は9時半"]) {
+      expect(
+        within(cardOf(content)).queryByRole("button", { name: OPEN_LABEL }),
+      ).not.toBeInTheDocument();
+    }
+    // One per mentoring record, none for the decisions.
+    expect(screen.getAllByRole("button", { name: OPEN_LABEL })).toHaveLength(3);
+  });
+
+  it("keeps the card's existing rendering (kind label, date, content, rationale) as it was", async () => {
+    stubRoutedFetch();
+    await renderLoaded();
+
+    const card = cardOf("根拠を先に固めろ");
+    const header = card.querySelector(".decision-card-header");
+    expect(header?.outerHTML).toBe(
+      '<div class="decision-card-header">' +
+        '<span class="decision-kind decision-kind-mentoring">メンタリング</span>' +
+        `<time datetime="${TASK_MENTORING.created_at}">${TASK_MENTORING.created_at}</time>` +
+        "</div>",
+    );
+    expect(card.querySelector(".decision-content")?.textContent).toBe(
+      "根拠を先に固めろ",
+    );
+    expect(card.querySelector(".decision-rationale")?.textContent).toBe(
+      "根拠: 数字が弱い",
+    );
+    // The header / content / rationale still come first, in the same order.
+    expect(
+      Array.from(card.children)
+        .slice(0, 3)
+        .map((child) => child.className),
+    ).toEqual(["decision-card-header", "decision-content", "decision-rationale"]);
+  });
+
+  it("keeps section headings, section order, record order and section ids unchanged", async () => {
+    stubRoutedFetch();
+    await renderLoaded();
+
+    expect(sectionTitles()).toEqual([
+      "打ち合わせの準備",
+      "見積もり資料の作成",
+      "タスクに紐づかない決定",
+    ]);
+    expect(
+      screen
+        .getAllByRole("heading", { level: 3 })
+        .map((heading) => heading.closest("section")?.id),
+    ).toEqual([
+      decisionSectionId(8),
+      decisionSectionId(5),
+      decisionSectionId(null),
+    ]);
+    const taskItems = within(
+      screen.getByLabelText("見積もり資料の作成の記録"),
+    ).getAllByRole("listitem");
+    expect(
+      taskItems.map((item) => item.querySelector(".decision-content")?.textContent),
+    ).toEqual(["根拠を先に固めろ", "今日はこれを最優先で片付けろ"]);
+  });
+
+  it("opens the transcript of that record's session_id (and no other) when pressed", async () => {
+    const fetchMock = stubRoutedFetch();
+    await renderLoaded();
+
+    fireEvent.click(
+      within(cardOf("午前は集中作業にあてろ")).getByRole("button", {
+        name: OPEN_LABEL,
+      }),
+    );
+
+    const dialog = await screen.findByRole("dialog");
+    await within(dialog).findByText("午前は集中作業にあてろ");
+    const messageUrls = fetchMock.mock.calls
+      .map((call) => String(call[0]))
+      .filter((url) => url.startsWith("/api/sessions"));
+    expect(messageUrls).toEqual(["/api/sessions/4/messages"]);
+  });
+
+  it("shows the task title and the record's date/time when opened from a record with a task_id", async () => {
+    stubRoutedFetch();
+    await renderLoaded();
+
+    fireEvent.click(
+      within(cardOf("根拠を先に固めろ")).getByRole("button", { name: OPEN_LABEL }),
+    );
+
+    const dialog = await screen.findByRole("dialog");
+    expect(
+      within(dialog).getByRole("heading", { name: "見積もり資料の作成" }),
+    ).toBeInTheDocument();
+    expect(
+      dialog.querySelector(`time[datetime="${TASK_MENTORING.created_at}"]`),
+    ).not.toBeNull();
+  });
+
+  it("shows UNASSIGNED_SECTION_TITLE when opened from a record with no task_id", async () => {
+    stubRoutedFetch();
+    await renderLoaded();
+
+    fireEvent.click(
+      within(cardOf("午前は集中作業にあてろ")).getByRole("button", {
+        name: OPEN_LABEL,
+      }),
+    );
+
+    const dialog = await screen.findByRole("dialog");
+    expect(
+      within(dialog).getByRole("heading", { name: "タスクに紐づかない決定" }),
+    ).toBeInTheDocument();
+    expect(
+      dialog.querySelector(`time[datetime="${UNASSIGNED_MENTORING.created_at}"]`),
+    ).not.toBeNull();
+  });
+
+  it("shows the same #<task_id> fallback as the section heading when a record's task_title is missing", async () => {
+    stubRoutedFetch([
+      makeDecision({
+        id: 9,
+        session_id: 7,
+        task_id: 12,
+        task_title: null,
+        kind: "mentoring",
+        content: "根拠を先に固めろ",
+      }),
+    ]);
+    await renderLoaded();
+
+    expect(sectionTitles()).toEqual(["#12"]);
+    fireEvent.click(
+      within(cardOf("根拠を先に固めろ")).getByRole("button", { name: OPEN_LABEL }),
+    );
+
+    const dialog = await screen.findByRole("dialog");
+    expect(within(dialog).getByRole("heading", { name: "#12" })).toBeInTheDocument();
+  });
+
+  it("returns focus to the affordance it was opened from when closed", async () => {
+    stubRoutedFetch();
+    await renderLoaded();
+
+    const opener = within(cardOf("根拠を先に固めろ")).getByRole("button", {
+      name: OPEN_LABEL,
+    });
+    opener.focus();
+    fireEvent.click(opener);
+    const dialog = await screen.findByRole("dialog");
+    expect(within(dialog).getByRole("button", { name: "閉じる" })).toHaveFocus();
+    fireEvent.click(within(dialog).getByRole("button", { name: "閉じる" }));
+
+    expect(opener).toHaveFocus();
+  });
+
+  it("opens the same session from two mentoring records (different tasks) sharing a session_id, each showing its own origin", async () => {
+    const fetchMock = stubRoutedFetch();
+    await renderLoaded();
+
+    fireEvent.click(
+      within(cardOf("議題を3つに絞れ")).getByRole("button", { name: OPEN_LABEL }),
+    );
+    let dialog = await screen.findByRole("dialog");
+    await within(dialog).findByText("見積もりの進め方を見てほしい");
+    expect(
+      within(dialog).getByRole("heading", { name: "打ち合わせの準備" }),
+    ).toBeInTheDocument();
+    fireEvent.click(within(dialog).getByRole("button", { name: "閉じる" }));
+
+    fireEvent.click(
+      within(cardOf("根拠を先に固めろ")).getByRole("button", { name: OPEN_LABEL }),
+    );
+    dialog = await screen.findByRole("dialog");
+    await within(dialog).findByText("見積もりの進め方を見てほしい");
+    expect(
+      within(dialog).getByRole("heading", { name: "見積もり資料の作成" }),
+    ).toBeInTheDocument();
+
+    const messageUrls = fetchMock.mock.calls
+      .map((call) => String(call[0]))
+      .filter((url) => url.startsWith("/api/sessions"));
+    expect(messageUrls).toEqual([
+      "/api/sessions/7/messages",
+      "/api/sessions/7/messages",
+    ]);
+  });
+
+  it("returns to the decision log when the transcript is closed", async () => {
+    stubRoutedFetch();
+    await renderLoaded();
+
+    fireEvent.click(
+      within(cardOf("根拠を先に固めろ")).getByRole("button", { name: OPEN_LABEL }),
+    );
+    const dialog = await screen.findByRole("dialog");
+    fireEvent.click(within(dialog).getByRole("button", { name: "閉じる" }));
+
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+    expect(sectionTitles()).toEqual([
+      "打ち合わせの準備",
+      "見積もり資料の作成",
+      "タスクに紐づかない決定",
+    ]);
+    expect(screen.getAllByRole("button", { name: OPEN_LABEL })).toHaveLength(3);
   });
 });
