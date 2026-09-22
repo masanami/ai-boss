@@ -14,10 +14,12 @@ import {
 } from "./side-panel-width";
 import TaskBoard from "./TaskBoard";
 import type { Task } from "./task";
+import TaskStartMentoringPrompt from "./TaskStartMentoringPrompt";
 import TodaySummary from "./TodaySummary";
 import { useChat } from "./use-chat";
 import { useHealthCheck } from "./use-health-check";
 import { useSidePanelWidth } from "./use-side-panel-width";
+import { useTaskStartMentoringPrompt } from "./use-task-start-mentoring-prompt";
 import { useTasks } from "./use-tasks";
 import WorkLogView from "./WorkLogView";
 import "./AppLayout.css";
@@ -115,6 +117,16 @@ function AppLayout() {
   // `sending || switching` だけでヘッダと等価になり、`editingMessageId` を
   // `useChat` へリフトする必要が無い。
   const startMentoringDisabled = chatState.sending || chatState.switching;
+
+  // タスク着手時のメンタリングの促し（Issue #566 S1, 決定6）。遷移は tasks
+  // ビュー（select・drop）とサイドパネル（チェックイン）の両方から起きるので、
+  // 共有 tasksState を持つここで検知し、どのビューでも見えるサイドパネル上部
+  // に描く。可否はタスクカードの「メンタリングする」と同じ（`adhoc` かつ
+  // ready）で、出せないときは促し自体を出さない。
+  const taskStartPrompt = useTaskStartMentoringPrompt(
+    tasksState.tasks,
+    onStartMentoring !== null,
+  );
 
   // タスクカードの振り返り導線（Issue #557 / S2a, 親 #438 決定14・決定15）。
   // 決定ログへ切り替えると同時に「どのタスクのセクションへ寄せるか」を持ち、
@@ -319,6 +331,12 @@ function AppLayout() {
           className="app-side-panel"
           aria-label="サイドパネル"
         >
+          <TaskStartMentoringPrompt
+            task={onStartMentoring === null ? null : taskStartPrompt.promptTask}
+            onStartMentoring={startMentoringForTask}
+            startMentoringDisabled={startMentoringDisabled}
+            onDismiss={taskStartPrompt.dismiss}
+          />
           <CheckinPanel tasksState={tasksState} />
           <TodaySummary tasks={tasksState.tasks} status={tasksState.status} />
         </aside>
