@@ -57,6 +57,7 @@ export interface Settings {
   escalation_l2_after_minutes: number;
   escalation_l3_after_minutes: number;
   escalation_repeat_minutes: number;
+  detection_daily_notification_cap: number;
   model: string;
   evidence_enforcement_enabled: boolean;
   morning_mentoring_required: boolean;

@@ -3,6 +3,7 @@ import {
   type DetectionInput,
   type DetectionRuleType,
   type FiringNotification,
+  type NotificationHistoryEntry,
   type WorkingHours,
 } from "./detection-types.js";
 import { isWithinWorkingHours, timeStringToMinutes, toDateKey } from "./time-utils.js";
@@ -44,6 +45,29 @@ function outsideHoursPeriodKey(now: Date, workingHours: WorkingHours): string {
   return toDateKey(now);
 }
 
+// 帯外区間キーが基底キーの末尾に足すサフィックス（`:{帯外区間の開始日}`）。
+// 基底キー自体は `:YYYY-MM-DD` で終わらない（commitment_missed は UTC ISO の
+// `Z` で終わる）ため、末尾一致で除いても基底キーを誤って切らない。
+const OUTSIDE_HOURS_PERIOD_SUFFIX = /:\d{4}-\d{2}-\d{2}$/;
+
+/**
+ * 基底キーが baseRuleKey に等しい通知（帯の中のキーと帯外区間キーの両方）
+ * のうち、送信時刻のローカル暦日が dateKey に等しいものの件数。段階（L1〜L3）
+ * は問わず 1 件ずつ数える（機能仕様 docs/features/working-hours-intervals.md
+ * 決定 13・14）。
+ */
+function countSentOnDate(
+  baseRuleKey: string,
+  dateKey: string,
+  notifications: NotificationHistoryEntry[],
+): number {
+  return notifications.filter(
+    (entry) =>
+      entry.ruleKey.replace(OUTSIDE_HOURS_PERIOD_SUFFIX, "") === baseRuleKey &&
+      toDateKey(new Date(entry.sentAt)) === dateKey,
+  ).length;
+}
+
 /**
  * サボり検知ルールエンジン（純粋関数）。
  * 入力（タスク・活動シグナル・通知履歴・設定・現在時刻）から、今回発火すべき
@@ -54,6 +78,9 @@ function outsideHoursPeriodKey(now: Date, workingHours: WorkingHours): string {
  *   rule_key ごとに 1 回だけ L1 で発火する。勤務時間帯ゲート下の 5 ルールは
  *   帯外区間（終業〜翌始業）ごとに 1 回、commitment_missed は約束 1 件につき 1 回
  * - 休憩申告中: 休憩延伸・朝会・夕会・着手の約束を除く全ルールを停止
+ * - 通知上限: 朝会・夕会を除く検知系 6 ルールは、基底 rule_key ごとにローカル
+ *   暦日あたり settings.dailyNotificationCap 回まで。帯の中は now の暦日、
+ *   帯の外は帯外区間の開始日の枠で数える（決定 13〜15）
  *
  * commitment_missed の例外は ADR 0004 改訂（2026-09-13）、5 ルールの帯外発火は
  * docs/features/working-hours-intervals.md 決定 9・10 による。
@@ -94,6 +121,18 @@ export function evaluateRules(input: DetectionInput): FiringNotification[] {
 
   const withinWorkingHours = isWithinWorkingHours(now, settings.workingHours);
   const activeBreak = getActiveBreak(activityEvents);
+  // 上限の枠の暦日。帯の外を now の暦日で数えると、0 時に枠が空いて帯外の
+  // 通知が毎晩 0 時に寄るため、帯外区間の開始日で数える（決定 14）。帯の外
+  // では帯外区間キーのサフィックスと同じ値になる
+  const capDateKey = withinWorkingHours
+    ? toDateKey(now)
+    : outsideHoursPeriodKey(now, settings.workingHours);
+
+  function hasReachedDailyCap(baseRuleKey: string): boolean {
+    return (
+      countSentOnDate(baseRuleKey, capDateKey, notifications) >= settings.dailyNotificationCap
+    );
+  }
 
   // 勤務時間帯ゲート下の 5 ルール（break_overrun / unstarted / avoidance /
   // silence / deadline_overdue）。帯の中は resolveEscalation をそのまま通し
@@ -107,10 +146,11 @@ export function evaluateRules(input: DetectionInput): FiringNotification[] {
     ruleKey: string,
     taskId: number | null,
   ): void {
+    if (hasReachedDailyCap(ruleKey)) return;
     if (withinWorkingHours) {
       tryFire(ruleType, ruleKey, taskId);
     } else {
-      fireOnce(ruleType, `${ruleKey}:${outsideHoursPeriodKey(now, settings.workingHours)}`, taskId);
+      fireOnce(ruleType, `${ruleKey}:${capDateKey}`, taskId);
     }
   }
 
@@ -156,6 +196,7 @@ export function evaluateRules(input: DetectionInput): FiringNotification[] {
   // rule_key が約束の時刻を含み約束ごとに一意なので、暦日は足さない。
   for (const task of findMissedCommitmentTasks(tasks, now)) {
     const ruleKey = buildCommitmentMissedRuleKey(task);
+    if (hasReachedDailyCap(ruleKey)) continue;
     if (withinWorkingHours) {
       tryFire("commitment_missed", ruleKey, task.id);
     } else {

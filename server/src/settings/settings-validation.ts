@@ -6,7 +6,8 @@ import { timeStringToMinutes } from "../detection/time-utils.js";
  * The full set of keys the settings API (GET/PUT /api/settings) recognizes.
  * Deliberately kept in sync with the existing readers this ticket must not
  * diverge from: `boss/boss-settings.ts` (boss_*), `scheduler/detection-settings.ts`
- * (work_*, *_meeting_time, detection_*_fallback_minutes, escalation_*_minutes),
+ * (work_*, *_meeting_time, detection_*_fallback_minutes, escalation_*_minutes,
+ * detection_daily_notification_cap),
  * and `llm/claude-client.ts` (model). No new keys are invented here.
  */
 export const SETTINGS_KEYS = [
@@ -24,6 +25,7 @@ export const SETTINGS_KEYS = [
   "escalation_l2_after_minutes",
   "escalation_l3_after_minutes",
   "escalation_repeat_minutes",
+  "detection_daily_notification_cap",
   "model",
   "evidence_enforcement_enabled",
   "morning_mentoring_required",
@@ -68,7 +70,8 @@ type PositiveIntegerKey =
   | "detection_break_fallback_minutes"
   | "escalation_l2_after_minutes"
   | "escalation_l3_after_minutes"
-  | "escalation_repeat_minutes";
+  | "escalation_repeat_minutes"
+  | "detection_daily_notification_cap";
 type LabeledSettingKey = RequiredStringKey | TimeKey | PositiveIntegerKey;
 
 const SETTING_LABELS: Record<LabeledSettingKey, string> = {
@@ -84,6 +87,7 @@ const SETTING_LABELS: Record<LabeledSettingKey, string> = {
   escalation_l2_after_minutes: "エスカレーション: レベル2まで",
   escalation_l3_after_minutes: "エスカレーション: レベル3まで",
   escalation_repeat_minutes: "エスカレーション: 再通知間隔",
+  detection_daily_notification_cap: "1 日の通知上限",
 };
 
 // #517 決定3: 勤務時間の前後関係の error/code は規則単位の固定文言。
@@ -184,11 +188,19 @@ function validateTime(key: TimeKey): FieldValidator {
   };
 }
 
-function validatePositiveIntegerMinutes(key: PositiveIntegerKey): FieldValidator {
+// unit は文言の「（分）」「（回）」の部分。web の <label> の単位表記に揃える。
+// 安全な整数（Number.isSafeInteger）に限るのは、1e21 のような値は String() が
+// "1e+21" になり、読み出し側 resolvePositiveIntSetting（scheduler/
+// detection-settings.ts）が往復できず既定値へ倒れて、PUT の成功と実効値が
+// 食い違うため（PR #569 レビュー）
+function validatePositiveInteger(
+  key: PositiveIntegerKey,
+  unit: "分" | "回",
+): FieldValidator {
   return (value) => {
-    if (typeof value !== "number" || !Number.isInteger(value) || value <= 0) {
+    if (typeof value !== "number" || !Number.isSafeInteger(value) || value <= 0) {
       return err(
-        `${SETTING_LABELS[key]}（分）には 1 以上の整数を入力してください`,
+        `${SETTING_LABELS[key]}（${unit}）には 1 以上の整数を入力してください`,
         "invalid_positive_integer",
       );
     }
@@ -225,23 +237,33 @@ const VALIDATORS: Record<SettingKey, FieldValidator> = {
   work_end: validateTime("work_end"),
   morning_meeting_time: validateTime("morning_meeting_time"),
   evening_meeting_time: validateTime("evening_meeting_time"),
-  detection_unstarted_fallback_minutes: validatePositiveIntegerMinutes(
+  detection_unstarted_fallback_minutes: validatePositiveInteger(
     "detection_unstarted_fallback_minutes",
+    "分",
   ),
-  detection_silence_fallback_minutes: validatePositiveIntegerMinutes(
+  detection_silence_fallback_minutes: validatePositiveInteger(
     "detection_silence_fallback_minutes",
+    "分",
   ),
-  detection_break_fallback_minutes: validatePositiveIntegerMinutes(
+  detection_break_fallback_minutes: validatePositiveInteger(
     "detection_break_fallback_minutes",
+    "分",
   ),
-  escalation_l2_after_minutes: validatePositiveIntegerMinutes(
+  escalation_l2_after_minutes: validatePositiveInteger(
     "escalation_l2_after_minutes",
+    "分",
   ),
-  escalation_l3_after_minutes: validatePositiveIntegerMinutes(
+  escalation_l3_after_minutes: validatePositiveInteger(
     "escalation_l3_after_minutes",
+    "分",
   ),
-  escalation_repeat_minutes: validatePositiveIntegerMinutes(
+  escalation_repeat_minutes: validatePositiveInteger(
     "escalation_repeat_minutes",
+    "分",
+  ),
+  detection_daily_notification_cap: validatePositiveInteger(
+    "detection_daily_notification_cap",
+    "回",
   ),
   model: validateNonEmptyString("model"),
   evidence_enforcement_enabled: validateBoolean("evidence_enforcement_enabled"),

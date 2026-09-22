@@ -1104,8 +1104,14 @@ describe("evaluateRules outside working hours (Issue #550 S2)", () => {
     it("fires silence outside working hours once per period across two consecutive nights (per-minute sweep)", () => {
       // D 18:00 → D+2 09:00 を毎分評価する（間の D+1 の勤務時間帯も含む）。帯外の
       // 発火（区間の日付付き rule_key）は各夜の終業直後の 1 回ずつだけで、0 時には増えない。
+      // 無音が D+1 の勤務時間帯を通して続くと、帯の中の発火で 1 日の通知上限（#562 S3・
+      // 既定 5）に達し、2 晩目の帯外の 1 回は上限で抑えられる（下のテスト）。ここでは帯外の
+      // 「区間ごとに 1 回」だけを見るため、上限に掛からない値にしておく。
       const DAY_AFTER_NEXT = (h: number, min: number) => new Date(2026, 8, 16, h, min);
-      const fired = sweep(DAY(18, 0), DAY_AFTER_NEXT(9, 0), { activityEvents: [lastCheckin] });
+      const fired = sweep(DAY(18, 0), DAY_AFTER_NEXT(9, 0), {
+        activityEvents: [lastCheckin],
+        settings: { ...settings, dailyNotificationCap: 1000 },
+      });
 
       expect(
         firingsOf(fired, "silence")
@@ -1115,6 +1121,18 @@ describe("evaluateRules outside working hours (Issue #550 S2)", () => {
         [DAY(18, 0), `silence:${DAY_KEY}`],
         [NEXT_DAY(18, 0), `silence:${NEXT_DAY_KEY}`],
       ]);
+    });
+
+    it("suppresses the second night's outside-hours firing under the default cap when the day in between used up the allowance (#562 S3 決定 14)", () => {
+      const DAY_AFTER_NEXT = (h: number, min: number) => new Date(2026, 8, 16, h, min);
+      const fired = sweep(DAY(18, 0), DAY_AFTER_NEXT(9, 0), { activityEvents: [lastCheckin] });
+
+      const silence = firingsOf(fired, "silence");
+      expect(
+        silence.filter((f) => f.firing.ruleKey !== "silence").map((f) => [f.at, f.firing.ruleKey]),
+      ).toEqual([[DAY(18, 0), `silence:${DAY_KEY}`]]);
+      // D+1 の帯の中では基底キー silence が上限の 5 回まで鳴る
+      expect(silence.filter((f) => f.firing.ruleKey === "silence")).toHaveLength(5);
     });
   });
 
@@ -1247,6 +1265,276 @@ describe("evaluateRules outside working hours (Issue #550 S2)", () => {
       expect(
         evaluateRules(baseInput({ now: DAY(20, 0), tasks: [freshTask], activityEvents: [recentCheckin] })),
       ).toEqual([]);
+    });
+  });
+});
+
+describe("evaluateRules daily notification cap (Issue #562 S3)", () => {
+  // D = 2026-09-14（ローカル暦日）。固定時刻と履歴の sentAt はいずれもローカル日時から
+  // 導出し、UTC 文字列リテラルで固定しない（ADR 0007 決定 5）。
+  const PREV_DAY_KEY = "2026-09-13";
+  const DAY_KEY = "2026-09-14";
+  const PREV_DAY = (h: number, min: number) => new Date(2026, 8, 13, h, min);
+  const DAY = (h: number, min: number) => new Date(2026, 8, 14, h, min);
+  const NEXT_DAY = (h: number, min: number) => new Date(2026, 8, 15, h, min);
+  const NOW = DAY(12, 0);
+
+  // 前日 07:00 作成・見積もり無し（既定 60 分）の todo タスク。D-1 08:00 以降ずっと未着手が成立する。
+  const unstartedTask = makeTask({ id: 3, status: "todo", created_at: PREV_DAY(7, 0).toISOString() });
+
+  // 段階は L1・L2・L3・L3・L3… の順（エスカレーションの実際の積み上がりと同じ形）
+  const LEVELS = [1, 2, 3, 3, 3, 3, 3, 3, 3, 3];
+
+  /** ruleKey の履歴を sentAts の各時刻に 1 件ずつ積む */
+  function sentAt(ruleKey: string, sentAts: Date[]): NotificationHistoryEntry[] {
+    return sentAts.map((at, i) => ({
+      ruleKey,
+      escalationLevel: LEVELS[i] ?? 3,
+      sentAt: at.toISOString(),
+    }));
+  }
+
+  /**
+   * day の帯の中（10:45 から 10 分おき）に ruleKey の履歴を count 件（5 件以下）積む。
+   * 最新は遅くとも 11:25 なので、NOW（12:00）の時点でどの段階の間隔も経過済みになり、
+   * 上限が無ければ発火する状態になる。
+   */
+  function inHoursHistory(ruleKey: string, count: number, day = DAY): NotificationHistoryEntry[] {
+    return sentAt(
+      ruleKey,
+      Array.from({ length: count }, (_, i) => day(10, 45 + i * 10)),
+    );
+  }
+
+  function withCap(cap: number) {
+    return { ...DEFAULT_DETECTION_SETTINGS, dailyNotificationCap: cap };
+  }
+
+  function ruleKeysAt(input: Partial<DetectionInput>): string[] {
+    return evaluateRules(baseInput({ now: NOW, ...input })).map((f) => f.ruleKey);
+  }
+
+  describe("the cap boundary", () => {
+    it("fires unstarted:3 in working hours when 4 notifications were sent today (the 5th still fires)", () => {
+      expect(
+        ruleKeysAt({ tasks: [unstartedTask], notifications: inHoursHistory("unstarted:3", 4) }),
+      ).toContain("unstarted:3");
+    });
+
+    it("does not fire unstarted:3 in working hours when 5 notifications were sent today (the 6th does not fire)", () => {
+      expect(
+        ruleKeysAt({ tasks: [unstartedTask], notifications: inHoursHistory("unstarted:3", 5) }),
+      ).not.toContain("unstarted:3");
+    });
+
+    it("does not fire unstarted:3 with 1 notification today when the cap is set to 1", () => {
+      expect(
+        ruleKeysAt({
+          tasks: [unstartedTask],
+          notifications: inHoursHistory("unstarted:3", 1),
+          settings: withCap(1),
+        }),
+      ).not.toContain("unstarted:3");
+    });
+
+    it("fires unstarted:3 with 5 notifications today when the cap is set to 10 (the default 5 is not hard-coded)", () => {
+      expect(
+        ruleKeysAt({
+          tasks: [unstartedTask],
+          notifications: inHoursHistory("unstarted:3", 5),
+          settings: withCap(10),
+        }),
+      ).toContain("unstarted:3");
+    });
+
+    it("does not give the allowance back when an activity signal follows the latest notification (the L1 reset does not reset the cap)", () => {
+      const input = {
+        tasks: [unstartedTask],
+        notifications: inHoursHistory("unstarted:3", 5),
+        activityEvents: [makeActivityEvent({ type: "checkin", created_at: DAY(11, 40).toISOString() })],
+      };
+
+      expect(ruleKeysAt(input)).not.toContain("unstarted:3");
+      // 対照: 上限さえ無ければ、同じ入力で L1 リセットにより発火する
+      expect(evaluateRules(baseInput({ now: NOW, ...input, settings: withCap(10) }))).toContainEqual({
+        ruleType: "unstarted",
+        ruleKey: "unstarted:3",
+        escalationLevel: 1,
+        taskId: 3,
+      });
+    });
+
+    it("counts each notification once regardless of its escalation level (L1, L2, L3, L3, L3)", () => {
+      const notifications = inHoursHistory("unstarted:3", 5);
+      expect(notifications.map((n) => n.escalationLevel)).toEqual([1, 2, 3, 3, 3]);
+
+      expect(ruleKeysAt({ tasks: [unstartedTask], notifications })).not.toContain("unstarted:3");
+    });
+  });
+
+  describe("counts by the base rule_key", () => {
+    it("counts an outside-hours period key sent before today's start of work (unstarted:3:{D-1} at D 02:00) toward the in-hours unstarted:3 allowance", () => {
+      const notifications = [
+        ...inHoursHistory("unstarted:3", 4),
+        ...sentAt(`unstarted:3:${PREV_DAY_KEY}`, [DAY(2, 0)]),
+      ];
+
+      expect(ruleKeysAt({ tasks: [unstartedTask], notifications })).not.toContain("unstarted:3");
+    });
+
+    it("does not count unstarted:30 (or unstarted:30:{D}) toward unstarted:3 (no prefix matching)", () => {
+      const notifications = [
+        ...inHoursHistory("unstarted:30", 5),
+        ...sentAt(`unstarted:30:${DAY_KEY}`, [DAY(2, 0)]),
+      ];
+
+      expect(ruleKeysAt({ tasks: [unstartedTask], notifications })).toContain("unstarted:3");
+    });
+
+    it("does not count avoidance:3 toward unstarted:3 (a different rule type has its own allowance)", () => {
+      expect(
+        ruleKeysAt({ tasks: [unstartedTask], notifications: inHoursHistory("avoidance:3", 5) }),
+      ).toContain("unstarted:3");
+    });
+
+    it("keeps a separate deadline_overdue allowance per task", () => {
+      const capped = makeTask({ id: 11, status: "in_progress", due_at: "2026-09-12" });
+      const other = makeTask({ id: 12, status: "in_progress", due_at: "2026-09-12" });
+
+      const keys = ruleKeysAt({
+        tasks: [capped, other],
+        notifications: inHoursHistory("deadline_overdue:11", 5),
+      });
+
+      expect(keys).not.toContain("deadline_overdue:11");
+      expect(keys).toContain("deadline_overdue:12");
+    });
+  });
+
+  describe("resets at local midnight (TZ-independent)", () => {
+    it("fires unstarted:3 at D+1 09:00 when all 5 notifications were sent at D 23:59 (yesterday's allowance does not carry over)", () => {
+      const notifications = sentAt("unstarted:3", Array(5).fill(DAY(23, 59)));
+
+      expect(ruleKeysAt({ now: NEXT_DAY(9, 0), tasks: [unstartedTask], notifications })).toContain(
+        "unstarted:3",
+      );
+    });
+
+    it("does not fire unstarted:3 at D+1 09:00 when all 5 notifications were sent at D+1 00:00 (00:00 belongs to the new day)", () => {
+      const notifications = sentAt("unstarted:3", Array(5).fill(NEXT_DAY(0, 0)));
+
+      expect(
+        ruleKeysAt({ now: NEXT_DAY(9, 0), tasks: [unstartedTask], notifications }),
+      ).not.toContain("unstarted:3");
+    });
+  });
+
+  describe("outside working hours (counted against the period's start date)", () => {
+    const fiveInHoursOnD = inHoursHistory("unstarted:3", 5);
+
+    it("does not fire unstarted:3:{D} at D 18:00 when 5 notifications were sent in D's working hours", () => {
+      expect(
+        ruleKeysAt({ now: DAY(18, 0), tasks: [unstartedTask], notifications: fiveInHoursOnD }),
+      ).not.toContain(`unstarted:3:${DAY_KEY}`);
+    });
+
+    it("does not fire unstarted:3:{D} at D+1 00:00 either (the same period is still counted against D; no midnight firing)", () => {
+      expect(
+        ruleKeysAt({ now: NEXT_DAY(0, 0), tasks: [unstartedTask], notifications: fiveInHoursOnD }),
+      ).toEqual([]);
+    });
+
+    it("fires unstarted:3 at D+1 09:00 in working hours (the next day's allowance is free)", () => {
+      expect(
+        ruleKeysAt({ now: NEXT_DAY(9, 0), tasks: [unstartedTask], notifications: fiveInHoursOnD }),
+      ).toContain("unstarted:3");
+    });
+
+    it("fires unstarted:3:{D} at D 18:00 when only 3 notifications were sent in D's working hours (below the cap, once per period as before)", () => {
+      expect(
+        ruleKeysAt({
+          now: DAY(18, 0),
+          tasks: [unstartedTask],
+          notifications: inHoursHistory("unstarted:3", 3),
+        }),
+      ).toContain(`unstarted:3:${DAY_KEY}`);
+    });
+
+    it("does not fire unstarted:3:{D-1} at D 02:00 when D-1's working hours had 5 notifications and D has none (counted by the period's start date, not now's date)", () => {
+      expect(
+        ruleKeysAt({
+          now: DAY(2, 0),
+          tasks: [unstartedTask],
+          notifications: inHoursHistory("unstarted:3", 5, PREV_DAY),
+        }),
+      ).not.toContain(`unstarted:3:${PREV_DAY_KEY}`);
+    });
+  });
+
+  describe("target rules", () => {
+    it.each([
+      {
+        rule: "silence",
+        ruleKey: "silence",
+        input: { activityEvents: [makeActivityEvent({ type: "checkin", created_at: DAY(10, 0).toISOString() })] },
+      },
+      {
+        rule: "break_overrun",
+        ruleKey: "break_overrun",
+        input: {
+          activityEvents: [
+            makeActivityEvent({ type: "break_start", expected_minutes: 15, created_at: DAY(10, 0).toISOString() }),
+          ],
+        },
+      },
+      {
+        rule: "avoidance",
+        ruleKey: "avoidance:3",
+        input: {
+          tasks: [unstartedTask],
+          activityEvents: [
+            makeActivityEvent({ type: "task_update", task_id: 2, created_at: DAY(11, 50).toISOString() }),
+          ],
+        },
+      },
+      {
+        rule: "deadline_overdue",
+        ruleKey: "deadline_overdue:3",
+        input: { tasks: [makeTask({ id: 3, status: "in_progress", due_at: "2026-09-12" })] },
+      },
+    ])("does not fire $rule in working hours with 5 notifications today, and fires with 4", ({ ruleKey, input }) => {
+      expect(ruleKeysAt({ ...input, notifications: inHoursHistory(ruleKey, 4) })).toContain(ruleKey);
+      expect(ruleKeysAt({ ...input, notifications: inHoursHistory(ruleKey, 5) })).not.toContain(ruleKey);
+    });
+
+    it("does not fire commitment_missed in working hours with 5 notifications today for that commitment's base key, and fires with 4", () => {
+      const task = makeTask({
+        id: 3,
+        status: "todo",
+        committed_start_at: DAY(10, 0).toISOString(),
+        committed_at: DAY(9, 0).toISOString(),
+      });
+      const ruleKey = buildCommitmentMissedRuleKey(task);
+
+      expect(ruleKeysAt({ tasks: [task], notifications: inHoursHistory(ruleKey, 4) })).toContain(ruleKey);
+      expect(ruleKeysAt({ tasks: [task], notifications: inHoursHistory(ruleKey, 5) })).not.toContain(ruleKey);
+    });
+
+    it("still fires morning_meeting with 5 notifications today for its rule_key (meetings are not capped)", () => {
+      const ruleKey = `morning_meeting:${DAY_KEY}@09:00`;
+
+      expect(
+        ruleKeysAt({ todaysSessionTypes: ["evening"], notifications: inHoursHistory(ruleKey, 5) }),
+      ).toContain(ruleKey);
+    });
+
+    it("still fires evening_meeting with 5 notifications today for its rule_key (meetings are not capped)", () => {
+      const ruleKey = `evening_meeting:${DAY_KEY}@18:00`;
+      const notifications = sentAt(ruleKey, [DAY(18, 5), DAY(18, 15), DAY(18, 25), DAY(18, 35), DAY(18, 45)]);
+
+      expect(
+        ruleKeysAt({ now: DAY(19, 0), todaysSessionTypes: ["morning"], notifications }),
+      ).toContain(ruleKey);
     });
   });
 });

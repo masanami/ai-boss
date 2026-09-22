@@ -8,7 +8,7 @@ import { loadDetectionSettings } from "../scheduler/detection-settings.js";
 import { DEFAULT_MODEL } from "../llm/claude-client.js";
 import { MIN_STRICTNESS, MAX_STRICTNESS } from "../boss/persona-prompt.js";
 
-// The `*_minutes` keys all share the same `validatePositiveIntegerMinutes`
+// The `*_minutes` keys all share the same `validatePositiveInteger(key, "分")`
 // validator (settings-validation.ts), so their HTTP-level boundary behavior
 // is exercised once per key here rather than duplicating the same
 // assertions by hand.
@@ -71,6 +71,7 @@ interface SettingsBody {
   escalation_l2_after_minutes: number;
   escalation_l3_after_minutes: number;
   escalation_repeat_minutes: number;
+  detection_daily_notification_cap: number;
   model: string;
   evidence_enforcement_enabled: boolean;
   morning_mentoring_required: boolean;
@@ -115,6 +116,7 @@ describe("settings routes", () => {
         escalation_l2_after_minutes: 15,
         escalation_l3_after_minutes: 10,
         escalation_repeat_minutes: 10,
+        detection_daily_notification_cap: 5,
         model: DEFAULT_MODEL,
         evidence_enforcement_enabled: false,
         morning_mentoring_required: true,
@@ -467,6 +469,28 @@ describe("settings routes", () => {
               method: "PUT",
               headers: { "Content-Type": "application/json" },
               body: JSON.stringify({ [key]: value }),
+            });
+
+            expect(res.status).toBe(400);
+            const body = await readJson<ErrorBody>(res);
+            expect(body).toEqual({
+              error: MINUTE_KEY_ERRORS[key],
+              code: "invalid_positive_integer",
+            });
+          },
+        );
+
+        // PR #569 Codex 指摘: 同じバリデータを共有する既存 6 キーも、安全な整数の
+        // 範囲外（1e21）は読み出し側が往復できないため 400。文言は従来のまま
+        it.each(MINUTE_KEYS)(
+          "returns 400 with the unchanged Japanese error for %s beyond the safe integer range (1e21)",
+          async (key) => {
+            const app = createApp(db);
+
+            const res = await app.request("/api/settings", {
+              method: "PUT",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ [key]: 1e21 }),
             });
 
             expect(res.status).toBe(400);
@@ -1115,6 +1139,97 @@ describe("settings routes", () => {
 
         expect(res.status).toBe(400);
       });
+    });
+
+    // #562 決定 16: 1 日の通知上限。文言は仕様の受入基準から直接転記する
+    // （SETTING_LABELS を参照すると恒真になるため。MINUTE_KEY_ERRORS と同じ理由）
+    describe("detection_daily_notification_cap (#562)", () => {
+      const CAP_ERROR = "1 日の通知上限（回）には 1 以上の整数を入力してください";
+
+      function readStoredCap(): string | undefined {
+        const row = db
+          .prepare("SELECT value FROM settings WHERE key = ?")
+          .get("detection_daily_notification_cap") as { value: string } | undefined;
+        return row?.value;
+      }
+
+      it("GET returns the stored value as a number once saved", async () => {
+        db.prepare("INSERT INTO settings (key, value) VALUES (?, ?)").run(
+          "detection_daily_notification_cap",
+          "7",
+        );
+        const app = createApp(db);
+
+        const res = await app.request("/api/settings");
+
+        const body = await readJson<SettingsBody>(res);
+        expect(body.detection_daily_notification_cap).toBe(7);
+      });
+
+      it("PUT accepts 3, saves it, and returns 3 for the key", async () => {
+        const app = createApp(db);
+
+        const res = await app.request("/api/settings", {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ detection_daily_notification_cap: 3 }),
+        });
+
+        expect(res.status).toBe(200);
+        const body = await readJson<SettingsBody>(res);
+        expect(body.detection_daily_notification_cap).toBe(3);
+        expect(readStoredCap()).toBe("3");
+      });
+
+      // Codex 指摘（PR #569）: 1e21 は JSON で "1e+21" になり、保存しても
+      // resolvePositiveIntSetting が往復できず既定値 5 へ倒れる。PUT 成功と
+      // 実効値の食い違いを起こさないよう、安全な整数の範囲外は 400 で拒否する
+      it("PUT returns 400 and saves nothing for an integer beyond the safe range (1e21) that the reader cannot round-trip", async () => {
+        const app = createApp(db);
+
+        const res = await app.request("/api/settings", {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ detection_daily_notification_cap: 1e21 }),
+        });
+
+        expect(res.status).toBe(400);
+        const body = await readJson<ErrorBody>(res);
+        expect(body).toEqual({ error: CAP_ERROR, code: "invalid_positive_integer" });
+        expect(readStoredCap()).toBeUndefined();
+      });
+
+      it("PUT accepts Number.MAX_SAFE_INTEGER and GET returns the same value (round-trips through the reader)", async () => {
+        const app = createApp(db);
+
+        const put = await app.request("/api/settings", {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ detection_daily_notification_cap: Number.MAX_SAFE_INTEGER }),
+        });
+        expect(put.status).toBe(200);
+
+        const body = await readJson<SettingsBody>(await app.request("/api/settings"));
+        expect(body.detection_daily_notification_cap).toBe(Number.MAX_SAFE_INTEGER);
+      });
+
+      it.each([0, -1, 2.5, "3"])(
+        "PUT returns 400 with the Japanese error and code (invalid_positive_integer) and saves nothing when the value is %j",
+        async (value) => {
+          const app = createApp(db);
+
+          const res = await app.request("/api/settings", {
+            method: "PUT",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ detection_daily_notification_cap: value }),
+          });
+
+          expect(res.status).toBe(400);
+          const body = await readJson<ErrorBody>(res);
+          expect(body).toEqual({ error: CAP_ERROR, code: "invalid_positive_integer" });
+          expect(readStoredCap()).toBeUndefined();
+        },
+      );
     });
   });
 });
