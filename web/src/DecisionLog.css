@@ -78,3 +78,14 @@
   font-size: 0.8rem;
   color: var(--color-text-muted);
 }
+
+/* Issue #564 (S3): メンタリング記録から当該会話を読み返す導線。既存の
+   ヘッダ・本文・根拠の下に足すだけで、それらの見た目は変えない。 */
+.decision-card-actions {
+  display: flex;
+  justify-content: flex-end;
+}
+
+.decision-transcript-button {
+  font-size: 0.75rem;
+}

@@ -1,4 +1,4 @@
-import { useEffect } from "react";
+import { useEffect, useState } from "react";
 import { decisionSectionId } from "./decision-section-id";
 import { useDecisions } from "./use-decisions";
 import { groupDecisionsByTask } from "./group-decisions-by-task";
@@ -8,6 +8,7 @@ import type { Task } from "./task";
 import type { TasksLoadStatus } from "./use-tasks";
 import TaskReferenceText from "./TaskReferenceText";
 import { referenceableTasks } from "./task-id-references";
+import SessionTranscriptDialog from "./SessionTranscriptDialog";
 import "./DecisionLog.css";
 
 const KIND_LABEL: Record<DecisionKind, string> = {
@@ -24,9 +25,19 @@ interface DecisionCardProps {
    * out of scope for this ticket).
    */
   taskReferenceTasks: readonly Task[] | null;
+  /**
+   * Issue #564 (S3, 親 #438 決定22): opens the record's session transcript.
+   * Only rendered for `kind === "mentoring"` — S3 traces how a mentoring
+   * went, and widening it to decision cards is a separate call.
+   */
+  onOpenTranscript: (decision: DecisionRecord) => void;
 }
 
-function DecisionCard({ decision, taskReferenceTasks }: DecisionCardProps) {
+function DecisionCard({
+  decision,
+  taskReferenceTasks,
+  onOpenTranscript,
+}: DecisionCardProps) {
   return (
     <li className="decision-card">
       <div className="decision-card-header">
@@ -41,6 +52,17 @@ function DecisionCard({ decision, taskReferenceTasks }: DecisionCardProps) {
       {decision.rationale !== null && (
         <p className="decision-rationale">根拠: {decision.rationale}</p>
       )}
+      {decision.kind === "mentoring" && (
+        <div className="decision-card-actions">
+          <button
+            type="button"
+            className="decision-transcript-button"
+            onClick={() => onOpenTranscript(decision)}
+          >
+            会話を読み返す
+          </button>
+        </div>
+      )}
     </li>
   );
 }
@@ -48,11 +70,13 @@ function DecisionCard({ decision, taskReferenceTasks }: DecisionCardProps) {
 interface DecisionTaskSectionProps {
   section: DecisionSection;
   taskReferenceTasks: readonly Task[] | null;
+  onOpenTranscript: (record: OpenedRecord) => void;
 }
 
 function DecisionTaskSection({
   section,
   taskReferenceTasks,
+  onOpenTranscript,
 }: DecisionTaskSectionProps) {
   return (
     <section className="decision-section" id={decisionSectionId(section.taskId)}>
@@ -63,11 +87,27 @@ function DecisionTaskSection({
             key={decision.id}
             decision={decision}
             taskReferenceTasks={taskReferenceTasks}
+            onOpenTranscript={(opened) =>
+              onOpenTranscript({
+                sessionId: opened.session_id,
+                // 出自はこのセクションの見出しそのもの（決定22: 新しい文言を
+                // 作らない。`#<task_id>` のフォールバックも見出しと同じになる）。
+                sourceTitle: section.title,
+                recordedAt: opened.created_at,
+              })
+            }
           />
         ))}
       </ul>
     </section>
   );
+}
+
+/** The mentoring record whose session transcript is open (Issue #564). */
+interface OpenedRecord {
+  sessionId: number;
+  sourceTitle: string;
+  recordedAt: string;
 }
 
 interface DecisionLogProps {
@@ -119,6 +159,10 @@ function DecisionLog({
   onScrollTargetConsumed,
 }: DecisionLogProps = {}) {
   const { decisions, status } = useDecisions();
+  // Issue #564 (S3): 読み取り専用の会話面で開いている記録。持ち主はここ
+  // （`AppLayout` へ上げない）: 面は決定ログの上に重ねるだけで、ほかのビューと
+  // 共有する状態が無い。`useChat` の状態には触れない（決定22）。
+  const [openedRecord, setOpenedRecord] = useState<OpenedRecord | null>(null);
 
   // Runs after the commit that rendered the sections (or the empty/error
   // state), so the target section — if there is one — is already in the DOM.
@@ -162,8 +206,20 @@ function DecisionLog({
             key={section.taskId ?? "unassigned"}
             section={section}
             taskReferenceTasks={taskReferenceTasks}
+            onOpenTranscript={setOpenedRecord}
           />
         ))
+      )}
+      {openedRecord !== null && (
+        <SessionTranscriptDialog
+          // 記録を開き直したら取得状態を持ち越さない。
+          key={`${openedRecord.sessionId}:${openedRecord.recordedAt}:${openedRecord.sourceTitle}`}
+          sessionId={openedRecord.sessionId}
+          sourceTitle={openedRecord.sourceTitle}
+          recordedAt={openedRecord.recordedAt}
+          taskReferenceTasks={taskReferenceTasks}
+          onClose={() => setOpenedRecord(null)}
+        />
       )}
     </div>
   );
