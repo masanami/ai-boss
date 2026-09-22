@@ -3388,6 +3388,77 @@ describe("タスク着手時のメンタリングの促し (Issue #566, S1)", ()
       await waitFor(() => expect(queryPrompt()).toHaveTextContent("資料を作る"));
     });
 
+    // PR #572 Codex P2: 1 回の更新で見積もりありの着手が複数見え、共有の
+    // 取得の応答で同時に「未確認」と分かったとき、描画されるのは最後の 1 件
+    // だけ。描画されなかった先のタスクを促し済みにしてはならない（FR-6）。
+    it("marks only the rendered prompt when one shared decisions response makes several estimated starts unconfirmed (FR-6, PR #572)", async () => {
+      const a = makeTask({ id: 1, title: "資料を作る", status: "todo", estimated_minutes: 30 });
+      const b = makeTask({ id: 2, title: "見積もりを出す", status: "todo", estimated_minutes: 15 });
+      vi.stubGlobal(
+        "fetch",
+        createRoutedFetchMock({
+          tasks: [a, b],
+          onPatchTask: patchByBody([a, b]),
+          decisions: [],
+          onCheckin: (_body, tasks) =>
+            tasks.map((t) => ({ ...t, status: "in_progress" as const })),
+        }),
+      );
+
+      render(<AppLayout />);
+      await openBoardWith(["資料を作る", "見積もりを出す"]);
+      const combobox = screen.getByRole("combobox", { name: "着手するタスク" });
+      await waitFor(() => expect(combobox).toHaveValue("1"));
+      fireEvent.click(screen.getByRole("button", { name: "着手" }));
+
+      const prompt = await findPrompt();
+      expect(prompt).toHaveTextContent("見積もりを出す");
+      fireEvent.click(within(prompt).getByRole("button", { name: "あとで" }));
+
+      await changeStatus("資料を作る", "todo");
+      await changeStatus("資料を作る", "in_progress");
+
+      await waitFor(() => expect(queryPrompt()).toHaveTextContent("資料を作る"));
+    });
+
+    // 同じ系統: 別々の遷移の取得が同じタイミング（描画前）に完了した場合も、
+    // 描画されなかった先の判定のタスクを促し済みにしない。
+    it("marks only the rendered prompt when separate lookups for different tasks complete before React renders (FR-6, PR #572)", async () => {
+      const a = makeTask({ id: 1, title: "資料を作る", status: "todo", estimated_minutes: 30 });
+      const b = makeTask({ id: 2, title: "見積もりを出す", status: "todo", estimated_minutes: 15 });
+      const queue = createDecisionsQueue();
+      vi.stubGlobal(
+        "fetch",
+        createRoutedFetchMock({
+          tasks: [a, b],
+          onPatchTask: patchByBody([a, b]),
+          decisions: queue.respond,
+        }),
+      );
+
+      render(<AppLayout />);
+      await openBoardWith(["資料を作る", "見積もりを出す"]);
+      await changeStatus("資料を作る", "in_progress");
+      await waitFor(() => expect(queue.callCount).toBe(1));
+      await changeStatus("見積もりを出す", "in_progress");
+      await waitFor(() => expect(queue.callCount).toBe(2));
+
+      // 同じ同期区間で両方を解決する＝両方の判定が描画より前に走る
+      queue.resolve(0, []);
+      queue.resolve(1, []);
+      const prompt = await findPrompt();
+      await flushAsync();
+      expect(prompt).toHaveTextContent("見積もりを出す");
+      fireEvent.click(within(prompt).getByRole("button", { name: "あとで" }));
+
+      await changeStatus("資料を作る", "todo");
+      await changeStatus("資料を作る", "in_progress");
+      await waitFor(() => expect(queue.callCount).toBe(3));
+      queue.resolve(2, []);
+
+      await waitFor(() => expect(queryPrompt()).toHaveTextContent("資料を作る"));
+    });
+
     it("replaces the shown prompt with the newer task's, never showing two (AC-16)", async () => {
       const a = makeTask({ id: 1, title: "資料を作る", status: "todo" });
       const b = makeTask({ id: 2, title: "見積もりを出す", status: "todo" });

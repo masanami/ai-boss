@@ -34,16 +34,18 @@ export function useTaskStartMentoringPrompt(
   tasks: Task[],
   canPrompt: boolean,
 ): UseTaskStartMentoringPromptResult {
-  const [promptTaskId, setPromptTaskId] = useState<number | null>(null);
-  // 検知時点のタスク。表示は最新の `tasks` から引き直す（改名に追随する）が、
-  // 一覧から消えていてもこれで出し続ける（促しは自動で消えない。決定4）。
-  const [promptSnapshot, setPromptSnapshot] = useState<Task | null>(null);
+  // 検知時点のタスク。表示は最新の `tasks` から id で引き直す（改名に追随する）
+  // が、一覧から消えていてもこれで出し続ける（促しは自動で消えない。決定4）。
+  const [shownTask, setShownTask] = useState<Task | null>(null);
   // 初回は空配列＝前回値なし。読み込み直後の `in_progress` は遷移にならない（AC-11）。
   const previousTasksRef = useRef<Task[]>([]);
   const transitionSeqRef = useRef(0);
   // 0 は「まだ一度も表示していない」。番号は 1 から振るので、どの遷移も新しい。
   const lastShownSeqRef = useRef(0);
-  // 促しを表示したタスクの id（1 タスク 1 回。FR-6）。
+  // 促しを表示したタスクの id（1 タスク 1 回。FR-6）。**描画が確定してから**
+  // 入れる（下の effect）。判定の側で入れると、描画前に続けて完了した判定
+  // （共有の取得の応答・同時に完了した別々の取得・同じ更新の複数の着手）が
+  // React にまとめられ、描画されなかった先のタスクまで促し済みになる（PR #572）。
   const promptedTaskIdsRef = useRef(new Set<number>());
   // 取得完了時点の可否で判断するため、最新値を ref で持つ。下の遷移検知より
   // 先に宣言し、同じコミットで両方が変わっても新しい可否で判断させる。
@@ -60,9 +62,16 @@ export function useTaskStartMentoringPrompt(
   useEffect(() => {
     canPromptRef.current = canPrompt;
     if (!canPrompt) {
-      setPromptTaskId(null);
+      setShownTask(null);
     }
   }, [canPrompt]);
+
+  // 遷移検知より先に宣言し、同じコミットで検知が走っても先に促し済みへ入れる。
+  useEffect(() => {
+    if (shownTask !== null) {
+      promptedTaskIdsRef.current.add(shownTask.id);
+    }
+  }, [shownTask]);
 
   useEffect(() => {
     const previous = previousTasksRef.current;
@@ -79,15 +88,12 @@ export function useTaskStartMentoringPrompt(
       if (promptedTaskIdsRef.current.has(task.id)) {
         return;
       }
+      // 描画前に続けて呼ばれたら、最後の（番号の最も新しい）1 件だけが描画
+      // され、促し済みになる（上の effect）。
       lastShownSeqRef.current = seq;
-      promptedTaskIdsRef.current.add(task.id);
-      setPromptSnapshot(task);
-      setPromptTaskId(task.id);
+      setShownTask(task);
     };
 
-    // 1 回の更新で同期的に未確認と分かるもの（見積もり空）は、最後の 1 件だけ
-    // 表示する。順に表示すると描画されない前の促しまで「促し済み」になる。
-    let latestSync: { seq: number; task: Task } | null = null;
     // 同じ更新で見積もりありの遷移が複数あっても、取得は 1 回にまとめる。
     let decisionsRequest: Promise<DecisionRecord[]> | null = null;
 
@@ -98,7 +104,7 @@ export function useTaskStartMentoringPrompt(
         continue;
       }
       if (task.estimated_minutes === null) {
-        latestSync = { seq, task };
+        showIfNewest(seq, task);
         continue;
       }
       // その場で取得する（決定3: 保持した一覧ではメンタリング直後に古くなる）。
@@ -113,19 +119,16 @@ export function useTaskStartMentoringPrompt(
         () => {},
       );
     }
-    if (latestSync !== null) {
-      showIfNewest(latestSync.seq, latestSync.task);
-    }
   }, [tasks]);
 
   const dismiss = useCallback(() => {
-    setPromptTaskId(null);
+    setShownTask(null);
   }, []);
 
   const promptTask =
-    promptTaskId === null
+    shownTask === null
       ? null
-      : (tasks.find((task) => task.id === promptTaskId) ?? promptSnapshot);
+      : (tasks.find((task) => task.id === shownTask.id) ?? shownTask);
 
   return { promptTask, dismiss };
 }
