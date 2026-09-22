@@ -157,7 +157,7 @@
 
 ## 機能要件（S3）
 
-> 実装対象スライス **S3** の範囲。用語: **基底キー**とは、帯の中で使う `rule_key`（`unstarted:{taskId}` / `avoidance:{taskId}` / `break_overrun` / `silence` / `deadline_overdue:{taskId}` / `commitment_missed:{taskId}:{committed_start_at}:{committed_at}`）のこと。帯の外で使う `rule_key` は基底キーの末尾に `:{帯外区間の開始日 YYYY-MM-DD}` を足したものであり（`rule-engine.ts` の `tryFireGated`。決定 10）、上限はこのサフィックスを除いた基底キーで数える（決定 13）。
+> 実装対象スライス **S3** の範囲。用語: **基底キー**とは、帯の中で使う `rule_key`（`unstarted:{taskId}` / `avoidance:{taskId}` / `break_overrun` / `silence` / `deadline_overdue:{taskId}` / `commitment_missed:{taskId}:{committed_start_at}:{committed_at}`）のこと。このうち **`tryFireGated` を通る 5 ルール**（`unstarted` / `avoidance` / `break_overrun` / `silence` / `deadline_overdue`）**だけ**は、帯の外で使う `rule_key` が基底キーの末尾に `:{帯外区間の開始日 YYYY-MM-DD}` を足したものになる（`rule-engine.ts` の `tryFireGated`。決定 10）ため、上限はこのサフィックスを除いた基底キーで数える（決定 13）。**`commitment_missed` にはサフィックスが付かない**: 帯の内外を問わず `buildCommitmentMissedRuleKey()` の同一キーを使い、帯の外は履歴が 1 件も無いときだけ 1 回発火する（`rule-engine.ts` の別ループ。S2 の契約であり S3 で変えない）。上限はその同一キーで当日分を数える。
 
 - [ ] `unstarted` の通知は、基底キー（`unstarted:{taskId}`）ごとに 1 日の回数に上限がある
 - [ ] `avoidance` の通知は、基底キー（`avoidance:{taskId}`）ごとに 1 日の回数に上限がある
@@ -348,7 +348,7 @@
 
 ### 決定 13: 通知上限は基底 `rule_key` ごとに数え、`notifications` の既存レコードから当日分を数える（新テーブルを作らない）
 
-- **採用案**: 上限の単位は**基底キー**（帯の中で使う `rule_key`。実態は「ルール × 対象タスク」。判断 7）。帯の外で使う `rule_key` は基底キーに `:{帯外区間の開始日}` を足したもの（決定 10。`rule-engine.ts` の `tryFireGated` が `${ruleKey}:${outsideHoursPeriodKey(now, settings.workingHours)}` を組む）なので、**履歴の `rule_key` から末尾の `:YYYY-MM-DD` を除いたものが基底キーに等しい**エントリを同じ枠として数える。`unstarted:3` の枠に `unstarted:3:2026-09-22` は入るが、`unstarted:30` / `unstarted:30:2026-09-22` / `avoidance:3` は入らない。回数は `DetectionInput.notifications`（`notifications` テーブルの全履歴。`NotificationHistoryEntry` の `ruleKey` と `sentAt`）から数え、**新テーブル・新カラム・新 SQL を作らない**。
+- **採用案**: 上限の単位は**基底キー**（帯の中で使う `rule_key`。実態は「ルール × 対象タスク」。判断 7）。`tryFireGated` を通る 5 ルール（`unstarted` / `avoidance` / `break_overrun` / `silence` / `deadline_overdue`）は帯の外で使う `rule_key` が基底キーに `:{帯外区間の開始日}` を足したものになる（決定 10。`rule-engine.ts` の `tryFireGated` が `${ruleKey}:${outsideHoursPeriodKey(now, settings.workingHours)}` を組む）ので、**履歴の `rule_key` から末尾の `:YYYY-MM-DD` を除いたものが基底キーに等しい**エントリを同じ枠として数える。**`commitment_missed` は `tryFireGated` を通らず**（`rule-engine.ts` の `findMissedCommitmentTasks` ループ）、帯の内外を問わず `buildCommitmentMissedRuleKey()` の同一キーを無変更で `tryFire` / `fireOnce` へ渡す。S3 はこのキーを変えず（サフィックスを付けない。S2 の「約束 1 件につき 1 回」の契約を維持）、上限はその同一キーの当日分を数える。`unstarted:3` の枠に `unstarted:3:2026-09-22` は入るが、`unstarted:30` / `unstarted:30:2026-09-22` / `avoidance:3` は入らない。回数は `DetectionInput.notifications`（`notifications` テーブルの全履歴。`NotificationHistoryEntry` の `ruleKey` と `sentAt`）から数え、**新テーブル・新カラム・新 SQL を作らない**。
 - **理由**:
   1. **判断 7 が単位を `rule_key` ごと＝基底キーで数えると決めた**。基底キーで数えないと、帯の外の 1 回（別キー）が帯の中の枠と独立になり、1 日の総数が上限を超える。
   2. **既存の送信記録で足りる。** `notifications` は `rule_key` と `sent_at`（サーバの絶対時刻・UTC ISO。`notifications-repository.ts` の `insertNotification`）を持ち、検知エンジンは既にその全履歴を受け取っている（`scheduler-tick.ts` の `buildTickInput` が `listNotificationsSince(db, EPOCH_ISO)` を `toNotificationHistory` で `{ ruleKey, escalationLevel, sentAt }` に変換して渡す）。当日分は `toDateKey(new Date(sentAt)) === toDateKey(now)` で数えられ、SQL も索引も要らない（`notifications` に索引は無いが、全履歴を読む方針は `scheduler-tick.ts` の `EPOCH_ISO` のコメントが KISS/YAGNI として既に採っている）。
@@ -363,7 +363,7 @@
 
 ### 決定 14: リセット境界はローカル暦日 00:00。帯の外の 1 回は「帯外区間の開始日」の枠で数える
 
-- **採用案**: 上限の枠は**ローカル暦日 00:00** でリセットされる（判断 7。ADR 0007 決定 1・2 の暦日と `toDateKey` に揃える）。帯の**中**での発火判定は「基底キーの履歴のうち `sentAt` のローカル暦日が `now` のローカル暦日に等しいもの」を数え、上限以上なら発火しない。帯の**外**での発火判定（決定 9・10 の「帯外区間に 1 回だけ」）は、**その帯外区間の開始日**（`outsideHoursPeriodKey(now, settings.workingHours)`。当日の `work_end` 以降なら当日、当日の `work_start` 未満なら前日）**のローカル暦日に送られた件数**を数え、上限以上なら発火しない。
+- **採用案**: 上限の枠は**ローカル暦日 00:00** でリセットされる（判断 7。ADR 0007 決定 1・2 の暦日と `toDateKey` に揃える）。帯の**中**での発火判定は「基底キーの履歴のうち `sentAt` のローカル暦日が `now` のローカル暦日に等しいもの」を数え、上限以上なら発火しない。帯の**外**での発火判定（決定 9・10 の「帯外区間に 1 回だけ」）は、**その帯外区間の開始日**（`outsideHoursPeriodKey(now, settings.workingHours)`。当日の `work_end` 以降なら当日、当日の `work_start` 未満なら前日）**のローカル暦日に送られた件数**を数え、上限以上なら発火しない。**`commitment_missed` は帯の内外を問わず常に `now` のローカル暦日で数える**（帯外区間の開始日は使わない）。理由: 帯の外の `commitment_missed` は `fireOnce` により「そのキーの履歴が 1 件も無いとき」しか発火せず（`rule-engine.ts`）、そのとき当日分の件数は必ず 0 で上限に掛かりようがない。帯の外の 1 回が 0 時に寄る問題（理由 2）はキーが区間ごとに変わる 5 ルールに固有で、約束ごとに一意なキーでは起きない。
 - **理由**:
   1. **判断 7 がリセット境界を暦日 00:00 と決めた**。ADR 0007 の暦日と揃えるため、当日分の判定は `toDateKey` の等値で行う（新しい日付整形ロジックを書かない。ADR 0007 帰結）。
   2. **帯の外の判定を「`now` の暦日」で数えると、帯の外の通知が毎晩 0 時に寄る（決定 10 が改訂で退けた失敗モードの再来）。** 帯の中で上限に達した日（例: 09:00〜09:45 に 5 回）は、18:00 の帯外の 1 回が上限で抑えられる。もし 0 時に枠がリセットされると、帯外キー `unstarted:3:{当日}` はまだ履歴が無いため **00:00 の tick で発火する**。定常状態ではこれが毎晩繰り返され、帯の外の通知が 0 時に寄る。決定 10 はまさにこの「0 時に寄る」ふるまいをユーザーストーリー（「夜通し鳴り続けるのは困る」）とずれるとして退けた（オーナー決定・2026-09-21）。帯の外の 1 回を**区間の開始日の枠**で数えれば、開始日に上限へ達していた場合は 0 時をまたいでも黙ったままになり、決定 10 と判断 7 の両方を満たす。
@@ -561,7 +561,8 @@ S3 で新たにやらないこと:
 - [ ] `break_overrun` は、基底キー `break_overrun` の当日分が 5 件のとき帯の中で発火せず、4 件のとき発火する
 - [ ] `avoidance` は、基底キー `avoidance:3` の当日分が 5 件のとき帯の中で発火せず、4 件のとき発火する
 - [ ] `deadline_overdue` は、基底キー `deadline_overdue:3` の当日分が 5 件のとき帯の中で発火せず、4 件のとき発火する
-- [ ] `commitment_missed` は、その約束の基底キー（`commitment_missed:{taskId}:{committed_start_at}:{committed_at}`）の当日分が 5 件のとき帯の中で発火せず、4 件のとき発火する
+- [ ] `commitment_missed` は、その約束の基底キー（`commitment_missed:{taskId}:{committed_start_at}:{committed_at}`。帯の内外で同一）の当日分が 5 件のとき帯の中で発火せず、4 件のとき発火する
+- [ ] `commitment_missed` が帯の外（D の 20:00・履歴なし）で発火したとき、その `rule_key` は `buildCommitmentMissedRuleKey()` の値のままである（`:YYYY-MM-DD` のサフィックスが付かない。S2 の契約の退行防止）
 - [ ] `morning_meeting` は、その日の `rule_key`（`morning_meeting:{D}@09:00`）の当日分が 5 件あり間隔が経過しているとき、従来どおり発火する（朝会は上限の対象外）
 - [ ] `evening_meeting` について同上（夕会は上限の対象外）
 
