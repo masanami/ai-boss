@@ -1,0 +1,24 @@
+.task-start-mentoring-prompt {
+  padding: 0.75rem;
+  margin-bottom: 1rem;
+  border: 1px solid var(--color-accent);
+  border-radius: 6px;
+  background-color: var(--color-bg-elevated);
+}
+
+.task-start-mentoring-prompt p {
+  margin: 0 0 0.5rem;
+  font-size: 0.85rem;
+}
+
+.task-start-mentoring-prompt-actions {
+  display: flex;
+  gap: 0.5rem;
+}
+
+/* 促しが無い間もライブリージョンを残すための空の状態（枠も余白も出さない）。 */
+.task-start-mentoring-prompt--empty {
+  padding: 0;
+  margin: 0;
+  border: none;
+}

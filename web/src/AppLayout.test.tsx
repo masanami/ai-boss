@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
+  act,
   fireEvent,
   render,
   screen,
@@ -11,6 +12,7 @@ import type { ChatMessage, ChatSession } from "./chat";
 import type { DecisionRecord } from "./decision";
 import { SIDE_PANEL_WIDTH_STORAGE_KEY } from "./side-panel-width";
 import type { Task } from "./task";
+import { TASK_DRAG_DATA_TYPE } from "./task-dnd";
 
 function makeTask(overrides: Partial<Task> & { id: number }): Task {
   return {
@@ -2780,5 +2782,936 @@ describe("AppLayout side panel splitter (Issue #362)", () => {
 
     fireEvent.pointerUp(splitter, { pointerId: 1 });
     expect(appBody).not.toHaveClass("app-body--dragging");
+  });
+});
+
+// Issue #566 (S1): タスク着手時のメンタリングの促し。遷移の 3 経路（select・
+// drop・チェックイン後の再取得）と、判定の完了順（決定8・#568 改訂）を
+// AppLayout の統合で固定する。純粋な規則は task-start-mentoring.test.ts。
+describe("タスク着手時のメンタリングの促し (Issue #566, S1)", () => {
+  const PROMPT_NAME = "着手時のメンタリングの促し";
+
+  /**
+   * 促しのライブリージョンは常に置かれ、促しが無い間は空（中身の差し替えで
+   * 支援技術に通知させるため）。中身のあるときだけ促しが出ているとみなす。
+   */
+  function queryPrompt(): HTMLElement | null {
+    const region = screen.getByRole("status", { name: PROMPT_NAME });
+    return region.childElementCount > 0 ? region : null;
+  }
+
+  async function findPrompt(): Promise<HTMLElement> {
+    let prompt: HTMLElement | null = null;
+    await waitFor(() => {
+      prompt = queryPrompt();
+      expect(prompt).not.toBeNull();
+    });
+    return prompt!;
+  }
+
+  function mentoringRecord(taskId: number, overrides: Partial<DecisionRecord> = {}): DecisionRecord {
+    return {
+      id: 500 + taskId,
+      session_id: 1,
+      task_id: taskId,
+      task_title: `task-${taskId}`,
+      content: "進め方を確認した",
+      rationale: null,
+      status: "active",
+      kind: "mentoring",
+      created_at: "2026-07-05T00:00:00.000Z",
+      ...overrides,
+    };
+  }
+
+  /** PATCH の本文をそのまま当てた更新後のタスクを返す（サーバの代役）。 */
+  function patchByBody(initial: Task[]) {
+    const store = new Map(initial.map((t) => [t.id, t]));
+    return (id: number, body: unknown): Task => {
+      const updated = { ...store.get(id)!, ...(body as Partial<Task>) };
+      store.set(id, updated);
+      return updated;
+    };
+  }
+
+  /**
+   * `GET /api/decisions` の応答を、呼ばれた順に 1 件ずつテスト側から解決・
+   * 失敗させる。取得の完了順の逆転（AC-16b〜16e）を作るために使う。
+   */
+  function createDecisionsQueue() {
+    const pending: {
+      resolve: (records: DecisionRecord[]) => void;
+      reject: (error: Error) => void;
+    }[] = [];
+    const respond = () =>
+      new Promise<DecisionRecord[]>((resolve, reject) => {
+        pending.push({ resolve, reject });
+      });
+    return {
+      respond,
+      get callCount() {
+        return pending.length;
+      },
+      resolve(index: number, records: DecisionRecord[]) {
+        pending[index].resolve(records);
+      },
+      reject(index: number) {
+        pending[index].reject(new Error("decisions failed"));
+      },
+    };
+  }
+
+  /** 保留中の応答チェーン（fetch → json → 判定）を流し切る。 */
+  async function flushAsync(): Promise<void> {
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+  }
+
+  function cardOf(title: string): HTMLElement {
+    const card = within(screen.getByRole("main", { name: "タスクボード" }))
+      .getByRole("heading", { name: title })
+      .closest(".task-card");
+    if (!(card instanceof HTMLElement)) {
+      throw new Error(`task card not found: ${title}`);
+    }
+    return card;
+  }
+
+  async function openBoardWith(titles: string[]): Promise<void> {
+    fireEvent.click(screen.getByRole("button", { name: "タスク" }));
+    await screen.findByRole("region", { name: "未着手" });
+    for (const title of titles) {
+      await waitFor(() => expect(cardOf(title)).toBeInTheDocument());
+    }
+    // 導線の可否（chatState の復元）が確定するまで待つ。カードの
+    // 「メンタリングする」が出ていれば adhoc かつ ready。
+    await waitFor(() =>
+      expect(
+        screen.getAllByRole("button", { name: "メンタリングする" }).length,
+      ).toBeGreaterThan(0),
+    );
+  }
+
+  async function changeStatus(title: string, status: Task["status"]): Promise<void> {
+    fireEvent.change(within(cardOf(title)).getByLabelText("ステータス"), {
+      target: { value: status },
+    });
+    const column = {
+      todo: "未着手",
+      in_progress: "進行中",
+      paused: "一時停止",
+      done: "完了",
+      dropped: "中止",
+    }[status];
+    if (status === "done" || status === "dropped") {
+      await waitFor(() =>
+        expect(
+          within(screen.getByRole("region", { name: "未着手" })).queryByText(title),
+        ).not.toBeInTheDocument(),
+      );
+      return;
+    }
+    await waitFor(() =>
+      expect(
+        within(screen.getByRole("region", { name: column })).getByText(title),
+      ).toBeInTheDocument(),
+    );
+  }
+
+  describe("促しが出る", () => {
+    it("shows a status prompt with the task title when an unestimated task goes todo -> in_progress via the card select (AC-1, AC-3, AC-7, AC-8, AC-22)", async () => {
+      const task = makeTask({ id: 1, title: "資料を作る", status: "todo" });
+      vi.stubGlobal(
+        "fetch",
+        createRoutedFetchMock({ tasks: [task], onPatchTask: patchByBody([task]) }),
+      );
+
+      render(<AppLayout />);
+      await openBoardWith(["資料を作る"]);
+      // ライブリージョンは促しより前から空で置かれている（中身の差し替えで通知）
+      expect(
+        screen.getByRole("status", { name: PROMPT_NAME }),
+      ).toBeEmptyDOMElement();
+
+      await changeStatus("資料を作る", "in_progress");
+
+      const prompt = await findPrompt();
+      expect(prompt).toHaveTextContent("資料を作る");
+      expect(
+        within(prompt).getByRole("button", { name: "メンタリングする" }),
+      ).toBeInTheDocument();
+      expect(within(prompt).getByRole("button", { name: "あとで" })).toBeInTheDocument();
+      // 遷移はブロックされない（AC-22）
+      expect(
+        within(screen.getByRole("region", { name: "進行中" })).getByText("資料を作る"),
+      ).toBeInTheDocument();
+    });
+
+    it("shows the prompt for an estimated task with no mentoring record tied to it (AC-2)", async () => {
+      const task = makeTask({ id: 1, title: "資料を作る", status: "todo", estimated_minutes: 30 });
+      vi.stubGlobal(
+        "fetch",
+        createRoutedFetchMock({
+          tasks: [task],
+          onPatchTask: patchByBody([task]),
+          decisions: [
+            mentoringRecord(2),
+            mentoringRecord(1, { kind: "decision" }),
+          ],
+        }),
+      );
+
+      render(<AppLayout />);
+      await openBoardWith(["資料を作る"]);
+      await changeStatus("資料を作る", "in_progress");
+
+      const prompt = await findPrompt();
+      expect(prompt).toHaveTextContent("資料を作る");
+    });
+
+    it("shows the prompt when the task is dropped onto the in-progress column (AC-4)", async () => {
+      const task = makeTask({ id: 7, title: "資料を作る", status: "todo" });
+      vi.stubGlobal(
+        "fetch",
+        createRoutedFetchMock({ tasks: [task], onPatchTask: patchByBody([task]) }),
+      );
+
+      render(<AppLayout />);
+      await openBoardWith(["資料を作る"]);
+      const store = new Map<string, string>([[TASK_DRAG_DATA_TYPE, "7"]]);
+      const dataTransfer = {
+        setData: vi.fn((type: string, value: string) => {
+          store.set(type, value);
+        }),
+        getData: vi.fn((type: string) => store.get(type) ?? ""),
+        dropEffect: "",
+        effectAllowed: "",
+      };
+      const inProgressColumn = screen.getByRole("region", { name: "進行中" });
+      fireEvent.dragOver(inProgressColumn, { dataTransfer });
+      fireEvent.drop(inProgressColumn, { dataTransfer });
+
+      const prompt = await findPrompt();
+      expect(prompt).toHaveTextContent("資料を作る");
+    });
+
+    it("shows the prompt when a checkin task_start refresh reveals the todo -> in_progress transition (AC-5)", async () => {
+      const task = makeTask({ id: 1, title: "資料を作る", status: "todo" });
+      vi.stubGlobal(
+        "fetch",
+        createRoutedFetchMock({
+          tasks: [task],
+          onCheckin: (body, tasks) => {
+            const parsed = body as { type: string; task_id?: number };
+            return parsed.type === "task_start"
+              ? tasks.map((t) =>
+                  t.id === parsed.task_id ? { ...t, status: "in_progress" } : t,
+                )
+              : tasks;
+          },
+        }),
+      );
+
+      render(<AppLayout />);
+      // ダッシュボード表示のまま（どのビューでも見える位置に出ることの確認）
+      await waitFor(() =>
+        expect(screen.getByRole("combobox", { name: "着手するタスク" })).toHaveValue("1"),
+      );
+      await waitFor(() =>
+        expect(screen.getByRole("main", { name: "ダッシュボード" })).toBeInTheDocument(),
+      );
+      // chatState の復元確定を待つ（タスクボード無しで観測できる目印が無いので、
+      // チャット画面の入力欄の活性で見る代わりに復元の取得の完了を待つ）
+      await flushAsync();
+      expect(queryPrompt()).toBeNull();
+
+      fireEvent.click(screen.getByRole("button", { name: "着手" }));
+
+      const prompt = await findPrompt();
+      expect(prompt).toHaveTextContent("資料を作る");
+    });
+
+    it("shows another unconfirmed task's prompt after the first was dismissed with あとで (AC-6)", async () => {
+      const a = makeTask({ id: 1, title: "資料を作る", status: "todo" });
+      const b = makeTask({ id: 2, title: "見積もりを出す", status: "todo" });
+      vi.stubGlobal(
+        "fetch",
+        createRoutedFetchMock({ tasks: [a, b], onPatchTask: patchByBody([a, b]) }),
+      );
+
+      render(<AppLayout />);
+      await openBoardWith(["資料を作る", "見積もりを出す"]);
+      await changeStatus("資料を作る", "in_progress");
+      fireEvent.click(
+        within(await findPrompt()).getByRole(
+          "button",
+          { name: "あとで" },
+        ),
+      );
+      expect(queryPrompt()).toBeNull();
+
+      await changeStatus("見積もりを出す", "in_progress");
+
+      const prompt = await findPrompt();
+      expect(prompt).toHaveTextContent("見積もりを出す");
+    });
+  });
+
+  describe("促しが出ない", () => {
+    it("does not prompt an estimated task that has a mentoring record, and the task still moves (AC-9, AC-22)", async () => {
+      const task = makeTask({ id: 1, title: "資料を作る", status: "todo", estimated_minutes: 30 });
+      let decisionsCalls = 0;
+      vi.stubGlobal(
+        "fetch",
+        createRoutedFetchMock({
+          tasks: [task],
+          onPatchTask: patchByBody([task]),
+          decisions: () => {
+            decisionsCalls += 1;
+            return [mentoringRecord(1)];
+          },
+        }),
+      );
+
+      render(<AppLayout />);
+      await openBoardWith(["資料を作る"]);
+      await changeStatus("資料を作る", "in_progress");
+      await waitFor(() => expect(decisionsCalls).toBe(1));
+      await flushAsync();
+
+      expect(queryPrompt()).toBeNull();
+      expect(
+        within(screen.getByRole("region", { name: "進行中" })).getByText("資料を作る"),
+      ).toBeInTheDocument();
+    });
+
+    it("counts a withdrawn mentoring record as confirmed (AC-10)", async () => {
+      const task = makeTask({ id: 1, title: "資料を作る", status: "todo", estimated_minutes: 30 });
+      let decisionsCalls = 0;
+      vi.stubGlobal(
+        "fetch",
+        createRoutedFetchMock({
+          tasks: [task],
+          onPatchTask: patchByBody([task]),
+          decisions: () => {
+            decisionsCalls += 1;
+            return [mentoringRecord(1, { status: "withdrawn" })];
+          },
+        }),
+      );
+
+      render(<AppLayout />);
+      await openBoardWith(["資料を作る"]);
+      await changeStatus("資料を作る", "in_progress");
+      await waitFor(() => expect(decisionsCalls).toBe(1));
+      await flushAsync();
+
+      expect(queryPrompt()).toBeNull();
+    });
+
+    it("does not prompt a task already in progress on the initial load (AC-11)", async () => {
+      const task = makeTask({ id: 1, title: "資料を作る", status: "in_progress" });
+      const tasksGate = createGate();
+      const routed = createRoutedFetchMock({ tasks: [task] });
+      vi.stubGlobal(
+        "fetch",
+        vi.fn((url: string, init?: RequestInit) =>
+          url === "/api/tasks" && (init?.method ?? "GET") === "GET"
+            ? tasksGate.promise.then(() => routed(url, init))
+            : routed(url, init),
+        ),
+      );
+
+      render(<AppLayout />);
+      // タスクの初回読み込みを、促しを出せる状態（adhoc かつ ready）になって
+      // から届ける。先に届くと可否のほうで弾かれ、初回の扱いを検証できない。
+      fireEvent.click(screen.getByRole("button", { name: "チャット" }));
+      await waitFor(() =>
+        expect(screen.getByRole("button", { name: "朝会を開始" })).toBeEnabled(),
+      );
+      tasksGate.open();
+      await openBoardWith(["資料を作る"]);
+      await flushAsync();
+
+      expect(queryPrompt()).toBeNull();
+    });
+
+    it("does not prompt on paused -> in_progress (resume) (AC-12)", async () => {
+      const task = makeTask({ id: 1, title: "資料を作る", status: "paused" });
+      vi.stubGlobal(
+        "fetch",
+        createRoutedFetchMock({ tasks: [task], onPatchTask: patchByBody([task]) }),
+      );
+
+      render(<AppLayout />);
+      await openBoardWith(["資料を作る"]);
+      await changeStatus("資料を作る", "in_progress");
+      await flushAsync();
+
+      expect(queryPrompt()).toBeNull();
+    });
+
+    it("does not prompt on in_progress -> paused, in_progress -> todo, or todo -> done (AC-12)", async () => {
+      const a = makeTask({ id: 1, title: "資料を作る", status: "in_progress" });
+      const b = makeTask({ id: 2, title: "見積もりを出す", status: "in_progress" });
+      const c = makeTask({ id: 3, title: "片付ける", status: "todo" });
+      vi.stubGlobal(
+        "fetch",
+        createRoutedFetchMock({
+          tasks: [a, b, c],
+          onPatchTask: patchByBody([a, b, c]),
+        }),
+      );
+
+      render(<AppLayout />);
+      await openBoardWith(["資料を作る", "見積もりを出す", "片付ける"]);
+      await changeStatus("資料を作る", "paused");
+      await changeStatus("見積もりを出す", "todo");
+      await changeStatus("片付ける", "done");
+      await flushAsync();
+
+      expect(queryPrompt()).toBeNull();
+    });
+
+    it.each(["あとで", "メンタリングする"])(
+      "does not prompt the same task twice on the same page after closing it with %s (AC-13)",
+      async (closeWith) => {
+        const task = makeTask({ id: 1, title: "資料を作る", status: "todo" });
+        vi.stubGlobal(
+          "fetch",
+          createRoutedFetchMock({ tasks: [task], onPatchTask: patchByBody([task]) }),
+        );
+
+        render(<AppLayout />);
+        await openBoardWith(["資料を作る"]);
+        await changeStatus("資料を作る", "in_progress");
+        fireEvent.click(
+          within(await findPrompt()).getByRole(
+            "button",
+            { name: closeWith },
+          ),
+        );
+        expect(queryPrompt()).toBeNull();
+        if (closeWith === "メンタリングする") {
+          // chat へ切り替わるのでタスクボードへ戻る（送信の完了を待って）
+          await waitFor(() =>
+            expect(screen.getByRole("main", { name: "ボスとの対話" })).toBeInTheDocument(),
+          );
+          await waitFor(() => expect(screen.getByText("了解した。")).toBeInTheDocument());
+          await openBoardWith(["資料を作る"]);
+        }
+
+        await changeStatus("資料を作る", "todo");
+        await changeStatus("資料を作る", "in_progress");
+        await flushAsync();
+
+        expect(queryPrompt()).toBeNull();
+      },
+    );
+
+    it("does not prompt when fetching the decisions fails (AC-14)", async () => {
+      const task = makeTask({ id: 1, title: "資料を作る", status: "todo", estimated_minutes: 30 });
+      let decisionsCalls = 0;
+      vi.stubGlobal(
+        "fetch",
+        createRoutedFetchMock({
+          tasks: [task],
+          onPatchTask: patchByBody([task]),
+          decisions: () => {
+            decisionsCalls += 1;
+            return Promise.reject(new Error("decisions failed"));
+          },
+        }),
+      );
+
+      render(<AppLayout />);
+      await openBoardWith(["資料を作る"]);
+      await changeStatus("資料を作る", "in_progress");
+      await waitFor(() => expect(decisionsCalls).toBe(1));
+      await flushAsync();
+
+      expect(queryPrompt()).toBeNull();
+      expect(screen.queryByRole("alert")).toBeNull();
+    });
+
+    it("does not prompt during a meeting, where the task card has no mentoring button (AC-15)", async () => {
+      const task = makeTask({ id: 1, title: "資料を作る", status: "todo" });
+      const morningSession: ChatSession = {
+        id: 20,
+        type: "morning",
+        started_at: new Date().toISOString(),
+        ended_at: null,
+        summary: null,
+      };
+      let sessionsFetched = false;
+      const routed = createRoutedFetchMock({
+        tasks: [task],
+        sessions: [morningSession],
+        onPatchTask: patchByBody([task]),
+      });
+      vi.stubGlobal(
+        "fetch",
+        vi.fn((url: string, init?: RequestInit) => {
+          if (url === "/api/sessions") {
+            sessionsFetched = true;
+          }
+          return routed(url, init);
+        }),
+      );
+
+      render(<AppLayout />);
+      // 朝会中であることを確かめてから（復元前の窓は別のテストが持つ）
+      fireEvent.click(screen.getByRole("button", { name: "チャット" }));
+      await waitFor(() => expect(sessionsFetched).toBe(true));
+      await screen.findByText("朝会中");
+      fireEvent.click(screen.getByRole("button", { name: "タスク" }));
+      await waitFor(() => expect(cardOf("資料を作る")).toBeInTheDocument());
+      expect(
+        screen.queryByRole("button", { name: "メンタリングする" }),
+      ).not.toBeInTheDocument();
+
+      await changeStatus("資料を作る", "in_progress");
+      await flushAsync();
+
+      expect(queryPrompt()).toBeNull();
+    });
+
+    // 決定6・明示的な仮定 10: 促しを出せない間の遷移は「促し済み」にも入れない。
+    // 出せるようになってから同じタスクが再び着手されれば促す。
+    it("does not count a transition made while prompting is unavailable as prompted (決定6)", async () => {
+      const task = makeTask({ id: 1, title: "資料を作る", status: "todo" });
+      const restoreGate = createGate();
+      const routed = createRoutedFetchMock({
+        tasks: [task],
+        onPatchTask: patchByBody([task]),
+      });
+      let sessionsCalls = 0;
+      vi.stubGlobal(
+        "fetch",
+        vi.fn((url: string, init?: RequestInit) => {
+          // マウント時の復元（1 回目の GET /api/sessions）を保留し、
+          // chatState.status を loading のままにする＝導線を出せない窓。
+          if (url === "/api/sessions" && (init?.method ?? "GET") === "GET") {
+            sessionsCalls += 1;
+            if (sessionsCalls === 1) {
+              return restoreGate.promise.then(() => routed(url, init));
+            }
+          }
+          return routed(url, init);
+        }),
+      );
+
+      render(<AppLayout />);
+      fireEvent.click(screen.getByRole("button", { name: "タスク" }));
+      await waitFor(() => expect(cardOf("資料を作る")).toBeInTheDocument());
+      await changeStatus("資料を作る", "in_progress");
+      await flushAsync();
+      expect(queryPrompt()).toBeNull();
+
+      restoreGate.open();
+      await waitFor(() =>
+        expect(
+          within(cardOf("資料を作る")).getByRole("button", { name: "メンタリングする" }),
+        ).toBeInTheDocument(),
+      );
+      // 窓の中の遷移は、出せるようになった後にも遅れて出てこない
+      expect(queryPrompt()).toBeNull();
+
+      await changeStatus("資料を作る", "todo");
+      await changeStatus("資料を作る", "in_progress");
+
+      const prompt = await findPrompt();
+      expect(prompt).toHaveTextContent("資料を作る");
+    });
+
+    it("does not show the same task again when a second pending lookup for it completes after the first was dismissed (FR-6, 決定8)", async () => {
+      const a = makeTask({ id: 1, title: "資料を作る", status: "todo", estimated_minutes: 30 });
+      const queue = createDecisionsQueue();
+      vi.stubGlobal(
+        "fetch",
+        createRoutedFetchMock({
+          tasks: [a],
+          onPatchTask: patchByBody([a]),
+          decisions: queue.respond,
+        }),
+      );
+
+      render(<AppLayout />);
+      await openBoardWith(["資料を作る"]);
+      // 1 回目の判定が返る前にもう一度着手し、同じタスクの判定を 2 本走らせる
+      await changeStatus("資料を作る", "in_progress");
+      await waitFor(() => expect(queue.callCount).toBe(1));
+      await changeStatus("資料を作る", "todo");
+      await changeStatus("資料を作る", "in_progress");
+      await waitFor(() => expect(queue.callCount).toBe(2));
+
+      queue.resolve(0, []);
+      fireEvent.click(
+        within(await findPrompt()).getByRole("button", { name: "あとで" }),
+      );
+      queue.resolve(1, []);
+      await flushAsync();
+
+      expect(queryPrompt()).toBeNull();
+    });
+
+    it("marks only the prompt it actually shows when one refresh reveals several starts (FR-6, 決定8)", async () => {
+      const a = makeTask({ id: 1, title: "資料を作る", status: "todo" });
+      const b = makeTask({ id: 2, title: "見積もりを出す", status: "todo" });
+      vi.stubGlobal(
+        "fetch",
+        createRoutedFetchMock({
+          tasks: [a, b],
+          onPatchTask: patchByBody([a, b]),
+          // 1 回のチェックインの再取得で 2 件が同時に着手済みとして見える
+          // （例: もう 1 件はボスの update_task で動いていた。仮定 7）
+          onCheckin: (_body, tasks) =>
+            tasks.map((t) => ({ ...t, status: "in_progress" as const })),
+        }),
+      );
+
+      render(<AppLayout />);
+      await openBoardWith(["資料を作る", "見積もりを出す"]);
+      const combobox = screen.getByRole("combobox", { name: "着手するタスク" });
+      await waitFor(() => expect(combobox).toHaveValue("1"));
+      fireEvent.click(screen.getByRole("button", { name: "着手" }));
+
+      const prompt = await findPrompt();
+      expect(prompt).toHaveTextContent("見積もりを出す");
+      fireEvent.click(within(prompt).getByRole("button", { name: "あとで" }));
+
+      // 表示されなかった「資料を作る」は促し済みに入っていない
+      await changeStatus("資料を作る", "todo");
+      await changeStatus("資料を作る", "in_progress");
+
+      await waitFor(() => expect(queryPrompt()).toHaveTextContent("資料を作る"));
+    });
+
+    // PR #572 Codex P2: 1 回の更新で見積もりありの着手が複数見え、共有の
+    // 取得の応答で同時に「未確認」と分かったとき、描画されるのは最後の 1 件
+    // だけ。描画されなかった先のタスクを促し済みにしてはならない（FR-6）。
+    it("marks only the rendered prompt when one shared decisions response makes several estimated starts unconfirmed (FR-6, PR #572)", async () => {
+      const a = makeTask({ id: 1, title: "資料を作る", status: "todo", estimated_minutes: 30 });
+      const b = makeTask({ id: 2, title: "見積もりを出す", status: "todo", estimated_minutes: 15 });
+      vi.stubGlobal(
+        "fetch",
+        createRoutedFetchMock({
+          tasks: [a, b],
+          onPatchTask: patchByBody([a, b]),
+          decisions: [],
+          onCheckin: (_body, tasks) =>
+            tasks.map((t) => ({ ...t, status: "in_progress" as const })),
+        }),
+      );
+
+      render(<AppLayout />);
+      await openBoardWith(["資料を作る", "見積もりを出す"]);
+      const combobox = screen.getByRole("combobox", { name: "着手するタスク" });
+      await waitFor(() => expect(combobox).toHaveValue("1"));
+      fireEvent.click(screen.getByRole("button", { name: "着手" }));
+
+      const prompt = await findPrompt();
+      expect(prompt).toHaveTextContent("見積もりを出す");
+      fireEvent.click(within(prompt).getByRole("button", { name: "あとで" }));
+
+      await changeStatus("資料を作る", "todo");
+      await changeStatus("資料を作る", "in_progress");
+
+      await waitFor(() => expect(queryPrompt()).toHaveTextContent("資料を作る"));
+    });
+
+    // 同じ系統: 別々の遷移の取得が同じタイミング（描画前）に完了した場合も、
+    // 描画されなかった先の判定のタスクを促し済みにしない。
+    it("marks only the rendered prompt when separate lookups for different tasks complete before React renders (FR-6, PR #572)", async () => {
+      const a = makeTask({ id: 1, title: "資料を作る", status: "todo", estimated_minutes: 30 });
+      const b = makeTask({ id: 2, title: "見積もりを出す", status: "todo", estimated_minutes: 15 });
+      const queue = createDecisionsQueue();
+      vi.stubGlobal(
+        "fetch",
+        createRoutedFetchMock({
+          tasks: [a, b],
+          onPatchTask: patchByBody([a, b]),
+          decisions: queue.respond,
+        }),
+      );
+
+      render(<AppLayout />);
+      await openBoardWith(["資料を作る", "見積もりを出す"]);
+      await changeStatus("資料を作る", "in_progress");
+      await waitFor(() => expect(queue.callCount).toBe(1));
+      await changeStatus("見積もりを出す", "in_progress");
+      await waitFor(() => expect(queue.callCount).toBe(2));
+
+      // 同じ同期区間で両方を解決する＝両方の判定が描画より前に走る
+      queue.resolve(0, []);
+      queue.resolve(1, []);
+      const prompt = await findPrompt();
+      await flushAsync();
+      expect(prompt).toHaveTextContent("見積もりを出す");
+      fireEvent.click(within(prompt).getByRole("button", { name: "あとで" }));
+
+      await changeStatus("資料を作る", "todo");
+      await changeStatus("資料を作る", "in_progress");
+      await waitFor(() => expect(queue.callCount).toBe(3));
+      queue.resolve(2, []);
+
+      await waitFor(() => expect(queryPrompt()).toHaveTextContent("資料を作る"));
+    });
+
+    it("replaces the shown prompt with the newer task's, never showing two (AC-16)", async () => {
+      const a = makeTask({ id: 1, title: "資料を作る", status: "todo" });
+      const b = makeTask({ id: 2, title: "見積もりを出す", status: "todo" });
+      vi.stubGlobal(
+        "fetch",
+        createRoutedFetchMock({ tasks: [a, b], onPatchTask: patchByBody([a, b]) }),
+      );
+
+      render(<AppLayout />);
+      await openBoardWith(["資料を作る", "見積もりを出す"]);
+      await changeStatus("資料を作る", "in_progress");
+      await findPrompt();
+
+      await changeStatus("見積もりを出す", "in_progress");
+
+      await waitFor(() => expect(queryPrompt()).toHaveTextContent("見積もりを出す"));
+      expect(screen.getAllByRole("status", { name: PROMPT_NAME })).toHaveLength(1);
+      expect(within(queryPrompt()!).getAllByRole("button", { name: "あとで" })).toHaveLength(1);
+      expect(queryPrompt()).not.toHaveTextContent("資料を作る");
+    });
+  });
+
+  // 決定8（#568 改訂）: 判定の完了順は「最後に表示した促しの番号」で裁く。
+  describe("判定の完了順 (決定8)", () => {
+    it("keeps the later task B's prompt when the earlier task A's lookup completes unconfirmed afterwards (AC-16b)", async () => {
+      const a = makeTask({ id: 1, title: "資料を作る", status: "todo", estimated_minutes: 30 });
+      const b = makeTask({ id: 2, title: "見積もりを出す", status: "todo" });
+      const queue = createDecisionsQueue();
+      vi.stubGlobal(
+        "fetch",
+        createRoutedFetchMock({
+          tasks: [a, b],
+          onPatchTask: patchByBody([a, b]),
+          decisions: queue.respond,
+        }),
+      );
+
+      render(<AppLayout />);
+      await openBoardWith(["資料を作る", "見積もりを出す"]);
+      await changeStatus("資料を作る", "in_progress");
+      await waitFor(() => expect(queue.callCount).toBe(1));
+      await changeStatus("見積もりを出す", "in_progress");
+      await waitFor(() => expect(queryPrompt()).toHaveTextContent("見積もりを出す"));
+
+      queue.resolve(0, []);
+      await flushAsync();
+
+      expect(screen.getAllByRole("status", { name: PROMPT_NAME })).toHaveLength(1);
+      expect(within(queryPrompt()!).getAllByRole("button", { name: "あとで" })).toHaveLength(1);
+      expect(queryPrompt()).toHaveTextContent("見積もりを出す");
+      expect(queryPrompt()).not.toHaveTextContent("資料を作る");
+    });
+
+    it("shows A's prompt when the later task B was confirmed and produced no prompt (AC-16c)", async () => {
+      const a = makeTask({ id: 1, title: "資料を作る", status: "todo", estimated_minutes: 30 });
+      const b = makeTask({ id: 2, title: "見積もりを出す", status: "todo", estimated_minutes: 15 });
+      const queue = createDecisionsQueue();
+      vi.stubGlobal(
+        "fetch",
+        createRoutedFetchMock({
+          tasks: [a, b],
+          onPatchTask: patchByBody([a, b]),
+          decisions: queue.respond,
+        }),
+      );
+
+      render(<AppLayout />);
+      await openBoardWith(["資料を作る", "見積もりを出す"]);
+      await changeStatus("資料を作る", "in_progress");
+      await waitFor(() => expect(queue.callCount).toBe(1));
+      await changeStatus("見積もりを出す", "in_progress");
+      await waitFor(() => expect(queue.callCount).toBe(2));
+      queue.resolve(1, [mentoringRecord(2)]);
+      await flushAsync();
+      expect(queryPrompt()).toBeNull();
+
+      queue.resolve(0, [mentoringRecord(2)]);
+
+      await waitFor(() => expect(queryPrompt()).toHaveTextContent("資料を作る"));
+    });
+
+    it("shows A's prompt when the later transition was of an already-prompted task B (AC-16d)", async () => {
+      const a = makeTask({ id: 1, title: "資料を作る", status: "todo", estimated_minutes: 30 });
+      const b = makeTask({ id: 2, title: "見積もりを出す", status: "todo" });
+      const queue = createDecisionsQueue();
+      vi.stubGlobal(
+        "fetch",
+        createRoutedFetchMock({
+          tasks: [a, b],
+          onPatchTask: patchByBody([a, b]),
+          decisions: queue.respond,
+        }),
+      );
+
+      render(<AppLayout />);
+      await openBoardWith(["資料を作る", "見積もりを出す"]);
+      // B を 1 回促して「あとで」で閉じ、todo に戻す
+      await changeStatus("見積もりを出す", "in_progress");
+      fireEvent.click(
+        within(await findPrompt()).getByRole(
+          "button",
+          { name: "あとで" },
+        ),
+      );
+      await changeStatus("見積もりを出す", "todo");
+
+      await changeStatus("資料を作る", "in_progress");
+      await waitFor(() => expect(queue.callCount).toBe(1));
+      await changeStatus("見積もりを出す", "in_progress");
+      await flushAsync();
+      expect(queryPrompt()).toBeNull();
+
+      queue.resolve(0, []);
+
+      await waitFor(() => expect(queryPrompt()).toHaveTextContent("資料を作る"));
+    });
+
+    it("shows A's prompt when the later task B's decisions lookup failed (AC-16e)", async () => {
+      const a = makeTask({ id: 1, title: "資料を作る", status: "todo", estimated_minutes: 30 });
+      const b = makeTask({ id: 2, title: "見積もりを出す", status: "todo", estimated_minutes: 15 });
+      const queue = createDecisionsQueue();
+      vi.stubGlobal(
+        "fetch",
+        createRoutedFetchMock({
+          tasks: [a, b],
+          onPatchTask: patchByBody([a, b]),
+          decisions: queue.respond,
+        }),
+      );
+
+      render(<AppLayout />);
+      await openBoardWith(["資料を作る", "見積もりを出す"]);
+      await changeStatus("資料を作る", "in_progress");
+      await waitFor(() => expect(queue.callCount).toBe(1));
+      await changeStatus("見積もりを出す", "in_progress");
+      await waitFor(() => expect(queue.callCount).toBe(2));
+      queue.reject(1);
+      await flushAsync();
+      expect(queryPrompt()).toBeNull();
+
+      queue.resolve(0, []);
+
+      await waitFor(() => expect(queryPrompt()).toHaveTextContent("資料を作る"));
+    });
+  });
+
+  describe("操作", () => {
+    it("starts the same task-origin mentoring as the task card and closes the prompt (AC-17, AC-18)", async () => {
+      const task = makeTask({ id: 42, title: "資料を作る", status: "todo" });
+      const sentBodies: unknown[] = [];
+      vi.stubGlobal(
+        "fetch",
+        createRoutedFetchMock({
+          tasks: [task],
+          onPatchTask: patchByBody([task]),
+          onSendMessage: (sessionId, body) => {
+            sentBodies.push(body);
+            return {
+              id: 900,
+              session_id: sessionId,
+              role: "boss",
+              content: "見といた。",
+              interrupted: 0,
+              created_at: new Date().toISOString(),
+            };
+          },
+        }),
+      );
+
+      render(<AppLayout />);
+      await openBoardWith(["資料を作る"]);
+      await changeStatus("資料を作る", "in_progress");
+      fireEvent.click(
+        within(await findPrompt()).getByRole(
+          "button",
+          { name: "メンタリングする" },
+        ),
+      );
+
+      expect(queryPrompt()).toBeNull();
+      await waitFor(() =>
+        expect(screen.getByRole("main", { name: "ボスとの対話" })).toBeInTheDocument(),
+      );
+      await waitFor(() => expect(sentBodies).toHaveLength(1));
+      expect(sentBodies[0]).toEqual({
+        content: "「資料を作る」の進め方を見てほしい",
+        mentoring: true,
+        mentoringTaskId: 42,
+      });
+      await waitFor(() => expect(screen.getByText("見といた。")).toBeInTheDocument());
+    });
+
+    it("closes the prompt with あとで without sending anything to the server (AC-19, AC-20)", async () => {
+      const task = makeTask({ id: 1, title: "資料を作る", status: "todo" });
+      const fetchMock = createRoutedFetchMock({
+        tasks: [task],
+        onPatchTask: patchByBody([task]),
+      });
+      vi.stubGlobal("fetch", fetchMock);
+
+      render(<AppLayout />);
+      await openBoardWith(["資料を作る"]);
+      await changeStatus("資料を作る", "in_progress");
+      const prompt = await findPrompt();
+      await flushAsync();
+      const callsBefore = fetchMock.mock.calls.length;
+
+      fireEvent.click(within(prompt).getByRole("button", { name: "あとで" }));
+      await flushAsync();
+
+      expect(queryPrompt()).toBeNull();
+      expect(fetchMock.mock.calls.length).toBe(callsBefore);
+    });
+
+    it("disables the prompt's メンタリングする while a chat send is in flight (AC-21)", async () => {
+      const gate = createGate();
+      const task = makeTask({ id: 1, title: "資料を作る", status: "todo" });
+      vi.stubGlobal(
+        "fetch",
+        createRoutedFetchMock({
+          tasks: [task],
+          onPatchTask: patchByBody([task]),
+          sessions: [
+            {
+              id: 30,
+              type: "adhoc",
+              started_at: new Date().toISOString(),
+              ended_at: null,
+              summary: null,
+            },
+          ],
+          holdSendMessage: gate.promise,
+        }),
+      );
+
+      render(<AppLayout />);
+      fireEvent.click(screen.getByRole("button", { name: "チャット" }));
+      await waitFor(() => expect(screen.getByLabelText("メッセージ")).toBeEnabled());
+      fireEvent.change(screen.getByLabelText("メッセージ"), {
+        target: { value: "相談したい" },
+      });
+      fireEvent.click(screen.getByRole("button", { name: "送信" }));
+      await screen.findByRole("button", { name: "生成を停止" });
+      await openBoardWith(["資料を作る"]);
+
+      await changeStatus("資料を作る", "in_progress");
+      const prompt = await findPrompt();
+      expect(within(prompt).getByRole("button", { name: "メンタリングする" })).toBeDisabled();
+
+      gate.open();
+      await waitFor(() =>
+        expect(within(prompt).getByRole("button", { name: "メンタリングする" })).toBeEnabled(),
+      );
+    });
   });
 });
