@@ -34,18 +34,21 @@ export function useTaskStartMentoringPrompt(
   tasks: Task[],
   canPrompt: boolean,
 ): UseTaskStartMentoringPromptResult {
-  // 検知時点のタスク。表示は最新の `tasks` から id で引き直す（改名に追随する）
-  // が、一覧から消えていてもこれで出し続ける（促しは自動で消えない。決定4）。
-  const [shownTask, setShownTask] = useState<Task | null>(null);
+  // 検知時点のタスクとその遷移の番号。表示は最新の `tasks` から id で引き直す
+  // （改名に追随する）が、一覧から消えていてもこれで出し続ける（促しは自動で
+  // 消えない。決定4）。
+  const [shown, setShown] = useState<{ task: Task; seq: number } | null>(null);
   // 初回は空配列＝前回値なし。読み込み直後の `in_progress` は遷移にならない（AC-11）。
   const previousTasksRef = useRef<Task[]>([]);
   const transitionSeqRef = useRef(0);
   // 0 は「まだ一度も表示していない」。番号は 1 から振るので、どの遷移も新しい。
   const lastShownSeqRef = useRef(0);
-  // 促しを表示したタスクの id（1 タスク 1 回。FR-6）。**描画が確定してから**
-  // 入れる（下の effect）。判定の側で入れると、描画前に続けて完了した判定
-  // （共有の取得の応答・同時に完了した別々の取得・同じ更新の複数の着手）が
-  // React にまとめられ、描画されなかった先のタスクまで促し済みになる（PR #572）。
+  // 促しを表示したタスクの id（1 タスク 1 回。FR-6）。これと上の番号は
+  // **可否が真の描画が確定してから**記録する（下の effect）。判定の側で記録
+  // すると、描画前に続けて完了した判定（共有の取得の応答・同時に完了した別々の
+  // 取得・同じ更新の複数の着手）が React にまとめられ、描画されなかった先の
+  // タスクまで促し済みになる（PR #572）。可否が偽になる描画とまとめられた判定
+  // も、画面には出ないので記録しない（#573）。
   const promptedTaskIdsRef = useRef(new Set<number>());
   // 取得完了時点の可否で判断するため、最新値を ref で持つ。下の遷移検知より
   // 先に宣言し、同じコミットで両方が変わっても新しい可否で判断させる。
@@ -62,16 +65,17 @@ export function useTaskStartMentoringPrompt(
   useEffect(() => {
     canPromptRef.current = canPrompt;
     if (!canPrompt) {
-      setShownTask(null);
+      setShown(null);
     }
   }, [canPrompt]);
 
   // 遷移検知より先に宣言し、同じコミットで検知が走っても先に促し済みへ入れる。
   useEffect(() => {
-    if (shownTask !== null) {
-      promptedTaskIdsRef.current.add(shownTask.id);
+    if (shown !== null && canPrompt) {
+      promptedTaskIdsRef.current.add(shown.task.id);
+      lastShownSeqRef.current = shown.seq;
     }
-  }, [shownTask]);
+  }, [shown, canPrompt]);
 
   useEffect(() => {
     const previous = previousTasksRef.current;
@@ -88,10 +92,11 @@ export function useTaskStartMentoringPrompt(
       if (promptedTaskIdsRef.current.has(task.id)) {
         return;
       }
-      // 描画前に続けて呼ばれたら、最後の（番号の最も新しい）1 件だけが描画
-      // され、促し済みになる（上の effect）。
-      lastShownSeqRef.current = seq;
-      setShownTask(task);
+      // 描画前に続けて呼ばれたら、番号の最も新しい 1 件だけが描画され、
+      // 促し済みになる（上の effect）。
+      setShown((pending) =>
+        pending !== null && pending.seq > seq ? pending : { task, seq },
+      );
     };
 
     // 同じ更新で見積もりありの遷移が複数あっても、取得は 1 回にまとめる。
@@ -122,13 +127,13 @@ export function useTaskStartMentoringPrompt(
   }, [tasks]);
 
   const dismiss = useCallback(() => {
-    setShownTask(null);
+    setShown(null);
   }, []);
 
   const promptTask =
-    shownTask === null
+    shown === null
       ? null
-      : (tasks.find((task) => task.id === shownTask.id) ?? shownTask);
+      : (tasks.find((task) => task.id === shown.task.id) ?? shown.task);
 
   return { promptTask, dismiss };
 }
