@@ -480,6 +480,28 @@ describe("settings routes", () => {
           },
         );
 
+        // PR #569 Codex 指摘: 同じバリデータを共有する既存 6 キーも、安全な整数の
+        // 範囲外（1e21）は読み出し側が往復できないため 400。文言は従来のまま
+        it.each(MINUTE_KEYS)(
+          "returns 400 with the unchanged Japanese error for %s beyond the safe integer range (1e21)",
+          async (key) => {
+            const app = createApp(db);
+
+            const res = await app.request("/api/settings", {
+              method: "PUT",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ [key]: 1e21 }),
+            });
+
+            expect(res.status).toBe(400);
+            const body = await readJson<ErrorBody>(res);
+            expect(body).toEqual({
+              error: MINUTE_KEY_ERRORS[key],
+              code: "invalid_positive_integer",
+            });
+          },
+        );
+
         it("saves nothing (non-regression) when detection_unstarted_fallback_minutes is rejected as 0", async () => {
           const app = createApp(db);
 
@@ -1157,6 +1179,38 @@ describe("settings routes", () => {
         const body = await readJson<SettingsBody>(res);
         expect(body.detection_daily_notification_cap).toBe(3);
         expect(readStoredCap()).toBe("3");
+      });
+
+      // Codex 指摘（PR #569）: 1e21 は JSON で "1e+21" になり、保存しても
+      // resolvePositiveIntSetting が往復できず既定値 5 へ倒れる。PUT 成功と
+      // 実効値の食い違いを起こさないよう、安全な整数の範囲外は 400 で拒否する
+      it("PUT returns 400 and saves nothing for an integer beyond the safe range (1e21) that the reader cannot round-trip", async () => {
+        const app = createApp(db);
+
+        const res = await app.request("/api/settings", {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ detection_daily_notification_cap: 1e21 }),
+        });
+
+        expect(res.status).toBe(400);
+        const body = await readJson<ErrorBody>(res);
+        expect(body).toEqual({ error: CAP_ERROR, code: "invalid_positive_integer" });
+        expect(readStoredCap()).toBeUndefined();
+      });
+
+      it("PUT accepts Number.MAX_SAFE_INTEGER and GET returns the same value (round-trips through the reader)", async () => {
+        const app = createApp(db);
+
+        const put = await app.request("/api/settings", {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ detection_daily_notification_cap: Number.MAX_SAFE_INTEGER }),
+        });
+        expect(put.status).toBe(200);
+
+        const body = await readJson<SettingsBody>(await app.request("/api/settings"));
+        expect(body.detection_daily_notification_cap).toBe(Number.MAX_SAFE_INTEGER);
       });
 
       it.each([0, -1, 2.5, "3"])(

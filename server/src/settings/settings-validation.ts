@@ -188,13 +188,17 @@ function validateTime(key: TimeKey): FieldValidator {
   };
 }
 
-// unit は文言の「（分）」「（回）」の部分。web の <label> の単位表記に揃える
+// unit は文言の「（分）」「（回）」の部分。web の <label> の単位表記に揃える。
+// 安全な整数（Number.isSafeInteger）に限るのは、1e21 のような値は String() が
+// "1e+21" になり、読み出し側 resolvePositiveIntSetting（scheduler/
+// detection-settings.ts）が往復できず既定値へ倒れて、PUT の成功と実効値が
+// 食い違うため（PR #569 レビュー）
 function validatePositiveInteger(
   key: PositiveIntegerKey,
   unit: "分" | "回",
 ): FieldValidator {
   return (value) => {
-    if (typeof value !== "number" || !Number.isInteger(value) || value <= 0) {
+    if (typeof value !== "number" || !Number.isSafeInteger(value) || value <= 0) {
       return err(
         `${SETTING_LABELS[key]}（${unit}）には 1 以上の整数を入力してください`,
         "invalid_positive_integer",
