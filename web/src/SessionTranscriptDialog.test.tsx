@@ -213,6 +213,55 @@ describe("SessionTranscriptDialog (Issue #564, S3)", () => {
     expect(onClose).toHaveBeenCalledTimes(1);
   });
 
+  describe("keyboard focus stays inside the dialog (PR #570 review)", () => {
+    it.each([
+      ["Tab", false],
+      ["Shift+Tab", true],
+    ])("keeps focus on the dialog's controls on %s from the close button", async (_label, shiftKey) => {
+      vi.stubGlobal("fetch", vi.fn(() => jsonResponse(200, [])));
+      renderDialog();
+      const close = await screen.findByRole("button", { name: "閉じる" });
+      expect(close).toHaveFocus();
+
+      // jsdom does not move focus on Tab by itself, so what is observable is
+      // that the browser default (moving focus out) is cancelled and focus is
+      // placed back inside the dialog.
+      const notCancelled = fireEvent.keyDown(close, { key: "Tab", shiftKey });
+
+      expect(notCancelled).toBe(false);
+      expect(close).toHaveFocus();
+    });
+
+    it("wraps Shift+Tab from the dialog container itself back onto its controls", async () => {
+      vi.stubGlobal("fetch", vi.fn(() => jsonResponse(200, [])));
+      renderDialog();
+      const dialog = await screen.findByRole("dialog");
+      dialog.focus();
+
+      const notCancelled = fireEvent.keyDown(dialog, { key: "Tab", shiftKey: true });
+
+      expect(notCancelled).toBe(false);
+      expect(within(dialog).getByRole("button", { name: "閉じる" })).toHaveFocus();
+    });
+
+    it("pulls focus back into the dialog when it lands on an element behind it", async () => {
+      vi.stubGlobal("fetch", vi.fn(() => jsonResponse(200, [])));
+      const outside = document.createElement("button");
+      outside.textContent = "背面のナビ";
+      document.body.appendChild(outside);
+      try {
+        renderDialog();
+        const close = await screen.findByRole("button", { name: "閉じる" });
+
+        outside.focus();
+
+        expect(close).toHaveFocus();
+      } finally {
+        outside.remove();
+      }
+    });
+  });
+
   it("calls onClose on Escape", async () => {
     vi.stubGlobal("fetch", vi.fn(() => jsonResponse(200, [])));
 

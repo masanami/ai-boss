@@ -84,13 +84,31 @@ function SessionTranscriptDialog({
     };
   }, [sessionId]);
 
+  const dialogRef = useRef<HTMLDivElement>(null);
+
   // 開いたら閉じるボタンへ、閉じたら開いた導線へフォーカスを戻す（長い決定
   // ログでキーボード操作の位置を失わないため）。
+  //
+  // 開いている間はフォーカスを面の中に閉じ込める（PR #570 の Codex P2）。
+  // `aria-modal` はフォーカスを拘束しないので、背面（ナビ・スプリッタ・サイド
+  // パネル）へ出ると Escape が効かず、背面のナビで面が閉じる手順を経ずに
+  // アンマウントされうる。Tab の循環（下の handleKeyDown）に加えて、それ以外の
+  // 経路で背面へ移ったフォーカスもここで面へ引き戻す。
   useEffect(() => {
     const opener =
       document.activeElement instanceof HTMLElement ? document.activeElement : null;
     closeButtonRef.current?.focus();
+    function keepFocusInside(event: FocusEvent) {
+      const dialog = dialogRef.current;
+      if (dialog !== null && !dialog.contains(event.target as Node | null)) {
+        closeButtonRef.current?.focus();
+      }
+    }
+    document.addEventListener("focusin", keepFocusInside);
     return () => {
+      // 引き戻しを外してから開いた導線へ戻す（アンマウント時は ref が外れて
+      // いて引き戻しは働かないが、順序に依存しないよう先に外しておく）。
+      document.removeEventListener("focusin", keepFocusInside);
       opener?.focus();
     };
   }, []);
@@ -99,6 +117,38 @@ function SessionTranscriptDialog({
     if (event.key === "Escape") {
       event.stopPropagation();
       onClose();
+      return;
+    }
+    if (event.key === "Tab") {
+      trapTab(event);
+    }
+  }
+
+  // Tab / Shift+Tab を面の中の操作要素で循環させる。いまは操作要素が閉じる
+  // ボタン 1 つだけだが、要素が増えても同じく端で折り返す。
+  function trapTab(event: KeyboardEvent<HTMLDivElement>) {
+    const dialog = dialogRef.current;
+    if (dialog === null) {
+      return;
+    }
+    const focusables = Array.from(
+      dialog.querySelectorAll<HTMLElement>(
+        'button:not([disabled]), [href], input, select, textarea, [tabindex]:not([tabindex="-1"])',
+      ),
+    );
+    const first = focusables[0];
+    const last = focusables[focusables.length - 1];
+    if (first === undefined || last === undefined) {
+      event.preventDefault();
+      return;
+    }
+    const active = document.activeElement;
+    if (event.shiftKey && (active === first || active === dialog)) {
+      event.preventDefault();
+      last.focus();
+    } else if (!event.shiftKey && active === last) {
+      event.preventDefault();
+      first.focus();
     }
   }
 
@@ -106,6 +156,7 @@ function SessionTranscriptDialog({
     <div className="session-transcript-backdrop">
       <div
         className="session-transcript"
+        ref={dialogRef}
         role="dialog"
         aria-modal="true"
         aria-labelledby="session-transcript-title"
