@@ -17,6 +17,7 @@ const SAMPLE_SETTINGS: Settings = {
   escalation_l2_after_minutes: 15,
   escalation_l3_after_minutes: 10,
   escalation_repeat_minutes: 10,
+  detection_daily_notification_cap: 5,
   model: "claude-sonnet-5",
   evidence_enforcement_enabled: false,
   morning_mentoring_required: true,

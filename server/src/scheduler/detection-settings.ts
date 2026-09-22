@@ -69,7 +69,7 @@ function resolvePositiveIntSetting(db: Database.Database, key: string, fallback:
 
 /**
  * Reads detection settings (working hours / meeting times / fallback
- * thresholds / escalation intervals) from the `settings` key-value table,
+ * thresholds / escalation intervals / daily notification cap) from the `settings` key-value table,
  * falling back to `DEFAULT_DETECTION_SETTINGS` for any key that is missing
  * or holds an invalid value. Settings keys and defaults follow Issue #38's
  * explicit assumptions.
@@ -127,5 +127,10 @@ export function loadDetectionSettings(db: Database.Database): DetectionSettings 
     },
     morningMeetingTime: resolveTimeSetting(db, "morning_meeting_time", base.morningMeetingTime),
     eveningMeetingTime: resolveTimeSetting(db, "evening_meeting_time", base.eveningMeetingTime),
+    dailyNotificationCap: resolvePositiveIntSetting(
+      db,
+      "detection_daily_notification_cap",
+      base.dailyNotificationCap,
+    ),
   };
 }

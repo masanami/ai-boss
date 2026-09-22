@@ -45,6 +45,7 @@ function readEffectiveSettings(db: Database.Database) {
     escalation_l2_after_minutes: detection.escalation.level1ToLevel2Minutes,
     escalation_l3_after_minutes: detection.escalation.level2ToLevel3Minutes,
     escalation_repeat_minutes: detection.escalation.level3RepeatMinutes,
+    detection_daily_notification_cap: detection.dailyNotificationCap,
     model,
     evidence_enforcement_enabled: evidence.enforcementEnabled,
     morning_mentoring_required: morningMentoringRequired,

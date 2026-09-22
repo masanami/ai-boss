@@ -157,4 +157,28 @@ describe("loadDetectionSettings", () => {
       expect(console.warn).toHaveBeenCalledTimes(2);
     });
   });
+
+  describe("detection_daily_notification_cap (#562 決定 16)", () => {
+    it("returns 5 as the daily notification cap when the key is unset", () => {
+      expect(loadDetectionSettings(db).dailyNotificationCap).toBe(5);
+    });
+
+    it("returns the stored value when detection_daily_notification_cap is \"3\"", () => {
+      putSetting(db, "detection_daily_notification_cap", "3");
+
+      expect(loadDetectionSettings(db).dailyNotificationCap).toBe(3);
+    });
+
+    it.each(["0", "-1", "abc", "2.5"])(
+      "falls back to 5 and warns with the key and stored value when detection_daily_notification_cap is %j",
+      (stored) => {
+        putSetting(db, "detection_daily_notification_cap", stored);
+
+        expect(loadDetectionSettings(db).dailyNotificationCap).toBe(5);
+        expect(console.warn).toHaveBeenCalledWith(
+          expect.stringContaining(`settings.detection_daily_notification_cap の値 "${stored}"`),
+        );
+      },
+    );
+  });
 });

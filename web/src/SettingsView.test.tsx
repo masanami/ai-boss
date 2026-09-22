@@ -18,6 +18,7 @@ const SAMPLE_SETTINGS: Settings = {
   escalation_l2_after_minutes: 15,
   escalation_l3_after_minutes: 10,
   escalation_repeat_minutes: 10,
+  detection_daily_notification_cap: 5,
   model: "claude-sonnet-5",
   evidence_enforcement_enabled: false,
   morning_mentoring_required: true,
@@ -211,6 +212,7 @@ describe("SettingsView", () => {
           escalation_l2_after_minutes: 15,
           escalation_l3_after_minutes: 10,
           escalation_repeat_minutes: 10,
+          detection_daily_notification_cap: 5,
           model: "claude-sonnet-5",
           evidence_enforcement_enabled: false,
           morning_mentoring_required: true,
@@ -364,6 +366,48 @@ describe("SettingsView", () => {
       unknown
     >;
     expect(sentBody.evidence_enforcement_enabled).toBe(true);
+  });
+
+  it("shows the loaded daily notification cap in the detection-threshold fieldset (#562)", async () => {
+    vi.stubGlobal(
+      "fetch",
+      stubGet({ ...SAMPLE_SETTINGS, detection_daily_notification_cap: 7 }),
+    );
+
+    render(<SettingsView />);
+
+    const input = await screen.findByLabelText("1 日の通知上限（回）");
+    expect(input).toHaveValue(7);
+    expect(input.closest("fieldset")).toHaveTextContent("検知閾値");
+  });
+
+  it("submits the edited daily notification cap as a number (#562)", async () => {
+    const fetchMock = stubGet();
+    fetchMock.mockResolvedValueOnce({
+      ok: true,
+      status: 200,
+      json: () =>
+        Promise.resolve({ ...SAMPLE_SETTINGS, detection_daily_notification_cap: 3 }),
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(<SettingsView />);
+    await waitFor(() =>
+      expect(screen.getByLabelText("1 日の通知上限（回）")).toHaveValue(5),
+    );
+
+    fireEvent.change(screen.getByLabelText("1 日の通知上限（回）"), {
+      target: { value: "3" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "保存" }));
+
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2));
+    const [, options] = fetchMock.mock.calls[1] as [string, RequestInit];
+    const sentBody = JSON.parse(options.body as string) as Record<
+      string,
+      unknown
+    >;
+    expect(sentBody.detection_daily_notification_cap).toBe(3);
   });
 
   it("shows the mentoring-required checkbox checked when unset (server returns true) (AC-38)", async () => {

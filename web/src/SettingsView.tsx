@@ -32,6 +32,7 @@ interface FormState {
   escalation_l2_after_minutes: number;
   escalation_l3_after_minutes: number;
   escalation_repeat_minutes: number;
+  detection_daily_notification_cap: number;
   model: string;
   evidence_enforcement_enabled: boolean;
   morning_mentoring_required: boolean;
@@ -313,6 +314,20 @@ function SettingsView() {
                 setForm({
                   ...form,
                   escalation_repeat_minutes: Number(event.target.value),
+                })
+              }
+            />
+          </label>
+          <label>
+            1 日の通知上限（回）
+            <input
+              type="number"
+              min={1}
+              value={form.detection_daily_notification_cap}
+              onChange={(event) =>
+                setForm({
+                  ...form,
+                  detection_daily_notification_cap: Number(event.target.value),
                 })
               }
             />

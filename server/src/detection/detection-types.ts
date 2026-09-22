@@ -97,6 +97,12 @@ export interface DetectionSettings {
   morningMeetingTime: string;
   /** 夕会の設定時刻 "HH:mm"。上記 `morningMeetingTime` と同じ注記が適用される */
   eveningMeetingTime: string;
+  /**
+   * 検知系 6 ルールの通知を、基底 rule_key ごとにローカル暦日あたり何回まで
+   * 発火させるか（1 以上。朝会・夕会は対象外。機能仕様
+   * docs/features/working-hours-intervals.md 決定 13〜16）
+   */
+  dailyNotificationCap: number;
 }
 
 /** Issue #36「明示的な仮定」セクションの決定値 */
@@ -113,6 +119,7 @@ export const DEFAULT_DETECTION_SETTINGS: DetectionSettings = {
   },
   morningMeetingTime: "09:00",
   eveningMeetingTime: "18:00",
+  dailyNotificationCap: 5,
 };
 
 export interface DetectionInput {

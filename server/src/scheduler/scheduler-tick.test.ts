@@ -1,4 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import type Database from "better-sqlite3";
 import { openDatabase } from "../db/connection.js";
 import { runMigrations } from "../db/migrate.js";
@@ -13,6 +16,7 @@ import { ACTIVITY_EVENT_TYPES, type ActivityEventType } from "../activity/activi
 import { loadDetectionSettings } from "./detection-settings.js";
 import { toNotificationHistory } from "./notification-history.js";
 import { upsertOverride } from "../meeting-schedule/meeting-schedule-repository.js";
+import { setSettingValue } from "../settings/settings-repository.js";
 
 const {
   createClaudeClientMock,
@@ -1688,5 +1692,87 @@ describe("createTicker().tick", () => {
         }
       },
     );
+  });
+});
+
+// #562 S3 決定 13: 1 日の通知上限は notifications の既存レコードから数える。
+// 設定キー → loadDetectionSettings → evaluateRules → 記録 の経路を、一時ファイルの
+// 実 DB で通して確かめる（SQLite はモックしない）。
+describe("daily notification cap via tick on a file-backed DB (#562)", () => {
+  let dir: string;
+  let db: Database.Database;
+  const env = {};
+
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), "ai-boss-daily-cap-"));
+    db = openDatabase(join(dir, "ai-boss.db"));
+    runMigrations(db);
+    createClaudeClientMock.mockReset();
+    generateNotificationBodyMock.mockReset();
+    insertNotificationMock.mockReset();
+    recordNotificationDeliveryMock.mockReset();
+    createClaudeClientMock.mockImplementation(() => {
+      throw new MissingApiKeyError();
+    });
+    generateNotificationBodyMock.mockImplementation(actualGenerateNotificationBody);
+    insertNotificationMock.mockImplementation(actualInsertNotification);
+    recordNotificationDeliveryMock.mockImplementation(actualRecordNotificationDelivery);
+
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(new Date(2026, 6, 5, 9, 0));
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+    vi.restoreAllMocks();
+    db.close();
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  /** unstarted が成立し続ける状態で、帯の中の tick を L1→L2 の間隔を空けて 2 回走らせる */
+  async function tickTwiceWhileUnstarted(): Promise<{ ruleKey: string; sends: number }> {
+    const task = insertTask(db, {
+      title: "資料作成",
+      description: null,
+      category: "work",
+      priority: "high",
+      due_at: null,
+      status: "todo",
+      boss_comment: null,
+      estimated_minutes: 30,
+    });
+    markTodaysMeetingsDone(db);
+    const execFile = vi.fn().mockImplementation(ok);
+    const ticker = createTicker({ db, env, execFile });
+
+    vi.setSystemTime(new Date(2026, 6, 5, 9, 31));
+    await ticker.tick();
+    advanceSystemTimeByMinutes(loadDetectionSettings(db).escalation.level1ToLevel2Minutes);
+    await ticker.tick();
+
+    return { ruleKey: `unstarted:${task.id}`, sends: execFile.mock.calls.length };
+  }
+
+  function recordedFor(ruleKey: string) {
+    return listNotificationsSince(db, "1970-01-01T00:00:00.000Z").filter(
+      (row) => row.rule_key === ruleKey,
+    );
+  }
+
+  it("records only one unstarted notification when the cap is 1 (the second tick neither records nor sends)", async () => {
+    setSettingValue(db, "detection_daily_notification_cap", "1");
+
+    const { ruleKey, sends } = await tickTwiceWhileUnstarted();
+
+    expect(recordedFor(ruleKey)).toHaveLength(1);
+    expect(sends).toBe(1);
+  });
+
+  it("records the second notification on the second tick when the cap is 2 (the stored cap reaches the engine)", async () => {
+    setSettingValue(db, "detection_daily_notification_cap", "2");
+
+    const { ruleKey } = await tickTwiceWhileUnstarted();
+
+    expect(recordedFor(ruleKey).map((row) => row.escalation_level)).toEqual([1, 2]);
   });
 });
