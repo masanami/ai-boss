@@ -1,5 +1,5 @@
-import 'dart:io';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
+import 'env.dart';
 
 // 項目 5: flutter_secure_storage（iOS は Keychain）に BYOK のキーを保存・読み出し。
 const storage = FlutterSecureStorage();
@@ -10,7 +10,7 @@ Future<String?> readApiKey() => storage.read(key: _key);
 
 /// 自動検証用: SIMCTL_CHILD_ANTHROPIC_API_KEY で渡されたキーをキーチェーンへ移す（値は返さない）
 Future<Map<String, Object?>> runKeychainCheck() async {
-  final fromEnv = Platform.environment['ANTHROPIC_API_KEY'];
+  final fromEnv = getEnv('ANTHROPIC_API_KEY');
   var bootstrapped = false;
   if (fromEnv != null && fromEnv.isNotEmpty) {
     await saveApiKey(fromEnv);

@@ -35,9 +35,28 @@
 - `vi.spyOn(console, "warn")` → 差し替え可能な `warn` 関数（本体側に注入点を 1 つ追加）
 - `it.each` / `describe.runIf` → `for` ループ／`group(..., skip:)`
 
-### 項目 1〜5: iOS アプリ（**未検証**。下記の環境問題でビルドできず）
+### 項目 1〜5: iOS アプリ（2026-09-23 再開後に検証・**iOS 26.5 シミュレータ**）
 
-- 画面移植のコード（`app/lib/dashboard/`）は **16:44:20〜16:45:32（約 1 分）で作成**。`flutter analyze` はエラー 0 件。**シミュレータでの表示は未確認**
-- 項目 2〜5 の検証コード（`app/lib/spike/`）は書いたが**一度もコンパイルしていない**（analyzer も起動しないため API の型整合も未確認）
-- **ブロッカー**: この開発機では Flutter SDK 同梱の `dartaotruntime`（`frontend_server_aot` / `gen_kernel_aot` / `analysis_server` を動かす実行系）が**起動直後（`_dyld_start`）で停止したまま進まない**。`flutter build ios` は `objective_c` パッケージのビルドフックのカーネルコンパイルで 10 分以上 CPU 0% のまま止まり、最小の `dart compile kernel` でも再現。`dart <file>`（VM 内の JIT）は動くため、項目 6 はこの経路で実施した
-  - `dartaotruntime` には `com.apple.quarantine` 属性が付いている（Homebrew cask 由来）。Developer ID（FLUTTER.IO LLC）で署名済み。Gatekeeper の初回起動確認で待たされている可能性が高いが、GUI を確認できないため未確定
+前回は Flutter SDK 同梱バイナリの Gatekeeper 拒否（quarantine 属性）でビルドできなかった。オーナーが個別に承認して解消した後に検証した。
+
+| # | 項目 | 結果 | 実測・所見 |
+|---|---|---|---|
+| 1 | 画面の表示 | ✅ | 移植した Dashboard が表示され、表情 4 種の切替（`AnimatedSwitcher` の縮小＋回転＋フェード）とゲージの遷移（`AnimatedContainer`）が動作（`evidence/dashboard.png`・`evidence/expression-switch-strip.png`）。**移植時間: コード作成 約 1 分（16:44:20〜16:45:32）＋表示確認まで 約 1 分（17:30:47〜17:31:44・修正なし）＝ 約 2 分（AI の壁時計）** |
+| 2 | アプリ内 SQLite | ✅ | drift（生 SQL の API・コード生成なし）で `tasks` 相当を作成・INSERT・UPDATE・SELECT（88ms）。`db.transaction` 内で例外 → ロールバックが効いた（drift のトランザクションは同一接続で直列化される） |
+| 3 | LLM ストリーミング＋tool use | ✅ | 公式 Dart SDK は無いため `package:http` の `send()`＋SSE 手書きパース。HTTP 200、最初のテキスト 1.16 秒・全体 2.19 秒、`create_task` の tool_use → stop_reason=tool_use。**Origin を付けないため CORS 用ヘッダは不要** |
+| 4 | 予約通知 | ✅ | `flutter_local_notifications` の `zonedSchedule` で予約→取り消し→再予約（`pending` で確認）。**アプリ終了（`simctl terminate`）後、取り消した分は届かず、再予約分が予定時刻どおり届いた**（`evidence/notification-while-terminated.png`）。上限: 70 件登録でエラー無く**黙って 64 件**（先に登録した 6 件が消える＝Tauri と同じ OS の挙動）。TZ のずれは無し（`timezone`＋`flutter_timezone` でローカル TZ を設定） |
+| 5 | API キーの保管 | ✅ | `flutter_secure_storage` でキーチェーンへ保存 → 再起動後に読み出し |
+
+### その他の実測
+
+- アプリサイズ: **release（実機 arm64・署名なし）20.1MB**（Flutter.framework 10MB・App.framework 7.1MB・sqlite3 1.6MB）。debug のシミュレータ用は 178MB（JIT・参考外）
+- 起動: `simctl launch` から最初のフレーム後のコールバックまで約 1.1 秒（debug ビルド。release はシミュレータで動かせないため未計測）
+- メモリ: debug ビルドでシミュレータ RSS 約 437MB（JIT のため参考外。release の値は実機で要確認）
+- ビルド時間: シミュレータ用 debug 25 秒（親の事前ビルドのキャッシュあり）・差分 12〜13 秒・release（実機用）30 秒。`flutter run` の起動 約 30 秒
+- ホットリロード: `flutter run` 中に 1 ファイル変更 → 270ms で反映
+
+### 詰まった点と回避策（再開後）
+
+1. **iOS の Flutter では `Platform.environment` に `SIMCTL_CHILD_*` で渡した変数が現れなかった**（自動検証の起動引数が届かない）。dart:ffi で libc の `getenv` を直接呼んで回避（`app/lib/spike/env.dart`・自動検証専用）
+2. 前回書いた未コンパイルの検証コード（drift・http・flutter_local_notifications・flutter_secure_storage）は**修正なしでそのままビルド・動作した**
+3. Gatekeeper（前回のブロッカー）: Homebrew の Flutter は同梱バイナリに quarantine 属性が付いており、`dart`・`dartaotruntime`・`dartvm`・`impellerc`・`font-subset`・`gen_snapshot_arm64` を個別に承認する必要があった。初回の環境構築で詰まりうる点として記録する

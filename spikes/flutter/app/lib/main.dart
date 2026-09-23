@@ -5,6 +5,7 @@ import 'package:path_provider/path_provider.dart';
 import 'dashboard/dashboard_data.dart';
 import 'dashboard/dashboard_view.dart';
 import 'dashboard/theme.dart';
+import 'spike/env.dart';
 import 'spike/keychain_check.dart';
 import 'spike/llm_check.dart';
 import 'spike/notify_check.dart';
@@ -50,6 +51,8 @@ class _HomePageState extends State<HomePage> {
   // 結果を Application Support/<step>.json へ書き出す（simctl get_app_container で回収）
   Future<void> _run(String name) async {
     Map<String, Object?> result;
+    final startedDir = await getApplicationSupportDirectory();
+    await File('${startedDir.path}/$name.started').writeAsString(DateTime.now().toUtc().toIso8601String());
     try {
       result = await _steps[name]!();
     } catch (e) {
@@ -65,8 +68,8 @@ class _HomePageState extends State<HomePage> {
     super.initState();
     WidgetsBinding.instance.addPostFrameCallback((_) async {
       final dir = await getApplicationSupportDirectory();
-      await File('${dir.path}/boot.json').writeAsString(jsonEncode({'at': DateTime.now().toUtc().toIso8601String()}));
-      for (final step in (Platform.environment['SPIKE_SELFTEST'] ?? '').split(',').where((s) => s.isNotEmpty)) {
+      await File('${dir.path}/boot.json').writeAsString(jsonEncode({'at': DateTime.now().toUtc().toIso8601String(), 'selftest': getEnv('SPIKE_SELFTEST'), 'hasKeyEnv': getEnv('ANTHROPIC_API_KEY') != null}));
+      for (final step in (getEnv('SPIKE_SELFTEST') ?? '').split(',').where((s) => s.isNotEmpty)) {
         if (_steps.containsKey(step)) await _run(step);
       }
     });
