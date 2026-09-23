@@ -1,0 +1,37 @@
+# スパイク用の補助ツール: シミュレータ上のシステムダイアログ（通知の許可など）を XCUITest でタップする。
+# 使い方: xcodegen generate && TEST_RUNNER_TAP_LABEL=許可 xcodebuild test -project Tapper.xcodeproj -scheme TapperHost -destination id=<UDID>
+name: Tapper
+options:
+  bundleIdPrefix: dev.aiboss.spike
+  deploymentTarget:
+    iOS: "17.0"
+targets:
+  TapperHost:
+    type: application
+    platform: iOS
+    sources: [Host]
+    info:
+      path: Host/Info.plist
+      properties:
+        UILaunchScreen: {}
+    settings:
+      GENERATE_INFOPLIST_FILE: YES
+      CODE_SIGNING_ALLOWED: NO
+  TapperUITests:
+    type: bundle.ui-testing
+    platform: iOS
+    sources: [TapperUITests]
+    dependencies:
+      - target: TapperHost
+    settings:
+      GENERATE_INFOPLIST_FILE: YES
+      TEST_TARGET_NAME: TapperHost
+      CODE_SIGNING_ALLOWED: NO
+schemes:
+  TapperHost:
+    build:
+      targets:
+        TapperHost: all
+        TapperUITests: [test]
+    test:
+      targets: [TapperUITests]

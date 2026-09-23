@@ -1,0 +1,12 @@
+build/
+.dart_tool/
+**/Pods/
+**/ios/Flutter/ephemeral/
+**/ios/.symlinks/
+*.app
+*.ipa
+*.xcuserstate
+xcuserdata/
+DerivedData/
+.env
+*.env

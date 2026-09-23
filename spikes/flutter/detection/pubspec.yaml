@@ -1,0 +1,9 @@
+name: aiboss_detection
+description: server/src/detection の Dart 翻訳（#576 スパイク。設計は変えず翻訳に徹する）
+publish_to: none
+environment:
+  sdk: ^3.9.0
+dev_dependencies:
+  test: ^1.26.0
+dependencies:
+  timezone: ^0.11.1
