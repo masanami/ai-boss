@@ -1,0 +1,16 @@
+node_modules/
+dist/
+target/
+build/
+src-tauri/gen/apple/build/
+src-tauri/gen/apple/Externals/
+src-tauri/gen/apple/assets/
+src-tauri/gen/schemas/
+Pods/
+*.app
+*.ipa
+*.xcuserstate
+xcuserdata/
+DerivedData/
+.env
+*.env

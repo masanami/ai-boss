@@ -1,0 +1,153 @@
+import { DEFAULT_DETECTION_SETTINGS } from "./detection-types.js";
+import type { WorkingHours } from "./detection-types.js";
+
+/** 値を [min, max] の範囲に収める */
+export function clamp(value: number, min: number, max: number): number {
+  return Math.min(Math.max(value, min), max);
+}
+
+/** later - earlier の経過時間を分単位で返す */
+export function diffInMinutes(later: Date, earlier: Date): number {
+  return (later.getTime() - earlier.getTime()) / (60 * 1000);
+}
+
+const TIME_STRING_PATTERN = /^\d{1,2}:\d{2}$/;
+
+/**
+ * "HH:mm" 形式の文字列を、真夜中からの経過分に変換する。
+ * 不正な形式（桁欠け・非数字・範囲外）は NaN 伝播で検知が静かに機能停止
+ * しないよう、警告ログを出して null を返す（フォールバックは呼び出し側）。
+ */
+export function timeStringToMinutes(time: string): number | null {
+  if (!TIME_STRING_PATTERN.test(time)) {
+    console.warn(
+      `invalid time string (expected "HH:mm"): ${JSON.stringify(time)}`,
+    );
+    return null;
+  }
+  const [hours, minutes] = time.split(":").map(Number);
+  if (hours > 23 || minutes > 59) {
+    console.warn(
+      `invalid time string (out of range): ${JSON.stringify(time)}`,
+    );
+    return null;
+  }
+  return hours * 60 + minutes;
+}
+
+/**
+ * 現在時刻（ローカル）が勤務時間帯 [start, end) に含まれるか。
+ * end は排他的境界（例: end="18:00" なら 18:00 ちょうどは対象外）。
+ */
+export function isWithinWorkingHours(
+  now: Date,
+  workingHours: WorkingHours,
+): boolean {
+  const nowMinutes = now.getHours() * 60 + now.getMinutes();
+  const startMinutes = timeStringToMinutes(workingHours.start);
+  const endMinutes = timeStringToMinutes(workingHours.end);
+  if (startMinutes === null || endMinutes === null) {
+    // 不正な設定値で検知全体が静かに停止（常に false）しないよう、既定の
+    // 勤務時間帯にフォールバックする（timeStringToMinutes が警告ログ済み）
+    return isWithinWorkingHours(now, DEFAULT_DETECTION_SETTINGS.workingHours);
+  }
+  return nowMinutes >= startMinutes && nowMinutes < endMinutes;
+}
+
+/**
+ * 日付を YYYY-MM-DD 形式で返す（朝会・夕会の日次 rule_key に使う）。
+ *
+ * `timeZone` を省略した場合は実行環境のローカル暦日（従来の挙動）。
+ * IANA タイムゾーン名（例 "Asia/Tokyo"）を渡すと、そのタイムゾーンでの
+ * 暦日を返す（案B: ADR 0007 #177）。
+ *
+ * `Intl.DateTimeFormat.formatToParts` で年月日を個別に取り出して組み立てる
+ * （`format()` 1発の文字列をロケール依存の区切り文字ごと信用しない、
+ * `toISOString()` は使わない＝UTC 固定になり本関数の目的そのものに反するため）。
+ *
+ * **年は 4 桁へゼロ詰めする**。西暦 1000 年未満で桁が落ちると `YYYY-MM-DD` を
+ * 名乗りながら `100-01-01` のような 3 桁キーを返し、同形式を要求する
+ * {@link parseDateKey}（`^(\d{4})-`）に拒否されて往復しなくなる（PR #458 の
+ * Codex 指摘 P2）。1000 年以上では出力が変わらないため、既存の呼び出し側への
+ * 影響は無い。
+ */
+export function toDateKey(date: Date, timeZone?: string): string {
+  if (timeZone === undefined) {
+    const year = String(date.getFullYear()).padStart(4, "0");
+    const month = String(date.getMonth() + 1).padStart(2, "0");
+    const day = String(date.getDate()).padStart(2, "0");
+    return `${year}-${month}-${day}`;
+  }
+  const parts = new Intl.DateTimeFormat("en-US", {
+    timeZone,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).formatToParts(date);
+  const part = (type: "year" | "month" | "day"): string =>
+    parts.find((p) => p.type === type)?.value ?? "";
+  return `${part("year").padStart(4, "0")}-${part("month")}-${part("day")}`;
+}
+
+/**
+ * ローカル日時を `YYYY-MM-DD HH:mm` 形式で返す（通知文面での着手の約束の表示に
+ * 使う。機能仕様 docs/features/task-start-commitment.md 決定 5）。日付部分は
+ * `toDateKey` に委ね、時刻をゼロ詰めして組み立てる。
+ */
+export function toLocalDateTimeKey(date: Date): string {
+  const hours = String(date.getHours()).padStart(2, "0");
+  const minutes = String(date.getMinutes()).padStart(2, "0");
+  return `${toDateKey(date)} ${hours}:${minutes}`;
+}
+
+const DATE_KEY_PATTERN = /^(\d{4})-(\d{2})-(\d{2})$/;
+
+/**
+ * `YYYY-MM-DD`（{@link toDateKey} と同じキー形式）の文字列をローカル日付
+ * として解釈する。形式不正、または実在しない暦日（例: 2026-02-30 は
+ * 3月2日へ繰り上がる）は null を返す。`toDateKey` で往復させて繰り上がりを
+ * 検知することで、月ごとの日数上限を手書きしない。
+ *
+ * `server/src/reports/work-logs-routes.ts`（`GET /api/work-logs/:date`）と
+ * `server/src/reports/reports-routes.ts`（`POST /api/reports/generate` の
+ * 任意 `date` パラメータ、Issue #297）が共通で使う。
+ */
+export function parseDateKey(dateKey: string): Date | null {
+  const match = DATE_KEY_PATTERN.exec(dateKey);
+  if (!match) return null;
+
+  const [, yearStr, monthStr, dayStr] = match;
+  const date = new Date(Number(yearStr), Number(monthStr) - 1, Number(dayStr), 0, 0, 0, 0);
+  if (toDateKey(date) !== dateKey) return null;
+
+  return date;
+}
+
+/**
+ * ローカルタイムゾーンの UTC オフセットを `±HH:MM` 形式で返す
+ * （`2026-09-05T14:32+09:00` のようなオフセット付き ISO の組み立てに使う）。
+ * `Date` に該当するメソッドが無いため `getTimezoneOffset()` から導出する。
+ * 同メソッドは「UTC からの遅れ」を分で返すため、符号は反転させる。
+ */
+export function toLocalOffset(date: Date): string {
+  const offsetMinutes = -date.getTimezoneOffset();
+  const sign = offsetMinutes < 0 ? "-" : "+";
+  const absolute = Math.abs(offsetMinutes);
+  const hours = String(Math.floor(absolute / 60)).padStart(2, "0");
+  const minutes = String(absolute % 60).padStart(2, "0");
+  return `${sign}${hours}:${minutes}`;
+}
+
+/**
+ * items の中から、getTimestamp が返す ISO8601 文字列が最も新しい要素を返す
+ * （入力配列は破壊しない）。escalation / silence / break-overrun の各ルールで
+ * 「直近の1件」を求める処理を共通化する。
+ */
+export function latestByTimestamp<T>(
+  items: T[],
+  getTimestamp: (item: T) => string,
+): T | undefined {
+  return [...items].sort(
+    (a, b) => new Date(getTimestamp(b)).getTime() - new Date(getTimestamp(a)).getTime(),
+  )[0];
+}

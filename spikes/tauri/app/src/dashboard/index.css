@@ -1,0 +1,40 @@
+:root {
+  /* --color-bg / --color-bg-elevated / --color-accent are duplicated as literal
+     hex values in web/public/favicon.svg and web/public/manifest.webmanifest
+     (static assets can't consume CSS variables). Update those files too when
+     changing these values. */
+  --color-bg: #14171c;
+  --color-bg-elevated: #1b1f26;
+  --color-bg-hover: #262b34;
+  --color-border: #2c313b;
+  --color-text: #e6e8eb;
+  --color-text-muted: #8b93a1;
+  --color-accent: #c8963e;
+  --color-accent-warm: #e8a15c;
+  --color-praise-bg: #3a2c1d;
+  --color-scold: #6f9bc9;
+  --color-scold-bg: #1c2733;
+  --color-danger: #e07070;
+
+  --nav-width: 200px;
+  --side-panel-width: 280px;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+}
+
+body {
+  margin: 0;
+  background-color: var(--color-bg);
+  color: var(--color-text);
+  font-family:
+    -apple-system, BlinkMacSystemFont, "Hiragino Sans", "Yu Gothic",
+    sans-serif;
+}
