@@ -56,6 +56,13 @@ const FORBIDDEN_GLOBAL_VALUE_IDENTIFIERS = new Set([
   "require",
   "__dirname",
   "__filename",
+  // PR #598 レビュー（P3）で追加。いずれも WebView に無い Node（CommonJS）の
+  // グローバルで、コア（server/src）は宣言名以外で参照しない。
+  "global",
+  "setImmediate",
+  "clearImmediate",
+  "module",
+  "exports",
 ]);
 
 interface StaticViolation {
@@ -106,7 +113,7 @@ function isDeclarationOrBindingName(node: ts.Identifier): boolean {
  * `self.require` はいずれも通常の（安全な）プロパティ名位置の"foo.process"
  * とは違い、対象の識別子そのものへの値参照である（self-review:
  * design-reviewer が `globalThis.process.env` の検知漏れを CONFIRMED）。 */
-const GLOBAL_OBJECT_ALIASES = new Set(["globalThis", "global", "self"]);
+const GLOBAL_OBJECT_ALIASES = new Set(["globalThis", "global", "self", "window"]);
 
 /**
  * Unwraps non-semantic wrapper nodes (`(x)` / `x as T` / `x satisfies T` /
@@ -448,6 +455,50 @@ describe("core-entry bundle — AC6/AC7 (process/require が無いグローバ�
     const exported = (context as Record<string, unknown>).AiBossCore as CoreExports;
     expect(exported.registeredCoreLlmBackendNames()).toEqual([]);
   });
+
+  // PR #598 レビュー（P2）: 評価直後だけを見ると、開発者用の版の `createApp`
+  // （`app.ts`）と同じ「ファクトリの中で登録する」形が `createCoreApp` に
+  // 入っても緑のままになる。ファクトリを呼んでリクエストを流した後にも 0 件で
+  // あること、`LLM_BACKEND=api` とキーがあってもチャットが LLM を呼べない応答
+  // （未登録エラーの 500）になることを確かめる。登録の確認をチャットの要求より
+  // 前に置くのは、万一登録されていた場合に外部へ送信する前に落とすため。
+  it.each([
+    { label: "LLM_BACKEND unset", env: {}, backend: "claude-code" },
+    { label: "LLM_BACKEND=api with a key", env: { LLM_BACKEND: "api", ANTHROPIC_API_KEY: "sk-test-dummy" }, backend: "api" },
+  ])("still registers zero LLM backends after createCoreApp is called and serves requests ($label)", async ({ env, backend }) => {
+    const context = createSandboxContext();
+    vm.runInContext(bundleCode, context);
+    const exported = (context as Record<string, unknown>).AiBossCore as CoreExports;
+
+    const db = openDatabase(":memory:");
+    try {
+      runMigrations(db);
+      const app = exported.createCoreApp(db, env);
+      expect((await app.request("/api/health")).status).toBe(200);
+      expect(exported.registeredCoreLlmBackendNames()).toEqual([]);
+
+      const sessionRes = await app.request("/api/sessions", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ type: "adhoc" }),
+      });
+      expect(sessionRes.status).toBe(201);
+      const session = (await sessionRes.json()) as { id: number };
+
+      const chatRes = await app.request(`/api/sessions/${session.id}/messages`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ content: "相談したい" }),
+      });
+      expect(chatRes.status).toBe(500);
+      expect(((await chatRes.json()) as { error: string }).error).toContain(
+        `No LLM backend implementation is registered for "${backend}"`,
+      );
+      expect(exported.registeredCoreLlmBackendNames()).toEqual([]);
+    } finally {
+      db.close();
+    }
+  });
 });
 
 describe("core-entry bundle — smoke test (vm 内で構築した app が実 DB への最小リクエストに応答する)", () => {
@@ -471,14 +522,16 @@ describe("core-entry bundle — smoke test (vm 内で構築した app が実 DB 
     const exported = (context as Record<string, unknown>).AiBossCore as CoreExports;
 
     const db = openDatabase(":memory:");
-    runMigrations(db);
-    const app = exported.createCoreApp(db, {});
+    try {
+      runMigrations(db);
+      const app = exported.createCoreApp(db, {});
 
-    const res = await app.request("/api/health");
-    expect(res.status).toBe(200);
-    expect(await res.json()).toEqual({ status: "ok", db: true });
-
-    db.close();
+      const res = await app.request("/api/health");
+      expect(res.status).toBe(200);
+      expect(await res.json()).toEqual({ status: "ok", db: true });
+    } finally {
+      db.close();
+    }
   });
 });
 
@@ -499,52 +552,54 @@ describe("core-entry bundle — AC12 (グローバル Buffer が未定義でも�
     // 実 DB は :memory: の better-sqlite3 + マイグレーション（テストは Node
     // で走るので DB は現行のまま — 機能仕様の指示どおり）。
     const db = openDatabase(":memory:");
-    runMigrations(db);
+    try {
+      runMigrations(db);
 
-    const stored = new Map<string, Uint8Array>();
-    const memoryEvidenceStore = {
-      write(storedFilename: string, data: Uint8Array) {
-        stored.set(storedFilename, data);
-      },
-      read(storedFilename: string) {
-        return stored.get(storedFilename);
-      },
-      remove(storedFilename: string) {
-        stored.delete(storedFilename);
-      },
-    };
+      const stored = new Map<string, Uint8Array>();
+      const memoryEvidenceStore = {
+        write(storedFilename: string, data: Uint8Array) {
+          stored.set(storedFilename, data);
+        },
+        read(storedFilename: string) {
+          return stored.get(storedFilename);
+        },
+        remove(storedFilename: string) {
+          stored.delete(storedFilename);
+        },
+      };
 
-    const app = exported.createCoreApp(db, {}, { evidenceStore: memoryEvidenceStore });
+      const app = exported.createCoreApp(db, {}, { evidenceStore: memoryEvidenceStore });
 
-    const createTaskRes = await app.request("/api/tasks", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ title: "証跡テスト用タスク" }),
-    });
-    expect(createTaskRes.status).toBe(201);
-    const task = (await createTaskRes.json()) as { id: number };
+      const createTaskRes = await app.request("/api/tasks", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ title: "証跡テスト用タスク" }),
+      });
+      expect(createTaskRes.status).toBe(201);
+      const task = (await createTaskRes.json()) as { id: number };
 
-    const bytes = new Uint8Array([1, 2, 3, 4, 5]);
-    const file = new File([bytes], "note.txt", { type: "text/plain" });
-    const formData = new FormData();
-    formData.set("file", file);
+      const bytes = new Uint8Array([1, 2, 3, 4, 5]);
+      const file = new File([bytes], "note.txt", { type: "text/plain" });
+      const formData = new FormData();
+      formData.set("file", file);
 
-    const uploadRes = await app.request(`/api/tasks/${task.id}/evidences`, {
-      method: "POST",
-      body: formData,
-    });
-    expect(uploadRes.status).toBe(201);
-    const evidence = (await uploadRes.json()) as { stored_filename: string };
+      const uploadRes = await app.request(`/api/tasks/${task.id}/evidences`, {
+        method: "POST",
+        body: formData,
+      });
+      expect(uploadRes.status).toBe(201);
+      const evidence = (await uploadRes.json()) as { stored_filename: string };
 
-    const savedBytes = stored.get(evidence.stored_filename);
-    expect(savedBytes).toBeDefined();
-    expect(Array.from(savedBytes as Uint8Array)).toEqual(Array.from(bytes));
-
-    db.close();
+      const savedBytes = stored.get(evidence.stored_filename);
+      expect(savedBytes).toBeDefined();
+      expect(Array.from(savedBytes as Uint8Array)).toEqual(Array.from(bytes));
+    } finally {
+      db.close();
+    }
   });
 });
 
-describe("core-entry bundle — 静的検査 (server/src/ 配下の入力に process/Buffer/require/__dirname/__filename の値参照・node: の値importが無い)", () => {
+describe("core-entry bundle — 静的検査 (server/src/ 配下の入力に Node のグローバル〔process・Buffer・require・__dirname・__filename・global・setImmediate・clearImmediate・module・exports〕の値参照・node: の値importが無い)", () => {
   it("has zero forbidden identifier/import occurrences across every bundled server/src/*.ts input", () => {
     const inputs = metafileInputPaths(buildResult!.metafile!).filter(
       (p) => p.includes("src/") && p.endsWith(".ts") && !p.includes("node_modules"),

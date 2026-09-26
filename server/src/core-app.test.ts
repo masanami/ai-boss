@@ -3,6 +3,10 @@ import type Database from "better-sqlite3";
 import { openDatabase } from "./db/connection.js";
 import { runMigrations } from "./db/migrate.js";
 import { createCoreApp } from "./core-app.js";
+import {
+  registeredLlmBackendNames,
+  resetLlmBackendRegistryForTest,
+} from "./llm/llm-backend-registry.js";
 
 /**
  * `createCoreApp`（実行環境に依存しないコア。機能仕様
@@ -31,6 +35,47 @@ describe("createCoreApp", () => {
 
     expect(res.status).toBe(200);
     expect(await res.json()).toEqual({ status: "ok", db: true });
+  });
+
+  // PR #598 レビュー（P2）: 受入基準「製品版のコアのエントリが登録する LLM
+  // バックエンドは 0 件」を、ファクトリ（`createCoreApp`）の中での登録まで
+  // 含めて固定する。開発者用の版の `createApp`（`app.ts`）はファクトリ内で
+  // 登録する形なので、同じ形がコアに入ると評価直後の検査だけでは見逃す。
+  // `core-entry.bundle.test.ts` の同名の検査は、登録がバンドルを壊す場合は
+  // ビルドの失敗として落ちる。こちらは Node のモジュールグラフの上で、
+  // 登録そのものを直接観測する。登録の確認をチャットの要求より前に置くのは、
+  // 万一登録されていた場合に外部へ送信する前に落とすため。
+  it.each([
+    { label: "LLM_BACKEND unset", env: {}, backend: "claude-code" },
+    {
+      label: "LLM_BACKEND=api with a key",
+      env: { LLM_BACKEND: "api", ANTHROPIC_API_KEY: "sk-test-dummy" },
+      backend: "api",
+    },
+  ])("registers no LLM backend and cannot reach an LLM from the chat route ($label)", async ({ env, backend }) => {
+    resetLlmBackendRegistryForTest();
+
+    const app = createCoreApp(db, env);
+    expect((await app.request("/api/health")).status).toBe(200);
+    expect(registeredLlmBackendNames()).toEqual([]);
+
+    const sessionRes = await app.request("/api/sessions", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ type: "adhoc" }),
+    });
+    const session = (await sessionRes.json()) as { id: number };
+    const chatRes = await app.request(`/api/sessions/${session.id}/messages`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ content: "相談したい" }),
+    });
+
+    expect(chatRes.status).toBe(500);
+    expect(((await chatRes.json()) as { error: string }).error).toContain(
+      `No LLM backend implementation is registered for "${backend}"`,
+    );
+    expect(registeredLlmBackendNames()).toEqual([]);
   });
 
   it("returns 404 for an unknown path", async () => {
