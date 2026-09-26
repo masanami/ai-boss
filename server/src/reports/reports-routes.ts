@@ -89,7 +89,7 @@ function respondEveningSessionRequired(c: Context): Response {
  */
 export function createReportsRouter(
   db: Database.Database,
-  env: NodeJS.ProcessEnv = process.env,
+  env: NodeJS.ProcessEnv,
 ): Hono {
   const reports = new Hono();
 

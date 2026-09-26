@@ -7,14 +7,31 @@ import { loadConfig, resolveEvidenceDir } from "./config.js";
 import { openDatabase } from "./db/connection.js";
 import { runMigrations } from "./db/migrate.js";
 import { startScheduler } from "./scheduler/scheduler.js";
+// 機能仕様 docs/features/tauri-in-app-runtime.md 実装計画①: `claude-client.ts`
+// （コア）はもう `backends/*.ts` を静的 import しないため、`claude-code`
+// バックエンドの入口は Node 周辺の `dev-llm-backends.ts` を単一の窓口とする
+// （self-review: design-reviewer — `backends/claude-code-backend.js` を
+// このファイルから直接 import すると、以前の self-review で閉じたはずの
+// 「非ファサード経由の呼び出し元」を再び開けてしまう）。
 import {
+  registerDevLlmBackends,
   checkClaudeCodeAvailability,
   nodeExecFileForAvailabilityCheck,
-} from "./llm/claude-client.js";
+} from "./llm/dev-llm-backends.js";
 
 const config = loadConfig(process.env);
 const db = openDatabase(config.dbPath);
 runMigrations(db);
+
+// 開発者用の版（このエントリ）だけが `claude-code`/`api` を登録する
+// （オーナーの決定 Q4-b・Q4-c）。以前は `createApp` 呼び出しの副作用として
+// 暗黙に登録されていたが、`startScheduler`（下）が呼ぶ通知文面生成の経路
+// （`scheduler-tick.ts` → `notification-body.ts` → `createClaudeClient`）が
+// 将来 `createApp` より前に動くよう並び替わった場合に無登録のまま倒れる
+// リスクがあった（self-review: design-reviewer, PLAUSIBLE）。明示的にここで
+// 呼ぶことで、起動順の入れ替えに対して構造的に安全にする（`registerLlmBackend`
+// は `Map#set` の冪等性を持つため、`createApp` 内で再度呼ばれても無害）。
+registerDevLlmBackends();
 
 if (config.llmBackend === "claude-code") {
   // FR-13 / AC-12: best-effort, non-blocking — never awaited so it cannot

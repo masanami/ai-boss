@@ -1,4 +1,3 @@
-import { extname } from "node:path";
 import {
   EVIDENCE_EXTENSION_MIME_TYPES,
   MAX_EVIDENCES_PER_TASK,
@@ -6,15 +5,49 @@ import {
 } from "./task-evidence.js";
 
 /**
- * 拡張子を小文字化して取り出す。`node:path` の `extname` はパス区切りより
- * 後ろの最終コンポーネントからのみ拡張子を読むため、`../../etc/passwd.png`
- * のようなパストラバーサルを含むファイル名を渡しても `.png` だけが返る
- * （`stored_filename` はこの値ではなくサーバ生成名から作られるので、この
- * 挙動自体がパストラバーサル対策になっているわけではない。決定 1-c-i の
- * 対策は `evidence-storage.ts` 側にある）。
+ * `node:path` の `extname` 相当の自前実装（機能仕様
+ * docs/features/tauri-in-app-runtime.md「機能全体の設計」: `node:path` は
+ * ブラウザ実行環境で解決できないため、コア到達可能なこのモジュールでは
+ * 使わない。`tasks/evidence-store.ts` の保存名生成もこの関数を使う —
+ * 単一ソース）。
+ *
+ * 意味論は `node:path`（POSIX 版）の `extname` に合わせる: パス区切りは
+ * `/` のみとする（`\` は区切りとして扱わない）。**ただし厳密に同一ではない**
+ * （PR #598 レビューで実測）: 末尾が `/` の名前（`"x.png/"`）は `extname` が
+ * 末尾の区切りを無視して `.png` を返すのに対し、この関数は空文字を返す。
+ * `".."` は `extname` が空文字、この関数は `"."` を返す。どちらもホワイト
+ * リストに当たらない値になるため、判定は以前より厳しくなる方向にしか
+ * ずれない（許可されていた名前が拒否されうるだけで、拒否されていた名前が
+ * 許可されることはない）。ブラウザから届くファイル名（`File.name`）は
+ * パスを含まないため、実用上この差に当たることはない。CLAUDE.md の前提
+ * 「macOS ローカル完結」の下で元のコードが実際に使っていたのは常に
+ * POSIX 版の `path.extname`（`node:path` は macOS では POSIX 実装を
+ * 指す）であり、それは `\` をパス区切りとして扱わない（Windows 版
+ * `path.win32.extname` とは異なる — self-review: code-reviewer の指摘
+ * 「`\` も区切りに含めると、元の実装より*厳しい*方向に振る舞いが変わる」
+ * を受けて、`\` の特別扱いをやめた）。最終コンポーネント（`/` 区切りの
+ * 最後の部分）の、最後の `.` 以降を拡張子とする。先頭ドットのみ（隠し
+ * ファイル名など、そのコンポーネント内に `.` が先頭にしか無い場合）は
+ * 拡張子なし（空文字）として扱う。
+ */
+export function extractExtension(filename: string): string {
+  const lastComponent = filename.split("/").pop() ?? filename;
+  const lastDotIndex = lastComponent.lastIndexOf(".");
+  if (lastDotIndex <= 0) {
+    return "";
+  }
+  return lastComponent.slice(lastDotIndex);
+}
+
+/**
+ * 拡張子を小文字化して取り出す。`../../etc/passwd.png` のようなパス
+ * トラバーサルを含むファイル名を渡しても `.png` だけが返る（`stored_filename`
+ * はこの値ではなくサーバ生成名から作られるので、この挙動自体がパス
+ * トラバーサル対策になっているわけではない。決定 1-c-i の対策は
+ * `evidence-storage.ts`／`evidence-store.ts` 側にある）。
  */
 function lowerExtname(filename: string): string {
-  return extname(filename).toLowerCase();
+  return extractExtension(filename).toLowerCase();
 }
 
 /** 拡張子ホワイトリスト判定（決定 1-c）。大文字小文字を区別しない。 */

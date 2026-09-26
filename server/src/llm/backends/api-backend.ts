@@ -5,6 +5,7 @@ import type {
   OnTextDelta,
   RetryDecision,
 } from "../claude-client.js";
+import type { ResolvedLlmRequest } from "../llm-backend-registry.js";
 
 /**
  * `api` backend: thin wrapper around the Claude API (`@anthropic-ai/sdk`),
@@ -202,20 +203,21 @@ export function classifyApiError(error: unknown): RetryDecision {
  * import value bindings from `claude-client.ts` (avoids a runtime circular
  * dependency between the facade and this backend — only `import type`s are
  * shared, which are erased at compile time).
+ *
+ * Aliased to {@link ResolvedLlmRequest} (`llm-backend-registry.ts`) rather
+ * than re-declared here — 機能仕様 docs/features/tauri-in-app-runtime.md
+ * 実装計画①（レジストリ経由の DI へ移行）で `claude-client.ts`'s
+ * `resolveRequest` started returning `ResolvedLlmRequest` (the registry's
+ * backend-agnostic shape) instead of this type directly. Keeping this as an
+ * independent, structurally-identical interface would silently reintroduce
+ * the exact duplication a previous self-review (design-reviewer) already
+ * flagged and fixed for `ClaudeMessageRequest`/this type's predecessor: a
+ * field added to one side without the other would compile fine and only
+ * surface as a runtime mismatch. `ResolvedLlmRequest` is a core (registry)
+ * type; importing it here (backend → core, not core → backend) doesn't
+ * reintroduce the value-import direction 実装計画① removed.
  */
-export interface ApiMessageRequest {
-  model: string;
-  system?: string;
-  messages: Anthropic.MessageParam[];
-  tools?: Anthropic.Tool[];
-  toolChoice?: Anthropic.ToolChoice;
-  maxTokens: number;
-  /** Always resolved by the facade (`claude-client.ts`'s `resolveRequest`)
-   * before reaching this module — see `ClaudeMessageRequest.thinking`'s doc
-   * comment for the Issue #117 fail-safe-default rationale. */
-  thinking: Anthropic.ThinkingConfigParam;
-  outputConfig?: Anthropic.OutputConfig;
-}
+export type ApiMessageRequest = ResolvedLlmRequest;
 
 /**
  * Normalizes a raw `Anthropic.Message` into the facade's `BossLlmMessage`

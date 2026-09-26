@@ -15,7 +15,7 @@ import type { DashboardResponse } from "./dashboard.js";
  */
 export function createDashboardRouter(
   db: Database.Database,
-  env: NodeJS.ProcessEnv = process.env,
+  env: NodeJS.ProcessEnv,
 ): Hono {
   const dashboard = new Hono();
 

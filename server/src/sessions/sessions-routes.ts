@@ -168,8 +168,12 @@ function isBlockedByMentoringGate(db: Database.Database, before: Session | undef
 /**
  * Creates the sessions sub-router, mounted under `/api/sessions` by the
  * caller. `env`/`llmBackend` have no defaults here — the only caller,
- * `app.ts`, always resolves and passes both explicitly (see
- * `CreateAppOptions.llmBackend`'s doc comment for where the default lives).
+ * `core-app.ts`'s `createCoreApp`, always resolves and passes both
+ * explicitly (see `CreateCoreAppOptions.llmBackend`'s doc comment for where
+ * the default lives — self-review correction, 2周目: this comment named
+ * `app.ts`/`CreateAppOptions`, which was true before 機能仕様
+ * docs/features/tauri-in-app-runtime.md 実装計画③ split the router
+ * assembly out of `app.ts` into `core-app.ts`).
  */
 export function createSessionsRouter(
   db: Database.Database,
