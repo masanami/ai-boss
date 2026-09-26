@@ -43,7 +43,7 @@
 ## 機能要件（機能全体。スライスごとの範囲は「スライス」節）
 
 - [ ] 製品版は Tauri 2 のデスクトップアプリ（macOS）として起動し、Node サーバーを起動しない（S2 で検証）
-- [ ] 製品版の画面は既存の React（`web/`）の画面コンポーネントを変更せずに使う（S2 で検証）
+- [ ] 製品版の画面は既存の React（`web/`）の画面コンポーネントを変更せずに使う。例外は証跡ファイルを開くリンク（`TaskCard.tsx` の `<a href>` と、その URL を作る `tasks-api.ts` の `evidenceContentUrl`）で、Blob URL で開く形へ変える（クリティカル設計決定 1）（S2 で検証）
 - [ ] 製品版の API の呼び出しはアプリ内で処理され、`localhost` の配信に依存しない（S2 で検証）
 - [ ] 製品版のビルドに `claude-code` バックエンド（`@anthropic-ai/claude-agent-sdk`・`claude-code-backend.ts`）が含まれない（S1 で検証）
 - [ ] 各スライスのマージ時点で、開発者用の版（現行の Node サーバー版・`npm run start`）の既存テストが合格し、現行どおり起動する（各スライスの受入基準で検証）
@@ -98,6 +98,7 @@
 
 - `server/src` を「実行環境に依存しないコア」と「Node の周辺（開発者用の版のエントリ・アダプタ）」に分ける。**コアは Node 組み込み（`node:*`）・`process`・`@hono/node-server`・Agent SDK・`@anthropic-ai/sdk` を値として import しない**。Node の周辺は `index.ts` と、DB 接続・静的配信・通知の実行・証跡ファイルの保存・LLM バックエンド（`claude-code`・`api`）のアダプタに限る。
 - 実行環境ごとの差（証跡ファイルの保存・通知の送信・LLM バックエンド・設定値）は、コアがポートとして受け取り、エントリが実装を注入する（通知は `NotifierDeps.execFile` で既に DI されている形を踏襲する）。
+- コアは Node のグローバル（`Buffer` など）も使わない。import と違ってバンドル時に解決されず、呼ばれた時点で初めて `ReferenceError` になるため、バンドルの検査では見つからない。実測では証跡のアップロードの経路が `Buffer.from`（`tasks/task-evidences-routes.ts`）を使い、保存のデータ型も `Buffer`（`tasks/evidence-storage.ts`）である。証跡の保存ポートが受け渡すバイト列は Web 標準の型（`Uint8Array`）にする（`Buffer` は `Uint8Array` の派生型なので、開発者用の版の実装はそのまま受け取れる）。
 - ディレクトリは当面 `server/` のまま動かさない（仮定 A1）。
 
 ### 移行の順序と並行運用（Q3・確定）
@@ -154,6 +155,7 @@
 - [ ] 開発者用の版で `LLM_BACKEND=api` のとき、チャットは `api` バックエンドで処理される
 - [ ] 開発者用の版（`npm run start`）で、`web/dist` の画面が `/api` と同一オリジンで配信される（静的配信を Node の周辺へ移した後も現行どおり）
 - [ ] 開発者用の版（`npm run start`）で、未知の `/api/*` は 404 を返す（静的配信を Node の周辺へ移した後も現行どおり）
+- [ ] グローバルの `Buffer` を未定義にした状態で、証跡ファイルのアップロードのルートを呼ぶと成功する（保存先は証跡の保存ポートのテスト用の実装）
 - [ ] 証跡ファイルの保存・読み出し・削除の既存テストが、保存先をポート経由に変えた後も変更なしで合格する
 - [ ] `npm run lint`・`npm run typecheck`・`npm test`・`npm run test:tz` が合格する
 
