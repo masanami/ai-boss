@@ -13,6 +13,7 @@ import {
   validatePatchTaskInput,
 } from "./tasks-validation.js";
 import { createTaskEvidencesRouter } from "./task-evidences-routes.js";
+import type { EvidenceStore } from "./evidence-store.js";
 
 // 機能仕様 docs/features/completion-evidence-enforcement.md 決定 2 の
 // エラー文言。ボスチャット（task-tools.ts）とは別経路だが、同じ code を返す
@@ -23,20 +24,21 @@ const EVIDENCE_REQUIRED_ERROR_MESSAGE =
 /**
  * Creates the tasks sub-router, mounted under `/api/tasks` by the caller.
  *
- * `evidenceDir` is threaded through from `app.ts`'s `CreateAppOptions` to the
- * nested evidences router (機能仕様
- * docs/features/completion-evidence-enforcement.md 決定 1-a). It is only
- * read by the evidence file endpoints (`task-evidences-routes.ts`), never by
- * the task CRUD handlers below, so omitting it (as most existing tests that
+ * `evidenceStore` is threaded through from `core-app.ts`'s
+ * `CreateCoreAppOptions` to the nested evidences router (機能仕様
+ * docs/features/completion-evidence-enforcement.md 決定 1-a・
+ * docs/features/tauri-in-app-runtime.md「機能全体の設計」). It is only read
+ * by the evidence file endpoints (`task-evidences-routes.ts`), never by the
+ * task CRUD handlers below, so omitting it (as most existing tests that
  * don't touch evidences do) is harmless.
  */
-export function createTasksRouter(db: Database.Database, evidenceDir = ""): Hono {
+export function createTasksRouter(db: Database.Database, evidenceStore?: EvidenceStore): Hono {
   const tasks = new Hono();
 
   // Hono merges path params across `.route()` boundaries, so the nested
   // router's handlers can still read `:id` via `c.req.param("id")`
   // (verified directly against this Hono version before relying on it).
-  tasks.route("/:id/evidences", createTaskEvidencesRouter(db, evidenceDir));
+  tasks.route("/:id/evidences", createTaskEvidencesRouter(db, evidenceStore));
 
   tasks.get("/", (c) => {
     return c.json(listTasks(db));

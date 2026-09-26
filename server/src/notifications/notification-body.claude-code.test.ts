@@ -29,6 +29,12 @@ vi.mock("@anthropic-ai/claude-agent-sdk", () => ({
 }));
 
 const { generateNotificationBody } = await import("./notification-body.js");
+// 機能仕様 docs/features/tauri-in-app-runtime.md 実装計画①: `claude-client.ts`
+// はもうバックエンドを静的 import せず、レジストリ（`llm-backend-registry.ts`）
+// に登録された実装だけを使う。この開発者用の版のテストは `createApp`（登録の
+// 呼び出し元）を経由しないので、ここで明示的に登録する。
+const { registerDevLlmBackends } = await import("../llm/dev-llm-backends.js");
+registerDevLlmBackends();
 
 async function* toAsyncIterable<T>(items: T[]): AsyncGenerator<T> {
   for (const item of items) {

@@ -2,43 +2,47 @@ import type Anthropic from "@anthropic-ai/sdk";
 // Issue #118 の `resolveLlmBackend`（`createClaudeClient` の backend 既定の
 // 解決元）と、Issue #117 の `ApiMessageRequest`（thinking / outputConfig を
 // 含む api バックエンドのリクエスト型）は目的が異なり、両方必要（マージ解消）。
-import { resolveLlmBackend, type LlmBackend } from "../config.js";
+import { resolveLlmBackend, type LlmBackend, type AppEnv } from "../config.js";
+import { ClaudeCodeUnavailableError, CLAUDE_CODE_UNAVAILABLE_HINT } from "./llm-errors.js";
 import {
-  createApiClient,
-  streamApiMessage,
-  createApiMessage,
-  classifyApiError,
-  type ApiMessageRequest,
-} from "./backends/api-backend.js";
-import {
-  streamClaudeCodeMessage,
-  createClaudeCodeMessage,
-  buildClaudeCodeEnv,
-  ClaudeCodeUnavailableError,
-  CLAUDE_CODE_UNAVAILABLE_HINT,
-} from "./backends/claude-code-backend.js";
+  getLlmBackendImplementation,
+  type LlmDispatchHooks,
+  type ResolvedLlmRequest,
+} from "./llm-backend-registry.js";
 
 /** Re-exported so callers/tests can reference the FR-11 error type (and
- * Issue #118's switch-back guidance) without reaching into
- * `backends/claude-code-backend.js` directly — the facade is the intended
- * public surface (補足決定「FR-10 とエラーハンドリングの整合」already
- * documents `ClaudeCodeUnavailableError` as this module's `api` counterpart
- * to `MissingApiKeyError`). Imported as values (not just re-exported) above
- * so `dispatchStream`/`dispatchCreate` below can reference them directly. */
+ * Issue #118's switch-back guidance) without reaching into `llm-errors.js`
+ * directly — the facade is the intended public surface (補足決定「FR-10 と
+ * エラーハンドリングの整合」already documents `ClaudeCodeUnavailableError`
+ * as this module's `api` counterpart to `MissingApiKeyError`). 機能仕様
+ * docs/features/tauri-in-app-runtime.md 実装計画①: この2つは `claude-code`
+ * バックエンド固有の実装（Agent SDK を値 import する
+ * `backends/claude-code-backend.ts`）からではなく、Agent SDK を引き込まない
+ * `llm-errors.ts` から取る — このファサード自身が製品版のコアのバンドルへ
+ * 混入してよいモジュールであり続けるため（`core-entry.bundle.test.ts` が
+ * 固定する）。 */
 export { ClaudeCodeUnavailableError, CLAUDE_CODE_UNAVAILABLE_HINT };
-export type { ClaudeCodeUnavailableReason } from "./backends/claude-code-backend.js";
+export type { ClaudeCodeUnavailableReason } from "./llm-errors.js";
 
-/** FR-13 / AC-12: re-exported (like `ClaudeCodeUnavailableError` above) so
- * `server/src/index.ts`'s startup hook reaches the `claude-code` backend
- * through the facade rather than importing `backends/claude-code-backend.js`
- * directly — `server/src/llm/` treats this module as the intended public
- * surface (see this file's own doc comment and
- * docs/adr/0003-llm-backend-isolation.md's "組み込み方式"; self-review:
- * design-reviewer caught the direct import as the one non-facade caller). */
-export {
-  checkClaudeCodeAvailability,
-  nodeExecFileForAvailabilityCheck,
-} from "./backends/claude-code-backend.js";
+/**
+ * LLM バックエンドが未登録（`getLlmBackendImplementation` が見つけられない）
+ * ときに {@link createClaudeClient} が投げるエラー。製品版のコアのエントリ
+ * （`core-entry.ts`）はどのバックエンドも登録しない（オーナーの決定 Q4-c）
+ * ため、コアの `createCoreApp` からチャット等を呼んだ場合はこの経路に乗る
+ * — 呼び出し元の既存フォールバック・500 経路（`chat-messages-route.ts` 等の
+ * 汎用 `Error` catch）にそのまま乗る。
+ */
+export class LlmBackendNotRegisteredError extends Error {
+  constructor(backend: string) {
+    super(
+      `No LLM backend implementation is registered for "${backend}". ` +
+        "The caller (an entry module) must call a registration function " +
+        "(e.g. llm/dev-llm-backends.ts's registerDevLlmBackends()) before " +
+        "constructing a client for this backend.",
+    );
+    this.name = "LlmBackendNotRegisteredError";
+  }
+}
 
 /**
  * Facade over the LLM backends (`api` and, since Issue #79, `claude-code`)
@@ -170,21 +174,24 @@ export interface BossLlmMessage {
  *
  * Only the `api` backend validates `ANTHROPIC_API_KEY`; `claude-code`
  * performs no key check (FR-10).
+ *
+ * 機能仕様 docs/features/tauri-in-app-runtime.md 実装計画①: バックエンド
+ * ごとのクライアント構築（`buildClaudeCodeEnv`・`createApiClient`・
+ * `MissingApiKeyError` の判定）はこのファサードから直接呼ばず、
+ * `llm-backend-registry.ts` に登録された {@link LlmBackendImplementation}
+ * の `createClient` へ委譲する。未登録のバックエンド（製品版のコアのエントリ
+ * はどれも登録しない — オーナーの決定 Q4-c）を指定すると
+ * {@link LlmBackendNotRegisteredError} を投げる。
  */
 export function createClaudeClient(
-  env: NodeJS.ProcessEnv,
+  env: AppEnv,
   backend: LlmBackend = resolveLlmBackend(env),
 ): BossLlmClient {
-  if (backend === "claude-code") {
-    return { backend: "claude-code", env: buildClaudeCodeEnv(env) };
+  const implementation = getLlmBackendImplementation(backend);
+  if (!implementation) {
+    throw new LlmBackendNotRegisteredError(backend);
   }
-
-  const apiKey = env.ANTHROPIC_API_KEY;
-  if (!apiKey) {
-    throw new MissingApiKeyError();
-  }
-
-  return { backend: "api", client: createApiClient(apiKey) };
+  return implementation.createClient(env);
 }
 
 export interface ClaudeMessageRequest {
@@ -273,13 +280,16 @@ export interface StreamBossMessageOptions {
   signal?: AbortSignal;
 }
 
-/** Returns {@link ApiMessageRequest} rather than an inline structural copy of
+/** Returns {@link ResolvedLlmRequest} rather than an inline structural copy of
  * it so the two stay in sync by construction: adding a field on one side
  * without the other is now a compile error (self-review: design-reviewer
  * caught the duplicated shape when `thinking`/`outputConfig` widened it).
- * The import is type-only, so no runtime dependency is added in the
- * facade → backend direction that isn't already there. */
-function resolveRequest(request: ClaudeMessageRequest): ApiMessageRequest {
+ * `ResolvedLlmRequest` lives in `llm-backend-registry.ts` (a core module both
+ * this facade and every registered backend implementation share) rather than
+ * a backend-specific module, since 機能仕様
+ * docs/features/tauri-in-app-runtime.md 実装計画① removed this facade's
+ * static import of any backend module. */
+function resolveRequest(request: ClaudeMessageRequest): ResolvedLlmRequest {
   return {
     model: request.model ?? DEFAULT_MODEL,
     system: request.system,
@@ -310,8 +320,12 @@ function isToolUseBlock(block: BossContentBlock): block is BossToolUseBlock {
  * discipline (see that error type's own doc comment) — the static hint is
  * this module's way of surfacing actionable guidance without leaking
  * request/environment detail into logs. Shared by `dispatchStream` and
- * `dispatchCreate`'s `claude-code` branches so the behavior can't drift
- * between the streaming and non-streaming dispatch paths.
+ * `dispatchCreate` — applied uniformly across every registered backend
+ * (not gated on `client.backend === "claude-code"`) since 機能仕様
+ * docs/features/tauri-in-app-runtime.md 実装計画① made both functions
+ * backend-generic; the `instanceof` check below is a no-op for any error the
+ * `api` backend raises, so this stays behaviorally identical to the
+ * pre-refactor "only wrap the claude-code branch" version.
  */
 async function runClaudeCodeDispatch<T>(attempt: () => Promise<T>): Promise<T> {
   try {
@@ -364,6 +378,19 @@ function trackSideEffects(callbacks?: StreamBossMessageCallbacks): {
   return { trackedOnTextDelta, trackedExecuteTool, hasSideEffect: () => sideEffectOccurred };
 }
 
+/** Looks up the registered implementation for `backend`, throwing
+ * {@link LlmBackendNotRegisteredError} if none is registered — the same
+ * failure mode {@link createClaudeClient} raises, kept consistent so a
+ * `BossLlmClient` built before a backend was (hypothetically) unregistered
+ * fails the same way a fresh `createClaudeClient` call would. */
+function requireLlmBackendImplementation(backend: LlmBackend) {
+  const implementation = getLlmBackendImplementation(backend);
+  if (!implementation) {
+    throw new LlmBackendNotRegisteredError(backend);
+  }
+  return implementation;
+}
+
 /**
  * Dispatches a single streaming round, for either backend. The whole call —
  * for `claude-code`, the Agent SDK `query()` (including its own in-process
@@ -400,13 +427,21 @@ function trackSideEffects(callbacks?: StreamBossMessageCallbacks): {
  * {@link streamBossMessage}'s own round loop only *after* this call has
  * already resolved (Issue #78's "ツール実行主体の一本化" applies at the
  * facade's outer loop for `api`, not inside a single backend call the way
- * it does for `claude-code`'s in-process Agent SDK loop). So the `api`
- * branch below only wires `trackedOnTextDelta` from {@link trackSideEffects}
- * — there is no `trackedExecuteTool` to wire into `streamApiMessage` because
- * nothing in that function ever calls it. Each call to this function (i.e.
- * each `api` round in {@link streamBossMessage}'s tool-use loop) gets its
- * *own* fresh `hasSideEffect`/timeout budget — see that function's own doc
- * comment for the multi-round scope this implies.
+ * it does for `claude-code`'s in-process Agent SDK loop). 機能仕様
+ * docs/features/tauri-in-app-runtime.md 実装計画①: the `hooks` object built
+ * below is now passed uniformly to every registered backend's `streamRound`
+ * (it does include `executeTool`), but the `api` implementation's
+ * `streamRound` (`llm/dev-llm-backends.ts`) never reads it —
+ * `streamApiMessage` takes no `executeTool` parameter at all, so passing it
+ * through is harmless (self-review correction: an earlier version of this
+ * paragraph, written before the registry refactor, said "the `api` branch
+ * below only wires `trackedOnTextDelta`", describing this function's own
+ * per-backend `if` branches — those branches no longer exist here; the
+ * per-backend distinction now lives entirely inside each
+ * `LlmBackendImplementation`). Each call to this function (i.e. each `api`
+ * round in {@link streamBossMessage}'s tool-use loop) gets its *own* fresh
+ * `hasSideEffect`/timeout budget — see that function's own doc comment for
+ * the multi-round scope this implies.
  */
 async function dispatchStream(
   client: BossLlmClient,
@@ -414,39 +449,20 @@ async function dispatchStream(
   callbacks?: StreamBossMessageCallbacks,
   externalSignal?: AbortSignal,
 ): Promise<BossLlmMessage> {
-  if (client.backend === "claude-code") {
-    const resolved = resolveRequest(request);
-    const { trackedOnTextDelta, trackedExecuteTool, hasSideEffect } = trackSideEffects(callbacks);
-    return runClaudeCodeDispatch(() =>
-      runWithTimeoutAndRetry(
-        (signal) =>
-          streamClaudeCodeMessage(
-            {
-              model: resolved.model,
-              system: resolved.system,
-              messages: resolved.messages,
-              tools: resolved.tools,
-            },
-            {
-              onTextDelta: trackedOnTextDelta,
-              onToolEvent: callbacks?.onToolEvent,
-              executeTool: trackedExecuteTool,
-              signal,
-              env: client.env,
-            },
-          ),
-        hasSideEffect,
-        { signal: externalSignal },
-      ),
-    );
-  }
-
+  const implementation = requireLlmBackendImplementation(client.backend);
   const resolved = resolveRequest(request);
-  const { trackedOnTextDelta, hasSideEffect } = trackSideEffects(callbacks);
-  return runWithTimeoutAndRetry(
-    (signal) => streamApiMessage(client.client, resolved, trackedOnTextDelta, signal),
-    hasSideEffect,
-    { classifyError: classifyApiError, signal: externalSignal },
+  const { trackedOnTextDelta, trackedExecuteTool, hasSideEffect } = trackSideEffects(callbacks);
+  const hooks: LlmDispatchHooks = {
+    onTextDelta: trackedOnTextDelta,
+    onToolEvent: callbacks?.onToolEvent,
+    executeTool: trackedExecuteTool,
+  };
+  return runClaudeCodeDispatch(() =>
+    runWithTimeoutAndRetry(
+      (signal) => implementation.streamRound(client, resolved, hooks, signal),
+      hasSideEffect,
+      { classifyError: implementation.classifyError, signal: externalSignal },
+    ),
   );
 }
 
@@ -465,30 +481,14 @@ async function dispatchCreate(
   client: BossLlmClient,
   request: ClaudeMessageRequest,
 ): Promise<BossLlmMessage> {
-  if (client.backend === "claude-code") {
-    const resolved = resolveRequest(request);
-    return runClaudeCodeDispatch(() =>
-      runWithTimeoutAndRetry(
-        (signal) =>
-          createClaudeCodeMessage(
-            {
-              model: resolved.model,
-              system: resolved.system,
-              messages: resolved.messages,
-              tools: resolved.tools,
-            },
-            { signal, env: client.env },
-          ),
-        () => false,
-      ),
-    );
-  }
-
+  const implementation = requireLlmBackendImplementation(client.backend);
   const resolved = resolveRequest(request);
-  return runWithTimeoutAndRetry(
-    (signal) => createApiMessage(client.client, resolved, signal),
-    () => false,
-    { classifyError: classifyApiError },
+  return runClaudeCodeDispatch(() =>
+    runWithTimeoutAndRetry(
+      (signal) => implementation.createRound(client, resolved, signal),
+      () => false,
+      { classifyError: implementation.classifyError },
+    ),
   );
 }
 
@@ -543,6 +543,26 @@ async function dispatchCreate(
  * `AbortController`/`runWithTimeoutAndRetry` call above this loop and
  * reworking `hasSideEffect` to track side effects across rounds too — judged
  * out of Issue #176's scope (self-review: design-reviewer/code-reviewer).
+ *
+ * **Known scope boundary of 機能仕様 docs/features/tauri-in-app-runtime.md
+ * 実装計画①'s registry-based DI** (self-review: design-reviewer, PLAUSIBLE):
+ * this facade still branches on `client.backend === "claude-code"` (here)
+ * instead of the branch being owned entirely by `LlmBackendImplementation`.
+ * (`runClaudeCodeDispatch`, by contrast, does *not* branch on
+ * `client.backend` — self-review correction, 2周目: an earlier version of
+ * this paragraph said it did. It only recognizes the claude-code-specific
+ * `ClaudeCodeUnavailableError` type via `instanceof`, which is backend-name-
+ * agnostic and a no-op for any error the `api` implementation raises — see
+ * that function's own doc comment.) This was a deliberate, minimal-diff
+ * choice for S1: the tool-loop-ownership question ("does this backend run
+ * its own internal tool loop, or does the facade's outer loop own it?") is
+ * backend *behavior*, not backend *wiring* — the registry abstraction this
+ * ticket introduces is scoped to wiring (which implementation handles a
+ * given named backend), not to redesigning where tool-loop ownership lives.
+ * Moving it (e.g. an `ownsToolLoop` flag on `LlmBackendImplementation`) is
+ * left to whichever of #581/#582 next touches this loop — S1 only needed
+ * `claude-client.ts` to stop *importing* backend modules, not to stop
+ * knowing backend *names* exist.
  */
 export async function streamBossMessage(
   client: BossLlmClient,
@@ -721,12 +741,15 @@ export interface RetryTimeoutOptions {
    * side-effecting failure or an exhausted retry budget is never overridden
    * into "retry anyway" by this hook.
    *
-   * Only the `api` branches of {@link dispatchStream}/{@link dispatchCreate}
-   * pass one (`backends/api-backend.ts`'s `classifyApiError`). Every
-   * `claude-code` call site leaves it `undefined`, and every code path this
-   * hook touches is gated on it being set, so that backend keeps its
-   * pre-#224 behavior: always retry (until `maxRetries`/`hasSideEffect` says
-   * otherwise) with the plain exponential backoff (AC-3).
+   * Only the `api` `LlmBackendImplementation` (`llm/dev-llm-backends.ts`,
+   * wrapping `backends/api-backend.ts`'s `classifyApiError`) sets one —
+   * {@link dispatchStream}/{@link dispatchCreate} forward whatever
+   * `implementation.classifyError` they find (see
+   * `requireLlmBackendImplementation`), which is `undefined` for
+   * `claude-code`. Every code path this hook touches is gated on it being
+   * set, so `claude-code` keeps its pre-#224 behavior: always retry (until
+   * `maxRetries`/`hasSideEffect` says otherwise) with the plain exponential
+   * backoff (AC-3).
    */
   classifyError?: (error: unknown) => RetryDecision;
   /**

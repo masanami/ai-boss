@@ -9,9 +9,26 @@ import type {
   OnTextDelta,
   OnToolEvent,
 } from "../claude-client.js";
-import { SWITCH_TO_API_BACKEND_HINT } from "../../config.js";
 import { TASK_PRIORITIES, TASK_STATUSES } from "../../tasks/task.js";
 import { createTimedExecFile, type ExecFileFn } from "../../lib/exec-file.js";
+import {
+  ClaudeCodeUnavailableError,
+  CLAUDE_CODE_UNAVAILABLE_HINT,
+  type ClaudeCodeUnavailableReason,
+} from "../llm-errors.js";
+
+/**
+ * FR-11 のエラー型と案内文言（機能仕様 docs/features/tauri-in-app-runtime.md
+ * 実装計画①）は `../llm-errors.ts`（Agent SDK を引き込まない独立モジュール）
+ * が正本。このモジュールは値として再 export するのみで再定義しない —
+ * `llm/claude-client.ts`（コア）はこの `claude-code-backend.ts` を静的 import
+ * しなくなった（製品版のコアのバンドルに Agent SDK を混入させないため）ので、
+ * このモジュールが正本のままだとコア側が値を参照できなくなる。既存の
+ * `backends/claude-code-backend.js` から import しているテスト・呼び出し元
+ * との互換のため、ここでも同名で export し続ける。
+ */
+export { ClaudeCodeUnavailableError, CLAUDE_CODE_UNAVAILABLE_HINT };
+export type { ClaudeCodeUnavailableReason };
 
 /**
  * `claude-code` backend (Issue #79): calls the Claude Agent SDK
@@ -400,32 +417,6 @@ export interface ClaudeCodeAvailabilityCheckDeps {
 }
 
 /**
- * Static, secret-free guidance shown whenever the `claude-code` backend
- * (the default since Issue #118) turns out to be unavailable — either at
- * startup ({@link checkClaudeCodeAvailability}, best-effort) or at request
- * time ({@link ClaudeCodeUnavailableError}, surfaced by `claude-client.ts`'s
- * `dispatchStream`/`dispatchCreate`). Defined here (not in `claude-client.ts`)
- * and re-exported by that module's facade, because `claude-client.ts` already
- * imports from this module — defining it there and importing it back here
- * would create a circular import. Its switch-back sentence is imported from
- * `config.ts` (a leaf module that owns `LLM_BACKEND`'s semantics and imports
- * nothing) so `loadConfig`'s startup notice and this hint can't drift apart.
- *
- * Deliberately says "claude-code バックエンド" without claiming it is the
- * *default*: this fires for an explicit `LLM_BACKEND=claude-code` too, and
- * telling such an owner their `.env` setting isn't in effect would send them
- * chasing the wrong problem (self-review: code-reviewer).
- *
- * Deliberately static: per the "log class name only" discipline (see
- * `ClaudeCodeUnavailableError`'s own doc comment above), callers never log
- * `err.message`, so this is the only way to surface actionable guidance
- * without risking request/environment details leaking into logs.
- */
-export const CLAUDE_CODE_UNAVAILABLE_HINT =
-  "claude-code バックエンドが利用できません。Claude Code のインストール・ログイン状態を確認してください。" +
-  SWITCH_TO_API_BACKEND_HINT;
-
-/**
  * FR-13 / AC-12: best-effort startup check of the `claude-code` backend's
  * execution environment. Runs the shared executable path's `--version`
  * (never a token-consuming call — no prompt is sent) and never throws: every
@@ -516,49 +507,9 @@ export const nodeExecFileForAvailabilityCheck: ExecFileFn = createTimedExecFile(
 );
 
 // ---------------------------------------------------------------------------
-// FR-11: 実行環境不備の専用エラー型
+// FR-11: 実行環境不備の専用エラー型（定義は ../llm-errors.ts。このファイルの
+// 冒頭で再 export 済み）
 // ---------------------------------------------------------------------------
-
-/**
- * Distinguishes an execution-environment failure (Claude Code not
- * installed) from other, unclassified failures caught while running the
- * Agent SDK query. `"unknown"` also covers "not logged in / expired
- * credentials": the installed SDK version (0.3.231) exposes no dedicated
- * result subtype or error code for that case (verified by searching
- * `sdk.d.ts`/`sdk.mjs` for login/authentication-specific signals — none
- * found), so it cannot be distinguished from other unclassified failures
- * without guessing at stderr text. This is a recorded, deliberate
- * limitation (see the ticket's SDK-option research comment), not an
- * oversight — `reason` still lets a caller that wants to special-case "not
- * installed" do so.
- */
-export type ClaudeCodeUnavailableReason = "not_installed" | "unknown";
-
-/**
- * FR-11: dedicated error type for claude-code execution-*environment*
- * unavailability (not installed / not logged in), as opposed to an in-turn
- * execution failure such as hitting the max-turns cap (which keeps using
- * `ClaudeCodeBackendError` — see the `result` message handling in
- * `runClaudeCodeQuery` below). The existing call sites' generic `Error`
- * catches (chat route → HTTP 500; dashboard comment / notification body /
- * evening-summary extraction → template/fallback) handle this without any
- * change, since they all catch `Error` broadly (補足決定「FR-10 とエラー
- * ハンドリングの整合」).
- *
- * Every site that logs an error like this logs `error.name` only, never
- * `.message`/`.reason` (the existing "log class name only" discipline — see
- * `notifier.ts` and the chat route's catch comments), so `reason` is for
- * programmatic use only and is never written to a log.
- */
-export class ClaudeCodeUnavailableError extends Error {
-  readonly reason: ClaudeCodeUnavailableReason;
-
-  constructor(reason: ClaudeCodeUnavailableReason, message: string) {
-    super(message);
-    this.name = "ClaudeCodeUnavailableError";
-    this.reason = reason;
-  }
-}
 
 /** Classifies an error caught while iterating the Agent SDK's query stream
  * (i.e. a failure of the subprocess/environment itself, not a deliberate

@@ -1,5 +1,35 @@
-import { createHash } from "node:crypto";
 import type { Task } from "../tasks/task.js";
+
+/**
+ * 64bit FNV-1a を自前実装し hex 文字列で返す。`node:crypto` の `createHash`
+ * はブラウザ実行環境（Tauri の WebView）で解決できないため、コア到達可能な
+ * このモジュールでは使わない（機能仕様
+ * docs/features/tauri-in-app-runtime.md 仮定 A2）。`BigInt` は Web 標準。
+ *
+ * 暗号強度は要件でない — この関数の唯一の消費者
+ * （`boss-comment.ts`/`boss-comment-cache.ts`）はキャッシュキーとしてのみ
+ * 使う（仮定 A2）。ただし衝突の影響は「1回無駄に再生成する」ではない:
+ * `getCachedBossComment` はフィンガープリントが**一致すれば**キャッシュを
+ * 返すため、タスクの状態が変わったのに値が衝突すると、その日のうちは古い
+ * 「今日のひとこと」が出続ける（PR #598 レビューで訂正）。64bit の
+ * ハッシュで同じ日の中の 2 つの状態が衝突する確率は実用上無視できるため、
+ * 暗号学的ハッシュは使わない。ハッシュアルゴリズムの変更（sha256 → FNV-1a）
+ * によりキャッシュキーの値自体は変わるが、`computeTaskFingerprint` は不透明
+ * な文字列としてしか消費されないため、キャッシュは次回アクセス時に1回だけ
+ * 無効化されて再生成されるだけで、呼び出し元の契約は変わらない。
+ */
+function fnv1a64Hex(input: string): string {
+  const FNV_OFFSET_BASIS = 0xcbf29ce484222325n;
+  const FNV_PRIME = 0x100000001b3n;
+  const MASK_64_BIT = 0xffffffffffffffffn;
+
+  let hash = FNV_OFFSET_BASIS;
+  for (let i = 0; i < input.length; i++) {
+    hash ^= BigInt(input.charCodeAt(i));
+    hash = (hash * FNV_PRIME) & MASK_64_BIT;
+  }
+  return hash.toString(16).padStart(16, "0");
+}
 
 /**
  * Computes a deterministic fingerprint of task state (Issue #121, widened in
@@ -40,5 +70,5 @@ import type { Task } from "../tasks/task.js";
 export function computeTaskFingerprint(tasks: Task[]): string {
   const projection = tasks.map((task) => ({ ...task }));
 
-  return createHash("sha256").update(JSON.stringify(projection)).digest("hex");
+  return fnv1a64Hex(JSON.stringify(projection));
 }
