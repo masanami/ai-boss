@@ -20,6 +20,7 @@ AI が「上司（ボス）」を演じるセルフマネジメント支援ア�
 - **DRY**: 共通処理は再利用可能な関数・コンポーネントに抽出
 - **ローカルファースト**: 全データはローカル SQLite のみ。外部送信は Anthropic への推論リクエストだけ（不変制約）。既定の claude-code バックエンドはローカルの Claude Code 実行系を経由するが、この不変制約はビルトインツール無効化・セッション永続化無効化・テレメトリ／自動更新確認の無効化で担保する（[ADR 0001](docs/adr/0001-local-only-data-boundary.md)・[ADR 0003](docs/adr/0003-llm-backend-isolation.md)）
 - **秘密情報の分離**: `ANTHROPIC_API_KEY` は `server/.env` のみ。フロントエンドへ渡さない・コミットしない（claude-code バックエンドは API キーを子プロセス環境から明示除外する）（[ADR 0002](docs/adr/0002-api-key-and-llm-call-path.md)）
+  - 上の「ローカルファースト」「秘密情報の分離」は**現行（開発者用の版・`main`）の原則**である。製品版は [ADR 0011](docs/adr/0011-productization-architecture.md) と改訂後の ADR 0001〜0003（各 ADR 末尾の「改訂（2026-09-26）」）に従う
 - **検知ロジックは純粋関数**: サボり検知ルールエンジンは入力（activity_events 等）→ 出力の純粋関数として実装し、LLM は文面生成のみに使う
 
 ## 技術スタック
