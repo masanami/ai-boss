@@ -98,7 +98,7 @@
 
 - `server/src` を「実行環境に依存しないコア」と「Node の周辺（開発者用の版のエントリ・アダプタ）」に分ける。**コアは Node 組み込み（`node:*`）・`process`・`@hono/node-server`・Agent SDK・`@anthropic-ai/sdk` を値として import しない**。Node の周辺は `index.ts` と、DB 接続・静的配信・通知の実行・証跡ファイルの保存・LLM バックエンド（`claude-code`・`api`）のアダプタに限る。
 - 実行環境ごとの差（証跡ファイルの保存・通知の送信・LLM バックエンド・設定値）は、コアがポートとして受け取り、エントリが実装を注入する（通知は `NotifierDeps.execFile` で既に DI されている形を踏襲する）。
-- コアは Node のグローバル（`Buffer` など）も使わない。import と違ってバンドル時に解決されず、呼ばれた時点で初めて `ReferenceError` になるため、バンドルの検査では見つからない。実測では証跡のアップロードの経路が `Buffer.from`（`tasks/task-evidences-routes.ts`）を使い、保存のデータ型も `Buffer`（`tasks/evidence-storage.ts`）である。証跡の保存ポートが受け渡すバイト列は Web 標準の型（`Uint8Array`）にする（`Buffer` は `Uint8Array` の派生型なので、開発者用の版の実装はそのまま受け取れる）。
+- コアは Node のグローバル（`Buffer`・`process`・`require`・`__dirname`）も使わない。import と違ってバンドル時に解決されず、呼ばれた時点で初めて `ReferenceError` になるため、バンドルの検査では見つからない。実測では証跡のアップロードの経路が `Buffer.from`（`tasks/task-evidences-routes.ts`）を使い、保存のデータ型も `Buffer`（`tasks/evidence-storage.ts`）である。証跡の保存ポートが受け渡すバイト列は Web 標準の型（`Uint8Array`）にする（`Buffer` は `Uint8Array` の派生型なので、開発者用の版の実装はそのまま受け取れる）。
 - ディレクトリは当面 `server/` のまま動かさない（仮定 A1）。
 
 ### 移行の順序と並行運用（Q3・確定）
