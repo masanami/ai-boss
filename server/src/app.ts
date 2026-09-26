@@ -2,26 +2,23 @@ import { Hono } from "hono";
 import { serveStatic } from "@hono/node-server/serve-static";
 import { join } from "node:path";
 import type Database from "better-sqlite3";
-import { createTasksRouter } from "./tasks/tasks-routes.js";
-import { createSessionsRouter } from "./sessions/sessions-routes.js";
-import { createActivityRouter } from "./activity/activity-routes.js";
-import { createCheckinsRouter } from "./activity/checkins-routes.js";
-import { createDecisionsRouter } from "./decisions/decisions-routes.js";
-import { createDashboardRouter } from "./dashboard/dashboard-routes.js";
-import { createReportsRouter } from "./reports/reports-routes.js";
-import { createWorkLogsRouter } from "./reports/work-logs-routes.js";
-import { createSettingsRouter } from "./settings/settings-routes.js";
-import { createMeetingScheduleRouter } from "./meeting-schedule/meeting-schedule-routes.js";
-import { resolveLlmBackend, type LlmBackend } from "./config.js";
+import { createCoreApp } from "./core-app.js";
+import { createNodeFsEvidenceStore } from "./tasks/evidence-storage.js";
+import { registerDevLlmBackends } from "./llm/dev-llm-backends.js";
+import type { LlmBackend } from "./config.js";
 
-function checkDatabaseConnection(db: Database.Database): boolean {
-  try {
-    db.prepare("SELECT 1").get();
-    return true;
-  } catch {
-    return false;
-  }
-}
+/**
+ * 開発者用の版（現行の Node サーバー版）の合成ルート（機能仕様
+ * docs/features/tauri-in-app-runtime.md「機能全体の設計」・実装計画①②③）。
+ * `createCoreApp`（実行環境に依存しないコア）へ、Node 周辺の実装
+ * （`claude-code`/`api` の LLM バックエンド登録・証跡ファイルの Node fs
+ * 実装・`@hono/node-server/serve-static` による静的配信）を注入する。
+ *
+ * 製品版のコアのエントリ（`core-entry.ts`）はこのファイルを一切参照しない
+ * — `registerDevLlmBackends`（`claude-code` を含む）を呼ぶのはこのファイル
+ * と（必要なら）`index.ts` だけで、製品版には含まれない（オーナーの決定
+ * Q4-b・Q4-c）。
+ */
 
 export interface CreateAppOptions {
   /**
@@ -32,36 +29,26 @@ export interface CreateAppOptions {
    */
   staticRoot?: string;
   /**
-   * LLM backend for the chat (`sessions`) and re-adjudication (`decisions`)
-   * routes, resolved by the caller via `loadConfig(env).llmBackend`
-   * (`index.ts`) and threaded through to `createClaudeClient`. When omitted
-   * (most tests), it is resolved from `env` via `resolveLlmBackend(env)` —
-   * i.e. the caller's own `LLM_BACKEND`, falling back to
-   * `config.ts`'s `DEFAULT_LLM_BACKEND` when that is unset. Resolving from `env`
-   * rather than jumping straight to the static default (Issue #118) keeps
-   * this option consistent with `createClaudeClient`'s own default and with
-   * the three `resolveLlmBackend(env)` call sites below: an `env` that says
-   * `LLM_BACKEND=api` must not be silently routed to the subscription
-   * backend just because this option was left off (FR-12).
-   *
-   * Dashboard comment / notification-body / daily-report generation are not
-   * wired to this option — but they are still backend-aware: those call
-   * sites (`dashboard/boss-comment.ts`, `notifications/notification-body.ts`,
-   * `reports/generate-daily-report.ts` via `reports/extract-evening-summary.ts`)
-   * resolve the backend themselves via `resolveLlmBackend(env)` (Issue #79),
-   * since they already receive the full `env` independently of this
-   * `createApp` option.
+   * LLM backend for the chat and session-summary routes (`sessions`),
+   * resolved by the caller via `loadConfig(env).llmBackend` (`index.ts`) and
+   * threaded through to `createCoreApp`. When omitted (most tests), it is
+   * resolved from `env` via `resolveLlmBackend(env)` inside `createCoreApp`
+   * — i.e. the caller's own `LLM_BACKEND`, falling back to `config.ts`'s
+   * `DEFAULT_LLM_BACKEND` when that is unset. See
+   * `CreateCoreAppOptions.llmBackend`'s doc comment (`core-app.ts`) for which
+   * routes this option does and does not reach — `decisions` is read-only
+   * and never took a backend (self-review correction, 2周目: an earlier
+   * version of this doc comment listed it).
    */
   llmBackend?: LlmBackend;
   /**
    * Directory where task evidence files (attachments) are stored on disk
    * (機能仕様 docs/features/completion-evidence-enforcement.md 決定 1-a).
-   * Threaded through the same way as `staticRoot`: `index.ts` passes
-   * `resolveEvidenceDir(config.dbPath)` (`config.ts`), while tests pass a
-   * temp directory directly — `dbPath` may be `:memory:` in tests, from
-   * which no directory can be derived. Consumed by the evidence HTTP
-   * endpoints (`tasks/task-evidences-routes.ts`, #388) via
-   * `createTasksRouter`.
+   * `index.ts` passes `resolveEvidenceDir(config.dbPath)` (`config.ts`), while
+   * tests pass a temp directory directly. Converted to an `EvidenceStore`
+   * (`tasks/evidence-storage.ts`'s `createNodeFsEvidenceStore`) before being
+   * threaded through to `createCoreApp` — the core no longer accepts a raw
+   * directory path (機能仕様 docs/features/tauri-in-app-runtime.md 実装計画②）.
    */
   evidenceDir?: string;
 }
@@ -71,34 +58,41 @@ export interface CreateAppOptions {
  *
  * `env` defaults to `process.env` and is threaded through explicitly (so
  * tests can inject a fake environment without mutating global state) to
- * every router that needs Claude client resolution: sessions (chat),
- * decisions (re-adjudication), and dashboard (boss comment).
+ * `createCoreApp`, which in turn threads it to every router that needs
+ * Claude client resolution: sessions (chat and session summary) and
+ * dashboard (boss comment) — see `core-app.ts`'s doc comment for the full,
+ * corrected accounting (`decisions` never took `env`; self-review, 2周目).
+ * This default is safe here (unlike the old
+ * `createDashboardRouter`/`createReportsRouter` defaults removed in this same
+ * change) because `app.ts` is Node-only periphery, never part of the
+ * browser-bundled core (`core-entry.ts`) — see `core-app.ts`'s doc comment.
  */
 export function createApp(
   db: Database.Database,
   env: NodeJS.ProcessEnv = process.env,
   options: CreateAppOptions = {},
 ): Hono {
-  const api = new Hono();
-  const llmBackend: LlmBackend = options.llmBackend ?? resolveLlmBackend(env);
+  // 開発者用の版だけが `claude-code`/`api` を登録する（オーナーの決定
+  // Q4-b・Q4-c）。レジストリはモジュールレベルのグローバル状態なので、複数
+  // テストで `createApp` を繰り返し呼んでも安全（`Map#set` の冪等性）。
+  registerDevLlmBackends();
 
-  api.get("/health", (c) => {
-    return c.json({ status: "ok", db: checkDatabaseConnection(db) });
+  // `evidenceDir` 省略時は `evidenceStore` を渡さない（`undefined`）—
+  // コア（`tasks/task-evidences-routes.ts`）の「evidenceStore 未設定なら
+  // 500」という一本化された経路に乗せる。以前は空文字列を Node fs 実装へ
+  // 渡していたため、実際にファイル evidence エンドポイントを呼ぶと
+  // `mkdirSync("")` が ENOENT を投げて未処理例外になっていた
+  // （self-review: code-reviewer/design-reviewer 双方が CONFIRMED/PLAUSIBLE
+  // — どのテストにも依存されていない経路だが、コアが新設した「未設定」の
+  // 扱いが2通り併存するのは避ける）。
+  const evidenceStore = options.evidenceDir
+    ? createNodeFsEvidenceStore(options.evidenceDir)
+    : undefined;
+
+  const app = createCoreApp(db, env, {
+    llmBackend: options.llmBackend,
+    evidenceStore,
   });
-
-  api.route("/tasks", createTasksRouter(db, options.evidenceDir));
-  api.route("/sessions", createSessionsRouter(db, env, llmBackend));
-  api.route("/checkins", createCheckinsRouter(db));
-  api.route("/activity", createActivityRouter(db));
-  api.route("/decisions", createDecisionsRouter(db));
-  api.route("/dashboard", createDashboardRouter(db, env));
-  api.route("/reports", createReportsRouter(db, env));
-  api.route("/work-logs", createWorkLogsRouter(db));
-  api.route("/settings", createSettingsRouter(db));
-  api.route("/meeting-schedule", createMeetingScheduleRouter(db));
-
-  const app = new Hono();
-  app.route("/api", api);
 
   if (options.staticRoot) {
     const { staticRoot } = options;

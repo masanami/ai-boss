@@ -1,5 +1,3 @@
-import { dirname, join } from "node:path";
-
 const DEFAULT_PORT = 8787;
 const DEFAULT_DB_PATH = "./data/ai-boss.db";
 /** Default backend used by `loadConfig`, re-exported so callers that need a
@@ -36,6 +34,18 @@ export interface AppConfig {
   hasAnthropicApiKey: boolean;
   llmBackend: LlmBackend;
 }
+
+/**
+ * `NodeJS.ProcessEnv` の代わりにコア（実行環境非依存のモジュール群）が使う
+ * 環境変数の型（機能仕様 docs/features/tauri-in-app-runtime.md「機能全体の
+ * 設計」）。`NodeJS.ProcessEnv` は型としては実質同じ形（`[key: string]:
+ * string | undefined`）で、型注釈そのものはバンドルの esbuild 入力に現れず
+ * 実行時にも影響しない（型は erased されるため）ので既存関数のシグネチャは
+ * 変更していない — ここでは `createCoreApp`（`core-app.ts`）のように
+ * 「`process.env` を暗黙の既定値にしない」ことを型で示したい新しい境界に
+ * 限って使う。
+ */
+export type AppEnv = Record<string, string | undefined>;
 
 function resolvePort(env: NodeJS.ProcessEnv): number {
   if (!env.PORT) {
@@ -87,6 +97,38 @@ export function resolveLlmBackend(env: NodeJS.ProcessEnv): LlmBackend {
 }
 
 /**
+ * `node:path` の `dirname` 相当の自前実装（機能仕様
+ * docs/features/tauri-in-app-runtime.md「機能全体の設計」: `node:path` は
+ * ブラウザ実行環境で解決できないため、コア到達可能なモジュールでは使わない。
+ * `config.ts` は `llm/claude-client.ts` 等コアの広い範囲から import される
+ * ため、`resolveEvidenceDir` を Node 周辺へ動かすより自前実装のほうが
+ * 変更点が小さい）。意味論: 最後の `/` の直前までをディレクトリ部とする
+ * （区切りが無ければ `"."`、先頭の `/` のみなら `"/"`）。
+ */
+function dirnameOf(filePath: string): string {
+  const lastSlash = filePath.lastIndexOf("/");
+  if (lastSlash === -1) {
+    return ".";
+  }
+  if (lastSlash === 0) {
+    return "/";
+  }
+  return filePath.slice(0, lastSlash);
+}
+
+/** `node:path` の `join(dir, name)` に相当する最小限の結合。`dir` が `"."`
+ * なら `name` だけを返し（`path.join(".", "evidence")` と同じ）、`"./"`
+ * 始まりの相対パスは正規化して落とす（`path.join` が `./` を畳み込む挙動に
+ * 合わせる — `resolveEvidenceDir` の既存テストが期待する形）。 */
+function joinDirWithName(dir: string, name: string): string {
+  const normalized = dir.startsWith("./") ? dir.slice(2) : dir;
+  if (normalized === "" || normalized === ".") {
+    return name;
+  }
+  return normalized.endsWith("/") ? `${normalized}${name}` : `${normalized}/${name}`;
+}
+
+/**
  * Derives the evidence storage directory from the DB file path (機能仕様
  * docs/features/completion-evidence-enforcement.md 決定 1-a): a sibling
  * `evidence/` directory next to the SQLite file, so no new environment
@@ -96,7 +138,7 @@ export function resolveLlmBackend(env: NodeJS.ProcessEnv): LlmBackend {
  * directly instead of calling this function).
  */
 export function resolveEvidenceDir(dbPath: string): string {
-  return join(dirname(dbPath), "evidence");
+  return joinDirWithName(dirnameOf(dbPath), "evidence");
 }
 
 export function loadConfig(env: NodeJS.ProcessEnv): AppConfig {

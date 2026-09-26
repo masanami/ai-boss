@@ -50,6 +50,7 @@ const {
   createClaudeClient,
   MissingApiKeyError,
   LlmTimeoutError,
+  LlmBackendNotRegisteredError,
   ClaudeCodeUnavailableError,
   CLAUDE_CODE_UNAVAILABLE_HINT,
   DEFAULT_MODEL,
@@ -60,6 +61,16 @@ const {
   requestVerdict,
   runWithTimeoutAndRetry,
 } = await import("./claude-client.js");
+const { resetLlmBackendRegistryForTest } = await import("./llm-backend-registry.js");
+// 機能仕様 docs/features/tauri-in-app-runtime.md 実装計画①: `claude-client.ts`
+// はもう `backends/*.ts` を静的 import しない。この facade のテストは
+// `createApp`（登録の呼び出し元）を経由せず `createClaudeClient` を直接
+// 呼ぶので、ここで明示的に開発者用の版のバックエンドを登録する — 上の
+// `vi.mock("./backends/claude-code-backend.js", ...)` は解決済みモジュール
+// パス単位で効くため、`registerDevLlmBackends` 経由の import もモックされた
+// `streamClaudeCodeMessage`/`createClaudeCodeMessage` を受け取る。
+const { registerDevLlmBackends } = await import("./dev-llm-backends.js");
+registerDevLlmBackends();
 // Issue #224: used to build real `APIError`-shaped errors (status +
 // `Retry-After` header) for the api-branch retry-wiring tests below — same
 // technique `api-backend.test.ts` uses for `isRetryableApiError`/
@@ -143,6 +154,24 @@ beforeEach(() => {
 });
 
 describe("createClaudeClient", () => {
+  // self-review（code-reviewer, CONFIRMED）: LlmBackendNotRegisteredError
+  // — 製品版のコアのエントリ（core-entry.ts）はどのバックエンドも登録しない
+  // ため実際に通る経路（オーナーの決定 Q4-c）——には、それまでテストが
+  // 無かった。レジストリを一時的にリセットして再現し、他のテストへ影響
+  // しないよう `finally` で必ず開発者用の版のバックエンドを再登録する
+  // （このファイルの他の全テストは登録済みの前提で動く）。
+  it("throws LlmBackendNotRegisteredError when no implementation is registered for the backend (製品版のコアのエントリが実際に通る経路)", () => {
+    resetLlmBackendRegistryForTest();
+    try {
+      expect(() => createClaudeClient({}, "claude-code")).toThrow(LlmBackendNotRegisteredError);
+      expect(() => createClaudeClient({ ANTHROPIC_API_KEY: "sk-ant-test-key" }, "api")).toThrow(
+        LlmBackendNotRegisteredError,
+      );
+    } finally {
+      registerDevLlmBackends();
+    }
+  });
+
   it("throws MissingApiKeyError when ANTHROPIC_API_KEY is not set (api backend explicit)", () => {
     expect(() => createClaudeClient({}, "api")).toThrow(MissingApiKeyError);
   });
