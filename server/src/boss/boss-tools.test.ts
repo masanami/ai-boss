@@ -38,7 +38,7 @@ describe("executeBossTool", () => {
     const result = await executeBossTool(portFor(db), sessionId, "create_task", { title: "資料作成" });
 
     expect(result.isError).toBe(false);
-    expect((await listTasks(portFor(db)))).toHaveLength(1);
+    expect(await listTasks(portFor(db))).toHaveLength(1);
   });
 
   it("dispatches record_decision to the decision tool, using the given session id", async () => {
@@ -92,7 +92,7 @@ describe("executeBossTool", () => {
       });
 
       expect(result.isError).toBe(true);
-      expect((await listTasks(portFor(db)))).toHaveLength(0);
+      expect(await listTasks(portFor(db))).toHaveLength(0);
     });
   });
 

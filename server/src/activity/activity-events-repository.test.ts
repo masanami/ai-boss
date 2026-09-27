@@ -331,7 +331,7 @@ describe("findLatestEvent", () => {
   });
 
   it("returns undefined when there are no events", async () => {
-    expect((await findLatestEvent(portFor(db)))).toBeUndefined();
+    expect(await findLatestEvent(portFor(db))).toBeUndefined();
   });
 
   it("returns the most recently created event", async () => {

@@ -273,7 +273,7 @@ describe("listDecisions", () => {
   });
 
   it("returns an empty array when there are no decisions", async () => {
-    expect((await listDecisions(portFor(db)))).toEqual([]);
+    expect(await listDecisions(portFor(db))).toEqual([]);
   });
 
   it("returns all decisions ordered by created_at descending", async () => {

@@ -101,7 +101,7 @@ async function checkPrerequisite(
   db: Db,
   now: Date,
   eveningSessionId: number | undefined,
-): Promise< { ok: true; session: Session } | { ok: false; code: "evening_session_required" }> {
+): Promise<{ ok: true; session: Session } | { ok: false; code: "evening_session_required" }> {
   const session = await resolveTargetEveningSession(db, now, eveningSessionId);
   if (!session || session.ended_at === null) {
     return { ok: false, code: "evening_session_required" };

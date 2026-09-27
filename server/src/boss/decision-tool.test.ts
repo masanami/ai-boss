@@ -60,7 +60,7 @@ describe("executeRecordDecisionTool", () => {
 
     expect(result.isError).toBe(true);
     expect(result.content).toContain("content");
-    expect((await listDecisions(portFor(db)))).toHaveLength(0);
+    expect(await listDecisions(portFor(db))).toHaveLength(0);
   });
 
   it("persists rationale when provided", async () => {
@@ -114,6 +114,6 @@ describe("executeRecordDecisionTool", () => {
 
     expect(result.isError).toBe(true);
     expect(result.content).toContain("9999");
-    expect((await listDecisions(portFor(db)))).toHaveLength(0);
+    expect(await listDecisions(portFor(db))).toHaveLength(0);
   });
 });

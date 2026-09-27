@@ -32,21 +32,26 @@ export async function upsertDailyReport(
 ): Promise<DailyReport> {
   const now = new Date().toISOString();
 
-  await db.run(
-    `INSERT INTO daily_reports (date, content, evening_session_id, created_at, updated_at)
-     VALUES (?, ?, ?, ?, ?)
-     ON CONFLICT(date) DO UPDATE SET
-       content = excluded.content,
-       evening_session_id = excluded.evening_session_id,
-       updated_at = excluded.updated_at`,
-    [record.date, record.content, record.evening_session_id, now, now],
-  );
+  // UPSERT と読み戻しを 1 つのトランザクションで行う（#606 self-review）:
+  // 別々だと、同じ日付の並行する生成の UPSERT が間に入り、相手の行を読み戻して
+  // 返しうる。
+  return db.transaction(async (tx) => {
+    await tx.run(
+      `INSERT INTO daily_reports (date, content, evening_session_id, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?)
+       ON CONFLICT(date) DO UPDATE SET
+         content = excluded.content,
+         evening_session_id = excluded.evening_session_id,
+         updated_at = excluded.updated_at`,
+      [record.date, record.content, record.evening_session_id, now, now],
+    );
 
-  const report = await findDailyReportByDate(db, record.date);
-  if (!report) {
-    throw new Error("failed to read back the upserted daily report");
-  }
-  return report;
+    const report = await findDailyReportByDate(tx, record.date);
+    if (!report) {
+      throw new Error("failed to read back the upserted daily report");
+    }
+    return report;
+  });
 }
 
 /**

@@ -25,7 +25,7 @@ describe("loadDetectionSettings", () => {
   });
 
   it("returns DEFAULT_DETECTION_SETTINGS when no settings rows exist (Issue #38 explicit assumptions)", async () => {
-    expect((await loadDetectionSettings(portFor(db)))).toEqual(DEFAULT_DETECTION_SETTINGS);
+    expect(await loadDetectionSettings(portFor(db))).toEqual(DEFAULT_DETECTION_SETTINGS);
   });
 
   it("overrides working hours, meeting times, fallback minutes, and escalation intervals from settings", async () => {

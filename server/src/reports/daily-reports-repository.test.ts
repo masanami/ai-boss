@@ -121,7 +121,7 @@ describe("daily-reports-repository", () => {
 
   describe("listDailyReports", () => {
     it("returns an empty array when there are no reports", async () => {
-      expect((await listDailyReports(portFor(db)))).toEqual([]);
+      expect(await listDailyReports(portFor(db))).toEqual([]);
     });
 
     it("returns only date/created_at/updated_at (no content), ordered by date descending", async () => {

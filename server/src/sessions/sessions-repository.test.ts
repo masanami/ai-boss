@@ -82,7 +82,7 @@ describe("sessions repository", () => {
 
   describe("listSessions", () => {
     it("returns an empty array when no sessions exist", async () => {
-      expect((await listSessions(portFor(db)))).toEqual([]);
+      expect(await listSessions(portFor(db))).toEqual([]);
     });
 
     it("orders sessions by started_at descending, id descending as tie-breaker", async () => {

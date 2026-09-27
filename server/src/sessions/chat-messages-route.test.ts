@@ -1765,7 +1765,7 @@ describe("POST /api/sessions/:id/messages", () => {
     const toolPayload = JSON.parse(toolEvent!.data) as { isError: boolean };
     expect(toolPayload.isError).toBe(true);
     expect(streamBossMessageMock).toHaveBeenCalledTimes(1);
-    expect((await listDecisions(portFor(db)))).toHaveLength(0);
+    expect(await listDecisions(portFor(db))).toHaveLength(0);
   });
 
   it("marks the tool result as an error and still finalizes when the tool call is invalid", async () => {
@@ -1828,7 +1828,7 @@ describe("POST /api/sessions/:id/messages", () => {
     });
     const events = parseSseEvents(await res.text());
 
-    expect((await listTasks(portFor(db)))).toHaveLength(1);
+    expect(await listTasks(portFor(db))).toHaveLength(1);
 
     const doneEvent = events.find((e) => e.event === "done");
     const bossMessage = JSON.parse(doneEvent!.data) as Message;
