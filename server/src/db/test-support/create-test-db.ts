@@ -31,8 +31,9 @@ export async function createTestDb(): Promise<{ db: DbPort; raw: Database.Databa
  * operation right after a matching statement, or throw to make that
  * statement fail (#603).
  *
- * All DB access in such a test must go through this `db`: `portFor(raw)` is
- * a *different* port (different lock, no hooks).
+ * The port is registered via `trackPort`, so `portFor(raw)` returns this same
+ * hooked port (same lock, same hooks) — helpers that call `portFor(raw)` stay
+ * on the one lock.
  */
 export async function createHookedTestDb(): Promise<{
   db: DbPort;

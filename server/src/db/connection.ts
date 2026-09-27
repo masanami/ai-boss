@@ -39,11 +39,10 @@ export function openDatabase(dbPath: string): Database.Database {
 // ---------------------------------------------------------------------------
 
 /**
- * better-sqlite3 は**型としてのみ** import する（値としては import しない
- * — 実際の生の接続 `raw` は呼び出し元が用意して渡す。「Node の周辺」の
- * モジュールとして、コアのバンドル検査
- * `server/src/core-entry.bundle.test.ts` の対象外にする設計
- * ・機能仕様 docs/features/async-db-layer.md）。
+ * このモジュールは better-sqlite3 を値として import する「Node の周辺」の
+ * モジュールであり、コア（`core-entry.ts` から到達するモジュール）からは
+ * import しない（コアのバンドル検査 `server/src/core-entry.bundle.test.ts`
+ * が better-sqlite3 の混入を検出する・機能仕様 docs/features/async-db-layer.md）。
  *
  * 1本の接続 `raw` の上で文を実行するだけの {@link DbDriver} 実装。ロック・
  * トランザクションの意味は持たない（直列化層 `serialized-db.ts` の責務）。
@@ -76,13 +75,14 @@ const portsByRawConnection = new WeakMap<Database.Database, DbPort>();
 
 /**
  * `raw`（better-sqlite3 の生の接続）1本の上に、直列化された非同期の
- * {@link DbPort} を組み立てる。開発者用の版の唯一の DB 生成経路になる想定
- * （#601 時点では既存呼び出し元からはまだ使われない）。
+ * {@link DbPort} を組み立てる。開発者用の版の唯一の DB 生成経路（`index.ts`
+ * が接続 1 本の上にこのポート 1 つを作り、マイグレーション・API・スケジューラ
+ * で共有する）。
  *
  * **同じ `raw` に対しては、常に同じ `DbPort`（＝同じ直列化ロック）を返す**
  * （`raw` ごとに `WeakMap` でキャッシュする）。この保証が無いと、ある経路が
- * `createBetterSqlite3Port(raw)` を、別の経路（`transitional-bridge.ts` の
- * `portFor(raw)` 等）が独立にポートを作った場合に、同じ接続の上に別々の
+ * `createBetterSqlite3Port(raw)` を、別の経路（テスト補助
+ * `test-support/port-for.ts` の `portFor(raw)` 等）が独立にポートを作った場合に、同じ接続の上に別々の
  * ロックが2本できてしまい、決定1の「直列化層でトランザクションを1つずつ
  * 通す」が黙って崩れる（self-review・design-reviewer 指摘・CONFIRMED相当:
  * `portFor` はこのキャッシュに乗るため、`portFor` 経由と直接呼び出しを

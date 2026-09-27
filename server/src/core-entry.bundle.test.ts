@@ -34,6 +34,8 @@ const FORBIDDEN_PACKAGE_SUBSTRINGS = [
   "@anthropic-ai/claude-agent-sdk",
   "@hono/node-server",
   "@anthropic-ai/sdk",
+  // #597 AC-1: better-sqlite3 実装（`db/connection.ts`）は Node の周辺にだけ置く。
+  "better-sqlite3",
 ] as const;
 
 const FORBIDDEN_CLAUDE_CODE_BACKEND_SUBSTRING = "llm/backends/claude-code-backend.ts";
