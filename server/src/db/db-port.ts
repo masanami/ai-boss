@@ -122,7 +122,11 @@ export interface Db {
  * トップレベルの `transaction(fn)` の後始末の `ROLLBACK` 自体が失敗すると、
  * トランザクション状態が不明になったとみなし、このポート**全体**が使用不可
  * になる（以後どの操作を呼んでも例外になる。再接続・自動回復はしない。
- * #617・`serialized-db.ts` の `TxState.rollbackFailure` と同じ理屈）。 */
+ * #617・`serialized-db.ts` の `TxState.rollbackFailure` と同じ理屈）。
+ * `BEGIN IMMEDIATE` が失敗した場合も、その後の後始末でトランザクションが
+ * 開いたまま残っていないことを確かめられなければ同様に使用不可になる
+ * （#623）。確かめられた場合（実行前に拒否された `SQLITE_BUSY` 等）は
+ * `BEGIN` の元の例外を投げるだけで、ポートは使用可能なまま。 */
 export type DbPort = Db;
 
 /** `transaction(fn)` の中で `fn` に渡されるハンドル。`Db` と同じ操作を持つ

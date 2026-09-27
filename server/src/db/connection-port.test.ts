@@ -1,3 +1,6 @@
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import Database from "better-sqlite3";
 import { createBetterSqlite3Driver, createBetterSqlite3Port } from "./connection.js";
@@ -158,5 +161,32 @@ describe("createBetterSqlite3Port — self-review で見つかった回帰: raw 
 
     expect(order).toEqual(["tx:before-await", "tx:after-await", "concurrent:done"]);
     raw.close();
+  });
+});
+
+describe("createBetterSqlite3Port — #623: 実際の SQLITE_BUSY で BEGIN IMMEDIATE が失敗しても、ポートは使用不可にならない", () => {
+  it("別の接続が書き込みロックを持っている間の transaction は SQLITE_BUSY で失敗するが、ロックが外れた後の transaction は正常にコミットされる", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "ai-boss-623-"));
+    const path = join(dir, "busy.sqlite");
+    const raw = new Database(path, { timeout: 0 });
+    raw.exec(`CREATE TABLE items (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL)`);
+    const other = new Database(path, { timeout: 0 });
+    try {
+      const db = createBetterSqlite3Port(raw);
+
+      other.exec("BEGIN IMMEDIATE");
+      await expect(db.transaction(async () => "should-not-run")).rejects.toMatchObject({ code: "SQLITE_BUSY" });
+      expect(raw.inTransaction).toBe(false);
+      other.exec("ROLLBACK");
+
+      await db.transaction(async (tx) => {
+        await tx.run("INSERT INTO items (name) VALUES (?)", ["after-busy"]);
+      });
+      expect(other.prepare("SELECT name FROM items").all()).toEqual([{ name: "after-busy" }]);
+    } finally {
+      other.close();
+      raw.close();
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });
