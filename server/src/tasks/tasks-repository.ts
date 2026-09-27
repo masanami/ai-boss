@@ -68,10 +68,9 @@ export async function findTaskById(
  * Inserts a new task with server-managed timestamps and returns the
  * persisted row (all columns, as read back from the database).
  *
- * Does not itself enforce the evidence gate (決定 2-h) — `POST /api/tasks`
- * (the only real-code call site that can create a task directly `done`,
- * since `TaskForm` never sends `status` and the `create_task` boss tool's
- * schema has no `status` field either) checks {@link isEvidenceGateBlocking}
+ * Does not itself enforce the evidence gate (決定 2-h) — the task-creation
+ * entry points (`POST /api/tasks` and the boss's `create_task` tool) go
+ * through {@link createTask}, which checks {@link isEvidenceGateBlocking}
  * before calling this function.
  */
 export async function insertTask(
@@ -117,6 +116,44 @@ export async function insertTask(
   return task;
 }
 
+export type CreateTaskResult =
+  | { ok: true; task: Task }
+  | { ok: false; reason: "evidence_required" };
+
+/**
+ * Creates a task through the completion-evidence gate（機能仕様
+ * docs/features/completion-evidence-enforcement.md 決定 2-h: 作成時に直接
+ * `done` にする経路も同じ判定にする）. Both task-creation entry points —
+ * `POST /api/tasks` and the boss's `create_task` tool — call this, so the
+ * rule can't drift between them (Issue #619: the tool used to call
+ * {@link insertTask} directly and could create a `done` task with zero
+ * evidence). The tool's schema has no `status`, but `validateCreateTaskInput`
+ * accepts one, so an LLM passing `status: "done"` outside the schema reaches
+ * here too.
+ *
+ * The gate check (which reads the evidence-enforcement setting) and the
+ * insert run in one transaction（#604・決定 2 の全数監査: 判定と書き込みの間
+ * に設定の保存を挟ませない）. On rejection nothing is written.
+ */
+export async function createTask(
+  db: Db,
+  record: NewTaskRecord,
+): Promise<CreateTaskResult> {
+  return db.transaction(async (tx) => {
+    // taskId: null は「まだ存在しないタスク＝エビデンス件数は常に0」を表す。
+    if (
+      record.status === "done" &&
+      (await isEvidenceGateBlocking(tx, {
+        taskId: null,
+        evidenceRequired: record.evidence_required ?? false,
+      }))
+    ) {
+      return { ok: false, reason: "evidence_required" } as const;
+    }
+    return { ok: true, task: await insertTask(tx, record) } as const;
+  });
+}
+
 export interface TaskPatch {
   title?: string;
   description?: string | null;
@@ -142,15 +179,15 @@ export interface TaskPatch {
  * because the evidence-enforcement setting is on, the task requires
  * evidence, and it has none yet.
  *
- * `taskId: null` represents the create path (`POST /api/tasks` creating a
+ * `taskId: null` represents the create path ({@link createTask} creating a
  * task directly with `status: "done"`) — a task that doesn't exist yet can
  * never have evidence attached, so the count is treated as 0 without a
  * lookup. `taskId` a number represents the update path (`updateTask`),
  * where the task's actual attached-evidence count is read.
  *
  * Called from exactly two places (決定 2-h: "関門を2つに増やすのではなく、
- * 1つの述語を2箇所から呼ぶ"): `tasks-routes.ts`'s `POST /api/tasks` handler,
- * and `updateTask` below.
+ * 1つの述語を2箇所から呼ぶ"): {@link createTask} (shared by `POST /api/tasks`
+ * and the boss's `create_task` tool), and `updateTask` below.
  */
 export async function isEvidenceGateBlocking(
   db: Db,

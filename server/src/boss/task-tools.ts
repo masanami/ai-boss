@@ -1,7 +1,7 @@
 import type Anthropic from "@anthropic-ai/sdk";
 import type { Db } from "../db/db-port.js";
 import { TASK_PRIORITIES, TASK_STATUSES } from "../tasks/task.js";
-import { insertTask, updateTask } from "../tasks/tasks-repository.js";
+import { createTask, updateTask } from "../tasks/tasks-repository.js";
 import {
   COMMITMENT_REQUIRES_TODO_ERROR,
   validateCreateTaskInput,
@@ -106,6 +106,13 @@ export interface ToolExecutionResult {
   isError: boolean;
 }
 
+// 決定 2-e: ボスチャット経由の拒否は既存のエラー返却様式で理由文字列を
+// 返すだけでよい（専用の仕組みを足さない）。ツール結果は会話へ戻るため、
+// この文言をボスがそのままユーザーへ伝える形になる。create_task・update_task
+// の両方の関門拒否で使う。
+const EVIDENCE_REQUIRED_TOOL_ERROR =
+  "エビデンスが添付されていないため、このタスクを完了にできません。";
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null;
 }
@@ -119,8 +126,13 @@ async function executeCreateTask(
     return { content: result.error, isError: true };
   }
 
-  const task = await insertTask(db, result.data);
-  return { content: JSON.stringify(task), isError: false };
+  // 決定 2-h / Issue #619: POST /api/tasks と同じ関門（同じトランザクション
+  // 内の判定）を通す。拒否の文言は update_task の関門拒否と同じにする。
+  const createResult = await createTask(db, result.data);
+  if (!createResult.ok) {
+    return { content: EVIDENCE_REQUIRED_TOOL_ERROR, isError: true };
+  }
+  return { content: JSON.stringify(createResult.task), isError: false };
 }
 
 async function executeUpdateTask(
@@ -152,14 +164,7 @@ async function executeUpdateTask(
         isError: true,
       };
     }
-    // 決定 2-e: ボスチャット経由の拒否は既存のエラー返却様式で理由文字列を
-    // 返すだけでよい（専用の仕組みを足さない）。ツール結果は会話へ戻るため、
-    // この文言をボスがそのままユーザーへ伝える形になる。
-    return {
-      content:
-        "エビデンスが添付されていないため、このタスクを完了にできません。",
-      isError: true,
-    };
+    return { content: EVIDENCE_REQUIRED_TOOL_ERROR, isError: true };
   }
 
   return { content: JSON.stringify(updateResult.task), isError: false };

@@ -228,7 +228,7 @@ ALTER TABLE tasks ADD COLUMN evidence_required INTEGER NOT NULL DEFAULT 0;
 
 **導出決定 2-g: web の API 層はエラーの `code` を保持する。** 現在の `web/src/tasks-api.ts` は `{ error }` の文言だけを `Error` にして投げるため `code` で分岐できない。`web/src/daily-reports-api.ts` の `ReportApiError`（`message` + `code`）と同じ形のエラークラスをタスク API 側にも用意し、UI は文言でなく `code` で分岐する（[ADR 0008](../adr/0008-evening-dialogue-prerequisite.md) 決定 2 と同じ規律）。
 
-**導出決定 2-h: 作成時に直接 `done` にする経路も同じ判定にする。** `POST /api/tasks` は `status: "done"` を受け付ける（`insertTask` は `record.status === "done"` で `completed_at` を入れる。`tasks-repository.ts:45`）。新規タスクにエビデンスは付けられないので、設定 ON で `evidence_required: true` かつ `status: "done"` の作成は必ず「エビデンス 0 件で `done`」になる。関門の判定式を共有の純粋述語に切り出し、`insertTask` 経路からも同じ `code: "evidence_required"` で 409 を返す。**関門を 2 つに増やすのではなく、1 つの述語を 2 箇所から呼ぶ**（この経路は UI からは到達しない — `TaskForm` は `status` を送らず、`create_task` ツールのスキーマにも `status` は無い）。
+**導出決定 2-h: 作成時に直接 `done` にする経路も同じ判定にする。** `POST /api/tasks` は `status: "done"` を受け付ける（`insertTask` は `record.status === "done"` で `completed_at` を入れる。`tasks-repository.ts:45`）。新規タスクにエビデンスは付けられないので、設定 ON で `evidence_required: true` かつ `status: "done"` の作成は必ず「エビデンス 0 件で `done`」になる。関門の判定式を共有の純粋述語に切り出し、`insertTask` 経路からも同じ `code: "evidence_required"` で 409 を返す。**関門を 2 つに増やすのではなく、1 つの述語を 2 箇所から呼ぶ**（この経路は UI からは到達しない — `TaskForm` は `status` を送らない。`create_task` ツールのスキーマにも `status` は無いが、入力の検証（`validateCreateTaskInput`）は `status` を受け付けるため、LLM がスキーマ外の `status: "done"` を渡せばこの経路に届く。そのため `create_task` ツールも `POST /api/tasks` と同じ関門を通す — 判定と挿入を 1 つのトランザクションで行う `createTask`（`tasks-repository.ts`）を両者から呼ぶ。Issue #619）。
 
 ### 決定 3: 裁定者はボス（LLM）。人間が上書きでき、上書きは活動ログに残る（論点 1）
 
