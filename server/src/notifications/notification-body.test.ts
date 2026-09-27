@@ -77,7 +77,7 @@ describe("generateNotificationBody", () => {
     putSetting(db, "boss_name", "スミス");
     streamBossMessageMock.mockResolvedValue(fakeTextMessage("着手しろ"));
 
-    await generateNotificationBody(db, env, {
+    await generateNotificationBody(portFor(db), env, {
       ruleType: "todo_stall",
       escalationLevel: 1,
       task: makeTask(),
@@ -96,7 +96,7 @@ describe("generateNotificationBody", () => {
   it("AC-S3-7: passes the notification Markdown-free instruction to the model (#546)", async () => {
     streamBossMessageMock.mockResolvedValue(fakeTextMessage("着手しろ"));
 
-    await generateNotificationBody(db, env, {
+    await generateNotificationBody(portFor(db), env, {
       ruleType: "todo_stall",
       escalationLevel: 1,
       task: makeTask(),
@@ -113,7 +113,7 @@ describe("generateNotificationBody", () => {
   it("includes the current date/time section in the system prompt (#288)", async () => {
     streamBossMessageMock.mockResolvedValue(fakeTextMessage("手を動かせ"));
 
-    await generateNotificationBody(db, env, {
+    await generateNotificationBody(portFor(db), env, {
       ruleType: "deadline_overdue",
       escalationLevel: 1,
       task: makeTask(),
@@ -127,7 +127,7 @@ describe("generateNotificationBody", () => {
   it("includes the rule type, escalation level, and task title in the user message", async () => {
     streamBossMessageMock.mockResolvedValue(fakeTextMessage("着手しろ"));
 
-    await generateNotificationBody(db, env, {
+    await generateNotificationBody(portFor(db), env, {
       ruleType: "todo_stall",
       escalationLevel: 2,
       task: makeTask({ title: "見積書作成" }),
@@ -143,7 +143,7 @@ describe("generateNotificationBody", () => {
   it("uses a small max_tokens for cost minimization", async () => {
     streamBossMessageMock.mockResolvedValue(fakeTextMessage("着手しろ"));
 
-    await generateNotificationBody(db, env, {
+    await generateNotificationBody(portFor(db), env, {
       ruleType: "silence",
       escalationLevel: 1,
       task: null,
@@ -159,7 +159,7 @@ describe("generateNotificationBody", () => {
   it("sends thinking: { type: 'disabled' } (Issue #117)", async () => {
     streamBossMessageMock.mockResolvedValue(fakeTextMessage("着手しろ"));
 
-    await generateNotificationBody(db, env, {
+    await generateNotificationBody(portFor(db), env, {
       ruleType: "silence",
       escalationLevel: 1,
       task: null,
@@ -177,7 +177,7 @@ describe("generateNotificationBody", () => {
       fakeTextMessage("<p>資料作成に早く着手しろ。</p>"),
     );
 
-    const body = await generateNotificationBody(db, env, {
+    const body = await generateNotificationBody(portFor(db), env, {
       ruleType: "todo_stall",
       escalationLevel: 1,
       task: makeTask(),
@@ -193,7 +193,7 @@ describe("generateNotificationBody", () => {
   it("falls back to the template when the Claude reply normalizes to whitespace only", async () => {
     streamBossMessageMock.mockResolvedValue(fakeTextMessage("<p></p><br>"));
 
-    const body = await generateNotificationBody(db, env, {
+    const body = await generateNotificationBody(portFor(db), env, {
       ruleType: "todo_stall",
       escalationLevel: 1,
       task: makeTask(),
@@ -215,7 +215,7 @@ describe("generateNotificationBody", () => {
       fakeTextMessage("  資料作成に早く着手しろ。  "),
     );
 
-    const body = await generateNotificationBody(db, env, {
+    const body = await generateNotificationBody(portFor(db), env, {
       ruleType: "todo_stall",
       escalationLevel: 1,
       task: makeTask(),
@@ -230,7 +230,7 @@ describe("generateNotificationBody", () => {
       throw new MissingApiKeyError();
     });
 
-    const body = await generateNotificationBody(db, env, {
+    const body = await generateNotificationBody(portFor(db), env, {
       ruleType: "todo_stall",
       escalationLevel: 1,
       task: makeTask({ title: "資料作成" }),
@@ -248,7 +248,7 @@ describe("generateNotificationBody", () => {
     // resolveBossSettings(portFor(db)) は閉じた DB への読み出しで reject する
     db.close();
 
-    const body = await generateNotificationBody(db, env, {
+    const body = await generateNotificationBody(portFor(db), env, {
       ruleType: "todo_stall",
       escalationLevel: 1,
       task: makeTask({ title: "資料作成" }),
@@ -268,7 +268,7 @@ describe("generateNotificationBody", () => {
       new Error("connection reset with request id secret123"),
     );
 
-    const body = await generateNotificationBody(db, env, {
+    const body = await generateNotificationBody(portFor(db), env, {
       ruleType: "silence",
       escalationLevel: 2,
       task: null,
@@ -285,7 +285,7 @@ describe("generateNotificationBody", () => {
   it("falls back to the fixed template when the response has no text content blocks", async () => {
     streamBossMessageMock.mockResolvedValue(fakeTextMessage(""));
 
-    const body = await generateNotificationBody(db, env, {
+    const body = await generateNotificationBody(portFor(db), env, {
       ruleType: "break_overrun",
       escalationLevel: 3,
       task: null,
@@ -300,7 +300,7 @@ describe("generateNotificationBody", () => {
       throw new MissingApiKeyError();
     });
 
-    const body = await generateNotificationBody(db, env, {
+    const body = await generateNotificationBody(portFor(db), env, {
       ruleType: "todo_stall",
       escalationLevel: 1,
       task: makeTask({ title: "見積書作成" }),
@@ -315,13 +315,13 @@ describe("generateNotificationBody", () => {
       throw new MissingApiKeyError();
     });
 
-    const l1 = await generateNotificationBody(db, env, {
+    const l1 = await generateNotificationBody(portFor(db), env, {
       ruleType: "avoidance",
       escalationLevel: 1,
       task: makeTask(),
       now,
     });
-    const l3 = await generateNotificationBody(db, env, {
+    const l3 = await generateNotificationBody(portFor(db), env, {
       ruleType: "avoidance",
       escalationLevel: 3,
       task: makeTask(),
@@ -336,7 +336,7 @@ describe("generateNotificationBody", () => {
       throw new MissingApiKeyError();
     });
 
-    const body = await generateNotificationBody(db, env, {
+    const body = await generateNotificationBody(portFor(db), env, {
       ruleType: "silence",
       escalationLevel: 1,
       task: null,
@@ -351,7 +351,7 @@ describe("generateNotificationBody", () => {
       throw new MissingApiKeyError();
     });
 
-    const body = await generateNotificationBody(db, env, {
+    const body = await generateNotificationBody(portFor(db), env, {
       ruleType: "silence",
       escalationLevel: 4 as unknown as 1 | 2 | 3,
       task: null,
@@ -367,7 +367,7 @@ describe("generateNotificationBody", () => {
       throw new MissingApiKeyError();
     });
 
-    const body = await generateNotificationBody(db, env, {
+    const body = await generateNotificationBody(portFor(db), env, {
       ruleType: "unknown_rule" as unknown as "silence",
       escalationLevel: 1,
       task: null,
@@ -383,7 +383,7 @@ describe("generateNotificationBody", () => {
       throw new MissingApiKeyError();
     });
 
-    const body = await generateNotificationBody(db, env, {
+    const body = await generateNotificationBody(portFor(db), env, {
       ruleType: "deadline_overdue",
       escalationLevel: 1,
       task: makeTask({ title: "見積書作成" }),
@@ -398,7 +398,7 @@ describe("generateNotificationBody", () => {
       throw new MissingApiKeyError();
     });
 
-    const body = await generateNotificationBody(db, env, {
+    const body = await generateNotificationBody(portFor(db), env, {
       ruleType: "morning_meeting",
       escalationLevel: 1,
       task: null,
@@ -413,7 +413,7 @@ describe("generateNotificationBody", () => {
       throw new MissingApiKeyError();
     });
 
-    const body = await generateNotificationBody(db, env, {
+    const body = await generateNotificationBody(portFor(db), env, {
       ruleType: "evening_meeting",
       escalationLevel: 2,
       task: null,
@@ -428,13 +428,13 @@ describe("generateNotificationBody", () => {
       throw new MissingApiKeyError();
     });
 
-    const l1 = await generateNotificationBody(db, env, {
+    const l1 = await generateNotificationBody(portFor(db), env, {
       ruleType: "deadline_overdue",
       escalationLevel: 1,
       task: makeTask(),
       now,
     });
-    const l3 = await generateNotificationBody(db, env, {
+    const l3 = await generateNotificationBody(portFor(db), env, {
       ruleType: "deadline_overdue",
       escalationLevel: 3,
       task: makeTask(),
@@ -451,7 +451,7 @@ describe("generateNotificationBody", () => {
     it("includes the committed task's local commitment date/time in the user instruction", async () => {
       streamBossMessageMock.mockResolvedValue(fakeTextMessage("着手しろ"));
 
-      await generateNotificationBody(db, env, {
+      await generateNotificationBody(portFor(db), env, {
         ruleType: "commitment_missed",
         escalationLevel: 1,
         task: makeTask({
@@ -469,7 +469,7 @@ describe("generateNotificationBody", () => {
     it("does not include a commitment line for other rule types", async () => {
       streamBossMessageMock.mockResolvedValue(fakeTextMessage("着手しろ"));
 
-      await generateNotificationBody(db, env, {
+      await generateNotificationBody(portFor(db), env, {
         ruleType: "todo_stall",
         escalationLevel: 1,
         task: makeTask({
@@ -490,7 +490,7 @@ describe("generateNotificationBody", () => {
           throw new MissingApiKeyError();
         });
 
-        const body = await generateNotificationBody(db, env, {
+        const body = await generateNotificationBody(portFor(db), env, {
           ruleType: "commitment_missed",
           escalationLevel,
           task: makeTask({ title: "見積書作成" }),
@@ -507,13 +507,13 @@ describe("generateNotificationBody", () => {
         throw new MissingApiKeyError();
       });
 
-      const l1 = await generateNotificationBody(db, env, {
+      const l1 = await generateNotificationBody(portFor(db), env, {
         ruleType: "commitment_missed",
         escalationLevel: 1,
         task: makeTask(),
         now,
       });
-      const l3 = await generateNotificationBody(db, env, {
+      const l3 = await generateNotificationBody(portFor(db), env, {
         ruleType: "commitment_missed",
         escalationLevel: 3,
         task: makeTask(),

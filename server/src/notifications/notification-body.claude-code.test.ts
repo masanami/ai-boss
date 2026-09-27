@@ -86,7 +86,7 @@ describe("generateNotificationBody (claude-code backend, end-to-end via the real
   it("generates via the claude-code backend without ANTHROPIC_API_KEY", async () => {
     queryMock.mockReturnValueOnce(toAsyncIterable([assistantTextMessage("着手しろ"), resultMessage()]));
 
-    const body = await generateNotificationBody(db, env, {
+    const body = await generateNotificationBody(portFor(db), env, {
       ruleType: "todo_stall",
       escalationLevel: 1,
       task: makeTask(),
@@ -103,7 +103,7 @@ describe("generateNotificationBody (claude-code backend, end-to-end via the real
         throw new Error("claude code executable not found");
       });
 
-      const bodyPromise = generateNotificationBody(db, env, {
+      const bodyPromise = generateNotificationBody(portFor(db), env, {
         ruleType: "todo_stall",
         escalationLevel: 1,
         task: makeTask(),

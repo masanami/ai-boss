@@ -1,4 +1,4 @@
-import type Database from "better-sqlite3";
+import type { Db } from "../db/db-port.js";
 import { startOfLocalDayIso, startOfNextLocalDayIso } from "../activity/local-day.js";
 import { listNotificationsBetween } from "../notifications/notifications-repository.js";
 
@@ -12,11 +12,11 @@ import { listNotificationsBetween } from "../notifications/notifications-reposit
  * 集計を膨らませないため（#236。`GET /api/activity/today` の #230 と同じ欠陥
  * クラス）。両境界は同じ `now` から導出する（activity-routes.ts と同じ理由）。
  */
-export function calculateTodayMaxEscalationLevel(
-  db: Database.Database,
+export async function calculateTodayMaxEscalationLevel(
+  db: Db,
   now: Date,
-): number {
-  const notifications = listNotificationsBetween(
+): Promise<number> {
+  const notifications = await listNotificationsBetween(
     db,
     startOfLocalDayIso(now),
     startOfNextLocalDayIso(now),

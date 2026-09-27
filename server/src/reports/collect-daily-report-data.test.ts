@@ -86,18 +86,18 @@ describe("collectDailyReportData", () => {
     await runMigrations(portFor(db));
   });
 
-  afterEach(() => {
+  afterEach(async () => {
     db.close();
   });
 
-  it("throws when the evening session has not ended (ended_at is null)", () => {
+  it("throws when the evening session has not ended (ended_at is null)", async () => {
     const session = insertRawSession(db, "evening", iso(2026, 8, 14, 19, 0), null);
 
-    expect(() => collectDailyReportData(db, session)).toThrow();
+    await expect(collectDailyReportData(portFor(db), session)).rejects.toThrow();
   });
 
   describe("日付境界: 23:50開始・翌00:30終了の夕会", () => {
-    it("uses the session's start-day local date as the target date, and only collects data within the start day's [00:00:00.000, next local day 00:00:00.000) half-open range", () => {
+    it("uses the session's start-day local date as the target date, and only collects data within the start day's [00:00:00.000, next local day 00:00:00.000) half-open range", async () => {
       const session = insertRawSession(
         db,
         "evening",
@@ -118,7 +118,7 @@ describe("collectDailyReportData", () => {
         completedAt: iso(2026, 8, 15, 0, 10),
       });
 
-      const result = collectDailyReportData(db, session);
+      const result = await collectDailyReportData(portFor(db), session);
 
       expect(result.completedTasks).toEqual(["当日完了タスク"]);
       expect(result.targetDate.getFullYear()).toBe(2026);
@@ -128,7 +128,7 @@ describe("collectDailyReportData", () => {
   });
 
   describe("本日のタスク（完了タスク）", () => {
-    it("includes a done task whose completed_at falls on the target day", () => {
+    it("includes a done task whose completed_at falls on the target day", async () => {
       const session = insertRawSession(db, "evening", iso(2026, 8, 14, 19, 0), iso(2026, 8, 14, 19, 30));
       insertRawTask(db, {
         title: "資料作成",
@@ -137,12 +137,12 @@ describe("collectDailyReportData", () => {
         completedAt: iso(2026, 8, 14, 15, 0),
       });
 
-      const result = collectDailyReportData(db, session);
+      const result = await collectDailyReportData(portFor(db), session);
 
       expect(result.completedTasks).toEqual(["資料作成"]);
     });
 
-    it("excludes a done task completed on a different day", () => {
+    it("excludes a done task completed on a different day", async () => {
       const session = insertRawSession(db, "evening", iso(2026, 8, 14, 19, 0), iso(2026, 8, 14, 19, 30));
       insertRawTask(db, {
         title: "前日完了タスク",
@@ -151,14 +151,14 @@ describe("collectDailyReportData", () => {
         completedAt: iso(2026, 8, 13, 15, 0),
       });
 
-      const result = collectDailyReportData(db, session);
+      const result = await collectDailyReportData(portFor(db), session);
 
       expect(result.completedTasks).toEqual([]);
     });
 
     it.each([["todo"], ["in_progress"], ["dropped"]] as const)(
       "excludes a %s task even if it has a completed_at on the target day",
-      (status) => {
+      async (status) => {
         const session = insertRawSession(db, "evening", iso(2026, 8, 14, 19, 0), iso(2026, 8, 14, 19, 30));
         insertRawTask(db, {
           title: `${status}タスク`,
@@ -167,13 +167,13 @@ describe("collectDailyReportData", () => {
           completedAt: iso(2026, 8, 14, 15, 0),
         });
 
-        const result = collectDailyReportData(db, session);
+        const result = await collectDailyReportData(portFor(db), session);
 
         expect(result.completedTasks).toEqual([]);
       },
     );
 
-    it("excludes a done task whose completed_at is exactly the next local day's 00:00:00.000 while keeping the last in-range one (half-open interval upper bound, ADR 0007 決定3)", () => {
+    it("excludes a done task whose completed_at is exactly the next local day's 00:00:00.000 while keeping the last in-range one (half-open interval upper bound, ADR 0007 決定3)", async () => {
       const session = insertRawSession(db, "evening", iso(2026, 8, 14, 19, 0), iso(2026, 8, 14, 19, 30));
       // 上限直前は含む（対照。これが無いと「常に空を返す」壊れ方でも通ってしまう）
       insertRawTask(db, {
@@ -189,14 +189,14 @@ describe("collectDailyReportData", () => {
         completedAt: iso(2026, 8, 15, 0, 0), // 翌ローカル暦日 00:00:00.000 ちょうど
       });
 
-      const result = collectDailyReportData(db, session);
+      const result = await collectDailyReportData(portFor(db), session);
 
       expect(result.completedTasks).toEqual(["当日末尾完了タスク"]);
     });
   });
 
   describe("本日のタスク（進行中タスク）", () => {
-    it("includes an in_progress task that has a task_start event on the target day", () => {
+    it("includes an in_progress task that has a task_start event on the target day", async () => {
       const session = insertRawSession(db, "evening", iso(2026, 8, 14, 19, 0), iso(2026, 8, 14, 19, 30));
       const taskId = insertRawTask(db, {
         title: "設計レビュー",
@@ -205,12 +205,12 @@ describe("collectDailyReportData", () => {
       });
       insertRawActivityEvent(db, { type: "task_start", taskId, createdAt: iso(2026, 8, 14, 10, 0) });
 
-      const result = collectDailyReportData(db, session);
+      const result = await collectDailyReportData(portFor(db), session);
 
       expect(result.inProgressTasks).toEqual(["設計レビュー"]);
     });
 
-    it("includes an in_progress task that has only a task_update event on the target day", () => {
+    it("includes an in_progress task that has only a task_update event on the target day", async () => {
       const session = insertRawSession(db, "evening", iso(2026, 8, 14, 19, 0), iso(2026, 8, 14, 19, 30));
       const taskId = insertRawTask(db, {
         title: "設計レビュー",
@@ -219,12 +219,12 @@ describe("collectDailyReportData", () => {
       });
       insertRawActivityEvent(db, { type: "task_update", taskId, createdAt: iso(2026, 8, 14, 11, 0) });
 
-      const result = collectDailyReportData(db, session);
+      const result = await collectDailyReportData(portFor(db), session);
 
       expect(result.inProgressTasks).toEqual(["設計レビュー"]);
     });
 
-    it("excludes an in_progress task with no activity_events on the target day (long-running task with no movement today)", () => {
+    it("excludes an in_progress task with no activity_events on the target day (long-running task with no movement today)", async () => {
       const session = insertRawSession(db, "evening", iso(2026, 8, 14, 19, 0), iso(2026, 8, 14, 19, 30));
       insertRawTask(db, {
         title: "長期継続タスク",
@@ -232,14 +232,14 @@ describe("collectDailyReportData", () => {
         createdAt: iso(2026, 7, 1, 9, 0),
       });
 
-      const result = collectDailyReportData(db, session);
+      const result = await collectDailyReportData(portFor(db), session);
 
       expect(result.inProgressTasks).toEqual([]);
     });
 
     it.each([["todo"], ["done"], ["dropped"]] as const)(
       "excludes a %s task even if it has a task_start event on the target day",
-      (status) => {
+      async (status) => {
         const session = insertRawSession(db, "evening", iso(2026, 8, 14, 19, 0), iso(2026, 8, 14, 19, 30));
         const taskId = insertRawTask(db, {
           title: `${status}タスク`,
@@ -249,13 +249,13 @@ describe("collectDailyReportData", () => {
         });
         insertRawActivityEvent(db, { type: "task_start", taskId, createdAt: iso(2026, 8, 14, 10, 0) });
 
-        const result = collectDailyReportData(db, session);
+        const result = await collectDailyReportData(portFor(db), session);
 
         expect(result.inProgressTasks).toEqual([]);
       },
     );
 
-    it("excludes an in_progress task whose only task_start event is exactly the next local day's 00:00:00.000 while keeping the last in-range one (half-open interval upper bound, ADR 0007 決定3)", () => {
+    it("excludes an in_progress task whose only task_start event is exactly the next local day's 00:00:00.000 while keeping the last in-range one (half-open interval upper bound, ADR 0007 決定3)", async () => {
       const session = insertRawSession(db, "evening", iso(2026, 8, 14, 19, 0), iso(2026, 8, 14, 19, 30));
       // 上限直前は含む（対照。これが無いと「常に空を返す」壊れ方でも通ってしまう）
       const inRangeTaskId = insertRawTask(db, {
@@ -279,14 +279,14 @@ describe("collectDailyReportData", () => {
         createdAt: iso(2026, 8, 15, 0, 0), // 翌ローカル暦日 00:00:00.000 ちょうど
       });
 
-      const result = collectDailyReportData(db, session);
+      const result = await collectDailyReportData(portFor(db), session);
 
       expect(result.inProgressTasks).toEqual(["当日末尾着手タスク"]);
     });
   });
 
   describe("決定事項", () => {
-    it("includes an active decision created on the target day, from any session type", () => {
+    it("includes an active decision created on the target day, from any session type", async () => {
       const eveningSession = insertRawSession(db, "evening", iso(2026, 8, 14, 19, 0), iso(2026, 8, 14, 19, 30));
       const morningSession = insertRawSession(db, "morning", iso(2026, 8, 14, 9, 0), iso(2026, 8, 14, 9, 10));
       insertRawDecision(db, {
@@ -296,12 +296,12 @@ describe("collectDailyReportData", () => {
         createdAt: iso(2026, 8, 14, 9, 5),
       });
 
-      const result = collectDailyReportData(db, eveningSession);
+      const result = await collectDailyReportData(portFor(db), eveningSession);
 
       expect(result.decisions).toEqual(["朝会での決定"]);
     });
 
-    it("orders decisions by created_at ascending", () => {
+    it("orders decisions by created_at ascending", async () => {
       const session = insertRawSession(db, "evening", iso(2026, 8, 14, 19, 0), iso(2026, 8, 14, 19, 30));
       insertRawDecision(db, {
         sessionId: session.id,
@@ -316,14 +316,14 @@ describe("collectDailyReportData", () => {
         createdAt: iso(2026, 8, 14, 9, 0),
       });
 
-      const result = collectDailyReportData(db, session);
+      const result = await collectDailyReportData(portFor(db), session);
 
       expect(result.decisions).toEqual(["先の決定", "後の決定"]);
     });
 
     it.each([["revised"], ["withdrawn"]] as const)(
       "excludes a %s decision even if created on the target day",
-      (status) => {
+      async (status) => {
         const session = insertRawSession(db, "evening", iso(2026, 8, 14, 19, 0), iso(2026, 8, 14, 19, 30));
         insertRawDecision(db, {
           sessionId: session.id,
@@ -332,13 +332,13 @@ describe("collectDailyReportData", () => {
           createdAt: iso(2026, 8, 14, 9, 0),
         });
 
-        const result = collectDailyReportData(db, session);
+        const result = await collectDailyReportData(portFor(db), session);
 
         expect(result.decisions).toEqual([]);
       },
     );
 
-    it("excludes kind='mentoring' decisions, keeping kind='decision' ones on the same day (#408 AC-43 — mentoring must not appear as a decision in the daily report)", () => {
+    it("excludes kind='mentoring' decisions, keeping kind='decision' ones on the same day (#408 AC-43 — mentoring must not appear as a decision in the daily report)", async () => {
       const session = insertRawSession(db, "evening", iso(2026, 8, 14, 19, 0), iso(2026, 8, 14, 19, 30));
       insertRawDecision(db, {
         sessionId: session.id,
@@ -355,12 +355,12 @@ describe("collectDailyReportData", () => {
         kind: "decision",
       });
 
-      const result = collectDailyReportData(db, session);
+      const result = await collectDailyReportData(portFor(db), session);
 
       expect(result.decisions).toEqual(["通常の決定"]);
     });
 
-    it("excludes a decision created on a different day", () => {
+    it("excludes a decision created on a different day", async () => {
       const session = insertRawSession(db, "evening", iso(2026, 8, 14, 19, 0), iso(2026, 8, 14, 19, 30));
       insertRawDecision(db, {
         sessionId: session.id,
@@ -369,12 +369,12 @@ describe("collectDailyReportData", () => {
         createdAt: iso(2026, 8, 13, 9, 0),
       });
 
-      const result = collectDailyReportData(db, session);
+      const result = await collectDailyReportData(portFor(db), session);
 
       expect(result.decisions).toEqual([]);
     });
 
-    it("excludes an active decision created exactly at the next local day's 00:00:00.000 while keeping the last in-range one (half-open interval upper bound, ADR 0007 決定3)", () => {
+    it("excludes an active decision created exactly at the next local day's 00:00:00.000 while keeping the last in-range one (half-open interval upper bound, ADR 0007 決定3)", async () => {
       const session = insertRawSession(db, "evening", iso(2026, 8, 14, 19, 0), iso(2026, 8, 14, 19, 30));
       // 上限直前は含む（対照。これが無いと「常に空を返す」壊れ方でも通ってしまう）
       insertRawDecision(db, {
@@ -390,14 +390,14 @@ describe("collectDailyReportData", () => {
         createdAt: iso(2026, 8, 15, 0, 0), // 翌ローカル暦日 00:00:00.000 ちょうど
       });
 
-      const result = collectDailyReportData(db, session);
+      const result = await collectDailyReportData(portFor(db), session);
 
       expect(result.decisions).toEqual(["当日末尾の決定"]);
     });
   });
 
   describe("活動記録との統合", () => {
-    it("computes firstTaskStartAt/breakCount/breakTotalMinutes end-to-end, including the day-crossing break case", () => {
+    it("computes firstTaskStartAt/breakCount/breakTotalMinutes end-to-end, including the day-crossing break case", async () => {
       const session = insertRawSession(
         db,
         "evening",
@@ -409,7 +409,7 @@ describe("collectDailyReportData", () => {
       // 翌日00:05終了・夕会は翌日00:30終了 → 10分として計上される
       insertRawActivityEvent(db, { type: "break_end", createdAt: iso(2026, 8, 15, 0, 5) });
 
-      const result = collectDailyReportData(db, session);
+      const result = await collectDailyReportData(portFor(db), session);
 
       expect(result.firstTaskStartAt).not.toBeNull();
       expect(result.firstTaskStartAt?.toISOString()).toBe(new Date(iso(2026, 8, 14, 9, 15)).toISOString());
@@ -417,10 +417,10 @@ describe("collectDailyReportData", () => {
       expect(result.breakTotalMinutes).toBe(10);
     });
 
-    it("reports '着手なし'/'休憩なし' equivalents (null/0) when there are no activity_events on the target day", () => {
+    it("reports '着手なし'/'休憩なし' equivalents (null/0) when there are no activity_events on the target day", async () => {
       const session = insertRawSession(db, "evening", iso(2026, 8, 14, 19, 0), iso(2026, 8, 14, 19, 30));
 
-      const result = collectDailyReportData(db, session);
+      const result = await collectDailyReportData(portFor(db), session);
 
       expect(result.firstTaskStartAt).toBeNull();
       expect(result.breakCount).toBe(0);
@@ -434,7 +434,7 @@ describe("collectDailyReportData", () => {
       // Case A: break_end イベントが存在しない（休憩が未終了のまま夕会が終了した）
       const sessionA = insertRawSession(db, "evening", startedAt, endedAt);
       insertRawActivityEvent(db, { type: "break_start", createdAt: iso(2026, 8, 14, 23, 55) });
-      const resultA = collectDailyReportData(db, sessionA);
+      const resultA = await collectDailyReportData(portFor(db), sessionA);
 
       // Case B: break_end が夕会 ended_at と完全一致する（半開区間のクエリからは
       // 除外されるが、computeActivityRecord の打ち切りで同じ値になるはず）
@@ -443,7 +443,7 @@ describe("collectDailyReportData", () => {
       const sessionB = insertRawSession(db2, "evening", startedAt, endedAt);
       insertRawActivityEvent(db2, { type: "break_start", createdAt: iso(2026, 8, 14, 23, 55) });
       insertRawActivityEvent(db2, { type: "break_end", createdAt: endedAt });
-      const resultB = collectDailyReportData(db2, sessionB);
+      const resultB = await collectDailyReportData(portFor(db2), sessionB);
       db2.close();
 
       expect(resultB.breakCount).toBe(resultA.breakCount);
@@ -452,7 +452,7 @@ describe("collectDailyReportData", () => {
       expect(resultB.breakTotalMinutes).toBe(35);
     });
 
-    it("does not pair a target-day break_start with a next-day break_end that belongs to a break started after local midnight (#237 reproduction: 23:00 start, 00:30 start, 01:00 end, session ends 01:30 → 90 min, count 1)", () => {
+    it("does not pair a target-day break_start with a next-day break_end that belongs to a break started after local midnight (#237 reproduction: 23:00 start, 00:30 start, 01:00 end, session ends 01:30 → 90 min, count 1)", async () => {
       // 夕会 23:50 → 翌 01:30（日跨ぎ）。break_end の探索窓が ended_at まで伸びる一方で
       // break_start の窓が翌暦日 00:00 で切れると、00:30 の start が見えないまま
       // 01:00 の end が 23:00 の start と結ばれ 120 分になる（Issue #237 のシナリオ）。
@@ -466,7 +466,7 @@ describe("collectDailyReportData", () => {
       insertRawActivityEvent(db, { type: "break_start", createdAt: iso(2026, 8, 15, 0, 30) });
       insertRawActivityEvent(db, { type: "break_end", createdAt: iso(2026, 8, 15, 1, 0) });
 
-      const result = collectDailyReportData(db, session);
+      const result = await collectDailyReportData(portFor(db), session);
 
       // 対応付け規則（activity-record.ts）: 休憩は同時に 1 つしか開かず、開いている
       // 休憩の上に来た break_start は先行休憩をその時刻で閉じる。よって 23:00 の休憩は
@@ -476,7 +476,7 @@ describe("collectDailyReportData", () => {
       expect(result.breakTotalMinutes).toBe(90);
     });
 
-    it("excludes a task_start/break_start event exactly at the next local day's 00:00:00.000 from firstTaskStartAt/breakCount while keeping the in-range ones (half-open interval upper bound, ADR 0007 決定3)", () => {
+    it("excludes a task_start/break_start event exactly at the next local day's 00:00:00.000 from firstTaskStartAt/breakCount while keeping the in-range ones (half-open interval upper bound, ADR 0007 決定3)", async () => {
       const session = insertRawSession(db, "evening", iso(2026, 8, 14, 19, 0), iso(2026, 8, 14, 19, 30));
       // break_start だけ上限直前の対照を置く（breakCount は件数なので 1→2 で
       // 上限の退行を検出できる）。task_start 側は対照を置かない——firstTaskStartAt は
@@ -486,7 +486,7 @@ describe("collectDailyReportData", () => {
       insertRawActivityEvent(db, { type: "task_start", createdAt: iso(2026, 8, 15, 0, 0) });
       insertRawActivityEvent(db, { type: "break_start", createdAt: iso(2026, 8, 15, 0, 0) });
 
-      const result = collectDailyReportData(db, session);
+      const result = await collectDailyReportData(portFor(db), session);
 
       expect(result.firstTaskStartAt).toBeNull();
       expect(result.breakCount).toBe(1);

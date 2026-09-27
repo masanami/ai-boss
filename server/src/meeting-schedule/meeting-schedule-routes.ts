@@ -1,6 +1,6 @@
 import { Hono } from "hono";
 import type { Context } from "hono";
-import type Database from "better-sqlite3";
+import type { Db } from "../db/db-port.js";
 import { readJsonBody } from "../lib/read-json-body.js";
 import { parseDateKey, toDateKey } from "../detection/time-utils.js";
 import { TIME_PATTERN } from "../detection/detection-types.js";
@@ -17,7 +17,6 @@ import {
   upsertOverride,
   deleteOverride,
 } from "./meeting-schedule-repository.js";
-import { portFor } from "../db/transitional-bridge.js";
 
 /**
  * 当日限りの朝会・夕会の時刻変更（#432 /
@@ -44,8 +43,8 @@ interface MeetingScheduleResponse {
   evening: MeetingSlotResponse;
 }
 
-async function buildMeetingDefaults(db: Database.Database): Promise<MeetingTimeDefaults> {
-  const settings = await loadDetectionSettings(portFor(db));
+async function buildMeetingDefaults(db: Db): Promise<MeetingTimeDefaults> {
+  const settings = await loadDetectionSettings(db);
   return {
     morning: settings.morningMeetingTime,
     evening: settings.eveningMeetingTime,
@@ -61,12 +60,12 @@ function buildSlot(defaultTime: string, effectiveTime: string): MeetingSlotRespo
   };
 }
 
-function buildResponseBody(
-  db: Database.Database,
+async function buildResponseBody(
+  db: Db,
   date: string,
   defaults: MeetingTimeDefaults,
-): MeetingScheduleResponse {
-  const overrides = findOverridesByDate(db, date);
+): Promise<MeetingScheduleResponse> {
+  const overrides = await findOverridesByDate(db, date);
   const effective = resolveEffectiveMeetingTimes(defaults, overrides);
   return {
     date,
@@ -112,7 +111,7 @@ function validateDateParam(c: Context, dateParam: string): Response | undefined 
   return undefined;
 }
 
-export function createMeetingScheduleRouter(db: Database.Database): Hono {
+export function createMeetingScheduleRouter(db: Db): Hono {
   const router = new Hono();
 
   router.get("/:date", async (c) => {
@@ -120,8 +119,12 @@ export function createMeetingScheduleRouter(db: Database.Database): Hono {
     const dateError = validateDateParam(c, dateParam);
     if (dateError) return dateError;
 
-    const defaults = await buildMeetingDefaults(db);
-    return c.json(buildResponseBody(db, dateParam, defaults), 200);
+    // 既定の時刻と上書きを 1 つのトランザクションで読む（#606・決定 2 の全数
+    // 監査: 並行する更新の途中の組み合わせを返さない）。
+    const body = await db.transaction(async (tx) =>
+      buildResponseBody(tx, dateParam, await buildMeetingDefaults(tx)),
+    );
+    return c.json(body, 200);
   });
 
   router.put("/:date", async (c) => {
@@ -140,61 +143,67 @@ export function createMeetingScheduleRouter(db: Database.Database): Hono {
       }
     }
 
-    const defaults = await buildMeetingDefaults(db);
+    // T4（#606・機能仕様 docs/features/async-db-layer.md 決定 2）: the default
+    // meeting times (used both for the delete-vs-upsert decision and for the
+    // delay limit `isAllowedMeetingTime`) are read inside the same transaction
+    // as the override writes. Read outside, a concurrent change of the default
+    // times could land between the decision and the write, persisting an
+    // override judged against stale defaults (AC-19). Validation failures
+    // return early from the transaction, which then commits nothing.
+    return db.transaction(async (tx) => {
+      const defaults = await buildMeetingDefaults(tx);
 
-    type PendingOperation =
-      | { type: MeetingType; action: "upsert"; time: string }
-      | { type: MeetingType; action: "delete" };
-    const operations: PendingOperation[] = [];
+      type PendingOperation =
+        | { type: MeetingType; action: "upsert"; time: string }
+        | { type: MeetingType; action: "delete" };
+      const operations: PendingOperation[] = [];
 
-    for (const type of MEETING_TYPES) {
-      if (!(type in rawBody)) continue;
-      const value = rawBody[type];
+      for (const type of MEETING_TYPES) {
+        if (!(type in rawBody)) continue;
+        const value = rawBody[type];
 
-      if (value === null) {
-        operations.push({ type, action: "delete" });
-        continue;
-      }
+        if (value === null) {
+          operations.push({ type, action: "delete" });
+          continue;
+        }
 
-      if (typeof value !== "string" || !TIME_PATTERN.test(value)) {
-        return c.json(
-          {
-            error: `${type} の時刻を "HH:mm" の形式または null で指定してください`,
-            code: "invalid_time",
-          },
-          400,
-        );
-      }
+        if (typeof value !== "string" || !TIME_PATTERN.test(value)) {
+          return c.json(
+            {
+              error: `${type} の時刻を "HH:mm" の形式または null で指定してください`,
+              code: "invalid_time",
+            },
+            400,
+          );
+        }
 
-      if (!isAllowedMeetingTime(defaults[type], value)) {
-        return c.json(
-          {
-            error: `${type} の時刻は ${latestAllowedMeetingTime(defaults[type])} より後には設定できません`,
-            code: "delay_limit_exceeded",
-          },
-          400,
-        );
-      }
+        if (!isAllowedMeetingTime(defaults[type], value)) {
+          return c.json(
+            {
+              error: `${type} の時刻は ${latestAllowedMeetingTime(defaults[type])} より後には設定できません`,
+              code: "delay_limit_exceeded",
+            },
+            400,
+          );
+        }
 
-      if (value === defaults[type]) {
-        operations.push({ type, action: "delete" });
-      } else {
-        operations.push({ type, action: "upsert", time: value });
-      }
-    }
-
-    const applyOperations = db.transaction((ops: PendingOperation[]) => {
-      for (const op of ops) {
-        if (op.action === "delete") {
-          deleteOverride(db, dateParam, op.type);
+        if (value === defaults[type]) {
+          operations.push({ type, action: "delete" });
         } else {
-          upsertOverride(db, dateParam, op.type, op.time);
+          operations.push({ type, action: "upsert", time: value });
         }
       }
-    });
-    applyOperations(operations);
 
-    return c.json(buildResponseBody(db, dateParam, defaults), 200);
+      for (const op of operations) {
+        if (op.action === "delete") {
+          await deleteOverride(tx, dateParam, op.type);
+        } else {
+          await upsertOverride(tx, dateParam, op.type, op.time);
+        }
+      }
+
+      return c.json(await buildResponseBody(tx, dateParam, defaults), 200);
+    });
   });
 
   return router;

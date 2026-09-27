@@ -19,12 +19,12 @@ describe("insertNotification", () => {
     await runMigrations(portFor(db));
   });
 
-  afterEach(() => {
+  afterEach(async () => {
     db.close();
   });
 
-  it("records a notification with a server-managed sent_at and returns the persisted row", () => {
-    const notification = insertNotification(db, {
+  it("records a notification with a server-managed sent_at and returns the persisted row", async () => {
+    const notification = await insertNotification(portFor(db), {
       type: "escalation",
       rule_key: "silence",
       escalation_level: 1,
@@ -41,8 +41,8 @@ describe("insertNotification", () => {
     expect(typeof notification.sent_at).toBe("string");
   });
 
-  it("allows rule_key and escalation_level to be omitted (defaulting to null)", () => {
-    const notification = insertNotification(db, {
+  it("allows rule_key and escalation_level to be omitted (defaulting to null)", async () => {
+    const notification = await insertNotification(portFor(db), {
       type: "session_reminder",
       body: "朝会の時間だ",
     });
@@ -53,8 +53,8 @@ describe("insertNotification", () => {
     });
   });
 
-  it("persists the notification so it can be read back from the database", () => {
-    const notification = insertNotification(db, {
+  it("persists the notification so it can be read back from the database", async () => {
+    const notification = await insertNotification(portFor(db), {
       type: "escalation",
       rule_key: "todo_stall:1",
       escalation_level: 2,
@@ -69,8 +69,8 @@ describe("insertNotification", () => {
 
   // #321: the record is written *before* the send (Issue #221), so at insert
   // time the delivery outcome is genuinely unknown — not "failed".
-  it("leaves the delivery outcome unknown (delivered/channel null) at insert time (#321)", () => {
-    const notification = insertNotification(db, {
+  it("leaves the delivery outcome unknown (delivered/channel null) at insert time (#321)", async () => {
+    const notification = await insertNotification(portFor(db), {
       type: "escalation",
       rule_key: "silence",
       escalation_level: 1,
@@ -89,7 +89,7 @@ describe("recordNotificationDelivery", () => {
     await runMigrations(portFor(db));
   });
 
-  afterEach(() => {
+  afterEach(async () => {
     db.close();
   });
 
@@ -99,15 +99,15 @@ describe("recordNotificationDelivery", () => {
     [{ delivered: false, channel: "none" }, { delivered: 0, channel: "none" }],
   ] as const)(
     "records the send result %j on the notification row as %j (#321)",
-    (result, expected) => {
-      const notification = insertNotification(db, {
+    async (result, expected) => {
+      const notification = await insertNotification(portFor(db), {
         type: "escalation",
         rule_key: "silence",
         escalation_level: 1,
         body: "L1",
       });
 
-      recordNotificationDelivery(db, notification.id, result);
+      await recordNotificationDelivery(portFor(db), notification.id, result);
 
       const row = db
         .prepare("SELECT delivered, channel FROM notifications WHERE id = ?")
@@ -116,13 +116,13 @@ describe("recordNotificationDelivery", () => {
     },
   );
 
-  it("only updates the targeted row", () => {
-    const first = insertNotification(db, { type: "escalation", rule_key: "silence", escalation_level: 1, body: "L1" });
-    const second = insertNotification(db, { type: "escalation", rule_key: "silence", escalation_level: 2, body: "L2" });
+  it("only updates the targeted row", async () => {
+    const first = await insertNotification(portFor(db), { type: "escalation", rule_key: "silence", escalation_level: 1, body: "L1" });
+    const second = await insertNotification(portFor(db), { type: "escalation", rule_key: "silence", escalation_level: 2, body: "L2" });
 
-    recordNotificationDelivery(db, second.id, { delivered: false, channel: "none" });
+    await recordNotificationDelivery(portFor(db), second.id, { delivered: false, channel: "none" });
 
-    expect(findLatestNotificationByRuleKey(db, "silence")).toMatchObject({
+    expect(await findLatestNotificationByRuleKey(portFor(db), "silence")).toMatchObject({
       id: second.id,
       delivered: 0,
       channel: "none",
@@ -133,10 +133,10 @@ describe("recordNotificationDelivery", () => {
     expect(untouched).toEqual({ delivered: null, channel: null });
   });
 
-  it("throws when no notification has the given id, instead of silently updating nothing", () => {
-    expect(() =>
-      recordNotificationDelivery(db, 9999, { delivered: true, channel: "terminal-notifier" }),
-    ).toThrow(/9999/);
+  it("throws when no notification has the given id, instead of silently updating nothing", async () => {
+    await expect(
+      recordNotificationDelivery(portFor(db), 9999, { delivered: true, channel: "terminal-notifier" }),
+    ).rejects.toThrow(/9999/);
   });
 });
 
@@ -148,35 +148,35 @@ describe("findLatestNotificationByRuleKey", () => {
     await runMigrations(portFor(db));
   });
 
-  afterEach(() => {
+  afterEach(async () => {
     db.close();
   });
 
-  it("returns undefined when no notification exists for the rule_key", () => {
-    expect(findLatestNotificationByRuleKey(db, "silence")).toBeUndefined();
+  it("returns undefined when no notification exists for the rule_key", async () => {
+    expect(await findLatestNotificationByRuleKey(portFor(db), "silence")).toBeUndefined();
   });
 
-  it("returns the most recently sent notification for the given rule_key", () => {
-    insertNotification(db, {
+  it("returns the most recently sent notification for the given rule_key", async () => {
+    await insertNotification(portFor(db), {
       type: "escalation",
       rule_key: "silence",
       escalation_level: 1,
       body: "L1",
     });
-    const latest = insertNotification(db, {
+    const latest = await insertNotification(portFor(db), {
       type: "escalation",
       rule_key: "silence",
       escalation_level: 2,
       body: "L2",
     });
-    insertNotification(db, {
+    await insertNotification(portFor(db), {
       type: "escalation",
       rule_key: "todo_stall:1",
       escalation_level: 1,
       body: "別ルール",
     });
 
-    const found = findLatestNotificationByRuleKey(db, "silence");
+    const found = await findLatestNotificationByRuleKey(portFor(db), "silence");
     expect(found).toMatchObject({ id: latest.id, escalation_level: 2 });
   });
 });
@@ -193,7 +193,7 @@ describe("listNotificationsSince", () => {
     db.close();
   });
 
-  it("returns only notifications sent at or after the given cutoff, oldest first", () => {
+  it("returns only notifications sent at or after the given cutoff, oldest first", async () => {
     const cutoff = new Date("2026-07-05T09:00:00.000Z");
 
     function insertAt(body: string, sentAt: string): number {
@@ -212,7 +212,7 @@ describe("listNotificationsSince", () => {
       "2026-07-05T10:00:00.000Z",
     );
 
-    const results = listNotificationsSince(db, cutoff.toISOString());
+    const results = await listNotificationsSince(portFor(db), cutoff.toISOString());
 
     expect(results.map((n) => n.body)).not.toContain("対象外（cutoff より前）");
     expect(results.map((n) => n.id)).toEqual([atCutoffId, afterCutoffId]);
@@ -240,7 +240,7 @@ describe("listNotificationsBetween", () => {
     return Number(result.lastInsertRowid);
   }
 
-  it("returns notifications in the half-open window [since, until): includes the lower bound exactly, excludes the upper bound exactly, oldest first (ADR 0007 決定3, #236)", () => {
+  it("returns notifications in the half-open window [since, until): includes the lower bound exactly, excludes the upper bound exactly, oldest first (ADR 0007 決定3, #236)", async () => {
     // 経過時間のみを扱うため UTC リテラルでよい（ADR 0007 決定5）。
     const since = "2026-07-05T09:00:00.000Z";
     const until = "2026-07-05T12:00:00.000Z";
@@ -252,7 +252,7 @@ describe("listNotificationsBetween", () => {
     insertAt("対象外（ちょうど until）", until);
     insertAt("対象外（until より後）", "2026-07-05T12:00:00.001Z");
 
-    const results = listNotificationsBetween(db, since, until);
+    const results = await listNotificationsBetween(portFor(db), since, until);
 
     expect(results.map((n) => n.id)).toEqual([atSinceId, insideId, justBeforeUntilId]);
   });

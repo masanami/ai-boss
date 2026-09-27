@@ -1,4 +1,4 @@
-import type Database from "better-sqlite3";
+import type { Db } from "../db/db-port.js";
 import type { Notification } from "./notification.js";
 
 export interface NewNotificationRecord {
@@ -25,28 +25,28 @@ export interface NotificationDeliveryRecord {
  * (future) detection engine/scheduler uses to avoid duplicate sends and to
  * track escalation state per `rule_key`.
  */
-export function insertNotification(
-  db: Database.Database,
+export async function insertNotification(
+  db: Db,
   record: NewNotificationRecord,
-): Notification {
+): Promise<Notification> {
   const now = new Date().toISOString();
 
-  const result = db
-    .prepare(
-      `INSERT INTO notifications (type, rule_key, escalation_level, body, sent_at)
+  const result = await db.run(
+    `INSERT INTO notifications (type, rule_key, escalation_level, body, sent_at)
        VALUES (?, ?, ?, ?, ?)`,
-    )
-    .run(
+    [
       record.type,
       record.rule_key ?? null,
       record.escalation_level ?? null,
       record.body,
       now,
-    );
+    ],
+  );
 
-  const notification = db
-    .prepare("SELECT * FROM notifications WHERE id = ?")
-    .get(Number(result.lastInsertRowid)) as Notification | undefined;
+  const notification = await db.get<Notification>(
+    "SELECT * FROM notifications WHERE id = ?",
+    [result.lastInsertRowid],
+  );
   if (!notification) {
     throw new Error("failed to read back the inserted notification");
   }
@@ -62,14 +62,15 @@ export function insertNotification(
  * Throws if no row has `id`: a silent no-op here would recreate exactly the
  * kind of unobservable failure this column exists to expose.
  */
-export function recordNotificationDelivery(
-  db: Database.Database,
+export async function recordNotificationDelivery(
+  db: Db,
   id: number,
   result: NotificationDeliveryRecord,
-): void {
-  const { changes } = db
-    .prepare("UPDATE notifications SET delivered = ?, channel = ? WHERE id = ?")
-    .run(result.delivered ? 1 : 0, result.channel, id);
+): Promise<void> {
+  const { changes } = await db.run(
+    "UPDATE notifications SET delivered = ?, channel = ? WHERE id = ?",
+    [result.delivered ? 1 : 0, result.channel, id],
+  );
   if (changes === 0) {
     throw new Error(`notification ${id} not found; delivery outcome was not recorded`);
   }
@@ -80,15 +81,14 @@ export function recordNotificationDelivery(
  * when none has been sent yet. Used to resolve the current escalation level
  * for a rule (未実装の検知エンジンが利用する想定).
  */
-export function findLatestNotificationByRuleKey(
-  db: Database.Database,
+export async function findLatestNotificationByRuleKey(
+  db: Db,
   ruleKey: string,
-): Notification | undefined {
-  return db
-    .prepare(
-      "SELECT * FROM notifications WHERE rule_key = ? ORDER BY sent_at DESC, id DESC LIMIT 1",
-    )
-    .get(ruleKey) as Notification | undefined;
+): Promise<Notification | undefined> {
+  return db.get<Notification>(
+    "SELECT * FROM notifications WHERE rule_key = ? ORDER BY sent_at DESC, id DESC LIMIT 1",
+    [ruleKey],
+  );
 }
 
 /**
@@ -96,15 +96,14 @@ export function findLatestNotificationByRuleKey(
  * as the notification-history input for the (future) detection engine
  * (e.g. "直近 N 時間分" queries — the caller computes `sinceIso`).
  */
-export function listNotificationsSince(
-  db: Database.Database,
+export async function listNotificationsSince(
+  db: Db,
   sinceIso: string,
-): Notification[] {
-  return db
-    .prepare(
-      "SELECT * FROM notifications WHERE sent_at >= ? ORDER BY sent_at ASC, id ASC",
-    )
-    .all(sinceIso) as Notification[];
+): Promise<Notification[]> {
+  return db.all<Notification>(
+    "SELECT * FROM notifications WHERE sent_at >= ? ORDER BY sent_at ASC, id ASC",
+    [sinceIso],
+  );
 }
 
 /**
@@ -117,14 +116,13 @@ export function listNotificationsSince(
  * `listNotificationsSince` so that function's unbounded contract for the
  * detection engine's history read-back stays visibly unchanged (#236).
  */
-export function listNotificationsBetween(
-  db: Database.Database,
+export async function listNotificationsBetween(
+  db: Db,
   sinceIso: string,
   untilIsoExclusive: string,
-): Notification[] {
-  return db
-    .prepare(
-      "SELECT * FROM notifications WHERE sent_at >= ? AND sent_at < ? ORDER BY sent_at ASC, id ASC",
-    )
-    .all(sinceIso, untilIsoExclusive) as Notification[];
+): Promise<Notification[]> {
+  return db.all<Notification>(
+    "SELECT * FROM notifications WHERE sent_at >= ? AND sent_at < ? ORDER BY sent_at ASC, id ASC",
+    [sinceIso, untilIsoExclusive],
+  );
 }

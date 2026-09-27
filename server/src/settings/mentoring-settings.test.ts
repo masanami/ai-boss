@@ -21,21 +21,21 @@ describe("resolveMorningMentoringRequired", () => {
   });
 
   it("defaults to true when the key is unset (AC-32)", async () => {
-    expect((await resolveMorningMentoringRequired(portFor(db)))).toBe(true);
+    expect(await resolveMorningMentoringRequired(portFor(db))).toBe(true);
   });
 
   it('reads true when stored as the string "true"', async () => {
     await setSettingValue(portFor(db), "morning_mentoring_required", "true");
-    expect((await resolveMorningMentoringRequired(portFor(db)))).toBe(true);
+    expect(await resolveMorningMentoringRequired(portFor(db))).toBe(true);
   });
 
   it('reads false when stored as the string "false" (AC-33 read-back)', async () => {
     await setSettingValue(portFor(db), "morning_mentoring_required", "false");
-    expect((await resolveMorningMentoringRequired(portFor(db)))).toBe(false);
+    expect(await resolveMorningMentoringRequired(portFor(db))).toBe(false);
   });
 
   it('falls back to true (on) for an unrecognized stored value (AC-37)', async () => {
     await setSettingValue(portFor(db), "morning_mentoring_required", "yes");
-    expect((await resolveMorningMentoringRequired(portFor(db)))).toBe(true);
+    expect(await resolveMorningMentoringRequired(portFor(db))).toBe(true);
   });
 });

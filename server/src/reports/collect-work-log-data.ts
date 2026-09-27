@@ -3,7 +3,7 @@
 // 読み取り専用で参照する。日報の収集段（collect-daily-report-data.ts）と異なり
 // 夕会セッションに依存せず、対象ローカル暦日だけを入力に取る（作業ログは
 // 「いつでも生成可」— docs/adr/0008-evening-dialogue-prerequisite.md 帰結）。
-import type Database from "better-sqlite3";
+import type { Db } from "../db/db-port.js";
 import type { DecisionStatus } from "../decisions/decision.js";
 // 集計範囲の境界は activity/local-day.ts へ集約する（ADR 0007 帰結。収集段ごとに
 // 自前の境界計算を持たない）。
@@ -77,20 +77,25 @@ interface ActivityEventRow {
  * （作業ログは夕会に依存しない事実列挙。暦日の基準は
  * docs/adr/0007-local-calendar-day-basis.md）。
  */
-export function collectWorkLogData(db: Database.Database, targetDate: Date): CollectedWorkLogData {
+export async function collectWorkLogData(db: Db, targetDate: Date): Promise<CollectedWorkLogData> {
+  // 複数の表を読むため、1 つのトランザクションでスナップショットとして読む
+  // （#606・決定 2 の全数監査: 並行する書き込みの途中の組み合わせを材料にしない）。
+  return db.transaction((tx) => collectWorkLogDataInSnapshot(tx, targetDate));
+}
+
+async function collectWorkLogDataInSnapshot(db: Db, targetDate: Date): Promise<CollectedWorkLogData> {
   const dayStartIso = startOfLocalDayIso(targetDate);
   const nextDayStartIso = startOfNextLocalDayIso(targetDate);
 
   // kind = 'mentoring' 行は除外する（#408 AC-44）。メンタリングの結論は
   // #358 のタスク軸ログ（listDecisions）から参照する記録であり、作業ログの
   // 「決定ログ」として混入させない。
-  const decisionRows = db
-    .prepare(
-      `SELECT id, status, content, created_at FROM decisions
+  const decisionRows = await db.all<DecisionRow>(
+    `SELECT id, status, content, created_at FROM decisions
        WHERE kind = 'decision' AND created_at >= ? AND created_at < ?
        ORDER BY created_at ASC, id ASC`,
-    )
-    .all(dayStartIso, nextDayStartIso) as DecisionRow[];
+    [dayStartIso, nextDayStartIso],
+  );
 
   const decisions: CollectedWorkLogDecision[] = decisionRows.map((row) => ({
     id: row.id,
@@ -100,17 +105,16 @@ export function collectWorkLogData(db: Database.Database, targetDate: Date): Col
   }));
 
   const typePlaceholders = WORK_LOG_ACTIVITY_EVENT_TYPES.map(() => "?").join(", ");
-  const eventRows = db
-    .prepare(
-      `SELECT e.id AS id, e.type AS type, e.note AS note,
+  const eventRows = await db.all<ActivityEventRow>(
+    `SELECT e.id AS id, e.type AS type, e.note AS note,
               e.expected_minutes AS expected_minutes, e.created_at AS created_at,
               t.title AS task_title
        FROM activity_events e
        LEFT JOIN tasks t ON t.id = e.task_id
        WHERE e.type IN (${typePlaceholders}) AND e.created_at >= ? AND e.created_at < ?
        ORDER BY e.created_at ASC, e.id ASC`,
-    )
-    .all(...WORK_LOG_ACTIVITY_EVENT_TYPES, dayStartIso, nextDayStartIso) as ActivityEventRow[];
+    [...WORK_LOG_ACTIVITY_EVENT_TYPES, dayStartIso, nextDayStartIso],
+  );
 
   const activityEvents: CollectedWorkLogActivityEvent[] = eventRows.map((row) => ({
     id: row.id,

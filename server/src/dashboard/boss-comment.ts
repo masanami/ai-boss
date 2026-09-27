@@ -1,4 +1,4 @@
-import type Database from "better-sqlite3";
+import type { Db } from "../db/db-port.js";
 import { resolveBossSettings } from "../boss/boss-settings.js";
 import { buildPersonaPrompt } from "../boss/persona-prompt.js";
 import { resolveLlmBackend, type LlmBackend } from "../config.js";
@@ -14,7 +14,6 @@ import type { Task } from "../tasks/task.js";
 import { toDateKey } from "../detection/time-utils.js";
 import { getCachedBossComment, setCachedBossComment } from "./boss-comment-cache.js";
 import { computeTaskFingerprint } from "./task-fingerprint.js";
-import { portFor } from "../db/transitional-bridge.js";
 
 /**
  * ダッシュボードの「今日のひとこと」生成（Issue #58）。人格プロンプト生成器
@@ -86,7 +85,7 @@ interface GenerationResult {
 }
 
 async function generateBossComment(
-  db: Database.Database,
+  db: Db,
   env: NodeJS.ProcessEnv,
   now: Date,
   tasks: Task[],
@@ -94,7 +93,7 @@ async function generateBossComment(
   try {
     const backend = resolveLlmBackend(env);
     const client = createClaudeClient(env, backend);
-    const { model, persona } = await resolveBossSettings(portFor(db));
+    const { model, persona } = await resolveBossSettings(db);
     const system = buildPersonaPrompt(persona, {
       tasks,
       recentDecisions: [],
@@ -180,15 +179,15 @@ async function generateBossComment(
  * `listTasks(db)`（進捗計算用）とは別の読み取りになる）。
  */
 export async function getOrGenerateBossComment(
-  db: Database.Database,
+  db: Db,
   env: NodeJS.ProcessEnv,
   now: Date,
 ): Promise<string> {
   const todayKey = toDateKey(now);
-  const tasks = await listTasks(portFor(db));
+  const tasks = await listTasks(db);
   const fingerprint = computeTaskFingerprint(tasks);
 
-  const cached = await getCachedBossComment(portFor(db), todayKey, fingerprint);
+  const cached = await getCachedBossComment(db, todayKey, fingerprint);
   if (cached !== undefined) {
     // Codex 指摘（PR #467）: 正規化後の空判定は生成側にもあるが、**旧版が
     // 書いたキャッシュ行**（`<p></p>` のようにタグだけを含む値。旧コードでは
@@ -201,7 +200,7 @@ export async function getOrGenerateBossComment(
 
   const result = await generateBossComment(db, env, now, tasks);
   if (result.succeeded) {
-    await setCachedBossComment(portFor(db), todayKey, fingerprint, result.text);
+    await setCachedBossComment(db, todayKey, fingerprint, result.text);
   }
   return stripHtmlTags(result.text);
 }

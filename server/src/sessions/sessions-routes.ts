@@ -26,7 +26,6 @@ import { generateDailyReport } from "../reports/generate-daily-report.js";
 import { countMentoringDecisionsBySessionId } from "../decisions/decisions-repository.js";
 import { isMentoringComplete } from "./mentoring-gate.js";
 import { resolveMorningMentoringRequired } from "../settings/mentoring-settings.js";
-import { rawOf } from "../db/transitional-bridge.js";
 
 function isValidSessionType(value: string): value is SessionType {
   return SESSION_TYPES.includes(value as SessionType);
@@ -75,7 +74,7 @@ async function triggerDailyReportGeneration(
   eveningSessionId: number,
 ): Promise<void> {
   try {
-    await generateDailyReport(rawOf(db), env, new Date(), {
+    await generateDailyReport(db, env, new Date(), {
       eveningSessionId,
       timeoutMs: EVENING_END_REPORT_TIMEOUT_MS,
     });
