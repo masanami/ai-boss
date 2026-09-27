@@ -22,7 +22,7 @@ describe("executeRecordMentoringTool", () => {
   beforeEach(async () => {
     db = openDatabase(":memory:");
     await runMigrations(portFor(db));
-    sessionId = insertSession(db, { type: "morning" }).id;
+    sessionId = (await insertSession(portFor(db), { type: "morning" })).id;
   });
 
   afterEach(async () => {
@@ -30,7 +30,7 @@ describe("executeRecordMentoringTool", () => {
   });
 
   it("records a mentoring conclusion for the current session with kind 'mentoring'", async () => {
-    const result = await executeRecordMentoringTool(db, sessionId, {
+    const result = await executeRecordMentoringTool(portFor(db), sessionId, {
       content: "見積もりの前提を再確認してから着手する",
     });
 
@@ -43,21 +43,21 @@ describe("executeRecordMentoringTool", () => {
       kind: "mentoring",
     });
 
-    const decisions = listDecisions(db);
+    const decisions = (await listDecisions(portFor(db)));
     expect(decisions).toHaveLength(1);
     expect(decisions[0].kind).toBe("mentoring");
   });
 
   it("returns an error result when content is missing", async () => {
-    const result = await executeRecordMentoringTool(db, sessionId, {});
+    const result = await executeRecordMentoringTool(portFor(db), sessionId, {});
 
     expect(result.isError).toBe(true);
     expect(result.content).toContain("content");
-    expect(listDecisions(db)).toHaveLength(0);
+    expect((await listDecisions(portFor(db)))).toHaveLength(0);
   });
 
   it("persists rationale when provided", async () => {
-    const result = await executeRecordMentoringTool(db, sessionId, {
+    const result = await executeRecordMentoringTool(portFor(db), sessionId, {
       content: "見積もりの前提を再確認してから着手する",
       rationale: "着手前提の仕様確認が漏れていた",
     });
@@ -78,7 +78,7 @@ describe("executeRecordMentoringTool", () => {
       estimated_minutes: null,
     });
 
-    const result = await executeRecordMentoringTool(db, sessionId, {
+    const result = await executeRecordMentoringTool(portFor(db), sessionId, {
       content: "見積もりの前提を再確認してから着手する",
       task_id: task.id,
     });
@@ -89,7 +89,7 @@ describe("executeRecordMentoringTool", () => {
   });
 
   it("treats an explicit null task_id the same as omitted", async () => {
-    const result = await executeRecordMentoringTool(db, sessionId, {
+    const result = await executeRecordMentoringTool(portFor(db), sessionId, {
       content: "見積もりの前提を再確認してから着手する",
       task_id: null,
     });
@@ -100,14 +100,14 @@ describe("executeRecordMentoringTool", () => {
   });
 
   it("returns an error result and does not persist when task_id does not refer to an existing task", async () => {
-    const result = await executeRecordMentoringTool(db, sessionId, {
+    const result = await executeRecordMentoringTool(portFor(db), sessionId, {
       content: "見積もりの前提を再確認してから着手する",
       task_id: 9999,
     });
 
     expect(result.isError).toBe(true);
     expect(result.content).toContain("9999");
-    expect(listDecisions(db)).toHaveLength(0);
+    expect((await listDecisions(portFor(db)))).toHaveLength(0);
   });
 
   describe("mentoringTaskId fallback (Issue #469)", () => {
@@ -124,7 +124,7 @@ describe("executeRecordMentoringTool", () => {
       });
 
       const result = await executeRecordMentoringTool(
-        db,
+        portFor(db),
         sessionId,
         { content: "見積もりの前提を再確認してから着手する" },
         task.id,
@@ -134,7 +134,7 @@ describe("executeRecordMentoringTool", () => {
       const recorded = JSON.parse(result.content);
       expect(recorded).toMatchObject({ task_id: task.id, kind: "mentoring" });
 
-      const decisions = listDecisions(db);
+      const decisions = (await listDecisions(portFor(db)));
       expect(decisions).toHaveLength(1);
       expect(decisions[0].task_id).toBe(task.id);
     });
@@ -162,7 +162,7 @@ describe("executeRecordMentoringTool", () => {
       });
 
       const result = await executeRecordMentoringTool(
-        db,
+        portFor(db),
         sessionId,
         { content: "見積もりの前提を再確認してから着手する", task_id: explicitTask.id },
         otherTask.id,
@@ -186,7 +186,7 @@ describe("executeRecordMentoringTool", () => {
       });
 
       const result = await executeRecordMentoringTool(
-        db,
+        portFor(db),
         sessionId,
         { content: "見積もりの前提を再確認してから着手する", task_id: 9999 },
         validTask.id,
@@ -194,11 +194,11 @@ describe("executeRecordMentoringTool", () => {
 
       expect(result.isError).toBe(true);
       expect(result.content).toContain("9999");
-      expect(listDecisions(db)).toHaveLength(0);
+      expect((await listDecisions(portFor(db)))).toHaveLength(0);
     });
 
     it("keeps task_id null when mentoringTaskId is not supplied and task_id is omitted (AC-25)", async () => {
-      const result = await executeRecordMentoringTool(db, sessionId, {
+      const result = await executeRecordMentoringTool(portFor(db), sessionId, {
         content: "見積もりの前提を再確認してから着手する",
       });
 
@@ -220,7 +220,7 @@ describe("executeRecordMentoringTool", () => {
       });
 
       const result = await executeRecordMentoringTool(
-        db,
+        portFor(db),
         sessionId,
         { content: "見積もりの前提を再確認してから着手する", task_id: null },
         task.id,
@@ -233,7 +233,7 @@ describe("executeRecordMentoringTool", () => {
 
     it("returns an error and does not persist when mentoringTaskId does not refer to an existing task", async () => {
       const result = await executeRecordMentoringTool(
-        db,
+        portFor(db),
         sessionId,
         { content: "見積もりの前提を再確認してから着手する" },
         9999,
@@ -241,7 +241,7 @@ describe("executeRecordMentoringTool", () => {
 
       expect(result.isError).toBe(true);
       expect(result.content).toContain("9999");
-      expect(listDecisions(db)).toHaveLength(0);
+      expect((await listDecisions(portFor(db)))).toHaveLength(0);
     });
   });
 });

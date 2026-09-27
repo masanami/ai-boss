@@ -73,7 +73,7 @@ describe("generateMeetingOpening", () => {
     const now = new Date(2026, 7, 20, 8, 0);
     createBossMessageMock.mockResolvedValue(fakeTextMessage("今日はA案件から片付けろ。"));
 
-    const result = await generateMeetingOpening(db, env, now, "morning");
+    const result = await generateMeetingOpening(portFor(db), env, now, "morning");
 
     expect(result).toEqual({ text: "今日はA案件から片付けろ。", succeeded: true });
     expect(createBossMessageMock).toHaveBeenCalledTimes(1);
@@ -83,7 +83,7 @@ describe("generateMeetingOpening", () => {
     const now = new Date(2026, 7, 20, 18, 0);
     createBossMessageMock.mockResolvedValue(fakeTextMessage("今日の進捗を聞かせろ。"));
 
-    const result = await generateMeetingOpening(db, env, now, "evening");
+    const result = await generateMeetingOpening(portFor(db), env, now, "evening");
 
     expect(result).toEqual({ text: "今日の進捗を聞かせろ。", succeeded: true });
   });
@@ -92,7 +92,7 @@ describe("generateMeetingOpening", () => {
     const now = new Date(2026, 7, 20, 8, 0);
     createBossMessageMock.mockResolvedValue(fakeTextMessage("報告しろ"));
 
-    await generateMeetingOpening(db, env, now, "morning");
+    await generateMeetingOpening(portFor(db), env, now, "morning");
 
     expect(createBossMessageMock).toHaveBeenCalledWith(
       expect.anything(),
@@ -116,7 +116,7 @@ describe("generateMeetingOpening", () => {
     });
     createBossMessageMock.mockResolvedValue(fakeTextMessage("報告しろ"));
 
-    await generateMeetingOpening(db, env, now, "morning");
+    await generateMeetingOpening(portFor(db), env, now, "morning");
 
     expect(createBossMessageMock).toHaveBeenCalledWith(
       expect.anything(),
@@ -128,7 +128,7 @@ describe("generateMeetingOpening", () => {
     const now = new Date(2026, 7, 20, 18, 0);
     createBossMessageMock.mockResolvedValue(fakeTextMessage("報告しろ"));
 
-    await generateMeetingOpening(db, env, now, "evening");
+    await generateMeetingOpening(portFor(db), env, now, "evening");
 
     expect(createBossMessageMock).toHaveBeenCalledWith(
       expect.anything(),
@@ -141,7 +141,7 @@ describe("generateMeetingOpening", () => {
     const now = new Date(2026, 7, 20, 8, 0);
     createBossMessageMock.mockResolvedValue(fakeTextMessage("報告しろ"));
 
-    await generateMeetingOpening(db, env, now, "morning");
+    await generateMeetingOpening(portFor(db), env, now, "morning");
 
     expect(createBossMessageMock).toHaveBeenCalledWith(
       expect.anything(),
@@ -153,7 +153,7 @@ describe("generateMeetingOpening", () => {
     const now = new Date(2026, 7, 20, 8, 0);
     createBossMessageMock.mockResolvedValue(fakeTextMessage("報告しろ"));
 
-    await generateMeetingOpening(db, env, now, "morning");
+    await generateMeetingOpening(portFor(db), env, now, "morning");
 
     expect(createBossMessageMock).toHaveBeenCalledWith(
       expect.anything(),
@@ -165,7 +165,7 @@ describe("generateMeetingOpening", () => {
     const now = new Date(2026, 7, 20, 8, 0);
     createBossMessageMock.mockRejectedValue(new Error("connection reset with request id xyz"));
 
-    const result = await generateMeetingOpening(db, env, now, "morning");
+    const result = await generateMeetingOpening(portFor(db), env, now, "morning");
 
     expect(result).toEqual({ text: MORNING_OPENING_FALLBACK, succeeded: false });
   });
@@ -174,7 +174,7 @@ describe("generateMeetingOpening", () => {
     const now = new Date(2026, 7, 20, 18, 0);
     createBossMessageMock.mockRejectedValue(new Error("connection reset"));
 
-    const result = await generateMeetingOpening(db, env, now, "evening");
+    const result = await generateMeetingOpening(portFor(db), env, now, "evening");
 
     expect(result).toEqual({ text: EVENING_OPENING_FALLBACK, succeeded: false });
   });
@@ -183,7 +183,7 @@ describe("generateMeetingOpening", () => {
     const now = new Date(2026, 7, 20, 8, 0);
     createBossMessageMock.mockResolvedValue(fakeTextMessage(""));
 
-    const result = await generateMeetingOpening(db, env, now, "morning");
+    const result = await generateMeetingOpening(portFor(db), env, now, "morning");
 
     expect(result).toEqual({ text: MORNING_OPENING_FALLBACK, succeeded: false });
   });
@@ -192,7 +192,7 @@ describe("generateMeetingOpening", () => {
     const now = new Date(2026, 7, 20, 18, 0);
     createBossMessageMock.mockReturnValue(new Promise(() => {}));
 
-    const resultPromise = generateMeetingOpening(db, env, now, "evening");
+    const resultPromise = generateMeetingOpening(portFor(db), env, now, "evening");
     await vi.advanceTimersByTimeAsync(10_000);
     const result = await resultPromise;
 
@@ -208,7 +208,7 @@ describe("generateMeetingOpening", () => {
       }),
     );
 
-    const resultPromise = generateMeetingOpening(db, env, now, "evening");
+    const resultPromise = generateMeetingOpening(portFor(db), env, now, "evening");
     await vi.advanceTimersByTimeAsync(9_000);
     resolveMessage(fakeTextMessage("ぎりぎり間に合った"));
     const result = await resultPromise;
@@ -223,7 +223,7 @@ describe("generateMeetingOpening", () => {
       new Error("request id abc123 leaked into the message"),
     );
 
-    await generateMeetingOpening(db, env, now, "morning");
+    await generateMeetingOpening(portFor(db), env, now, "morning");
 
     const loggedText = errorSpy.mock.calls.map((call) => call.join(" ")).join("\n");
     expect(loggedText).not.toContain("abc123");

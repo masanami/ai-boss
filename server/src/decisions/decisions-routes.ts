@@ -1,5 +1,5 @@
 import { Hono } from "hono";
-import type Database from "better-sqlite3";
+import type { Db } from "../db/db-port.js";
 import { listDecisions } from "./decisions-repository.js";
 
 /**
@@ -10,11 +10,11 @@ import { listDecisions } from "./decisions-repository.js";
  * appeals-driven revision write path was removed, being unused — the chat's
  * `record_decision` tool already covers re-litigating a decision).
  */
-export function createDecisionsRouter(db: Database.Database): Hono {
+export function createDecisionsRouter(db: Db): Hono {
   const decisions = new Hono();
 
-  decisions.get("/", (c) => {
-    return c.json(listDecisions(db));
+  decisions.get("/", async (c) => {
+    return c.json(await listDecisions(db));
   });
 
   return decisions;

@@ -1,4 +1,4 @@
-import type Database from "better-sqlite3";
+import type { Db } from "../db/db-port.js";
 import { startOfLocalDayIso, startOfNextLocalDayIso } from "../activity/local-day.js";
 import type { Message, MessageRole } from "./message.js";
 
@@ -22,28 +22,28 @@ export interface NewMessageRecord {
  * Inserts a new message with a server-managed `created_at` timestamp and
  * returns the persisted row.
  */
-export function insertMessage(
-  db: Database.Database,
+export async function insertMessage(
+  db: Db,
   record: NewMessageRecord,
-): Message {
+): Promise<Message> {
   const now = new Date().toISOString();
 
-  const result = db
-    .prepare(
-      `INSERT INTO messages (session_id, role, content, interrupted, created_at)
+  const result = await db.run(
+    `INSERT INTO messages (session_id, role, content, interrupted, created_at)
        VALUES (?, ?, ?, ?, ?)`,
-    )
-    .run(
+    [
       record.session_id,
       record.role,
       record.content,
       record.interrupted === true ? 1 : 0,
       now,
-    );
+    ],
+  );
 
-  const message = db
-    .prepare("SELECT * FROM messages WHERE id = ?")
-    .get(Number(result.lastInsertRowid)) as Message | undefined;
+  const message = await db.get<Message>(
+    "SELECT * FROM messages WHERE id = ?",
+    [result.lastInsertRowid],
+  );
   if (!message) {
     throw new Error("failed to read back the inserted message");
   }
@@ -54,15 +54,14 @@ export function insertMessage(
  * Returns all messages for a session ordered by `created_at` ascending,
  * with `id` ascending as a tie-breaker for deterministic ordering.
  */
-export function listMessagesBySessionId(
-  db: Database.Database,
+export async function listMessagesBySessionId(
+  db: Db,
   sessionId: number,
-): Message[] {
-  return db
-    .prepare(
-      "SELECT * FROM messages WHERE session_id = ? ORDER BY created_at ASC, id ASC",
-    )
-    .all(sessionId) as Message[];
+): Promise<Message[]> {
+  return db.all<Message>(
+    "SELECT * FROM messages WHERE session_id = ? ORDER BY created_at ASC, id ASC",
+    [sessionId],
+  );
 }
 
 /**
@@ -72,14 +71,15 @@ export function listMessagesBySessionId(
  * tell the two apart, which is intentional: this is the single place that
  * rejects cross-session references (#375, chat-message-rewrite decision 3).
  */
-export function findMessageInSession(
-  db: Database.Database,
+export async function findMessageInSession(
+  db: Db,
   sessionId: number,
   messageId: number,
-): Message | undefined {
-  return db
-    .prepare("SELECT * FROM messages WHERE id = ? AND session_id = ?")
-    .get(messageId, sessionId) as Message | undefined;
+): Promise<Message | undefined> {
+  return db.get<Message>(
+    "SELECT * FROM messages WHERE id = ? AND session_id = ?",
+    [messageId, sessionId],
+  );
 }
 
 /**
@@ -105,23 +105,22 @@ export function findMessageInSession(
  * following `insertMessage` in a single `db.transaction`
  * (ADR 0005 決定 5 / chat-message-rewrite「機能全体の設計」).
  */
-export function deleteMessagesFrom(
-  db: Database.Database,
+export async function deleteMessagesFrom(
+  db: Db,
   sessionId: number,
   fromMessageId: number,
-): number {
-  const anchor = findMessageInSession(db, sessionId, fromMessageId);
+): Promise<number> {
+  const anchor = await findMessageInSession(db, sessionId, fromMessageId);
   if (!anchor) {
     return 0;
   }
 
-  const result = db
-    .prepare(
-      `DELETE FROM messages
+  const result = await db.run(
+    `DELETE FROM messages
        WHERE session_id = ?
          AND (created_at > ? OR (created_at = ? AND id >= ?))`,
-    )
-    .run(sessionId, anchor.created_at, anchor.created_at, fromMessageId);
+    [sessionId, anchor.created_at, anchor.created_at, fromMessageId],
+  );
 
   return result.changes;
 }
@@ -134,16 +133,15 @@ export function deleteMessagesFrom(
  * counts toward this one, and `role = 'boss'` rows (including the meeting
  * opening line, `meeting-opening.ts`) are excluded.
  */
-export function countUserMessagesBySessionId(
-  db: Database.Database,
+export async function countUserMessagesBySessionId(
+  db: Db,
   sessionId: number,
-): number {
-  const row = db
-    .prepare(
-      "SELECT COUNT(*) AS count FROM messages WHERE session_id = ? AND role = 'user'",
-    )
-    .get(sessionId) as { count: number };
-  return row.count;
+): Promise<number> {
+  const row = await db.get<{ count: number }>(
+    "SELECT COUNT(*) AS count FROM messages WHERE session_id = ? AND role = 'user'",
+    [sessionId],
+  );
+  return row?.count ?? 0;
 }
 
 /**
@@ -166,19 +164,18 @@ export function countUserMessagesBySessionId(
  * `chat-messages-route.ts`, where the truncation transaction is ordered
  * ahead of both context reads.
  */
-export function listTodaysAdhocMessages(
-  db: Database.Database,
+export async function listTodaysAdhocMessages(
+  db: Db,
   now: Date,
-): Message[] {
-  return db
-    .prepare(
-      `SELECT messages.*
+): Promise<Message[]> {
+  return db.all<Message>(
+    `SELECT messages.*
        FROM messages
        JOIN sessions ON sessions.id = messages.session_id
        WHERE sessions.type = 'adhoc'
          AND messages.created_at >= ?
          AND messages.created_at < ?
        ORDER BY messages.created_at ASC, messages.id ASC`,
-    )
-    .all(startOfLocalDayIso(now), startOfNextLocalDayIso(now)) as Message[];
+    [startOfLocalDayIso(now), startOfNextLocalDayIso(now)],
+  );
 }

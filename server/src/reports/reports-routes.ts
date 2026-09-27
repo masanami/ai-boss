@@ -5,6 +5,7 @@ import { parseDateKey } from "../detection/time-utils.js";
 import { findEveningSessionByDateKey } from "../sessions/sessions-repository.js";
 import { findDailyReportByDate, listDailyReports } from "./daily-reports-repository.js";
 import { generateDailyReport } from "./generate-daily-report.js";
+import { portFor } from "../db/transitional-bridge.js";
 
 /**
  * `POST /generate` の任意 JSON body（Issue #297）。両方省略時は従来どおり
@@ -130,7 +131,7 @@ export function createReportsRouter(
       if (!parsedDate) {
         return respondInvalidRequest(c, "date は実在する YYYY-MM-DD 形式の日付で指定してください");
       }
-      const session = findEveningSessionByDateKey(db, body.date);
+      const session = await findEveningSessionByDateKey(portFor(db), body.date);
       if (!session) {
         return respondEveningSessionRequired(c);
       }

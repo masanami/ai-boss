@@ -1,9 +1,8 @@
 import type Anthropic from "@anthropic-ai/sdk";
-import type Database from "better-sqlite3";
+import type { Db } from "../db/db-port.js";
 import { insertDecision } from "../decisions/decisions-repository.js";
 import { findTaskById } from "../tasks/tasks-repository.js";
 import type { ToolExecutionResult } from "./task-tools.js";
-import { portFor } from "../db/transitional-bridge.js";
 
 /**
  * Tool the boss invokes during chat to record a decision it has just made
@@ -38,7 +37,7 @@ function isRecord(value: unknown): value is Record<string, unknown> {
  * input.
  */
 export async function executeRecordDecisionTool(
-  db: Database.Database,
+  db: Db,
   sessionId: number,
   input: unknown,
 ): Promise<ToolExecutionResult> {
@@ -53,7 +52,7 @@ export async function executeRecordDecisionTool(
     if (typeof input.task_id !== "number") {
       return { content: "task_id must be a number or null", isError: true };
     }
-    if (!(await findTaskById(portFor(db), input.task_id))) {
+    if (!(await findTaskById(db, input.task_id))) {
       return { content: `task ${input.task_id} not found`, isError: true };
     }
   }
@@ -62,7 +61,7 @@ export async function executeRecordDecisionTool(
     return { content: "rationale must be a string", isError: true };
   }
 
-  const decision = insertDecision(db, {
+  const decision = await insertDecision(db, {
     session_id: sessionId,
     content: input.content,
     task_id: (input.task_id as number | undefined) ?? null,

@@ -27,7 +27,7 @@ describe("executeBossTool", () => {
   beforeEach(async () => {
     db = openDatabase(":memory:");
     await runMigrations(portFor(db));
-    sessionId = insertSession(db, { type: "adhoc" }).id;
+    sessionId = (await insertSession(portFor(db), { type: "adhoc" })).id;
   });
 
   afterEach(async () => {
@@ -35,43 +35,43 @@ describe("executeBossTool", () => {
   });
 
   it("dispatches create_task to the task tools", async () => {
-    const result = await executeBossTool(db, sessionId, "create_task", { title: "資料作成" });
+    const result = await executeBossTool(portFor(db), sessionId, "create_task", { title: "資料作成" });
 
     expect(result.isError).toBe(false);
     expect((await listTasks(portFor(db)))).toHaveLength(1);
   });
 
   it("dispatches record_decision to the decision tool, using the given session id", async () => {
-    const result = await executeBossTool(db, sessionId, "record_decision", {
+    const result = await executeBossTool(portFor(db), sessionId, "record_decision", {
       content: "資料作成を最優先にする",
     });
 
     expect(result.isError).toBe(false);
-    const decisions = listDecisions(db);
+    const decisions = (await listDecisions(portFor(db)));
     expect(decisions).toHaveLength(1);
     expect(decisions[0]).toMatchObject({ session_id: sessionId, kind: "decision" });
   });
 
   it("dispatches record_mentoring to the mentoring tool, using the given session id", async () => {
-    const result = await executeBossTool(db, sessionId, "record_mentoring", {
+    const result = await executeBossTool(portFor(db), sessionId, "record_mentoring", {
       content: "見積もりの前提を再確認してから着手する",
     });
 
     expect(result.isError).toBe(false);
-    const decisions = listDecisions(db);
+    const decisions = (await listDecisions(portFor(db)));
     expect(decisions).toHaveLength(1);
     expect(decisions[0]).toMatchObject({ session_id: sessionId, kind: "mentoring" });
   });
 
   it("returns an error result for an unknown tool name", async () => {
-    const result = await executeBossTool(db, sessionId, "delete_task", {});
+    const result = await executeBossTool(portFor(db), sessionId, "delete_task", {});
 
     expect(result.isError).toBe(true);
     expect(result.content).toContain("delete_task");
   });
 
   it("dispatches get_activity_log without requiring the session id", async () => {
-    const result = await executeBossTool(db, sessionId, "get_activity_log", {});
+    const result = await executeBossTool(portFor(db), sessionId, "get_activity_log", {});
 
     expect(result.isError).toBe(false);
     const parsed = JSON.parse(result.content) as { events: unknown[]; truncated: boolean };
@@ -85,7 +85,7 @@ describe("executeBossTool", () => {
   // 担保する（Issue #527 本文で親了承済み）。
   describe("committed_start_at の拒否（作成時、決定3-2）", () => {
     it("rejects create_task when status is not todo and committed_start_at is set, and does not create the task (mutation: skip the create-time rejection)", async () => {
-      const result = await executeBossTool(db, sessionId, "create_task", {
+      const result = await executeBossTool(portFor(db), sessionId, "create_task", {
         title: "t",
         status: "done",
         committed_start_at: "2026-09-14T20:00:00+09:00",
@@ -109,7 +109,7 @@ describe("executeBossTool", () => {
         boss_comment: null,
         estimated_minutes: null,
       });
-      const setup = await executeBossTool(db, sessionId, "update_task", {
+      const setup = await executeBossTool(portFor(db), sessionId, "update_task", {
         id: task.id,
         committed_start_at: "2026-09-14T20:00:00+09:00",
       });
@@ -118,7 +118,7 @@ describe("executeBossTool", () => {
       expect(setup.isError).toBe(false);
       expect(JSON.parse(setup.content).committed_start_at).toBe("2026-09-14T11:00:00.000Z");
 
-      const result = await executeBossTool(db, sessionId, "update_task", {
+      const result = await executeBossTool(portFor(db), sessionId, "update_task", {
         id: task.id,
         committed_start_at: null,
       });
@@ -140,12 +140,12 @@ describe("executeBossTool", () => {
         boss_comment: null,
         estimated_minutes: null,
       });
-      await executeBossTool(db, sessionId, "update_task", {
+      await executeBossTool(portFor(db), sessionId, "update_task", {
         id: task.id,
         committed_start_at: "2026-09-14T20:00:00+09:00",
       });
 
-      await executeBossTool(db, sessionId, "update_task", {
+      await executeBossTool(portFor(db), sessionId, "update_task", {
         id: task.id,
         committed_start_at: null,
       });
@@ -177,7 +177,7 @@ describe("executeBossTool", () => {
       });
 
       const result = await executeBossTool(
-        db,
+        portFor(db),
         sessionId,
         "record_mentoring",
         { content: "見積もりの前提を再確認してから着手する" },
@@ -185,7 +185,7 @@ describe("executeBossTool", () => {
       );
 
       expect(result.isError).toBe(false);
-      const decisions = listDecisions(db);
+      const decisions = (await listDecisions(portFor(db)));
       expect(decisions).toHaveLength(1);
       expect(decisions[0]).toMatchObject({ task_id: task.id, kind: "mentoring" });
     });
@@ -213,7 +213,7 @@ describe("executeBossTool", () => {
       });
 
       const result = await executeBossTool(
-        db,
+        portFor(db),
         sessionId,
         "record_mentoring",
         { content: "見積もりの前提を再確認してから着手する", task_id: explicitTask.id },
@@ -221,7 +221,7 @@ describe("executeBossTool", () => {
       );
 
       expect(result.isError).toBe(false);
-      const decisions = listDecisions(db);
+      const decisions = (await listDecisions(portFor(db)));
       expect(decisions[0]).toMatchObject({ task_id: explicitTask.id });
     });
 
@@ -238,7 +238,7 @@ describe("executeBossTool", () => {
       });
 
       const result = await executeBossTool(
-        db,
+        portFor(db),
         sessionId,
         "record_decision",
         { content: "資料作成を最優先にする" },
@@ -246,7 +246,7 @@ describe("executeBossTool", () => {
       );
 
       expect(result.isError).toBe(false);
-      const decisions = listDecisions(db);
+      const decisions = (await listDecisions(portFor(db)));
       expect(decisions).toHaveLength(1);
       expect(decisions[0]).toMatchObject({ task_id: null, kind: "decision" });
     });

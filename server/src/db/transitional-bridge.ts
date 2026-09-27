@@ -83,3 +83,17 @@ export function rawOf(db: DbPort | DbTx): Database.Database {
   }
   return raw;
 }
+
+/**
+ * Test-support hook for the transition period (#605): registers an already
+ * built serialized port (e.g. one on a hooked test driver —
+ * `test-support/create-test-db.ts`'s `createHookedTestDb`) as *the* port for
+ * `raw`, so that `rawOf` works on it and `portFor(raw)` returns this same
+ * port (same lock, same hooks) instead of building a second one. Removed with
+ * the rest of this module (#607).
+ */
+export function trackPort(port: DbPort, raw: Database.Database): DbPort {
+  const tracked = registerRawTracking(port, raw) as DbPort;
+  portCache.set(raw, tracked);
+  return tracked;
+}

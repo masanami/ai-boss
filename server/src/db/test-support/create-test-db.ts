@@ -1,7 +1,7 @@
 import type Database from "better-sqlite3";
 import { openDatabase } from "../connection.js";
 import { runMigrations } from "../migrate.js";
-import { portFor } from "../transitional-bridge.js";
+import { portFor, trackPort } from "../transitional-bridge.js";
 import type { DbPort } from "../db-port.js";
 import { createBetterSqlite3Driver } from "../better-sqlite3-driver.js";
 import { createSerializedDb } from "../serialized-db.js";
@@ -41,7 +41,10 @@ export async function createHookedTestDb(): Promise<{
 }> {
   const raw = openDatabase(":memory:");
   const hooks: DriverHook[] = [];
-  const db = createSerializedDb(createHookedDriver(createBetterSqlite3Driver(raw), hooks));
+  const db = trackPort(
+    createSerializedDb(createHookedDriver(createBetterSqlite3Driver(raw), hooks)),
+    raw,
+  );
   await runMigrations(db);
   return { db, raw, hooks };
 }

@@ -1,4 +1,4 @@
-import type Database from "better-sqlite3";
+import type { Db } from "../db/db-port.js";
 import { listSessions } from "../sessions/sessions-repository.js";
 import type { SessionType } from "../sessions/session.js";
 import { toDateKey } from "../detection/time-utils.js";
@@ -9,11 +9,11 @@ import { toDateKey } from "../detection/time-utils.js";
  * the morning/evening meeting rule_key). Used to build the detection
  * engine's `todaysSessionTypes` input.
  */
-export function listTodaysSessionTypes(db: Database.Database, now: Date): SessionType[] {
+export async function listTodaysSessionTypes(db: Db, now: Date): Promise<SessionType[]> {
   const todayKey = toDateKey(now);
   const types = new Set<SessionType>();
 
-  for (const session of listSessions(db)) {
+  for (const session of await listSessions(db)) {
     if (toDateKey(new Date(session.started_at)) === todayKey) {
       types.add(session.type);
     }

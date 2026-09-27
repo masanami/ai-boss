@@ -1,4 +1,4 @@
-import type Database from "better-sqlite3";
+import type { Db } from "../db/db-port.js";
 import type { LlmBackend } from "../config.js";
 import { resolveBossSettings } from "../boss/boss-settings.js";
 import {
@@ -9,7 +9,6 @@ import {
 } from "../llm/claude-client.js";
 import { listMessagesBySessionId } from "./messages-repository.js";
 import type { Message, MessageRole } from "./message.js";
-import { portFor } from "../db/transitional-bridge.js";
 
 /**
  * セッション終了時の要約生成（Issue #96）。会話履歴（messages）から、後日
@@ -63,19 +62,19 @@ function extractText(message: BossLlmMessage): string {
  * 同じ規約）。
  */
 export async function generateSessionSummary(
-  db: Database.Database,
+  db: Db,
   env: NodeJS.ProcessEnv,
   llmBackend: LlmBackend,
   sessionId: number,
 ): Promise<string | null> {
   try {
-    const messages = listMessagesBySessionId(db, sessionId);
+    const messages = await listMessagesBySessionId(db, sessionId);
     if (messages.length === 0) {
       return null;
     }
 
     const client = createClaudeClient(env, llmBackend);
-    const { model } = await resolveBossSettings(portFor(db));
+    const { model } = await resolveBossSettings(db);
 
     const message = await createBossMessage(client, {
       model,
