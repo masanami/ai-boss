@@ -87,10 +87,18 @@ describe("createHookedDriver", () => {
     const hookedDb = createSerializedDb(hookedDriver);
     dbHolder.current = hookedDb;
 
-    await hookedDb.transaction(async (tx) => {
-      await tx.get("SELECT * FROM items");
-      order.push("tx:after-read");
-    });
+    // トランザクションは意図的にロールバックさせる。フックが起動した書き込みが
+    // トランザクションに混ざっていれば一緒に消えるので、行が残ることで
+    // 「トランザクションの外で、終わってから実行された」ことを確かめる
+    // （コミットで終わらせると、混ざっていても行が残り検出力が無い）。
+    const rollbackMarker = new Error("rollback on purpose");
+    await expect(
+      hookedDb.transaction(async (tx) => {
+        await tx.get("SELECT * FROM items");
+        order.push("tx:after-read");
+        throw rollbackMarker;
+      }),
+    ).rejects.toBe(rollbackMarker);
 
     await queuedOpDone;
 

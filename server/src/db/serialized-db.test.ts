@@ -122,6 +122,18 @@ describe("createSerializedDb — AC-2: transaction 内の例外でその中の�
 
     const rows = await db.all("SELECT * FROM items");
     expect(rows).toEqual([]);
+
+    // `fn` が async でない（Promise を返す前に同期で throw する）場合も
+    // ROLLBACK され、BEGIN が開いたまま残らない（開いたままなら次の
+    // トップレベルの transaction の BEGIN が失敗する）。
+    const syncError = new Error("boom (truly sync throw)");
+    await expect(
+      db.transaction((): never => {
+        throw syncError;
+      }),
+    ).rejects.toBe(syncError);
+    await expect(db.transaction(async (tx) => tx.run("INSERT INTO items (name) VALUES (?)", ["after"]))).resolves.toBeDefined();
+    expect(await db.all("SELECT name FROM items")).toEqual([{ name: "after" }]);
     raw.close();
   });
 
