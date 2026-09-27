@@ -19,6 +19,7 @@ import {
   classifyByokAnthropicError,
   registerByokAnthropicBackend,
 } from "./byok-anthropic-backend.js";
+import { ByokModelNotAllowedError } from "../model-catalog.js";
 
 /**
  * SDK を使わない Anthropic Messages クライアントと転送のポートの上に作る
@@ -202,7 +203,7 @@ describe("BYOK（Anthropic）の登録と要求", () => {
     await impl.streamRound(
       client,
       baseRequest({
-        model: "claude-opus-x",
+        model: "claude-haiku-4-5",
         maxTokens: 4096,
         system: "be terse",
         messages: [{ role: "user", content: "hi" }, { role: "assistant", content: "yo" }],
@@ -212,7 +213,7 @@ describe("BYOK（Anthropic）の登録と要求", () => {
       new AbortController().signal,
     );
     const body = JSON.parse(calls[0].request.body);
-    expect(body.model).toBe("claude-opus-x");
+    expect(body.model).toBe("claude-haiku-4-5");
     expect(body.max_tokens).toBe(4096);
     expect(body.system).toBe("be terse");
     expect(body.messages).toEqual([
@@ -755,6 +756,54 @@ describe("エラーの分類", () => {
     expect(caught).toBeInstanceOf(AnthropicMessagesStreamError);
     expect((caught as Error).message).not.toContain("LEAK");
     expect((caught as Error).message).not.toContain("not-json");
+  });
+});
+
+describe("モデルの一覧に無いモデルの送信前の関門（機能仕様 docs/features/llm-provider-abstraction.md クリティカル設計決定3）", () => {
+  it("一覧に無いモデル（claude-opus-5-5）を streamRound で送ろうとすると失敗し、転送のポートは一度も呼ばれない", async () => {
+    const { transport, calls } = singleResponseTransport(
+      okResponse(textBody(buildSseText(textStreamEvents(["ok"])))),
+    );
+    const { impl, client } = registerAndGetImpl(transport);
+    await expect(
+      impl.streamRound(client, baseRequest({ model: "claude-opus-5-5" }), {}, new AbortController().signal),
+    ).rejects.toThrow(ByokModelNotAllowedError);
+    expect(calls).toHaveLength(0);
+  });
+
+  it("一覧に無いモデル（claude-opus-5-5）を createRound で送ろうとすると失敗し、転送のポートは一度も呼ばれない", async () => {
+    const nonStreamBody = JSON.stringify({ content: [{ type: "text", text: "ok" }] });
+    const { transport, calls } = singleResponseTransport(okResponse(textBody(nonStreamBody)));
+    const { impl, client } = registerAndGetImpl(transport);
+    await expect(
+      impl.createRound(client, baseRequest({ model: "claude-opus-5-5" }), new AbortController().signal),
+    ).rejects.toThrow(ByokModelNotAllowedError);
+    expect(calls).toHaveLength(0);
+  });
+
+  it("他方のプロバイダの一覧にあるモデル（gpt-6-sol）を送ろうとすると失敗し、転送のポートは一度も呼ばれない", async () => {
+    const { transport, calls } = singleResponseTransport(
+      okResponse(textBody(buildSseText(textStreamEvents(["ok"])))),
+    );
+    const { impl, client } = registerAndGetImpl(transport);
+    await expect(
+      impl.streamRound(client, baseRequest({ model: "gpt-6-sol" }), {}, new AbortController().signal),
+    ).rejects.toThrow(ByokModelNotAllowedError);
+    expect(calls).toHaveLength(0);
+  });
+
+  it("モデルの一覧に無いモデルによる拒否は、classifyByokAnthropicError で再試行不可である", () => {
+    const decision = classifyByokAnthropicError(new ByokModelNotAllowedError("anthropic", "claude-opus-5-5"));
+    expect(decision.retryable).toBe(false);
+  });
+
+  it("一覧にあるモデル（claude-sonnet-5）は関門を通過し、通常どおり送信される", async () => {
+    const { transport, calls } = singleResponseTransport(
+      okResponse(textBody(buildSseText(textStreamEvents(["ok"])))),
+    );
+    const { impl, client } = registerAndGetImpl(transport);
+    await impl.streamRound(client, baseRequest({ model: "claude-sonnet-5" }), {}, new AbortController().signal);
+    expect(calls).toHaveLength(1);
   });
 });
 

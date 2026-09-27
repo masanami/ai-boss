@@ -33,6 +33,18 @@ export { registeredLlmBackendNames as registeredCoreLlmBackendNames } from "./ll
 export { registerByokAnthropicBackend } from "./llm/backends/byok-anthropic-backend.js";
 
 /**
+ * BYOK（OpenAI）の登録関数も同じ理由で**呼ばずに re-export する**（機能仕様
+ * docs/features/llm-provider-abstraction.md「実装計画」・S2「製品版のエント
+ * リへの登録」より前——S1 は re-export のみ）。`OPENAI_RESPONSES_DESTINATION`
+ * も併せて re-export し、S3 以降の Tauri 実装がこのモジュールから宛先の
+ * 名前を引ける形に揃える（`ANTHROPIC_MESSAGES_DESTINATION` と同じ扱い）。
+ */
+export {
+  registerByokOpenAiBackend,
+  OPENAI_RESPONSES_DESTINATION,
+} from "./llm/backends/byok-openai-backend.js";
+
+/**
  * `SecureTransportError`（と失敗の種類の型）も re-export する（self-review:
  * design-reviewer, PLAUSIBLE）。エラーの分類（`classifyByokAnthropicError`）
  * は `instanceof SecureTransportError` というクラスの同一性に依存する。S3

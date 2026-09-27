@@ -9,12 +9,13 @@ use std::time::Duration;
 use secrecy::SecretString;
 use secure_transport::{
     Destination, DestinationTable, KeyStore, MemoryKeyStore, Provider, ResponseStream, SecureTransport, SendRequest,
-    TransportError, ANTHROPIC_MESSAGES,
+    TransportError, ANTHROPIC_MESSAGES, OPENAI_RESPONSES,
 };
 use support::{Gate, MockResponse, MockServer};
 
 /// テスト用のダミーのキー（実在のキーではない）。
 const KEY: &str = "sk-ant-dummy-registered-key-0123456789";
+const OPENAI_KEY: &str = "sk-openai-dummy-registered-key-0123456789";
 const BODY: &str = r#"{"model":"claude-sonnet-5","max_tokens":16,"messages":[{"role":"user","content":"BODY-MARKER-こんにちは"}]}"#;
 
 /// 合図で進めるテストが実装の欠陥で止まったとき、無限に待たずに落とすための安全網（正しさの判定には使わない）。
@@ -61,18 +62,24 @@ fn assert_no_secret(text: &str, secret: &str) {
     assert!(!text.contains(secret), "{text:?} must not contain {secret:?}");
 }
 
-// ---- 製品版の宛先の表 ----
+// ---- 製品版の宛先の表（機能仕様 docs/features/llm-provider-abstraction.md 受入基準（S1）「Rust の通信層」）----
 
 #[test]
-fn production_table_has_only_anthropic_messages() {
+fn production_table_has_exactly_anthropic_messages_and_openai_responses() {
     let table = DestinationTable::production();
-    assert_eq!(table.names().collect::<Vec<_>>(), vec!["anthropic-messages"]);
+    assert_eq!(table.names().collect::<Vec<_>>(), vec!["anthropic-messages", "openai-responses"]);
 }
 
 #[test]
 fn production_anthropic_messages_points_to_the_messages_api() {
     let table = DestinationTable::production();
     assert_eq!(table.get("anthropic-messages").unwrap().url(), "https://api.anthropic.com/v1/messages");
+}
+
+#[test]
+fn production_openai_responses_points_to_the_responses_api() {
+    let table = DestinationTable::production();
+    assert_eq!(table.get("openai-responses").unwrap().url(), "https://api.openai.com/v1/responses");
 }
 
 // ---- 付与するヘッダと要求の形 ----
@@ -145,6 +152,112 @@ async fn rejects_invalid_caller_header_without_sending() {
     let error = within(transport.send(request(&[("bad header", "x")]))).await.unwrap_err();
     assert_eq!(error, TransportError::InvalidHeader);
     assert!(server.requests().is_empty());
+}
+
+// ---- OpenAI Bearer の資格情報（機能仕様 docs/features/llm-provider-abstraction.md 受入基準（S1）「Rust の通信層」）----
+
+/// `anthropic-messages`（`server_a` へ）と `openai-responses`（`server_b` へ）の両方を持つ表。
+/// `anthropic_key`/`openai_key` を登録した状態のキーストアを共有する。
+fn dual_transport(server_a: &MockServer, server_b: &MockServer, anthropic_key: Option<&str>, openai_key: Option<&str>) -> SecureTransport {
+    let store = MemoryKeyStore::new();
+    if let Some(key) = anthropic_key {
+        store.set(Provider::Anthropic, SecretString::from(key)).unwrap();
+    }
+    if let Some(key) = openai_key {
+        store.set(Provider::OpenAi, SecretString::from(key)).unwrap();
+    }
+    let table = DestinationTable::from_entries([
+        (ANTHROPIC_MESSAGES, Destination::anthropic_messages(server_a.url("/v1/messages"))),
+        (OPENAI_RESPONSES, Destination::openai_responses(server_b.url("/v1/responses"))),
+    ]);
+    SecureTransport::new(table, Arc::new(store)).unwrap()
+}
+
+fn openai_request(headers: &[(&str, &str)]) -> SendRequest {
+    SendRequest {
+        request_id: "req-openai-1".to_owned(),
+        destination: OPENAI_RESPONSES.to_owned(),
+        headers: headers.iter().map(|(name, value)| ((*name).to_owned(), (*value).to_owned())).collect(),
+        body: BODY.to_owned(),
+    }
+}
+
+#[tokio::test]
+async fn openai_responses_attaches_registered_key_as_bearer_authorization() {
+    let anthropic_server = MockServer::start(MockResponse::new(200).chunk(b"ok")).await;
+    let openai_server = MockServer::start(MockResponse::new(200).chunk(b"ok")).await;
+    let transport = dual_transport(&anthropic_server, &openai_server, None, Some(OPENAI_KEY));
+    let mut stream = within(transport.send(openai_request(&[]))).await.expect("send");
+    within(read_all(&mut stream)).await.expect("body");
+    let requests = openai_server.requests();
+    assert_eq!(requests.len(), 1);
+    assert_eq!(requests[0].header_values("authorization"), vec![format!("Bearer {OPENAI_KEY}")]);
+}
+
+#[tokio::test]
+async fn openai_responses_request_has_no_x_api_key_header() {
+    let anthropic_server = MockServer::start(MockResponse::new(200).chunk(b"ok")).await;
+    let openai_server = MockServer::start(MockResponse::new(200).chunk(b"ok")).await;
+    let transport = dual_transport(&anthropic_server, &openai_server, None, Some(OPENAI_KEY));
+    let mut stream = within(transport.send(openai_request(&[]))).await.expect("send");
+    within(read_all(&mut stream)).await.expect("body");
+    assert!(openai_server.requests()[0].header_values("x-api-key").is_empty());
+}
+
+#[tokio::test]
+async fn openai_responses_request_has_no_anthropic_version_header() {
+    let anthropic_server = MockServer::start(MockResponse::new(200).chunk(b"ok")).await;
+    let openai_server = MockServer::start(MockResponse::new(200).chunk(b"ok")).await;
+    let transport = dual_transport(&anthropic_server, &openai_server, None, Some(OPENAI_KEY));
+    let mut stream = within(transport.send(openai_request(&[]))).await.expect("send");
+    within(read_all(&mut stream)).await.expect("body");
+    assert!(openai_server.requests()[0].header_values("anthropic-version").is_empty());
+}
+
+#[tokio::test]
+async fn openai_responses_drops_caller_authorization_and_uses_the_stored_key() {
+    let anthropic_server = MockServer::start(MockResponse::new(200).chunk(b"ok")).await;
+    let openai_server = MockServer::start(MockResponse::new(200).chunk(b"ok")).await;
+    let transport = dual_transport(&anthropic_server, &openai_server, None, Some(OPENAI_KEY));
+    let mut stream = within(transport.send(openai_request(&[("authorization", "Bearer caller-supplied-token")])))
+        .await
+        .expect("send");
+    within(read_all(&mut stream)).await.expect("body");
+    let requests = openai_server.requests();
+    assert_eq!(requests[0].header_values("authorization"), vec![format!("Bearer {OPENAI_KEY}")]);
+    assert!(requests[0].headers.iter().all(|(_, value)| !value.contains("caller-supplied-token")));
+}
+
+#[tokio::test]
+async fn anthropic_messages_uses_the_anthropic_key_when_both_keys_are_registered() {
+    let anthropic_server = MockServer::start(MockResponse::new(200).chunk(b"ok")).await;
+    let openai_server = MockServer::start(MockResponse::new(200).chunk(b"ok")).await;
+    let transport = dual_transport(&anthropic_server, &openai_server, Some(KEY), Some(OPENAI_KEY));
+    let mut stream = within(transport.send(request(&[]))).await.expect("send");
+    within(read_all(&mut stream)).await.expect("body");
+    let requests = anthropic_server.requests();
+    assert_eq!(requests[0].header_values("x-api-key"), vec![KEY]);
+}
+
+#[tokio::test]
+async fn anthropic_messages_request_headers_do_not_contain_the_openai_key_when_both_are_registered() {
+    let anthropic_server = MockServer::start(MockResponse::new(200).chunk(b"ok")).await;
+    let openai_server = MockServer::start(MockResponse::new(200).chunk(b"ok")).await;
+    let transport = dual_transport(&anthropic_server, &openai_server, Some(KEY), Some(OPENAI_KEY));
+    let mut stream = within(transport.send(request(&[]))).await.expect("send");
+    within(read_all(&mut stream)).await.expect("body");
+    let requests = anthropic_server.requests();
+    assert!(requests[0].headers.iter().all(|(_, value)| !value.contains(OPENAI_KEY)));
+}
+
+#[tokio::test]
+async fn missing_openai_key_is_rejected_without_sending() {
+    let anthropic_server = MockServer::start(MockResponse::new(200)).await;
+    let openai_server = MockServer::start(MockResponse::new(200)).await;
+    let transport = dual_transport(&anthropic_server, &openai_server, None, None);
+    let error = within(transport.send(openai_request(&[]))).await.unwrap_err();
+    assert_eq!(error, TransportError::KeyNotRegistered);
+    assert!(openai_server.requests().is_empty());
 }
 
 // ---- 送らずに失敗する場合 ----
@@ -427,6 +540,21 @@ async fn response_head_debug_does_not_contain_the_key() {
     let stream = within(transport.send(request(&[]))).await.expect("send");
     assert_no_secret(&format!("{:?}", stream.head()), KEY);
     assert_no_secret(&format!("{stream:?}"), KEY);
+}
+
+#[tokio::test]
+async fn openai_error_values_do_not_contain_the_registered_key() {
+    let store = MemoryKeyStore::new();
+    store.set(Provider::OpenAi, SecretString::from(OPENAI_KEY)).unwrap();
+    let table = DestinationTable::from_entries([(
+        OPENAI_RESPONSES,
+        Destination::openai_responses(closed_port_url().await),
+    )]);
+    let transport = SecureTransport::new(table, Arc::new(store)).unwrap();
+    let error = within(transport.send(openai_request(&[]))).await.unwrap_err();
+    assert_eq!(error, TransportError::Connection);
+    assert_no_secret(&format!("{error:?}"), OPENAI_KEY);
+    assert_no_secret(&error.to_string(), OPENAI_KEY);
 }
 
 #[test]

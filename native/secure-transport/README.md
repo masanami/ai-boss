@@ -6,8 +6,8 @@
 |---|---|
 | `key_store` | 保管のポート `KeyStore`（登録・削除・登録の有無）とテスト用の `MemoryKeyStore`。キーの値を読み出す `load` は封印つきで、クレートの外から呼べない（`compile_fail` の doctest で固定） |
 | `keychain` | Apple のキーチェーン実装 `KeychainKeyStore`（データ保護キーチェーン・`kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly`・同期しない）。`security-framework` の高レベル API（`PasswordOptions`）は `kSecAttrAccessible` を直接指定できず、読み出した値も消去されない `Vec<u8>` で返すため、`security-framework-sys` を直接呼ぶ |
-| `destination` | 宛先の表。製品版は `anthropic-messages` → `https://api.anthropic.com/v1/messages` の 1 行だけ |
-| `transport` | `x-api-key` と `anthropic-version` を付与するストリーミング転送（中止つき・リダイレクトに追従しない） |
+| `destination` | 宛先の表。製品版は `anthropic-messages` → `https://api.anthropic.com/v1/messages` と `openai-responses` → `https://api.openai.com/v1/responses` の 2 行だけ（#582） |
+| `transport` | 宛先の資格情報に応じてキーを付与するストリーミング転送（Anthropic は `x-api-key` と `anthropic-version`、OpenAI は `authorization: Bearer <キー>`。中止つき・リダイレクトに追従しない） |
 
 ## テスト
 
@@ -16,7 +16,7 @@
 npm run test:rust
 ```
 
-送信のテストは手元の模擬 HTTP サーバー（`tests/support/`）へ送る。実際の Anthropic API へは送らない。
+送信のテストは手元の模擬 HTTP サーバー（`tests/support/`）へ送る。実際の Anthropic・OpenAI の API へは送らない。
 
 ## 実キーチェーンの結合テスト（手動）
 
