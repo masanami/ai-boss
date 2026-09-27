@@ -1,4 +1,4 @@
-import type Database from "better-sqlite3";
+import type { Db } from "../db/db-port.js";
 import { evaluateRules } from "../detection/rule-engine.js";
 import type {
   DetectionInput,
@@ -25,7 +25,6 @@ import { mapToNotificationRuleType, toEscalationLevel } from "./rule-type-mappin
 import { toDateKey } from "../detection/time-utils.js";
 import { findOverridesByDate } from "../meeting-schedule/meeting-schedule-repository.js";
 import { resolveEffectiveMeetingTimes } from "../meeting-schedule/meeting-schedule.js";
-import { portFor } from "../db/transitional-bridge.js";
 
 /**
  * Lower bound for `listEventsSince` / `listNotificationsSince`: this ticket
@@ -41,7 +40,7 @@ const EPOCH_ISO = "1970-01-01T00:00:00.000Z";
 const DEFAULT_NOTIFICATION_TITLE = "AIボス";
 
 export interface TickDeps {
-  db: Database.Database;
+  db: Db;
   env: NodeJS.ProcessEnv;
   execFile: ExecFileFn;
   /**
@@ -73,12 +72,12 @@ export interface TickDeps {
  * 字面上の衝突を避けるため）。`work_start`/`work_end`（勤務時間帯ゲート）は
  * 当日変更の対象外（決定3）なので、ここでは触れない。
  */
-function resolveTodaysMeetingSettings(
-  db: Database.Database,
+async function resolveTodaysMeetingSettings(
+  db: Db,
   base: DetectionSettings,
   now: Date,
-): DetectionSettings {
-  const overrides = findOverridesByDate(db, toDateKey(now));
+): Promise<DetectionSettings> {
+  const overrides = await findOverridesByDate(db, toDateKey(now));
   const effective = resolveEffectiveMeetingTimes(
     { morning: base.morningMeetingTime, evening: base.eveningMeetingTime },
     overrides,
@@ -91,16 +90,25 @@ function resolveTodaysMeetingSettings(
 }
 
 async function buildTickInput(deps: TickDeps, now: Date): Promise<DetectionInput> {
-  const baseSettings = await loadDetectionSettings(portFor(deps.db));
-  const settings = resolveTodaysMeetingSettings(deps.db, baseSettings, now);
-  return {
-    now,
-    tasks: await listTasks(portFor(deps.db)),
-    activityEvents: await listEventsSince(portFor(deps.db), EPOCH_ISO),
-    notifications: toNotificationHistory(listNotificationsSince(deps.db, EPOCH_ISO)),
-    settings,
-    todaysSessionTypes: await listTodaysSessionTypes(portFor(deps.db), now),
-  };
+  // Every table the rule engine judges from is read in one transaction
+  // (#606・決定 2 の全数監査): with separate awaits a concurrent request (a
+  // checkin, a task update, a settings save) could land between the reads and
+  // hand the engine a combination that never existed in the DB (e.g. the
+  // task_start event without the task's in_progress status), producing a
+  // spurious nudge. The LLM body generation and the notification writes
+  // below stay outside this transaction.
+  return deps.db.transaction(async (tx) => {
+    const baseSettings = await loadDetectionSettings(tx);
+    const settings = await resolveTodaysMeetingSettings(tx, baseSettings, now);
+    return {
+      now,
+      tasks: await listTasks(tx),
+      activityEvents: await listEventsSince(tx, EPOCH_ISO),
+      notifications: toNotificationHistory(await listNotificationsSince(tx, EPOCH_ISO)),
+      settings,
+      todaysSessionTypes: await listTodaysSessionTypes(tx, now),
+    };
+  });
 }
 
 async function processFiring(
@@ -109,7 +117,7 @@ async function processFiring(
   now: Date,
 ): Promise<void> {
   const title = deps.notificationTitle ?? DEFAULT_NOTIFICATION_TITLE;
-  const task = firing.taskId !== null ? ((await findTaskById(portFor(deps.db), firing.taskId)) ?? null) : null;
+  const task = firing.taskId !== null ? ((await findTaskById(deps.db, firing.taskId)) ?? null) : null;
 
   // `notifications.type` intentionally stores the *detection* vocabulary
   // (e.g. "unstarted"), not the notification-body vocabulary it gets mapped
@@ -170,7 +178,7 @@ async function processFiring(
   // *failure* path: a failed record now means nothing was sent either, so
   // the same natural re-send path covers it instead of the user being
   // notified twice.
-  const recorded = insertNotification(deps.db, {
+  const recorded = await insertNotification(deps.db, {
     type: firing.ruleType,
     rule_key: firing.ruleKey,
     escalation_level: firing.escalationLevel,
@@ -211,7 +219,7 @@ async function processFiring(
   // wrapped inside generateNotificationBody), so message/stack is safe to
   // log — same reasoning as the catch above.
   try {
-    recordNotificationDelivery(deps.db, recorded.id, result);
+    await recordNotificationDelivery(deps.db, recorded.id, result);
   } catch (err) {
     console.error(
       `scheduler firing: failed to write back the delivery outcome (rule_key=${firing.ruleKey}, delivered=${result.delivered}, channel=${result.channel}, notification_id=${recorded.id}):`,

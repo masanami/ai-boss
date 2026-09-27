@@ -90,7 +90,7 @@ serve({ fetch: app.fetch, port: config.port }, (info) => {
 // production entry point, never from `createApp`/tests (see
 // `scheduler/scheduler.ts` and `scheduler/scheduler-tick.ts`, which are
 // tested directly and independently of node-cron/the server process).
-const scheduler = startScheduler({ db, env: process.env });
+const scheduler = startScheduler({ db: portFor(db), env: process.env });
 
 function gracefulStop(signal: NodeJS.Signals): void {
   console.log(`${signal} received, stopping the scheduler...`);

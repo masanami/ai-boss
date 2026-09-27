@@ -126,11 +126,11 @@ export function createCoreApp(
   api.route("/checkins", createCheckinsRouter(portFor(db)));
   api.route("/activity", createActivityRouter(portFor(db)));
   api.route("/decisions", createDecisionsRouter(portFor(db)));
-  api.route("/dashboard", createDashboardRouter(db, env));
-  api.route("/reports", createReportsRouter(db, env));
-  api.route("/work-logs", createWorkLogsRouter(db));
+  api.route("/dashboard", createDashboardRouter(portFor(db), env));
+  api.route("/reports", createReportsRouter(portFor(db), env));
+  api.route("/work-logs", createWorkLogsRouter(portFor(db)));
   api.route("/settings", createSettingsRouter(portFor(db)));
-  api.route("/meeting-schedule", createMeetingScheduleRouter(db));
+  api.route("/meeting-schedule", createMeetingScheduleRouter(portFor(db)));
 
   const app = new Hono();
   app.route("/api", api);

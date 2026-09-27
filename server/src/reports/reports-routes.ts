@@ -1,11 +1,10 @@
 import { Hono } from "hono";
 import type { Context } from "hono";
-import type Database from "better-sqlite3";
+import type { Db } from "../db/db-port.js";
 import { parseDateKey } from "../detection/time-utils.js";
 import { findEveningSessionByDateKey } from "../sessions/sessions-repository.js";
 import { findDailyReportByDate, listDailyReports } from "./daily-reports-repository.js";
 import { generateDailyReport } from "./generate-daily-report.js";
-import { portFor } from "../db/transitional-bridge.js";
 
 /**
  * `POST /generate` の任意 JSON body（Issue #297）。両方省略時は従来どおり
@@ -89,18 +88,18 @@ function respondEveningSessionRequired(c: Context): Response {
  * decision).
  */
 export function createReportsRouter(
-  db: Database.Database,
+  db: Db,
   env: NodeJS.ProcessEnv,
 ): Hono {
   const reports = new Hono();
 
-  reports.get("/", (c) => {
-    return c.json(listDailyReports(db));
+  reports.get("/", async (c) => {
+    return c.json(await listDailyReports(db));
   });
 
-  reports.get("/:date", (c) => {
+  reports.get("/:date", async (c) => {
     const date = c.req.param("date");
-    const report = findDailyReportByDate(db, date);
+    const report = await findDailyReportByDate(db, date);
     if (!report) {
       return c.json(
         { error: `report for ${date} not found`, code: "report_not_found" },
@@ -131,7 +130,7 @@ export function createReportsRouter(
       if (!parsedDate) {
         return respondInvalidRequest(c, "date は実在する YYYY-MM-DD 形式の日付で指定してください");
       }
-      const session = await findEveningSessionByDateKey(portFor(db), body.date);
+      const session = await findEveningSessionByDateKey(db, body.date);
       if (!session) {
         return respondEveningSessionRequired(c);
       }

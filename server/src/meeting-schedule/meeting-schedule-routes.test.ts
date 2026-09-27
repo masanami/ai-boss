@@ -63,7 +63,7 @@ describe("meeting-schedule routes", () => {
     });
 
     it("returns the override time for a type with an override (AC-23)", async () => {
-      upsertOverride(db, TODAY_KEY, "evening", "21:00");
+      await upsertOverride(portFor(db), TODAY_KEY, "evening", "21:00");
       const app = createApp(db);
 
       const res = await app.request(`/api/meeting-schedule/${TODAY_KEY}`);
@@ -73,7 +73,7 @@ describe("meeting-schedule routes", () => {
     });
 
     it("returns the constant setting time as defaultTime regardless of override presence (AC-24)", async () => {
-      upsertOverride(db, TODAY_KEY, "evening", "21:00");
+      await upsertOverride(portFor(db), TODAY_KEY, "evening", "21:00");
       const app = createApp(db);
 
       const res = await app.request(`/api/meeting-schedule/${TODAY_KEY}`);
@@ -84,7 +84,7 @@ describe("meeting-schedule routes", () => {
     });
 
     it("returns overridden: true for a type whose effective time differs from the default (AC-25)", async () => {
-      upsertOverride(db, TODAY_KEY, "evening", "21:00");
+      await upsertOverride(portFor(db), TODAY_KEY, "evening", "21:00");
       const app = createApp(db);
 
       const res = await app.request(`/api/meeting-schedule/${TODAY_KEY}`);
@@ -107,7 +107,7 @@ describe("meeting-schedule routes", () => {
       // ——リポジトリを直接叩いて、行が「存在するのに実効時刻は既定と同じ」
       // 状態を人為的に作る。実装が「行がある ⇒ overridden: true」という
       // 誤った判定に退行していないかを検出する。
-      upsertOverride(db, TODAY_KEY, "evening", "18:00"); // 既定と同値
+      await upsertOverride(portFor(db), TODAY_KEY, "evening", "18:00"); // 既定と同値
       const rowCountBefore = (
         db
           .prepare(
@@ -129,7 +129,7 @@ describe("meeting-schedule routes", () => {
       const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
       // 恒常設定 18:00 の上限は 21:00。22:00 は PUT では拒否されるため、
       // リポジトリを直接叩いて「保存済みの上限超過値」を人為的に作る。
-      upsertOverride(db, TODAY_KEY, "evening", "22:00");
+      await upsertOverride(portFor(db), TODAY_KEY, "evening", "22:00");
       const app = createApp(db);
 
       const res = await app.request(`/api/meeting-schedule/${TODAY_KEY}`);
@@ -410,8 +410,8 @@ describe("meeting-schedule routes", () => {
 
   describe("既存契約の保全", () => {
     it("GET /api/settings still returns the constant setting even when today has an override (AC-52)", async () => {
-      upsertOverride(db, TODAY_KEY, "morning", "07:00");
-      upsertOverride(db, TODAY_KEY, "evening", "21:00");
+      await upsertOverride(portFor(db), TODAY_KEY, "morning", "07:00");
+      await upsertOverride(portFor(db), TODAY_KEY, "evening", "21:00");
       const app = createApp(db);
 
       const res = await app.request("/api/settings");

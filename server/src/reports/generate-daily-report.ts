@@ -6,7 +6,7 @@
 //   4. 保存: upsertDailyReport（#106）
 // を1関数に結線する。自動生成（夕会終了フック、#109）と手動再生成（#109/#110
 // のルート）は、この単一の関数を共通して呼ぶ。
-import type Database from "better-sqlite3";
+import type { Db } from "../db/db-port.js";
 import { toDateKey } from "../detection/time-utils.js";
 import { findEveningSessionByDateKey, findSessionById } from "../sessions/sessions-repository.js";
 import { listMessagesBySessionId } from "../sessions/messages-repository.js";
@@ -16,7 +16,6 @@ import { extractEveningSummary } from "./extract-evening-summary.js";
 import { renderDailyReport } from "./render-daily-report.js";
 import { upsertDailyReport } from "./daily-reports-repository.js";
 import type { DailyReport } from "./daily-report.js";
-import { portFor } from "../db/transitional-bridge.js";
 
 export type GenerateDailyReportResult =
   | { ok: true; report: DailyReport }
@@ -61,10 +60,10 @@ export interface GenerateDailyReportOptions {
  * と同じクエリの重複を避ける）。
  */
 async function findTodaysEveningSession(
-  db: Database.Database,
+  db: Db,
   now: Date,
 ): Promise<Session | undefined> {
-  return findEveningSessionByDateKey(portFor(db), toDateKey(now));
+  return await findEveningSessionByDateKey(db, toDateKey(now));
 }
 
 /**
@@ -74,12 +73,12 @@ async function findTodaysEveningSession(
  * findTodaysEveningSession}）にフォールバックする。
  */
 async function resolveTargetEveningSession(
-  db: Database.Database,
+  db: Db,
   now: Date,
   eveningSessionId: number | undefined,
 ): Promise<Session | undefined> {
   if (eveningSessionId !== undefined) {
-    const session = await findSessionById(portFor(db), eveningSessionId);
+    const session = await findSessionById(db, eveningSessionId);
     if (!session || session.type !== "evening") {
       return undefined;
     }
@@ -99,16 +98,16 @@ async function resolveTargetEveningSession(
  * フォールバック日報を保存できる設計になっている。
  */
 async function checkPrerequisite(
-  db: Database.Database,
+  db: Db,
   now: Date,
   eveningSessionId: number | undefined,
-): Promise<{ ok: true; session: Session } | { ok: false; code: "evening_session_required" }> {
+): Promise< { ok: true; session: Session } | { ok: false; code: "evening_session_required" }> {
   const session = await resolveTargetEveningSession(db, now, eveningSessionId);
   if (!session || session.ended_at === null) {
     return { ok: false, code: "evening_session_required" };
   }
 
-  const userMessageCount = (await listMessagesBySessionId(portFor(db), session.id)).filter(
+  const userMessageCount = (await listMessagesBySessionId(db, session.id)).filter(
     (message) => message.role === "user",
   ).length;
   if (userMessageCount === 0) {
@@ -139,7 +138,7 @@ async function checkPrerequisite(
  *   増えない）
  */
 export async function generateDailyReport(
-  db: Database.Database,
+  db: Db,
   env: NodeJS.ProcessEnv,
   now: Date,
   options: GenerateDailyReportOptions = {},
@@ -150,8 +149,8 @@ export async function generateDailyReport(
   }
   const { session } = prerequisite;
 
-  const collected = collectDailyReportData(db, session);
-  const eveningMessages = await listMessagesBySessionId(portFor(db), session.id);
+  const collected = await collectDailyReportData(db, session);
+  const eveningMessages = await listMessagesBySessionId(db, session.id);
 
   // 収集した当日の active 決定一覧は、日報の「決定事項」セクション（Issue
   // #144 で廃止）へは渡さず、抽出ステップのコンテキストへ渡す（「決定の
@@ -176,7 +175,7 @@ export async function generateDailyReport(
     eveningSummary,
   });
 
-  const report = upsertDailyReport(db, {
+  const report = await upsertDailyReport(db, {
     date: toDateKey(collected.targetDate),
     content,
     evening_session_id: session.id,

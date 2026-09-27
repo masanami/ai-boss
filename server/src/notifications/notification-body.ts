@@ -1,4 +1,4 @@
-import type Database from "better-sqlite3";
+import type { Db } from "../db/db-port.js";
 import { resolveBossSettings } from "../boss/boss-settings.js";
 import { buildPersonaPrompt } from "../boss/persona-prompt.js";
 import { resolveLlmBackend } from "../config.js";
@@ -12,7 +12,6 @@ import {
 } from "../llm/claude-client.js";
 import type { Task } from "../tasks/task.js";
 import { toLocalDateTimeKey } from "../detection/time-utils.js";
-import { portFor } from "../db/transitional-bridge.js";
 
 /**
  * 通知文面生成。人格プロンプト生成器（purpose: "notification"）＋ Claude
@@ -192,7 +191,7 @@ export function buildFallbackBody(request: NotificationBodyRequest): string {
  * （フォールバック定型文）。
  */
 export async function generateNotificationBody(
-  db: Database.Database,
+  db: Db,
   env: NodeJS.ProcessEnv,
   request: NotificationBodyRequest,
 ): Promise<string> {
@@ -201,7 +200,7 @@ export async function generateNotificationBody(
   // （resolveBossSettings は db.prepare を呼ぶため DB 例外もここで保護する）。
   try {
     const client: BossLlmClient = createClaudeClient(env, resolveLlmBackend(env));
-    const { model, persona } = await resolveBossSettings(portFor(db));
+    const { model, persona } = await resolveBossSettings(db);
     const system = buildPersonaPrompt(persona, {
       tasks: request.task ? [request.task] : [],
       recentDecisions: [],

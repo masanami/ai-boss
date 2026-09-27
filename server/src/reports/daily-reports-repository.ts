@@ -1,4 +1,4 @@
-import type Database from "better-sqlite3";
+import type { Db } from "../db/db-port.js";
 import type { DailyReport, DailyReportSummary } from "./daily-report.js";
 
 export interface UpsertDailyReportRecord {
@@ -11,13 +11,11 @@ export interface UpsertDailyReportRecord {
  * Finds the daily report for a given local date key (`YYYY-MM-DD`), or
  * `undefined` if none exists yet.
  */
-export function findDailyReportByDate(
-  db: Database.Database,
+export async function findDailyReportByDate(
+  db: Db,
   date: string,
-): DailyReport | undefined {
-  return db.prepare("SELECT * FROM daily_reports WHERE date = ?").get(date) as
-    | DailyReport
-    | undefined;
+): Promise<DailyReport | undefined> {
+  return db.get<DailyReport>("SELECT * FROM daily_reports WHERE date = ?", [date]);
 }
 
 /**
@@ -28,22 +26,23 @@ export function findDailyReportByDate(
  * docs/adr/0005-sqlite-schema-policy.md 検討した代替案（1日1行・再生成は
  * 同日行の UPSERT・世代管理はしない）.
  */
-export function upsertDailyReport(
-  db: Database.Database,
+export async function upsertDailyReport(
+  db: Db,
   record: UpsertDailyReportRecord,
-): DailyReport {
+): Promise<DailyReport> {
   const now = new Date().toISOString();
 
-  db.prepare(
+  await db.run(
     `INSERT INTO daily_reports (date, content, evening_session_id, created_at, updated_at)
      VALUES (?, ?, ?, ?, ?)
      ON CONFLICT(date) DO UPDATE SET
        content = excluded.content,
        evening_session_id = excluded.evening_session_id,
        updated_at = excluded.updated_at`,
-  ).run(record.date, record.content, record.evening_session_id, now, now);
+    [record.date, record.content, record.evening_session_id, now, now],
+  );
 
-  const report = findDailyReportByDate(db, record.date);
+  const report = await findDailyReportByDate(db, record.date);
   if (!report) {
     throw new Error("failed to read back the upserted daily report");
   }
@@ -55,8 +54,8 @@ export function upsertDailyReport(
  * list screen (`GET /api/reports`). Only `date`/`created_at`/`updated_at`
  * are returned — `content` is intentionally excluded.
  */
-export function listDailyReports(db: Database.Database): DailyReportSummary[] {
-  return db
-    .prepare("SELECT date, created_at, updated_at FROM daily_reports ORDER BY date DESC")
-    .all() as DailyReportSummary[];
+export async function listDailyReports(db: Db): Promise<DailyReportSummary[]> {
+  return db.all<DailyReportSummary>(
+    "SELECT date, created_at, updated_at FROM daily_reports ORDER BY date DESC",
+  );
 }

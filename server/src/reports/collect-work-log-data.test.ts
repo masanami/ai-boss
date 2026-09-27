@@ -94,15 +94,15 @@ describe("collectWorkLogData", () => {
     db.close();
   });
 
-  it("returns empty decisions/activityEvents when nothing exists on the target day", () => {
-    const result = collectWorkLogData(db, new Date(2026, 7, 14));
+  it("returns empty decisions/activityEvents when nothing exists on the target day", async () => {
+    const result = await collectWorkLogData(portFor(db), new Date(2026, 7, 14));
 
     expect(result.decisions).toEqual([]);
     expect(result.activityEvents).toEqual([]);
     expect(result.targetDate).toEqual(new Date(2026, 7, 14));
   });
 
-  it("does not require an evening session (no prerequisite — generation is always available)", () => {
+  it("does not require an evening session (no prerequisite — generation is always available)", async () => {
     const sessionId = insertRawSession(db, iso(2026, 8, 14, 9, 0));
     insertRawDecision(db, {
       sessionId,
@@ -111,7 +111,7 @@ describe("collectWorkLogData", () => {
       createdAt: iso(2026, 8, 14, 10, 0),
     });
 
-    const result = collectWorkLogData(db, new Date(2026, 7, 14));
+    const result = await collectWorkLogData(portFor(db), new Date(2026, 7, 14));
 
     expect(result.decisions).toHaveLength(1);
   });
@@ -119,7 +119,7 @@ describe("collectWorkLogData", () => {
   describe("決定ログ", () => {
     it.each([["active"], ["revised"], ["withdrawn"]] as const)(
       "collects a %s decision on the target day",
-      (status) => {
+      async (status) => {
         const sessionId = insertRawSession(db, iso(2026, 8, 14, 9, 0));
         insertRawDecision(db, {
           sessionId,
@@ -128,7 +128,7 @@ describe("collectWorkLogData", () => {
           createdAt: iso(2026, 8, 14, 10, 0),
         });
 
-        const result = collectWorkLogData(db, new Date(2026, 7, 14));
+        const result = await collectWorkLogData(portFor(db), new Date(2026, 7, 14));
 
         expect(result.decisions).toEqual([
           { id: expect.any(Number), status, content: `${status}の決定`, createdAt: new Date(iso(2026, 8, 14, 10, 0)) },
@@ -136,7 +136,7 @@ describe("collectWorkLogData", () => {
       },
     );
 
-    it("excludes kind='mentoring' decisions, keeping kind='decision' ones on the same day (#408 AC-44 — mentoring must not appear as a decision in the work log)", () => {
+    it("excludes kind='mentoring' decisions, keeping kind='decision' ones on the same day (#408 AC-44 — mentoring must not appear as a decision in the work log)", async () => {
       const sessionId = insertRawSession(db, iso(2026, 8, 14, 9, 0));
       insertRawDecision(db, {
         sessionId,
@@ -153,12 +153,12 @@ describe("collectWorkLogData", () => {
         kind: "decision",
       });
 
-      const result = collectWorkLogData(db, new Date(2026, 7, 14));
+      const result = await collectWorkLogData(portFor(db), new Date(2026, 7, 14));
 
       expect(result.decisions.map((d) => d.content)).toEqual(["通常の決定"]);
     });
 
-    it("orders decisions by created_at ascending, then id ascending", () => {
+    it("orders decisions by created_at ascending, then id ascending", async () => {
       const sessionId = insertRawSession(db, iso(2026, 8, 14, 9, 0));
       insertRawDecision(db, {
         sessionId,
@@ -173,12 +173,12 @@ describe("collectWorkLogData", () => {
         createdAt: iso(2026, 8, 14, 9, 0),
       });
 
-      const result = collectWorkLogData(db, new Date(2026, 7, 14));
+      const result = await collectWorkLogData(portFor(db), new Date(2026, 7, 14));
 
       expect(result.decisions.map((d) => d.content)).toEqual(["先の決定", "後の決定"]);
     });
 
-    it("excludes a decision created on a different day", () => {
+    it("excludes a decision created on a different day", async () => {
       const sessionId = insertRawSession(db, iso(2026, 8, 13, 9, 0));
       insertRawDecision(db, {
         sessionId,
@@ -187,7 +187,7 @@ describe("collectWorkLogData", () => {
         createdAt: iso(2026, 8, 13, 9, 0),
       });
 
-      const result = collectWorkLogData(db, new Date(2026, 7, 14));
+      const result = await collectWorkLogData(portFor(db), new Date(2026, 7, 14));
 
       expect(result.decisions).toEqual([]);
     });
@@ -197,7 +197,7 @@ describe("collectWorkLogData", () => {
     // created_at を生成するため、実データでは旧実装（閉区間 `<= 23:59:59.999`）
     // でもこの境界は同じ結果になる。つまりこのテストは回帰再現ではなく、
     // 半開区間の契約を明文化するもの（ADR 0007 決定3）。
-    it("excludes a decision created at exactly the next local day's 00:00:00.000 (half-open upper bound)", () => {
+    it("excludes a decision created at exactly the next local day's 00:00:00.000 (half-open upper bound)", async () => {
       const sessionId = insertRawSession(db, iso(2026, 8, 15, 0, 0));
       insertRawDecision(db, {
         sessionId,
@@ -206,12 +206,12 @@ describe("collectWorkLogData", () => {
         createdAt: iso(2026, 8, 15, 0, 0, 0),
       });
 
-      const result = collectWorkLogData(db, new Date(2026, 7, 14));
+      const result = await collectWorkLogData(portFor(db), new Date(2026, 7, 14));
 
       expect(result.decisions).toEqual([]);
     });
 
-    it("includes a decision created at exactly the target day's own 00:00:00.000 (half-open lower bound, inclusive)", () => {
+    it("includes a decision created at exactly the target day's own 00:00:00.000 (half-open lower bound, inclusive)", async () => {
       const sessionId = insertRawSession(db, iso(2026, 8, 14, 0, 0));
       insertRawDecision(db, {
         sessionId,
@@ -220,17 +220,17 @@ describe("collectWorkLogData", () => {
         createdAt: iso(2026, 8, 14, 0, 0, 0),
       });
 
-      const result = collectWorkLogData(db, new Date(2026, 7, 14));
+      const result = await collectWorkLogData(portFor(db), new Date(2026, 7, 14));
 
       expect(result.decisions).toHaveLength(1);
     });
   });
 
   describe("activity_events", () => {
-    it("excludes chat_message events", () => {
+    it("excludes chat_message events", async () => {
       insertRawActivityEvent(db, { type: "chat_message", createdAt: iso(2026, 8, 14, 10, 0) });
 
-      const result = collectWorkLogData(db, new Date(2026, 7, 14));
+      const result = await collectWorkLogData(portFor(db), new Date(2026, 7, 14));
 
       expect(result.activityEvents).toEqual([]);
     });
@@ -242,16 +242,16 @@ describe("collectWorkLogData", () => {
       ["break_end"],
       ["checkin"],
       ["task_pause"],
-    ] as const)("collects a %s event on the target day", (type) => {
+    ] as const)("collects a %s event on the target day", async (type) => {
       insertRawActivityEvent(db, { type, createdAt: iso(2026, 8, 14, 10, 0) });
 
-      const result = collectWorkLogData(db, new Date(2026, 7, 14));
+      const result = await collectWorkLogData(portFor(db), new Date(2026, 7, 14));
 
       expect(result.activityEvents).toHaveLength(1);
       expect(result.activityEvents[0].type).toBe(type);
     });
 
-    it("collects a task_pause event and resolves its task title (G-179-13)", () => {
+    it("collects a task_pause event and resolves its task title (G-179-13)", async () => {
       const taskId = insertRawTask(db, { title: "資料作成", createdAt: iso(2026, 8, 14, 9, 0) });
       insertRawActivityEvent(db, {
         type: "task_pause",
@@ -259,31 +259,31 @@ describe("collectWorkLogData", () => {
         createdAt: iso(2026, 8, 14, 11, 0),
       });
 
-      const result = collectWorkLogData(db, new Date(2026, 7, 14));
+      const result = await collectWorkLogData(portFor(db), new Date(2026, 7, 14));
 
       expect(result.activityEvents).toEqual([
         expect.objectContaining({ type: "task_pause", taskTitle: "資料作成" }),
       ]);
     });
 
-    it("resolves the task title from task_id", () => {
+    it("resolves the task title from task_id", async () => {
       const taskId = insertRawTask(db, { title: "資料作成", createdAt: iso(2026, 8, 14, 9, 0) });
       insertRawActivityEvent(db, { type: "task_start", taskId, createdAt: iso(2026, 8, 14, 10, 0) });
 
-      const result = collectWorkLogData(db, new Date(2026, 7, 14));
+      const result = await collectWorkLogData(portFor(db), new Date(2026, 7, 14));
 
       expect(result.activityEvents[0].taskTitle).toBe("資料作成");
     });
 
-    it("resolves a null taskTitle when task_id is null", () => {
+    it("resolves a null taskTitle when task_id is null", async () => {
       insertRawActivityEvent(db, { type: "task_start", taskId: null, createdAt: iso(2026, 8, 14, 10, 0) });
 
-      const result = collectWorkLogData(db, new Date(2026, 7, 14));
+      const result = await collectWorkLogData(portFor(db), new Date(2026, 7, 14));
 
       expect(result.activityEvents[0].taskTitle).toBeNull();
     });
 
-    it("resolves a null taskTitle when the referenced task does not exist", () => {
+    it("resolves a null taskTitle when the referenced task does not exist", async () => {
       // 現行の tasks-repository にタスク削除 API は無く FK 制約
       // (server/src/db/connection.ts) が通常経路での孤立を防ぐが、将来の
       // 削除機能や手動データ操作に備え、収集段が防御的に null 解決すること
@@ -294,12 +294,12 @@ describe("collectWorkLogData", () => {
       db.prepare("DELETE FROM tasks WHERE id = ?").run(taskId);
       db.pragma("foreign_keys = ON");
 
-      const result = collectWorkLogData(db, new Date(2026, 7, 14));
+      const result = await collectWorkLogData(portFor(db), new Date(2026, 7, 14));
 
       expect(result.activityEvents[0].taskTitle).toBeNull();
     });
 
-    it("collects note and expected_minutes", () => {
+    it("collects note and expected_minutes", async () => {
       insertRawActivityEvent(db, {
         type: "break_start",
         note: "長めに取る",
@@ -307,43 +307,43 @@ describe("collectWorkLogData", () => {
         createdAt: iso(2026, 8, 14, 10, 0),
       });
 
-      const result = collectWorkLogData(db, new Date(2026, 7, 14));
+      const result = await collectWorkLogData(portFor(db), new Date(2026, 7, 14));
 
       expect(result.activityEvents[0]).toMatchObject({ note: "長めに取る", expectedMinutes: 15 });
     });
 
-    it("orders events by created_at ascending, then id ascending", () => {
+    it("orders events by created_at ascending, then id ascending", async () => {
       insertRawActivityEvent(db, { type: "checkin", createdAt: iso(2026, 8, 14, 15, 0) });
       insertRawActivityEvent(db, { type: "task_start", createdAt: iso(2026, 8, 14, 9, 0) });
 
-      const result = collectWorkLogData(db, new Date(2026, 7, 14));
+      const result = await collectWorkLogData(portFor(db), new Date(2026, 7, 14));
 
       expect(result.activityEvents.map((e) => e.type)).toEqual(["task_start", "checkin"]);
     });
 
-    it("excludes events on a different day (day-boundary, no evening-session extension)", () => {
+    it("excludes events on a different day (day-boundary, no evening-session extension)", async () => {
       insertRawActivityEvent(db, { type: "task_start", createdAt: iso(2026, 8, 13, 23, 59) });
       insertRawActivityEvent(db, { type: "task_start", createdAt: iso(2026, 8, 15, 0, 0) });
 
-      const result = collectWorkLogData(db, new Date(2026, 7, 14));
+      const result = await collectWorkLogData(portFor(db), new Date(2026, 7, 14));
 
       expect(result.activityEvents).toEqual([]);
     });
 
-    it("excludes an event created at exactly the next local day's 00:00:00.000 (half-open upper bound)", () => {
+    it("excludes an event created at exactly the next local day's 00:00:00.000 (half-open upper bound)", async () => {
       insertRawActivityEvent(db, { type: "task_start", createdAt: iso(2026, 8, 14, 23, 59, 59, 999) });
       insertRawActivityEvent(db, { type: "checkin", createdAt: iso(2026, 8, 15, 0, 0, 0, 0) });
 
-      const result = collectWorkLogData(db, new Date(2026, 7, 14));
+      const result = await collectWorkLogData(portFor(db), new Date(2026, 7, 14));
 
       expect(result.activityEvents.map((e) => e.type)).toEqual(["task_start"]);
     });
 
-    it("includes events at the exact day boundaries (00:00:00.000 and 23:59:59.999)", () => {
+    it("includes events at the exact day boundaries (00:00:00.000 and 23:59:59.999)", async () => {
       insertRawActivityEvent(db, { type: "task_start", createdAt: iso(2026, 8, 14, 0, 0, 0, 0) });
       insertRawActivityEvent(db, { type: "checkin", createdAt: iso(2026, 8, 14, 23, 59, 59, 999) });
 
-      const result = collectWorkLogData(db, new Date(2026, 7, 14));
+      const result = await collectWorkLogData(portFor(db), new Date(2026, 7, 14));
 
       expect(result.activityEvents).toHaveLength(2);
     });

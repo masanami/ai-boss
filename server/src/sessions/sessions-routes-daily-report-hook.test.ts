@@ -141,7 +141,7 @@ describe("evening session end -> daily report generation hook", () => {
     expect(res.status).toBe(200);
     expect(generateDailyReportMock).toHaveBeenCalledTimes(1);
     expect(generateDailyReportMock).toHaveBeenCalledWith(
-      db,
+      portFor(db),
       env,
       expect.any(Date),
       expect.objectContaining({ eveningSessionId: session.id, timeoutMs: 20_000 }),

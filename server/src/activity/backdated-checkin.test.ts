@@ -94,7 +94,7 @@ describe("backdated checkins: effect on notifications / escalation / break detec
     it("leaves an existing notification row unchanged after a backdated checkin is recorded", async () => {
       const sentAt = new Date(2026, 6, 5, 9, 0, 0, 0);
       vi.setSystemTime(sentAt);
-      const inserted = insertNotification(db, {
+      const inserted = await insertNotification(portFor(db), {
         type: "unstarted_reminder",
         rule_key: "unstarted:1",
         escalation_level: 2,
@@ -109,7 +109,7 @@ describe("backdated checkins: effect on notifications / escalation / break detec
       });
       expect(res.status).toBe(201);
 
-      const rows = listNotificationsSince(db, new Date(0).toISOString());
+      const rows = await listNotificationsSince(portFor(db), new Date(0).toISOString());
       expect(rows).toHaveLength(1);
       expect(rows[0]).toEqual(inserted);
     });
@@ -119,7 +119,7 @@ describe("backdated checkins: effect on notifications / escalation / break detec
     it("resets resolveEscalation to level 1 when the backdated signal is after the last notification's sent_at (AC-14)", async () => {
       const sentAt = new Date(2026, 6, 5, 9, 0, 0, 0);
       vi.setSystemTime(sentAt);
-      insertNotification(db, {
+      await insertNotification(portFor(db), {
         type: "unstarted_reminder",
         rule_key: "unstarted:1",
         escalation_level: 2,
@@ -138,7 +138,7 @@ describe("backdated checkins: effect on notifications / escalation / break detec
       expect(res.status).toBe(201);
 
       const notifications = toNotificationHistory(
-        listNotificationsSince(db, new Date(0).toISOString()),
+        await listNotificationsSince(portFor(db), new Date(0).toISOString()),
       );
       const activityEvents = await listEventsSince(portFor(db), new Date(0).toISOString());
       const result = resolveEscalation(
@@ -158,7 +158,7 @@ describe("backdated checkins: effect on notifications / escalation / break detec
     it("does not reset resolveEscalation when the backdated signal is before the last notification's sent_at (AC-15)", async () => {
       const sentAt = new Date(2026, 6, 5, 10, 0, 0, 0);
       vi.setSystemTime(sentAt);
-      insertNotification(db, {
+      await insertNotification(portFor(db), {
         type: "unstarted_reminder",
         rule_key: "unstarted:1",
         escalation_level: 1,
@@ -179,7 +179,7 @@ describe("backdated checkins: effect on notifications / escalation / break detec
       expect(res.status).toBe(201);
 
       const notifications = toNotificationHistory(
-        listNotificationsSince(db, new Date(0).toISOString()),
+        await listNotificationsSince(portFor(db), new Date(0).toISOString()),
       );
       const activityEvents = await listEventsSince(portFor(db), new Date(0).toISOString());
       const result = resolveEscalation(

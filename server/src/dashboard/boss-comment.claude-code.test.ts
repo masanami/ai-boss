@@ -75,7 +75,7 @@ describe("getOrGenerateBossComment (claude-code backend, end-to-end via the real
     const now = new Date(2026, 6, 6, 8, 0);
     mockClaudeCodeReply("今日も一日決めた通りにやれ");
 
-    const comment = await getOrGenerateBossComment(db, env, now);
+    const comment = await getOrGenerateBossComment(portFor(db), env, now);
 
     expect(comment).toBe("今日も一日決めた通りにやれ");
     // This suite never creates tasks, so the fingerprint is the stable
@@ -89,7 +89,7 @@ describe("getOrGenerateBossComment (claude-code backend, end-to-end via the real
     const now = new Date(2026, 6, 6, 8, 0);
     mockClaudeCodeReply("今日も一日決めた通りにやれ");
 
-    await getOrGenerateBossComment(db, env, now);
+    await getOrGenerateBossComment(portFor(db), env, now);
 
     const promptSent = (queryMock.mock.calls[0][0] as { prompt: string }).prompt;
     expect(promptSent).toContain(CLAUDE_CODE_SHORT_TEXT_INSTRUCTION);
@@ -100,7 +100,7 @@ describe("getOrGenerateBossComment (claude-code backend, end-to-end via the real
     const tooLong = "あ".repeat(81);
     mockClaudeCodeReply(tooLong);
 
-    const comment = await getOrGenerateBossComment(db, env, now);
+    const comment = await getOrGenerateBossComment(portFor(db), env, now);
 
     expect(comment).toBe("今日も決めたことを淡々とこなせ。");
     expect(await getCachedBossComment(portFor(db), "2026-07-06", computeTaskFingerprint([]))).toBeUndefined();
@@ -111,7 +111,7 @@ describe("getOrGenerateBossComment (claude-code backend, end-to-end via the real
     const exactly80 = "あ".repeat(80);
     mockClaudeCodeReply(exactly80);
 
-    const comment = await getOrGenerateBossComment(db, env, now);
+    const comment = await getOrGenerateBossComment(portFor(db), env, now);
 
     expect(comment).toBe(exactly80);
   });
@@ -127,7 +127,7 @@ describe("getOrGenerateBossComment (claude-code backend, end-to-end via the real
         throw new Error("claude code executable not found");
       });
 
-      const commentPromise = getOrGenerateBossComment(db, env, now);
+      const commentPromise = getOrGenerateBossComment(portFor(db), env, now);
       await vi.advanceTimersByTimeAsync(1_000 + 2_000);
 
       expect(await commentPromise).toBe("今日も決めたことを淡々とこなせ。");

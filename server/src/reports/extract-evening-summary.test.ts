@@ -75,7 +75,7 @@ describe("extractEveningSummary", () => {
       }),
     );
 
-    const result = await extractEveningSummary(db, env, eveningMessages, noDecisions, now);
+    const result = await extractEveningSummary(portFor(db), env, eveningMessages, noDecisions, now);
 
     expect(result).toEqual({
       reportSummary: "タスクAを完了した",
@@ -95,7 +95,7 @@ describe("extractEveningSummary", () => {
       }),
     );
 
-    const result = await extractEveningSummary(db, env, eveningMessages, noDecisions, now);
+    const result = await extractEveningSummary(portFor(db), env, eveningMessages, noDecisions, now);
 
     expect(result?.carryOver).toBe("なし");
   });
@@ -110,7 +110,7 @@ describe("extractEveningSummary", () => {
       }),
     );
 
-    const result = await extractEveningSummary(db, env, eveningMessages, noDecisions, now);
+    const result = await extractEveningSummary(portFor(db), env, eveningMessages, noDecisions, now);
 
     expect(result?.keyDecisions).toBe("なし");
   });
@@ -121,7 +121,7 @@ describe("extractEveningSummary", () => {
     );
 
     await extractEveningSummary(
-      db,
+      portFor(db),
       { ...env, LLM_BACKEND: "api" },
       eveningMessages,
       noDecisions,
@@ -143,7 +143,7 @@ describe("extractEveningSummary", () => {
     );
 
     await extractEveningSummary(
-      db,
+      portFor(db),
       { ...env, LLM_BACKEND: "claude-code" },
       eveningMessages,
       noDecisions,
@@ -165,7 +165,7 @@ describe("extractEveningSummary", () => {
       calledWithValid({ reportSummary: "a", bossComment: "b", keyDecisions: "なし", carryOver: "なし" }),
     );
 
-    await extractEveningSummary(db, env, eveningMessages, noDecisions, now);
+    await extractEveningSummary(portFor(db), env, eveningMessages, noDecisions, now);
 
     const [, request] = requestVerdictMock.mock.calls[0];
     expect(request.system).not.toContain("現在日時:");
@@ -201,7 +201,7 @@ describe("extractEveningSummary", () => {
       calledWithValid({ reportSummary: "a", bossComment: "b", keyDecisions: "なし", carryOver: "なし" }),
     );
 
-    await extractEveningSummary(db, env, eveningMessages, noDecisions, now);
+    await extractEveningSummary(portFor(db), env, eveningMessages, noDecisions, now);
 
     const [, request] = requestVerdictMock.mock.calls[0];
     const serializedMessages = JSON.stringify(request.messages);
@@ -218,7 +218,7 @@ describe("extractEveningSummary", () => {
       );
 
       await extractEveningSummary(
-        db,
+        portFor(db),
         env,
         eveningMessages,
         ["本日のノルマは資料作成完了とする", "設計レビューは明日に持ち越す"],
@@ -240,7 +240,7 @@ describe("extractEveningSummary", () => {
         calledWithValid({ reportSummary: "a", bossComment: "b", keyDecisions: "なし", carryOver: "なし" }),
       );
 
-      await extractEveningSummary(db, env, eveningMessages, [], now);
+      await extractEveningSummary(portFor(db), env, eveningMessages, [], now);
 
       const [, request] = requestVerdictMock.mock.calls[0];
       const userMessage = request.messages[0].content as string;
@@ -251,7 +251,7 @@ describe("extractEveningSummary", () => {
   it("フォールバック: ツールが呼ばれなかった場合は null を返す（例外を投げない）", async () => {
     requestVerdictMock.mockResolvedValue(notCalled());
 
-    const result = await extractEveningSummary(db, env, eveningMessages, noDecisions, now);
+    const result = await extractEveningSummary(portFor(db), env, eveningMessages, noDecisions, now);
 
     expect(result).toBeNull();
   });
@@ -259,7 +259,7 @@ describe("extractEveningSummary", () => {
   it("フォールバック: ツール入力が不正形（必須欠落・空文字）の場合は null を返す（例外を投げない）", async () => {
     requestVerdictMock.mockResolvedValue(calledWithInvalid("carry_over is required"));
 
-    const result = await extractEveningSummary(db, env, eveningMessages, noDecisions, now);
+    const result = await extractEveningSummary(portFor(db), env, eveningMessages, noDecisions, now);
 
     expect(result).toBeNull();
   });
@@ -267,7 +267,7 @@ describe("extractEveningSummary", () => {
   it("フォールバック: requestVerdict が例外を投げた場合も null を返す（例外を投げない）", async () => {
     requestVerdictMock.mockRejectedValue(new Error("network error"));
 
-    const result = await extractEveningSummary(db, env, eveningMessages, noDecisions, now);
+    const result = await extractEveningSummary(portFor(db), env, eveningMessages, noDecisions, now);
 
     expect(result).toBeNull();
   });
@@ -277,7 +277,7 @@ describe("extractEveningSummary", () => {
       throw new MissingApiKeyError();
     });
 
-    const result = await extractEveningSummary(db, {}, eveningMessages, noDecisions, now);
+    const result = await extractEveningSummary(portFor(db), {}, eveningMessages, noDecisions, now);
 
     expect(result).toBeNull();
     expect(requestVerdictMock).not.toHaveBeenCalled();
@@ -291,7 +291,7 @@ describe("extractEveningSummary", () => {
     });
     requestVerdictMock.mockReturnValue(slowPromise);
 
-    const resultPromise = extractEveningSummary(db, env, eveningMessages, noDecisions, now, {
+    const resultPromise = extractEveningSummary(portFor(db), env, eveningMessages, noDecisions, now, {
       timeoutMs: 1000,
     });
     // アサーションの取りこぼし（unhandled rejection の警告）を避けるため、
@@ -319,7 +319,7 @@ describe("extractEveningSummary", () => {
     });
     requestVerdictMock.mockReturnValue(slowPromise);
 
-    const resultPromise = extractEveningSummary(db, env, eveningMessages, noDecisions, now);
+    const resultPromise = extractEveningSummary(portFor(db), env, eveningMessages, noDecisions, now);
 
     await vi.advanceTimersByTimeAsync(60_000);
     resolveSlow(

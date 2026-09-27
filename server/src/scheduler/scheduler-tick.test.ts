@@ -396,7 +396,7 @@ async function tickThroughL1ToL3(
   // L1 (tick 1): setup already advanced the clock past the rule's firing
   // threshold.
   await ticker.tick();
-  let recorded = listNotificationsSince(db, "1970-01-01T00:00:00.000Z");
+  let recorded = await listNotificationsSince(portFor(db), "1970-01-01T00:00:00.000Z");
   expect(recorded).toHaveLength(1);
   expect(recorded[0]).toMatchObject({
     type: ruleType,
@@ -408,7 +408,7 @@ async function tickThroughL1ToL3(
   // boundary-inclusive note above), no new activity signal recorded.
   advanceSystemTimeByMinutes(level1ToLevel2Minutes);
   await ticker.tick();
-  recorded = listNotificationsSince(db, "1970-01-01T00:00:00.000Z");
+  recorded = await listNotificationsSince(portFor(db), "1970-01-01T00:00:00.000Z");
   expect(recorded).toHaveLength(2);
   expect(recorded[1]).toMatchObject({
     type: ruleType,
@@ -419,7 +419,7 @@ async function tickThroughL1ToL3(
   // L3 (tick 3): advance to exactly the L2->L3 interval boundary.
   advanceSystemTimeByMinutes(level2ToLevel3Minutes);
   await ticker.tick();
-  recorded = listNotificationsSince(db, "1970-01-01T00:00:00.000Z");
+  recorded = await listNotificationsSince(portFor(db), "1970-01-01T00:00:00.000Z");
   expect(recorded).toHaveLength(3);
   expect(recorded[2]).toMatchObject({
     type: ruleType,
@@ -473,7 +473,7 @@ describe("createTicker().tick", () => {
     vi.setSystemTime(new Date("2026-07-05T09:31:00.000"));
 
     const execFile = vi.fn().mockImplementation(ok);
-    const ticker = createTicker({ db, env, execFile });
+    const ticker = createTicker({ db: portFor(db), env, execFile });
 
     await ticker.tick();
 
@@ -482,7 +482,7 @@ describe("createTicker().tick", () => {
       expect.arrayContaining(["-title", "-message"]),
     );
 
-    const recorded = listNotificationsSince(db, "1970-01-01T00:00:00.000Z");
+    const recorded = await listNotificationsSince(portFor(db), "1970-01-01T00:00:00.000Z");
     expect(recorded).toHaveLength(1);
     expect(recorded[0]).toMatchObject({
       type: "unstarted",
@@ -514,11 +514,11 @@ describe("createTicker().tick", () => {
     vi.setSystemTime(new Date(committedStartAt));
 
     const execFile = vi.fn().mockImplementation(ok);
-    const ticker = createTicker({ db, env, execFile });
+    const ticker = createTicker({ db: portFor(db), env, execFile });
 
     await ticker.tick();
 
-    const recorded = listNotificationsSince(db, "1970-01-01T00:00:00.000Z");
+    const recorded = await listNotificationsSince(portFor(db), "1970-01-01T00:00:00.000Z");
     expect(recorded).toHaveLength(1);
     expect(recorded[0]).toMatchObject({
       type: "commitment_missed",
@@ -557,10 +557,10 @@ describe("createTicker().tick", () => {
     vi.setSystemTime(new Date(2026, 6, 5, 14, 30));
 
     const execFile = vi.fn().mockImplementation(ok);
-    const ticker = createTicker({ db, env, execFile });
+    const ticker = createTicker({ db: portFor(db), env, execFile });
     await ticker.tick();
 
-    const recorded = listNotificationsSince(db, "1970-01-01T00:00:00.000Z");
+    const recorded = await listNotificationsSince(portFor(db), "1970-01-01T00:00:00.000Z");
     expect(recorded.filter((n) => n.type === "commitment_missed")).toHaveLength(0);
     db.close();
   });
@@ -586,10 +586,10 @@ describe("createTicker().tick", () => {
     vi.setSystemTime(new Date(2026, 6, 5, 14, 30));
 
     const execFile = vi.fn().mockImplementation(ok);
-    const ticker = createTicker({ db, env, execFile });
+    const ticker = createTicker({ db: portFor(db), env, execFile });
     await ticker.tick();
 
-    const recorded = listNotificationsSince(db, "1970-01-01T00:00:00.000Z");
+    const recorded = await listNotificationsSince(portFor(db), "1970-01-01T00:00:00.000Z");
     expect(recorded.filter((n) => n.type === "commitment_missed")).toHaveLength(1);
     db.close();
   });
@@ -608,7 +608,7 @@ describe("createTicker().tick", () => {
     await markTodaysMeetingsDone(db);
 
     const execFile = vi.fn().mockImplementation(ok);
-    const ticker = createTicker({ db, env, execFile });
+    const ticker = createTicker({ db: portFor(db), env, execFile });
 
     vi.setSystemTime(new Date("2026-07-05T09:31:00.000"));
     await ticker.tick();
@@ -618,7 +618,7 @@ describe("createTicker().tick", () => {
     vi.setSystemTime(new Date("2026-07-05T09:32:00.000"));
     await ticker.tick();
 
-    const recorded = listNotificationsSince(db, "1970-01-01T00:00:00.000Z");
+    const recorded = await listNotificationsSince(portFor(db), "1970-01-01T00:00:00.000Z");
     expect(recorded).toHaveLength(1);
     db.close();
   });
@@ -637,7 +637,7 @@ describe("createTicker().tick", () => {
     await markTodaysMeetingsDone(db);
 
     const execFile = vi.fn().mockImplementation(ok);
-    const ticker = createTicker({ db, env, execFile });
+    const ticker = createTicker({ db: portFor(db), env, execFile });
 
     vi.setSystemTime(new Date("2026-07-05T09:31:00.000"));
     await ticker.tick();
@@ -648,7 +648,7 @@ describe("createTicker().tick", () => {
     vi.setSystemTime(new Date("2026-07-05T09:33:00.000"));
     await ticker.tick();
 
-    const recorded = listNotificationsSince(db, "1970-01-01T00:00:00.000Z");
+    const recorded = await listNotificationsSince(portFor(db), "1970-01-01T00:00:00.000Z");
     expect(recorded).toHaveLength(2);
     expect(recorded[1]).toMatchObject({ escalation_level: 1 });
     db.close();
@@ -670,11 +670,11 @@ describe("createTicker().tick", () => {
 
     const execFile = vi.fn().mockRejectedValue(new Error("boom"));
     const consoleErrorSpy = vi.spyOn(console, "error").mockImplementation(() => undefined);
-    const ticker = createTicker({ db, env, execFile });
+    const ticker = createTicker({ db: portFor(db), env, execFile });
 
     await expect(ticker.tick()).resolves.toBeUndefined();
 
-    const recorded = listNotificationsSince(db, "1970-01-01T00:00:00.000Z");
+    const recorded = await listNotificationsSince(portFor(db), "1970-01-01T00:00:00.000Z");
     expect(recorded).toHaveLength(1);
     consoleErrorSpy.mockRestore();
     db.close();
@@ -706,11 +706,11 @@ describe("createTicker().tick", () => {
     // logic reads must already be committed by the time the notification can
     // possibly reach the user.
     let recordedAtSendTime: number | null = null;
-    const execFile = vi.fn().mockImplementation(() => {
-      recordedAtSendTime = listNotificationsSince(db, "1970-01-01T00:00:00.000Z").length;
+    const execFile = vi.fn().mockImplementation(async () => {
+      recordedAtSendTime = (await listNotificationsSince(portFor(db), "1970-01-01T00:00:00.000Z")).length;
       return ok();
     });
-    const ticker = createTicker({ db, env, execFile });
+    const ticker = createTicker({ db: portFor(db), env, execFile });
 
     await ticker.tick();
 
@@ -744,7 +744,7 @@ describe("createTicker().tick", () => {
 
     const consoleErrorSpy = vi.spyOn(console, "error").mockImplementation(() => undefined);
     const execFile = vi.fn().mockImplementation(ok);
-    const ticker = createTicker({ db, env, execFile });
+    const ticker = createTicker({ db: portFor(db), env, execFile });
 
     // The firing is dropped by `runTick`'s per-firing catch, not by a crash.
     await expect(ticker.tick()).resolves.toBeUndefined();
@@ -753,7 +753,7 @@ describe("createTicker().tick", () => {
     // this rule from a clean state rather than duplicating a notification the
     // user has already seen.
     expect(execFile).not.toHaveBeenCalled();
-    expect(listNotificationsSince(db, "1970-01-01T00:00:00.000Z")).toHaveLength(0);
+    expect(await listNotificationsSince(portFor(db), "1970-01-01T00:00:00.000Z")).toHaveLength(0);
     const loggedArgs = consoleErrorSpy.mock.calls.flat().join(" ");
     expect(loggedArgs).toContain("scheduler firing failed");
     consoleErrorSpy.mockRestore();
@@ -786,9 +786,9 @@ describe("createTicker().tick", () => {
       const consoleErrorSpy = vi.spyOn(console, "error").mockImplementation(() => undefined);
       const execFile = vi.fn().mockImplementation(ok);
 
-      await createTicker({ db, env, execFile }).tick();
+      await createTicker({ db: portFor(db), env, execFile }).tick();
 
-      const recorded = listNotificationsSince(db, "1970-01-01T00:00:00.000Z");
+      const recorded = await listNotificationsSince(portFor(db), "1970-01-01T00:00:00.000Z");
       expect(recorded).toHaveLength(1);
       expect(recorded[0]).toMatchObject({
         rule_key: expectedRuleKey,
@@ -808,9 +808,9 @@ describe("createTicker().tick", () => {
       const consoleErrorSpy = vi.spyOn(console, "error").mockImplementation(() => undefined);
       const execFile = vi.fn().mockImplementation(failTerminalNotifierOnly);
 
-      await createTicker({ db, env, execFile }).tick();
+      await createTicker({ db: portFor(db), env, execFile }).tick();
 
-      const recorded = listNotificationsSince(db, "1970-01-01T00:00:00.000Z");
+      const recorded = await listNotificationsSince(portFor(db), "1970-01-01T00:00:00.000Z");
       expect(recorded).toHaveLength(1);
       expect(recorded[0]).toMatchObject({
         rule_key: expectedRuleKey,
@@ -830,11 +830,11 @@ describe("createTicker().tick", () => {
       const consoleErrorSpy = vi.spyOn(console, "error").mockImplementation(() => undefined);
       const execFile = vi.fn().mockRejectedValue(new Error("boom"));
 
-      await expect(createTicker({ db, env, execFile }).tick()).resolves.toBeUndefined();
+      await expect(createTicker({ db: portFor(db), env, execFile }).tick()).resolves.toBeUndefined();
 
       // Pre-existing contracts (Issue #38 / #221): the record stays, and the
       // failed send is not retried — exactly one attempt per channel.
-      const recorded = listNotificationsSince(db, "1970-01-01T00:00:00.000Z");
+      const recorded = await listNotificationsSince(portFor(db), "1970-01-01T00:00:00.000Z");
       expect(recorded).toHaveLength(1);
       expect(execFile).toHaveBeenCalledTimes(2);
       expect(execFile.mock.calls.map(([file]) => file)).toEqual(["terminal-notifier", "osascript"]);
@@ -880,11 +880,11 @@ describe("createTicker().tick", () => {
         const consoleErrorSpy = vi.spyOn(console, "error").mockImplementation(() => undefined);
         const execFile = vi.fn().mockImplementation(execFileImpl);
 
-        await expect(createTicker({ db, env, execFile }).tick()).resolves.toBeUndefined();
+        await expect(createTicker({ db: portFor(db), env, execFile }).tick()).resolves.toBeUndefined();
 
         // The outcome column stays "unknown" (NULL) rather than being
         // misreported either way; the record and the no-retry contract hold.
-        const recorded = listNotificationsSince(db, "1970-01-01T00:00:00.000Z");
+        const recorded = await listNotificationsSince(portFor(db), "1970-01-01T00:00:00.000Z");
         expect(recorded).toHaveLength(1);
         expect(recorded[0]).toMatchObject({ rule_key: expectedRuleKey, delivered: null, channel: null });
         expect(execFile).toHaveBeenCalledTimes(expected.sends);
@@ -931,7 +931,7 @@ describe("createTicker().tick", () => {
           resolveExecFile = () => resolve({ stdout: "", stderr: "" });
         }),
     );
-    const ticker = createTicker({ db, env, execFile });
+    const ticker = createTicker({ db: portFor(db), env, execFile });
 
     const first = ticker.tick();
 
@@ -948,7 +948,7 @@ describe("createTicker().tick", () => {
     resolveExecFile?.();
     await first;
 
-    const recorded = listNotificationsSince(db, "1970-01-01T00:00:00.000Z");
+    const recorded = await listNotificationsSince(portFor(db), "1970-01-01T00:00:00.000Z");
     expect(recorded).toHaveLength(1);
     db.close();
   });
@@ -994,11 +994,11 @@ describe("createTicker().tick", () => {
 
     const consoleErrorSpy = vi.spyOn(console, "error").mockImplementation(() => undefined);
     const execFile = vi.fn().mockImplementation(ok);
-    const ticker = createTicker({ db, env, execFile });
+    const ticker = createTicker({ db: portFor(db), env, execFile });
 
     await expect(ticker.tick()).resolves.toBeUndefined();
 
-    const recorded = listNotificationsSince(db, "1970-01-01T00:00:00.000Z");
+    const recorded = await listNotificationsSince(portFor(db), "1970-01-01T00:00:00.000Z");
     expect(recorded).toHaveLength(1);
     expect(recorded[0].type).toBe("deadline_overdue");
     const loggedArgs = consoleErrorSpy.mock.calls.flat().join(" ");
@@ -1030,7 +1030,7 @@ describe("createTicker().tick", () => {
 
     const consoleErrorSpy = vi.spyOn(console, "error").mockImplementation(() => undefined);
     const execFile = vi.fn().mockImplementation(ok);
-    const ticker = createTicker({ db, env, execFile });
+    const ticker = createTicker({ db: portFor(db), env, execFile });
 
     await expect(ticker.tick()).resolves.toBeUndefined();
 
@@ -1044,7 +1044,7 @@ describe("createTicker().tick", () => {
       expect.arrayContaining(["-title", "-message", fallbackBody]),
     );
 
-    const recorded = listNotificationsSince(db, "1970-01-01T00:00:00.000Z");
+    const recorded = await listNotificationsSince(portFor(db), "1970-01-01T00:00:00.000Z");
     expect(recorded).toHaveLength(1);
     expect(recorded[0]).toMatchObject({
       type: "unstarted",
@@ -1063,7 +1063,7 @@ describe("createTicker().tick", () => {
     db.close();
     const consoleErrorSpy = vi.spyOn(console, "error").mockImplementation(() => undefined);
     const execFile = vi.fn().mockImplementation(ok);
-    const ticker = createTicker({ db, env, execFile });
+    const ticker = createTicker({ db: portFor(db), env, execFile });
 
     await expect(ticker.tick()).resolves.toBeUndefined();
     expect(consoleErrorSpy).toHaveBeenCalled();
@@ -1091,9 +1091,9 @@ describe("createTicker().tick", () => {
         try {
           const expectedRuleKey = await setup(db, WORKING_HOURS_BASE_TIME);
           const withinExecFile = vi.fn().mockImplementation(ok);
-          await createTicker({ db, env, execFile: withinExecFile }).tick();
+          await createTicker({ db: portFor(db), env, execFile: withinExecFile }).tick();
 
-          const firedWithin = listNotificationsSince(db, "1970-01-01T00:00:00.000Z");
+          const firedWithin = await listNotificationsSince(portFor(db), "1970-01-01T00:00:00.000Z");
           expect(firedWithin).toHaveLength(1);
           expect(firedWithin[0]).toMatchObject({ type: ruleType, rule_key: expectedRuleKey });
           expect(withinExecFile).toHaveBeenCalled();
@@ -1112,14 +1112,14 @@ describe("createTicker().tick", () => {
           const outsideRuleKey = await setup(outsideDb, OUTSIDE_WORKING_HOURS_BASE_TIME);
           const outsideDayKey = toDateKey(new Date());
           const outsideExecFile = vi.fn().mockImplementation(ok);
-          const outsideTicker = createTicker({ db: outsideDb, env, execFile: outsideExecFile });
+          const outsideTicker = createTicker({ db: portFor(outsideDb), env, execFile: outsideExecFile });
           await outsideTicker.tick();
 
           // L1→L2 の既定間隔（15 分）を過ぎ、かつ avoidance の判定窓（30 分）の内側
           vi.setSystemTime(new Date(Date.now() + 16 * 60_000));
           await outsideTicker.tick();
 
-          const firedOutside = listNotificationsSince(outsideDb, "1970-01-01T00:00:00.000Z");
+          const firedOutside = await listNotificationsSince(portFor(outsideDb), "1970-01-01T00:00:00.000Z");
           expect(firedOutside).toHaveLength(1);
           expect(firedOutside[0]).toMatchObject({
             type: ruleType,
@@ -1154,9 +1154,9 @@ describe("createTicker().tick", () => {
         try {
           const expectedRuleKey = await setup(db, BASE_TIME);
           const withoutBreakExecFile = vi.fn().mockImplementation(ok);
-          await createTicker({ db, env, execFile: withoutBreakExecFile }).tick();
+          await createTicker({ db: portFor(db), env, execFile: withoutBreakExecFile }).tick();
 
-          const firedWithoutBreak = listNotificationsSince(db, "1970-01-01T00:00:00.000Z");
+          const firedWithoutBreak = await listNotificationsSince(portFor(db), "1970-01-01T00:00:00.000Z");
           expect(firedWithoutBreak).toHaveLength(1);
           expect(firedWithoutBreak[0]).toMatchObject({
             type: ruleType,
@@ -1189,9 +1189,9 @@ describe("createTicker().tick", () => {
           });
           await setup(breakDb, BASE_TIME);
           const withBreakExecFile = vi.fn().mockImplementation(ok);
-          await createTicker({ db: breakDb, env, execFile: withBreakExecFile }).tick();
+          await createTicker({ db: portFor(breakDb), env, execFile: withBreakExecFile }).tick();
 
-          const firedWithBreak = listNotificationsSince(breakDb, "1970-01-01T00:00:00.000Z");
+          const firedWithBreak = await listNotificationsSince(portFor(breakDb), "1970-01-01T00:00:00.000Z");
           expect(firedWithBreak).toHaveLength(0);
           expect(withBreakExecFile).not.toHaveBeenCalled();
         } finally {
@@ -1248,7 +1248,7 @@ describe("createTicker().tick", () => {
 
           vi.setSystemTime(OUTSIDE_WORKING_HOURS_AND_ON_BREAK_TIME);
           const execFile = vi.fn().mockImplementation(ok);
-          const ticker = createTicker({ db, env, execFile });
+          const ticker = createTicker({ db: portFor(db), env, execFile });
 
           await ticker.tick();
 
@@ -1256,7 +1256,7 @@ describe("createTicker().tick", () => {
           // 無いため、恒常設定の既定時刻（morning: 09:00 / evening: 18:00）
           // がそのまま実効時刻になる。
           const expectedMeetingTime = sessionType === "morning" ? "09:00" : "18:00";
-          const recorded = listNotificationsSince(db, "1970-01-01T00:00:00.000Z");
+          const recorded = await listNotificationsSince(portFor(db), "1970-01-01T00:00:00.000Z");
           expect(recorded).toHaveLength(1);
           expect(recorded[0]).toMatchObject({
             type: ruleType,
@@ -1280,26 +1280,26 @@ describe("createTicker().tick", () => {
     it("does not fire the evening meeting at 20:59 when today's evening override postpones it to 21:00 (AC-15)", async () => {
       vi.setSystemTime(BASE_TIME);
       await insertSession(portFor(db), { type: "morning" });
-      upsertOverride(db, TODAY_KEY, "evening", "21:00");
+      await upsertOverride(portFor(db), TODAY_KEY, "evening", "21:00");
 
       vi.setSystemTime(new Date(2026, 6, 5, 20, 59, 0));
       const execFile = vi.fn().mockImplementation(ok);
-      await createTicker({ db, env, execFile }).tick();
+      await createTicker({ db: portFor(db), env, execFile }).tick();
 
-      const recorded = listNotificationsSince(db, "1970-01-01T00:00:00.000Z");
+      const recorded = await listNotificationsSince(portFor(db), "1970-01-01T00:00:00.000Z");
       expect(recorded.filter((n) => n.type === "evening_meeting")).toHaveLength(0);
     });
 
     it("fires the evening meeting at 21:00 when today's evening override postpones it to 21:00 (AC-16)", async () => {
       vi.setSystemTime(BASE_TIME);
       await insertSession(portFor(db), { type: "morning" });
-      upsertOverride(db, TODAY_KEY, "evening", "21:00");
+      await upsertOverride(portFor(db), TODAY_KEY, "evening", "21:00");
 
       vi.setSystemTime(new Date(2026, 6, 5, 21, 0, 0));
       const execFile = vi.fn().mockImplementation(ok);
-      await createTicker({ db, env, execFile }).tick();
+      await createTicker({ db: portFor(db), env, execFile }).tick();
 
-      const recorded = listNotificationsSince(db, "1970-01-01T00:00:00.000Z");
+      const recorded = await listNotificationsSince(portFor(db), "1970-01-01T00:00:00.000Z");
       expect(recorded).toHaveLength(1);
       expect(recorded[0]).toMatchObject({
         type: "evening_meeting",
@@ -1311,13 +1311,13 @@ describe("createTicker().tick", () => {
     it("fires the morning meeting at 07:00 when today's morning override moves it earlier to 07:00 (AC-17)", async () => {
       vi.setSystemTime(BASE_TIME);
       await insertSession(portFor(db), { type: "evening" });
-      upsertOverride(db, TODAY_KEY, "morning", "07:00");
+      await upsertOverride(portFor(db), TODAY_KEY, "morning", "07:00");
 
       vi.setSystemTime(new Date(2026, 6, 5, 7, 0, 0));
       const execFile = vi.fn().mockImplementation(ok);
-      await createTicker({ db, env, execFile }).tick();
+      await createTicker({ db: portFor(db), env, execFile }).tick();
 
-      const recorded = listNotificationsSince(db, "1970-01-01T00:00:00.000Z");
+      const recorded = await listNotificationsSince(portFor(db), "1970-01-01T00:00:00.000Z");
       expect(recorded).toHaveLength(1);
       expect(recorded[0]).toMatchObject({
         type: "morning_meeting",
@@ -1334,14 +1334,14 @@ describe("createTicker().tick", () => {
       );
       // Yesterday's leftover override row must not leak into today's
       // resolution (findOverridesByDate is scoped by date).
-      upsertOverride(db, yesterdayKey, "evening", "21:00");
+      await upsertOverride(portFor(db), yesterdayKey, "evening", "21:00");
 
       // Standing default evening time (18:00) still applies today.
       vi.setSystemTime(new Date(2026, 6, 5, 18, 0, 0));
       const execFile = vi.fn().mockImplementation(ok);
-      await createTicker({ db, env, execFile }).tick();
+      await createTicker({ db: portFor(db), env, execFile }).tick();
 
-      const recorded = listNotificationsSince(db, "1970-01-01T00:00:00.000Z");
+      const recorded = await listNotificationsSince(portFor(db), "1970-01-01T00:00:00.000Z");
       expect(recorded).toHaveLength(1);
       expect(recorded[0]).toMatchObject({
         type: "evening_meeting",
@@ -1352,15 +1352,15 @@ describe("createTicker().tick", () => {
     it("keeps the morning meeting firing at the standing setting's time when only today's evening meeting has an override (AC-19)", async () => {
       vi.setSystemTime(BASE_TIME);
       await insertSession(portFor(db), { type: "evening" });
-      upsertOverride(db, TODAY_KEY, "evening", "21:00");
+      await upsertOverride(portFor(db), TODAY_KEY, "evening", "21:00");
 
       // Standing default morning time (09:00), unaffected by the evening-only
       // override.
       vi.setSystemTime(new Date(2026, 6, 5, 9, 0, 0));
       const execFile = vi.fn().mockImplementation(ok);
-      await createTicker({ db, env, execFile }).tick();
+      await createTicker({ db: portFor(db), env, execFile }).tick();
 
-      const recorded = listNotificationsSince(db, "1970-01-01T00:00:00.000Z");
+      const recorded = await listNotificationsSince(portFor(db), "1970-01-01T00:00:00.000Z");
       expect(recorded).toHaveLength(1);
       expect(recorded[0]).toMatchObject({
         type: "morning_meeting",
@@ -1380,10 +1380,10 @@ describe("createTicker().tick", () => {
       // Standing time (18:00) fires first, recorded at L1.
       vi.setSystemTime(new Date(2026, 6, 5, 18, 0, 0));
       const execFile = vi.fn().mockImplementation(ok);
-      const ticker = createTicker({ db, env, execFile });
+      const ticker = createTicker({ db: portFor(db), env, execFile });
       await ticker.tick();
 
-      let recorded = listNotificationsSince(db, "1970-01-01T00:00:00.000Z");
+      let recorded = await listNotificationsSince(portFor(db), "1970-01-01T00:00:00.000Z");
       expect(recorded).toHaveLength(1);
       expect(recorded[0]).toMatchObject({
         type: "evening_meeting",
@@ -1394,11 +1394,11 @@ describe("createTicker().tick", () => {
       // Postpone today's evening meeting to 21:00, 180 minutes after the
       // 18:00 firing above (> level1ToLevel2Minutes's default 15 minutes),
       // with no activity signal recorded in between.
-      upsertOverride(db, TODAY_KEY, "evening", "21:00");
+      await upsertOverride(portFor(db), TODAY_KEY, "evening", "21:00");
       vi.setSystemTime(new Date(2026, 6, 5, 21, 0, 0));
       await ticker.tick();
 
-      recorded = listNotificationsSince(db, "1970-01-01T00:00:00.000Z");
+      recorded = await listNotificationsSince(portFor(db), "1970-01-01T00:00:00.000Z");
       expect(recorded).toHaveLength(2);
       expect(recorded[1]).toMatchObject({
         type: "evening_meeting",
@@ -1418,13 +1418,13 @@ describe("createTicker().tick", () => {
         vi.setSystemTime(BASE_TIME);
         await recordActivityEvent(portFor(db), { type: "checkin" });
         await insertSession(portFor(db), { type: "morning" });
-        upsertOverride(db, TODAY_KEY, "evening", "21:00");
+        await upsertOverride(portFor(db), TODAY_KEY, "evening", "21:00");
 
         vi.setSystemTime(new Date(2026, 6, 5, 17, 59, 0));
         const controlExecFile = vi.fn().mockImplementation(ok);
-        await createTicker({ db, env, execFile: controlExecFile }).tick();
+        await createTicker({ db: portFor(db), env, execFile: controlExecFile }).tick();
 
-        const firedWithinHours = listNotificationsSince(db, "1970-01-01T00:00:00.000Z");
+        const firedWithinHours = await listNotificationsSince(portFor(db), "1970-01-01T00:00:00.000Z");
         expect(firedWithinHours.filter((n) => n.type === "silence")).toHaveLength(1);
       } finally {
         db.close();
@@ -1436,7 +1436,7 @@ describe("createTicker().tick", () => {
         vi.setSystemTime(BASE_TIME);
         await recordActivityEvent(portFor(outsideDb), { type: "checkin" });
         await insertSession(portFor(outsideDb), { type: "morning" });
-        upsertOverride(outsideDb, TODAY_KEY, "evening", "21:00");
+        await upsertOverride(portFor(outsideDb), TODAY_KEY, "evening", "21:00");
 
         // Past the standing work_end (18:00) but still before the postponed
         // evening meeting (21:00): silence must be treated as outside the
@@ -1445,9 +1445,9 @@ describe("createTicker().tick", () => {
         // escalating `silence` rule_key.
         vi.setSystemTime(new Date(2026, 6, 5, 19, 0, 0));
         const execFile = vi.fn().mockImplementation(ok);
-        await createTicker({ db: outsideDb, env, execFile }).tick();
+        await createTicker({ db: portFor(outsideDb), env, execFile }).tick();
 
-        const recorded = listNotificationsSince(outsideDb, "1970-01-01T00:00:00.000Z");
+        const recorded = await listNotificationsSince(portFor(outsideDb), "1970-01-01T00:00:00.000Z");
         const silence = recorded.filter((n) => n.type === "silence");
         expect(silence).toHaveLength(1);
         expect(silence[0]).toMatchObject({ rule_key: `silence:${TODAY_KEY}`, escalation_level: 1 });
@@ -1518,7 +1518,7 @@ describe("createTicker().tick", () => {
           // task's own id (not some other task) — otherwise
           // `hasRecentActivityOnOtherTasks` would flip the rule from
           // `unstarted` to `avoidance`, changing `rule_key`.
-          const expectedRuleKey = await await unstartedScenario.setup(db, BASE_TIME);
+          const expectedRuleKey = await unstartedScenario.setup(db, BASE_TIME);
           const taskId = Number(expectedRuleKey.split(":")[1]);
           if (!Number.isInteger(taskId)) {
             throw new Error(
@@ -1527,7 +1527,7 @@ describe("createTicker().tick", () => {
           }
 
           const execFile = vi.fn().mockImplementation(ok);
-          const ticker = createTicker({ db, env, execFile });
+          const ticker = createTicker({ db: portFor(db), env, execFile });
 
           // First tick: L1 fires (the scenario's setup already advanced the
           // clock past the unstarted threshold).
@@ -1554,7 +1554,7 @@ describe("createTicker().tick", () => {
           vi.setSystemTime(withinEscalationInterval(fireTime, interval, 2 / 3));
           await ticker.tick();
 
-          const recorded = listNotificationsSince(db, "1970-01-01T00:00:00.000Z");
+          const recorded = await listNotificationsSince(portFor(db), "1970-01-01T00:00:00.000Z");
           expect(recorded).toHaveLength(2);
           expect(recorded[1]).toMatchObject({
             escalation_level: 1,
@@ -1587,11 +1587,11 @@ describe("createTicker().tick", () => {
         try {
           const expectedRuleKey = await setup(db, BASE_TIME);
           const execFile = vi.fn().mockImplementation(ok);
-          const ticker = createTicker({ db, env, execFile });
+          const ticker = createTicker({ db: portFor(db), env, execFile });
 
           await ticker.tick();
 
-          const firstRecorded = listNotificationsSince(db, "1970-01-01T00:00:00.000Z");
+          const firstRecorded = await listNotificationsSince(portFor(db), "1970-01-01T00:00:00.000Z");
           expect(firstRecorded).toHaveLength(1);
           expect(firstRecorded[0]).toMatchObject({
             type: ruleType,
@@ -1609,7 +1609,7 @@ describe("createTicker().tick", () => {
           vi.setSystemTime(withinEscalationInterval(fireTime, interval, 1 / 2));
           await ticker.tick();
 
-          const afterDuplicateTick = listNotificationsSince(db, "1970-01-01T00:00:00.000Z");
+          const afterDuplicateTick = await listNotificationsSince(portFor(db), "1970-01-01T00:00:00.000Z");
           expect(afterDuplicateTick).toHaveLength(1);
         } finally {
           db.close();
@@ -1637,7 +1637,7 @@ describe("createTicker().tick", () => {
         try {
           const expectedRuleKey = await setup(db, ESCALATION_LADDER_BASE_TIME);
           const execFile = vi.fn().mockImplementation(ok);
-          const ticker = createTicker({ db, env, execFile });
+          const ticker = createTicker({ db: portFor(db), env, execFile });
 
           await tickThroughL1ToL3(db, ticker, ruleType, expectedRuleKey);
         } finally {
@@ -1670,7 +1670,7 @@ describe("createTicker().tick", () => {
         try {
           const expectedRuleKey = await setup(db, ESCALATION_LADDER_BASE_TIME);
           const execFile = vi.fn().mockImplementation(ok);
-          const ticker = createTicker({ db, env, execFile });
+          const ticker = createTicker({ db: portFor(db), env, execFile });
 
           await tickThroughL1ToL3(db, ticker, ruleType, expectedRuleKey);
 
@@ -1681,7 +1681,7 @@ describe("createTicker().tick", () => {
           advanceSystemTimeByMinutes(level3RepeatMinutes);
           await ticker.tick();
 
-          const recorded = listNotificationsSince(db, "1970-01-01T00:00:00.000Z");
+          const recorded = await listNotificationsSince(portFor(db), "1970-01-01T00:00:00.000Z");
           // Asserts the *full* level sequence (not just the last entry) so a
           // regression earlier in the ladder (e.g. L2 stalling at 2 forever)
           // can't slip through unnoticed just because the final tick still
@@ -1744,7 +1744,7 @@ describe("daily notification cap via tick on a file-backed DB (#562)", () => {
     });
     await markTodaysMeetingsDone(db);
     const execFile = vi.fn().mockImplementation(ok);
-    const ticker = createTicker({ db, env, execFile });
+    const ticker = createTicker({ db: portFor(db), env, execFile });
 
     vi.setSystemTime(new Date(2026, 6, 5, 9, 31));
     await ticker.tick();
@@ -1754,8 +1754,8 @@ describe("daily notification cap via tick on a file-backed DB (#562)", () => {
     return { ruleKey: `unstarted:${task.id}`, sends: execFile.mock.calls.length };
   }
 
-  function recordedFor(ruleKey: string) {
-    return listNotificationsSince(db, "1970-01-01T00:00:00.000Z").filter(
+  async function recordedFor(ruleKey: string) {
+    return (await listNotificationsSince(portFor(db), "1970-01-01T00:00:00.000Z")).filter(
       (row) => row.rule_key === ruleKey,
     );
   }
@@ -1765,7 +1765,7 @@ describe("daily notification cap via tick on a file-backed DB (#562)", () => {
 
     const { ruleKey, sends } = await tickTwiceWhileUnstarted();
 
-    expect(recordedFor(ruleKey)).toHaveLength(1);
+    expect(await recordedFor(ruleKey)).toHaveLength(1);
     expect(sends).toBe(1);
   });
 
@@ -1774,6 +1774,6 @@ describe("daily notification cap via tick on a file-backed DB (#562)", () => {
 
     const { ruleKey } = await tickTwiceWhileUnstarted();
 
-    expect(recordedFor(ruleKey).map((row) => row.escalation_level)).toEqual([1, 2]);
+    expect((await recordedFor(ruleKey)).map((row) => row.escalation_level)).toEqual([1, 2]);
   });
 });

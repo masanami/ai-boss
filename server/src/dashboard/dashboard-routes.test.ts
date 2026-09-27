@@ -96,7 +96,7 @@ describe("GET /api/dashboard", () => {
       estimated_minutes: null,
     });
     await insertSession(portFor(db), { type: "morning" });
-    insertNotification(db, { type: "avoidance", escalation_level: 2, body: "戻れ" });
+    await insertNotification(portFor(db), { type: "avoidance", escalation_level: 2, body: "戻れ" });
     const app = createApp(db, env);
 
     const res = await app.request("/api/dashboard");
