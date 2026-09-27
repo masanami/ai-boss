@@ -3,6 +3,7 @@ import type Database from "better-sqlite3";
 import type Anthropic from "@anthropic-ai/sdk";
 import { openDatabase } from "../db/connection.js";
 import { runMigrations } from "../db/migrate.js";
+import { portFor } from "../db/transitional-bridge.js";
 import { NOTIFICATION_PLAIN_TEXT_INSTRUCTION } from "../boss/persona-prompt.js";
 import { insertTask, updateTask } from "../tasks/tasks-repository.js";
 import { getCachedBossComment } from "./boss-comment-cache.js";
@@ -42,7 +43,7 @@ describe("getOrGenerateBossComment", () => {
   // `boss-comment.claude-code.test.ts` が担保する）。
   const env = { ANTHROPIC_API_KEY: "sk-ant-test-key", LLM_BACKEND: "api" };
 
-  beforeEach(() => {
+  beforeEach(async () => {
     // insertTask は updated_at に実時刻を使う。フィンガープリントの入力に
     // なるため、CLAUDE.md のテスト方針（現在時刻はモックする）に従って固定
     // する。テスト内の now と同じローカル日付に揃え、TZ 非依存に組む。
@@ -50,7 +51,7 @@ describe("getOrGenerateBossComment", () => {
     vi.useFakeTimers({ shouldAdvanceTime: true });
     vi.setSystemTime(new Date(2026, 6, 6, 8, 0));
     db = openDatabase(":memory:");
-    runMigrations(db);
+    await runMigrations(portFor(db));
     createClaudeClientMock.mockReset();
     createBossMessageMock.mockReset();
     createClaudeClientMock.mockReturnValue({});

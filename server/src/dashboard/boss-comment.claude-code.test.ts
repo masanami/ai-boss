@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import type Database from "better-sqlite3";
 import { openDatabase } from "../db/connection.js";
 import { runMigrations } from "../db/migrate.js";
+import { portFor } from "../db/transitional-bridge.js";
 import { getCachedBossComment } from "./boss-comment-cache.js";
 import { computeTaskFingerprint } from "./task-fingerprint.js";
 
@@ -64,9 +65,9 @@ describe("getOrGenerateBossComment (claude-code backend, end-to-end via the real
   let db: Database.Database;
   const env = { LLM_BACKEND: "claude-code" };
 
-  beforeEach(() => {
+  beforeEach(async () => {
     db = openDatabase(":memory:");
-    runMigrations(db);
+    await runMigrations(portFor(db));
     queryMock.mockReset();
   });
 

@@ -5,6 +5,7 @@ import { join } from "node:path";
 import type Database from "better-sqlite3";
 import { openDatabase } from "../db/connection.js";
 import { runMigrations } from "../db/migrate.js";
+import { portFor } from "../db/transitional-bridge.js";
 import { insertTask, updateTask } from "../tasks/tasks-repository.js";
 import { recordActivityEvent } from "../activity/activity-events-repository.js";
 import { insertSession } from "../sessions/sessions-repository.js";
@@ -355,10 +356,10 @@ it("RULE_GATE_SCENARIOS declares exactly one scenario per rule type the working-
 // ガード — 上の「RULE_GATE_SCENARIOS declares...」— とは異なり、ここでは
 // describe("createTicker().tick") の beforeEach/afterEach のライフサイクルに
 // 依存せず自己完結させる）。
-it("guards the invariant the avoidance scenario below depends on: the escalation intervals scheduler-tick.ts actually reads keep its seeded activity signal within the avoidance window through L1 -> L2 -> L3", () => {
+it("guards the invariant the avoidance scenario below depends on: the escalation intervals scheduler-tick.ts actually reads keep its seeded activity signal within the avoidance window through L1 -> L2 -> L3", async () => {
   const guardDb = openDatabase(":memory:");
   try {
-    runMigrations(guardDb);
+    await runMigrations(portFor(guardDb));
     const { escalation, avoidanceWindowMinutes } = loadDetectionSettings(guardDb);
     const avoidanceSeedToL1GapMinutes =
       AVOIDANCE_L1_FIRE_OFFSET_MINUTES - AVOIDANCE_OTHER_TASK_UPDATE_OFFSET_MINUTES;
@@ -431,9 +432,9 @@ describe("createTicker().tick", () => {
   let db: Database.Database;
   const env = {};
 
-  beforeEach(() => {
+  beforeEach(async () => {
     db = openDatabase(":memory:");
-    runMigrations(db);
+    await runMigrations(portFor(db));
     createClaudeClientMock.mockReset();
     streamBossMessageMock.mockReset();
     generateNotificationBodyMock.mockReset();
@@ -1107,7 +1108,7 @@ describe("createTicker().tick", () => {
         // independent of the positive control above.
         const outsideDb = openDatabase(":memory:");
         try {
-          runMigrations(outsideDb);
+          await runMigrations(portFor(outsideDb));
           const outsideRuleKey = setup(outsideDb, OUTSIDE_WORKING_HOURS_BASE_TIME);
           const outsideDayKey = toDateKey(new Date());
           const outsideExecFile = vi.fn().mockImplementation(ok);
@@ -1180,7 +1181,7 @@ describe("createTicker().tick", () => {
         // the excluded break_overrun scenario does that).
         const breakDb = openDatabase(":memory:");
         try {
-          runMigrations(breakDb);
+          await runMigrations(portFor(breakDb));
           vi.setSystemTime(BASE_TIME);
           recordActivityEvent(breakDb, {
             type: "break_start",
@@ -1431,7 +1432,7 @@ describe("createTicker().tick", () => {
 
       const outsideDb = openDatabase(":memory:");
       try {
-        runMigrations(outsideDb);
+        await runMigrations(portFor(outsideDb));
         vi.setSystemTime(BASE_TIME);
         recordActivityEvent(outsideDb, { type: "checkin" });
         insertSession(outsideDb, { type: "morning" });
@@ -1703,10 +1704,10 @@ describe("daily notification cap via tick on a file-backed DB (#562)", () => {
   let db: Database.Database;
   const env = {};
 
-  beforeEach(() => {
+  beforeEach(async () => {
     dir = mkdtempSync(join(tmpdir(), "ai-boss-daily-cap-"));
     db = openDatabase(join(dir, "ai-boss.db"));
-    runMigrations(db);
+    await runMigrations(portFor(db));
     createClaudeClientMock.mockReset();
     generateNotificationBodyMock.mockReset();
     insertNotificationMock.mockReset();

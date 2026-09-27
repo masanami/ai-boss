@@ -6,6 +6,7 @@ import { createApp } from "./app.js";
 import { loadConfig, resolveEvidenceDir } from "./config.js";
 import { openDatabase } from "./db/connection.js";
 import { runMigrations } from "./db/migrate.js";
+import { portFor } from "./db/transitional-bridge.js";
 import { startScheduler } from "./scheduler/scheduler.js";
 // 機能仕様 docs/features/tauri-in-app-runtime.md 実装計画①: `claude-client.ts`
 // （コア）はもう `backends/*.ts` を静的 import しないため、`claude-code`
@@ -21,7 +22,11 @@ import {
 
 const config = loadConfig(process.env);
 const db = openDatabase(config.dbPath);
-runMigrations(db);
+// `runMigrations`（#602）はポート経由の非同期関数になったため、ESM の
+// top-level await でこのモジュールの初期化を待つ（`"type": "module"` の
+// もとで有効。以降の `db`〔生の better-sqlite3 接続〕を使う起動処理は、
+// マイグレーション完了後に進む）。
+await runMigrations(portFor(db));
 
 // 開発者用の版（このエントリ）だけが `claude-code`/`api` を登録する
 // （オーナーの決定 Q4-b・Q4-c）。以前は `createApp` 呼び出しの副作用として

@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type Database from "better-sqlite3";
 import { openDatabase } from "../db/connection.js";
 import { runMigrations } from "../db/migrate.js";
+import { portFor } from "../db/transitional-bridge.js";
 import { insertTask } from "../tasks/tasks-repository.js";
 import { setSettingValue } from "../settings/settings-repository.js";
 import type { ActivityEvent } from "../activity/activity-event.js";
@@ -114,11 +115,11 @@ describe("TASK_TOOLS", () => {
 describe("executeTaskTool", () => {
   let db: Database.Database;
 
-  beforeEach(() => {
+  beforeEach(async () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date(2026, 6, 5, 12, 0, 0));
     db = openDatabase(":memory:");
-    runMigrations(db);
+    await runMigrations(portFor(db));
   });
 
   afterEach(() => {

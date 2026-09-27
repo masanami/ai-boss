@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type Database from "better-sqlite3";
 import { openDatabase } from "../db/connection.js";
 import { runMigrations } from "../db/migrate.js";
+import { portFor } from "../db/transitional-bridge.js";
 import type { Session } from "./session.js";
 import type { Message } from "./message.js";
 
@@ -95,9 +96,9 @@ describe("POST /api/sessions/:id/messages — Issue #117 reproduction", () => {
   // `createApp` は `llmBackend` 省略時に `resolveLlmBackend(env)` で解決する。
   const env = { ANTHROPIC_API_KEY: "sk-ant-test-key", LLM_BACKEND: "api" };
 
-  beforeEach(() => {
+  beforeEach(async () => {
     db = openDatabase(":memory:");
-    runMigrations(db);
+    await runMigrations(portFor(db));
     anthropicCtor.mockClear();
     streamMock.mockReset();
   });

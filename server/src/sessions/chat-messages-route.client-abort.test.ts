@@ -4,6 +4,7 @@ import type { AddressInfo } from "node:net";
 import { serve } from "@hono/node-server";
 import { openDatabase } from "../db/connection.js";
 import { runMigrations } from "../db/migrate.js";
+import { portFor } from "../db/transitional-bridge.js";
 import type { Session } from "./session.js";
 import type { Message } from "./message.js";
 
@@ -56,7 +57,7 @@ describe("POST /api/sessions/:id/messages — client disconnect over a real HTTP
 
   beforeEach(async () => {
     db = openDatabase(":memory:");
-    runMigrations(db);
+    await runMigrations(portFor(db));
     createClaudeClientMock.mockReset();
     streamBossMessageMock.mockReset();
     createBossMessageMock.mockReset();

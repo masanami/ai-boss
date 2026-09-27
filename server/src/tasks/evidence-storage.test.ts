@@ -5,6 +5,7 @@ import { join, sep } from "node:path";
 import type Database from "better-sqlite3";
 import { openDatabase } from "../db/connection.js";
 import { runMigrations } from "../db/migrate.js";
+import { portFor } from "../db/transitional-bridge.js";
 import { insertTask } from "./tasks-repository.js";
 import { insertTaskEvidence, findTaskEvidenceById } from "./task-evidences-repository.js";
 import { deleteEvidence, saveFileEvidence, saveLinkEvidence } from "./evidence-storage.js";
@@ -27,9 +28,9 @@ describe("evidence-storage", () => {
   let db: Database.Database;
   let evidenceDir: string;
 
-  beforeEach(() => {
+  beforeEach(async () => {
     db = openDatabase(":memory:");
-    runMigrations(db);
+    await runMigrations(portFor(db));
     evidenceDir = mkdtempSync(join(tmpdir(), "ai-boss-evidence-"));
   });
 

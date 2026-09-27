@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type Database from "better-sqlite3";
 import { openDatabase } from "../db/connection.js";
 import { runMigrations } from "../db/migrate.js";
+import { portFor } from "../db/transitional-bridge.js";
 import { insertSession } from "../sessions/sessions-repository.js";
 import { listDecisions } from "../decisions/decisions-repository.js";
 import { insertTask, listTasks } from "../tasks/tasks-repository.js";
@@ -23,9 +24,9 @@ describe("executeBossTool", () => {
   let db: Database.Database;
   let sessionId: number;
 
-  beforeEach(() => {
+  beforeEach(async () => {
     db = openDatabase(":memory:");
-    runMigrations(db);
+    await runMigrations(portFor(db));
     sessionId = insertSession(db, { type: "adhoc" }).id;
   });
 

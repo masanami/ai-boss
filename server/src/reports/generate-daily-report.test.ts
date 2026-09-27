@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type Database from "better-sqlite3";
 import { openDatabase } from "../db/connection.js";
 import { runMigrations } from "../db/migrate.js";
+import { portFor } from "../db/transitional-bridge.js";
 import type { SessionType } from "../sessions/session.js";
 import { FALLBACK_EVENING_SUMMARY_NOTE } from "./render-daily-report.js";
 import { EVENING_OPENING_FALLBACK } from "../sessions/meeting-opening.js";
@@ -86,9 +87,9 @@ const env = { ANTHROPIC_API_KEY: "sk-ant-test-key" };
 describe("generateDailyReport", () => {
   let db: Database.Database;
 
-  beforeEach(() => {
+  beforeEach(async () => {
     db = openDatabase(":memory:");
-    runMigrations(db);
+    await runMigrations(portFor(db));
     createClaudeClientMock.mockReset();
     requestVerdictMock.mockReset();
     createClaudeClientMock.mockReturnValue({ backend: "api", client: {} });

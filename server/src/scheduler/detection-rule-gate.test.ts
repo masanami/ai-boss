@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type Database from "better-sqlite3";
 import { openDatabase } from "../db/connection.js";
 import { runMigrations } from "../db/migrate.js";
+import { portFor } from "../db/transitional-bridge.js";
 import { evaluateRules } from "../detection/rule-engine.js";
 import {
   DEFAULT_DETECTION_SETTINGS,
@@ -97,9 +98,9 @@ describe("working-hours gate under a corrupted work_start/work_end pair (AC-10)"
     };
   }
 
-  beforeEach(() => {
+  beforeEach(async () => {
     db = openDatabase(":memory:");
-    runMigrations(db);
+    await runMigrations(portFor(db));
     vi.spyOn(console, "warn").mockImplementation(() => undefined);
     // work_start >= work_end の不正な組を直接書き込む。PUT 経由では
     // #480/#481 に弾かれてこの状態を作れない。

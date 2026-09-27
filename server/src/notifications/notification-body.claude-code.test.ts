@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import type Database from "better-sqlite3";
 import { openDatabase } from "../db/connection.js";
 import { runMigrations } from "../db/migrate.js";
+import { portFor } from "../db/transitional-bridge.js";
 import type { Task } from "../tasks/task.js";
 
 /**
@@ -76,9 +77,9 @@ describe("generateNotificationBody (claude-code backend, end-to-end via the real
   const env = { LLM_BACKEND: "claude-code" };
   const now = new Date("2026-07-05T10:00:00+09:00");
 
-  beforeEach(() => {
+  beforeEach(async () => {
     db = openDatabase(":memory:");
-    runMigrations(db);
+    await runMigrations(portFor(db));
     queryMock.mockReset();
   });
 

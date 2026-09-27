@@ -5,6 +5,7 @@ import { join } from "node:path";
 import type Database from "better-sqlite3";
 import { openDatabase } from "../db/connection.js";
 import { runMigrations } from "../db/migrate.js";
+import { portFor } from "../db/transitional-bridge.js";
 import { createApp } from "../app.js";
 import { insertTask } from "./tasks-repository.js";
 import { insertTaskEvidence } from "./task-evidences-repository.js";
@@ -40,9 +41,9 @@ describe("task evidences routes", () => {
   let db: Database.Database;
   let evidenceDir: string;
 
-  beforeEach(() => {
+  beforeEach(async () => {
     db = openDatabase(":memory:");
-    runMigrations(db);
+    await runMigrations(portFor(db));
     evidenceDir = mkdtempSync(join(tmpdir(), "ai-boss-evidence-routes-"));
   });
 

@@ -3,6 +3,7 @@ import type Database from "better-sqlite3";
 import type Anthropic from "@anthropic-ai/sdk";
 import { openDatabase } from "../db/connection.js";
 import { runMigrations } from "../db/migrate.js";
+import { portFor } from "../db/transitional-bridge.js";
 import { NOTIFICATION_PLAIN_TEXT_INSTRUCTION } from "../boss/persona-prompt.js";
 import type { Task } from "../tasks/task.js";
 
@@ -60,9 +61,9 @@ describe("generateNotificationBody", () => {
   const env = { ANTHROPIC_API_KEY: "sk-ant-test-key" };
   const now = new Date("2026-07-05T10:00:00+09:00");
 
-  beforeEach(() => {
+  beforeEach(async () => {
     db = openDatabase(":memory:");
-    runMigrations(db);
+    await runMigrations(portFor(db));
     createClaudeClientMock.mockReset();
     streamBossMessageMock.mockReset();
     createClaudeClientMock.mockReturnValue({});

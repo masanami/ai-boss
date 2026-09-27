@@ -3,7 +3,7 @@ import { createTestDb } from "./create-test-db.js";
 
 describe("createTestDb", () => {
   it("returns a DbPort backed by a migrated :memory: database", async () => {
-    const { db, raw } = createTestDb();
+    const { db, raw } = await createTestDb();
 
     // マイグレーション済み（v10）であることを、実テーブルへの書き込みで
     // 確かめる（`tasks` は version 1 から存在する）。
@@ -19,9 +19,9 @@ describe("createTestDb", () => {
     raw.close();
   });
 
-  it("returns a distinct database for each call", () => {
-    const first = createTestDb();
-    const second = createTestDb();
+  it("returns a distinct database for each call", async () => {
+    const first = await createTestDb();
+    const second = await createTestDb();
 
     expect(first.raw).not.toBe(second.raw);
 

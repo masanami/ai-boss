@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type Database from "better-sqlite3";
 import { openDatabase } from "../db/connection.js";
 import { runMigrations } from "../db/migrate.js";
+import { portFor } from "../db/transitional-bridge.js";
 import { DEFAULT_DETECTION_SETTINGS } from "../detection/detection-types.js";
 import { loadDetectionSettings } from "./detection-settings.js";
 
@@ -12,9 +13,9 @@ function putSetting(db: Database.Database, key: string, value: string): void {
 describe("loadDetectionSettings", () => {
   let db: Database.Database;
 
-  beforeEach(() => {
+  beforeEach(async () => {
     db = openDatabase(":memory:");
-    runMigrations(db);
+    await runMigrations(portFor(db));
     vi.spyOn(console, "warn").mockImplementation(() => undefined);
   });
 

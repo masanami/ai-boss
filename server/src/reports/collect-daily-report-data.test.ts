@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type Database from "better-sqlite3";
 import { openDatabase } from "../db/connection.js";
 import { runMigrations } from "../db/migrate.js";
+import { portFor } from "../db/transitional-bridge.js";
 import type { Session, SessionType } from "../sessions/session.js";
 import { collectDailyReportData } from "./collect-daily-report-data.js";
 
@@ -80,9 +81,9 @@ function insertRawDecision(
 describe("collectDailyReportData", () => {
   let db: Database.Database;
 
-  beforeEach(() => {
+  beforeEach(async () => {
     db = openDatabase(":memory:");
-    runMigrations(db);
+    await runMigrations(portFor(db));
   });
 
   afterEach(() => {
@@ -426,7 +427,7 @@ describe("collectDailyReportData", () => {
       expect(result.breakTotalMinutes).toBe(0);
     });
 
-    it("produces the same breakCount/breakTotalMinutes whether or not a break_end record exists exactly at the evening session's ended_at (ADR 0007 決定3: half-open interval excludes it from the query, but computeActivityRecord's sessionEndedAt cutoff yields an equivalent result)", () => {
+    it("produces the same breakCount/breakTotalMinutes whether or not a break_end record exists exactly at the evening session's ended_at (ADR 0007 決定3: half-open interval excludes it from the query, but computeActivityRecord's sessionEndedAt cutoff yields an equivalent result)", async () => {
       const startedAt = iso(2026, 8, 14, 23, 50);
       const endedAt = iso(2026, 8, 15, 0, 30);
 
@@ -438,7 +439,7 @@ describe("collectDailyReportData", () => {
       // Case B: break_end が夕会 ended_at と完全一致する（半開区間のクエリからは
       // 除外されるが、computeActivityRecord の打ち切りで同じ値になるはず）
       const db2 = openDatabase(":memory:");
-      runMigrations(db2);
+      await runMigrations(portFor(db2));
       const sessionB = insertRawSession(db2, "evening", startedAt, endedAt);
       insertRawActivityEvent(db2, { type: "break_start", createdAt: iso(2026, 8, 14, 23, 55) });
       insertRawActivityEvent(db2, { type: "break_end", createdAt: endedAt });

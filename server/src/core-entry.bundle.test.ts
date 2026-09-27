@@ -8,6 +8,7 @@ import { resolve as resolvePath } from "node:path";
 import { fileURLToPath } from "node:url";
 import { openDatabase } from "./db/connection.js";
 import { runMigrations } from "./db/migrate.js";
+import { portFor } from "./db/transitional-bridge.js";
 
 /**
  * 受入基準（S1）1〜7・12・14 を固定するバンドル検査（機能仕様
@@ -472,7 +473,7 @@ describe("core-entry bundle — AC6/AC7 (process/require が無いグローバ�
 
     const db = openDatabase(":memory:");
     try {
-      runMigrations(db);
+      await runMigrations(portFor(db));
       const app = exported.createCoreApp(db, env);
       expect((await app.request("/api/health")).status).toBe(200);
       expect(exported.registeredCoreLlmBackendNames()).toEqual([]);
@@ -523,7 +524,7 @@ describe("core-entry bundle — smoke test (vm 内で構築した app が実 DB 
 
     const db = openDatabase(":memory:");
     try {
-      runMigrations(db);
+      await runMigrations(portFor(db));
       const app = exported.createCoreApp(db, {});
 
       const res = await app.request("/api/health");
@@ -553,7 +554,7 @@ describe("core-entry bundle — AC12 (グローバル Buffer が未定義でも�
     // で走るので DB は現行のまま — 機能仕様の指示どおり）。
     const db = openDatabase(":memory:");
     try {
-      runMigrations(db);
+      await runMigrations(portFor(db));
 
       const stored = new Map<string, Uint8Array>();
       const memoryEvidenceStore = {

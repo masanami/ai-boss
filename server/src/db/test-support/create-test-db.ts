@@ -9,13 +9,13 @@ import type { DbPort } from "../db-port.js";
  * docs/features/async-db-layer.md「移行期の共通規約」・#601 完了条件）。
  *
  * マイグレーション済みの `:memory:` DB を組み立てて `{ db, raw }` を返す。
- * `runMigrations` は同期のうちは生の接続（`raw`）に対して直接呼ぶ。
- * `raw` は既存の同期テストコード（`db.prepare`/`exec`/`pragma` を直に呼ぶ
- * 24 ファイル・69 箇所、機能仕様の仮定 A1）が使ってよい。
+ * `runMigrations`（#602 で非同期の `Db` ポート経由になった）は `portFor(raw)`
+ * に対して呼ぶ。`raw` は既存の同期テストコード（`db.prepare`/`exec`/`pragma`
+ * を直に呼ぶ 24 ファイル・69 箇所、機能仕様の仮定 A1）が使ってよい。
  */
-export function createTestDb(): { db: DbPort; raw: Database.Database } {
+export async function createTestDb(): Promise<{ db: DbPort; raw: Database.Database }> {
   const raw = openDatabase(":memory:");
-  runMigrations(raw);
   const db = portFor(raw);
+  await runMigrations(db);
   return { db, raw };
 }
