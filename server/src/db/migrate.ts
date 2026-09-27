@@ -1,4 +1,4 @@
-import type Database from "better-sqlite3";
+import type { Db } from "./db-port.js";
 
 /**
  * A migration is either a plain SQL string (applied inside a single
@@ -10,8 +10,13 @@ import type Database from "better-sqlite3";
  * rebuild procedure — toggling it inside a transaction does not suppress the
  * FK check, it just defers the failure to COMMIT), which a bare SQL string
  * cannot express (#183).
+ *
+ * A function migration receives the top-level `Db` (never a `tx`): it needs
+ * to call `db.exec(...)` *outside* any transaction (for the `foreign_keys`
+ * toggle) as well as `db.transaction(...)` for the atomic part of its own
+ * work (#602・機能仕様 docs/features/async-db-layer.md 決定4).
  */
-type MigrationEntry = string | ((db: Database.Database) => void);
+type MigrationEntry = string | ((db: Db) => Promise<void>);
 
 // Rebuilds `tasks` and `activity_events` to add `'paused'` / `'task_pause'`
 // to their CHECK constraints (#179 decision 1). SQLite has no `ALTER TABLE
@@ -80,13 +85,14 @@ const V4_REBUILD_SQL = `
  * itself, and `decisions`, which also references `tasks(id)`) rather than a
  * full-database check, so pre-existing orphan rows in unrelated tables don't
  * newly block startup (#179 lead's judgment call).
+ *
+ * `PRAGMA foreign_key_check(...)` is read via `all` (never `pragma`): the
+ * port has no `pragma`-specific entry point (`Db` — #602・機能仕様
+ * docs/features/async-db-layer.md「IF / API」節).
  */
-function assertNoForeignKeyViolations(
-  db: Database.Database,
-  tables: string[],
-): void {
+async function assertNoForeignKeyViolations(db: Db, tables: string[]): Promise<void> {
   for (const table of tables) {
-    const violations = db.pragma(`foreign_key_check(${table})`) as unknown[];
+    const violations = await db.all(`PRAGMA foreign_key_check(${table})`);
     if (violations.length > 0) {
       throw new Error(
         `foreign key violations found in "${table}" after migrating to version 4: ${JSON.stringify(violations)}`,
@@ -101,17 +107,23 @@ function assertNoForeignKeyViolations(
 // `finally` guarantees `foreign_keys` is restored to ON even if the rebuild
 // or the FK check throws, so a failed v4 migration never leaves FK
 // enforcement silently disabled (docs/adr/0005-sqlite-schema-policy.md).
-function migrateToV4(db: Database.Database): void {
-  db.pragma("foreign_keys = OFF");
+//
+// The OFF/ON toggle runs on `db` (the top-level port, outside any
+// transaction — the same connection, so it still takes effect); the rebuild
+// SQL, the FK check, and the `user_version` bump all run inside a single
+// `db.transaction(...)` on the `tx` it hands to `fn`, so a failure there
+// rolls all three back together and leaves `user_version` at 3 (AC-13/AC-13b
+// ・#602).
+async function migrateToV4(db: Db): Promise<void> {
+  await db.exec("PRAGMA foreign_keys = OFF");
   try {
-    const apply = db.transaction(() => {
-      db.exec(V4_REBUILD_SQL);
-      assertNoForeignKeyViolations(db, ["activity_events", "decisions"]);
-      db.pragma("user_version = 4");
+    await db.transaction(async (tx) => {
+      await tx.exec(V4_REBUILD_SQL);
+      await assertNoForeignKeyViolations(tx, ["activity_events", "decisions"]);
+      await tx.exec("PRAGMA user_version = 4");
     });
-    apply();
   } finally {
-    db.pragma("foreign_keys = ON");
+    await db.exec("PRAGMA foreign_keys = ON");
   }
 }
 
@@ -370,18 +382,23 @@ const MIGRATIONS: Record<number, MigrationEntry> = {
  * migration cursor. Safe to call multiple times (idempotent): migrations
  * already applied (version <= current user_version) are skipped.
  *
+ * Runs entirely through the async `Db` port (#602・機能仕様
+ * docs/features/async-db-layer.md「IF / API」節): `PRAGMA user_version` is
+ * read via `get` and set via `exec` (never `db.pragma`, which the port
+ * doesn't expose).
+ *
  * Each version is applied atomically: for a plain SQL string entry, the
- * migration SQL and the `user_version` update run in a single transaction
- * (`PRAGMA user_version` participates in the transaction), so an
- * interruption or failure leaves the database exactly at the previous
- * version boundary — never in a "applied but not recorded" state that would
- * re-run non-idempotent statements on the next start (#175). The transaction
- * is per version (not around the whole loop) so that versions applied
- * before a failure stay committed, keeping recovery simple. A function
- * entry (e.g. v4) instead owns its own transaction and `user_version`
- * update, for migrations that need control outside of it (e.g. toggling
- * `PRAGMA foreign_keys` around a table rebuild, #183) — but is expected to
- * uphold the same atomicity contract.
+ * migration SQL and the `user_version` update run in a single `tx` handed to
+ * `db.transaction(...)` (the `PRAGMA user_version` update participates in
+ * the same transaction), so an interruption or failure leaves the database
+ * exactly at the previous version boundary — never in a "applied but not
+ * recorded" state that would re-run non-idempotent statements on the next
+ * start (#175). The transaction is per version (not around the whole loop)
+ * so that versions applied before a failure stay committed, keeping recovery
+ * simple. A function entry (e.g. v4) instead owns its own transaction and
+ * `user_version` update, for migrations that need control outside of it
+ * (e.g. toggling `PRAGMA foreign_keys` around a table rebuild, #183) — but is
+ * expected to uphold the same atomicity contract.
  *
  * If the database's `user_version` is already *ahead* of the latest known
  * migration version (e.g. the database was created by a newer build of the
@@ -390,6 +407,7 @@ const MIGRATIONS: Record<number, MigrationEntry> = {
  * left unrecognized: the loop below runs zero times in that case, and would
  * otherwise return without signaling anything is wrong (#204).
  *
+ * @param db - The top-level async `Db` port to migrate.
  * @param migrations - Version-keyed migration SQL or migration function.
  *   Defaults to the real schema; injectable so tests can exercise failure
  *   scenarios. The target (latest) version is derived from the highest key,
@@ -397,11 +415,12 @@ const MIGRATIONS: Record<number, MigrationEntry> = {
  *   in the keys is a programming error and fails fast instead of being
  *   silently skipped.
  */
-export function runMigrations(
-  db: Database.Database,
+export async function runMigrations(
+  db: Db,
   migrations: Record<number, MigrationEntry> = MIGRATIONS,
-): void {
-  const currentVersion = db.pragma("user_version", { simple: true }) as number;
+): Promise<void> {
+  const versionRow = await db.get<{ user_version: number }>("PRAGMA user_version");
+  const currentVersion = versionRow?.user_version ?? 0;
   const versions = Object.keys(migrations).map(Number);
   // An empty `migrations` map (only ever passed in tests; the real
   // MIGRATIONS map, defined above, is never empty) intentionally makes
@@ -435,13 +454,12 @@ export function runMigrations(
         // (see `migrateToV4`): version-scoped wrapping like the string case
         // below cannot express toggling `PRAGMA foreign_keys` outside the
         // transaction.
-        migration(db);
+        await migration(db);
       } else {
-        const applyVersion = db.transaction(() => {
-          db.exec(migration);
-          db.pragma(`user_version = ${version}`);
+        await db.transaction(async (tx) => {
+          await tx.exec(migration);
+          await tx.exec(`PRAGMA user_version = ${version}`);
         });
-        applyVersion();
       }
     } catch (error) {
       throw new Error(

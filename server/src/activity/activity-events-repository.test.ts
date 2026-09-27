@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type Database from "better-sqlite3";
 import { openDatabase } from "../db/connection.js";
 import { runMigrations } from "../db/migrate.js";
+import { portFor } from "../db/transitional-bridge.js";
 import { insertTask } from "../tasks/tasks-repository.js";
 import {
   checkBreakEndOrder,
@@ -25,9 +26,9 @@ function insertEvent(
 describe("recordActivityEvent", () => {
   let db: Database.Database;
 
-  beforeEach(() => {
+  beforeEach(async () => {
     db = openDatabase(":memory:");
-    runMigrations(db);
+    await runMigrations(portFor(db));
   });
 
   afterEach(() => {
@@ -104,9 +105,9 @@ describe("recordActivityEvent", () => {
 describe("findLatestTaskStartOrPauseEvent", () => {
   let db: Database.Database;
 
-  beforeEach(() => {
+  beforeEach(async () => {
     db = openDatabase(":memory:");
-    runMigrations(db);
+    await runMigrations(portFor(db));
   });
 
   afterEach(() => {
@@ -203,9 +204,9 @@ describe("findLatestTaskStartOrPauseEvent", () => {
 describe("checkBreakEndOrder", () => {
   let db: Database.Database;
 
-  beforeEach(() => {
+  beforeEach(async () => {
     db = openDatabase(":memory:");
-    runMigrations(db);
+    await runMigrations(portFor(db));
   });
 
   afterEach(() => {
@@ -261,9 +262,9 @@ describe("checkBreakEndOrder", () => {
 describe("listEventsSince", () => {
   let db: Database.Database;
 
-  beforeEach(() => {
+  beforeEach(async () => {
     db = openDatabase(":memory:");
-    runMigrations(db);
+    await runMigrations(portFor(db));
   });
 
   afterEach(() => {
@@ -320,9 +321,9 @@ describe("listEventsSince", () => {
 describe("findLatestEvent", () => {
   let db: Database.Database;
 
-  beforeEach(() => {
+  beforeEach(async () => {
     db = openDatabase(":memory:");
-    runMigrations(db);
+    await runMigrations(portFor(db));
   });
 
   afterEach(() => {

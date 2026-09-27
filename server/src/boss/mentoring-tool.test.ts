@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type Database from "better-sqlite3";
 import { openDatabase } from "../db/connection.js";
 import { runMigrations } from "../db/migrate.js";
+import { portFor } from "../db/transitional-bridge.js";
 import { insertSession } from "../sessions/sessions-repository.js";
 import { insertTask } from "../tasks/tasks-repository.js";
 import { listDecisions } from "../decisions/decisions-repository.js";
@@ -18,9 +19,9 @@ describe("executeRecordMentoringTool", () => {
   let db: Database.Database;
   let sessionId: number;
 
-  beforeEach(() => {
+  beforeEach(async () => {
     db = openDatabase(":memory:");
-    runMigrations(db);
+    await runMigrations(portFor(db));
     sessionId = insertSession(db, { type: "morning" }).id;
   });
 

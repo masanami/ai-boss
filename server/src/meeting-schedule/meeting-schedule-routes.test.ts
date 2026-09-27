@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type Database from "better-sqlite3";
 import { openDatabase } from "../db/connection.js";
 import { runMigrations } from "../db/migrate.js";
+import { portFor } from "../db/transitional-bridge.js";
 import { createApp } from "../app.js";
 import { setSettingValue } from "../settings/settings-repository.js";
 import { upsertOverride } from "./meeting-schedule-repository.js";
@@ -37,11 +38,11 @@ const YESTERDAY_KEY = "2026-09-19";
 describe("meeting-schedule routes", () => {
   let db: Database.Database;
 
-  beforeEach(() => {
+  beforeEach(async () => {
     vi.useFakeTimers();
     vi.setSystemTime(TODAY);
     db = openDatabase(":memory:");
-    runMigrations(db);
+    await runMigrations(portFor(db));
   });
 
   afterEach(() => {

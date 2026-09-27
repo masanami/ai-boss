@@ -5,6 +5,7 @@ import { BOSS_TOOLS, executeBossTool } from "../../boss/boss-tools.js";
 import { SUBMIT_EVENING_SUMMARY_TOOL } from "../../reports/evening-summary-tool.js";
 import { openDatabase } from "../../db/connection.js";
 import { runMigrations } from "../../db/migrate.js";
+import { portFor } from "../../db/transitional-bridge.js";
 import { insertTask } from "../../tasks/tasks-repository.js";
 import { insertSession } from "../../sessions/sessions-repository.js";
 
@@ -248,10 +249,10 @@ describe("TOOL_ZOD_SHAPES.update_task committed_start_at (決定6)", () => {
   // executeBossTool（実 DB・実タスクリポジトリ）へ渡し、約束が実際に取り消さ
   // れることを確認する。変異: Zod shape から .nullable() を外すと safeParse が
   // 失敗し、この検証を通った入力が存在しなくなる（下の assert が落ちる）。
-  it("clears committed_start_at and committed_at when the Zod-validated { id, committed_start_at: null } input is executed via executeBossTool", () => {
+  it("clears committed_start_at and committed_at when the Zod-validated { id, committed_start_at: null } input is executed via executeBossTool", async () => {
     const db = openDatabase(":memory:");
     try {
-      runMigrations(db);
+      await runMigrations(portFor(db));
       const sessionId = insertSession(db, { type: "adhoc" }).id;
       const task = insertTask(db, {
         title: "資料作成",

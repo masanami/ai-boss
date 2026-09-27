@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type Database from "better-sqlite3";
 import { openDatabase } from "../db/connection.js";
 import { runMigrations } from "../db/migrate.js";
+import { portFor } from "../db/transitional-bridge.js";
 import { createApp } from "../app.js";
 import { setSettingValue } from "../settings/settings-repository.js";
 import type { Session } from "./session.js";
@@ -95,7 +96,7 @@ const env = { ANTHROPIC_API_KEY: "sk-ant-test-key" };
 describe("evening session end -> daily report generation hook", () => {
   let db: Database.Database;
 
-  beforeEach(() => {
+  beforeEach(async () => {
     // 現在時刻を固定する。`toFake: ["Date"]` に限定し setTimeout は fake 化
     // しない（このルートが `await` する日報生成の内部タイマー・LLM 呼び出し
     // 待ちまで止めてテストをハングさせないため。web/src/AppLayout.test.tsx
@@ -104,7 +105,7 @@ describe("evening session end -> daily report generation hook", () => {
     vi.setSystemTime(new Date(2026, 7, 14, 19, 0, 0));
 
     db = openDatabase(":memory:");
-    runMigrations(db);
+    await runMigrations(portFor(db));
     createClaudeClientMock.mockReset();
     requestVerdictMock.mockReset();
     createBossMessageMock.mockReset();

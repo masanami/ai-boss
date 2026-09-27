@@ -3,6 +3,7 @@ import type Database from "better-sqlite3";
 import type Anthropic from "@anthropic-ai/sdk";
 import { openDatabase } from "../db/connection.js";
 import { runMigrations } from "../db/migrate.js";
+import { portFor } from "../db/transitional-bridge.js";
 import { insertMessage } from "./messages-repository.js";
 import { insertDecision } from "../decisions/decisions-repository.js";
 import { setSettingValue } from "../settings/settings-repository.js";
@@ -54,9 +55,9 @@ async function readJson<T>(res: Response): Promise<T> {
 describe("sessions routes", () => {
   let db: Database.Database;
 
-  beforeEach(() => {
+  beforeEach(async () => {
     db = openDatabase(":memory:");
-    runMigrations(db);
+    await runMigrations(portFor(db));
     createClaudeClientMock.mockReset();
     createBossMessageMock.mockReset();
     createClaudeClientMock.mockReturnValue({});

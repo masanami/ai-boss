@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type Database from "better-sqlite3";
 import { openDatabase } from "../db/connection.js";
 import { runMigrations } from "../db/migrate.js";
+import { portFor } from "../db/transitional-bridge.js";
 import { DEFAULT_MODEL } from "../llm/claude-client.js";
 import { DEFAULT_PERSONA_SETTINGS } from "./persona-prompt.js";
 import { resolveBossSettings } from "./boss-settings.js";
@@ -13,9 +14,9 @@ function putSetting(db: Database.Database, key: string, value: string): void {
 describe("resolveBossSettings", () => {
   let db: Database.Database;
 
-  beforeEach(() => {
+  beforeEach(async () => {
     db = openDatabase(":memory:");
-    runMigrations(db);
+    await runMigrations(portFor(db));
   });
 
   afterEach(() => {

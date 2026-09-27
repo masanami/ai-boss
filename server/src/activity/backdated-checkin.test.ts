@@ -3,6 +3,7 @@ import type { Hono } from "hono";
 import type Database from "better-sqlite3";
 import { openDatabase } from "../db/connection.js";
 import { runMigrations } from "../db/migrate.js";
+import { portFor } from "../db/transitional-bridge.js";
 import { createApp } from "../app.js";
 import { insertTask } from "../tasks/tasks-repository.js";
 import type { Task } from "../tasks/task.js";
@@ -77,9 +78,9 @@ function postCheckin(app: Hono, body: Record<string, unknown>) {
 describe("backdated checkins: effect on notifications / escalation / break detection (#352)", () => {
   let db: Database.Database;
 
-  beforeEach(() => {
+  beforeEach(async () => {
     db = openDatabase(":memory:");
-    runMigrations(db);
+    await runMigrations(portFor(db));
     vi.useFakeTimers();
     vi.setSystemTime(NOW);
   });

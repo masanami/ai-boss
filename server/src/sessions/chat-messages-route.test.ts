@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type Database from "better-sqlite3";
 import { openDatabase } from "../db/connection.js";
 import { runMigrations } from "../db/migrate.js";
+import { portFor } from "../db/transitional-bridge.js";
 import { insertTask, listTasks } from "../tasks/tasks-repository.js";
 import { insertDecision, listDecisions } from "../decisions/decisions-repository.js";
 import { MENTORING_TARGET_TASK_INSTRUCTION } from "../boss/persona-prompt.js";
@@ -101,9 +102,9 @@ describe("POST /api/sessions/:id/messages", () => {
   let db: Database.Database;
   const env = { ANTHROPIC_API_KEY: "sk-ant-test-key" };
 
-  beforeEach(() => {
+  beforeEach(async () => {
     db = openDatabase(":memory:");
-    runMigrations(db);
+    await runMigrations(portFor(db));
     createClaudeClientMock.mockReset();
     streamBossMessageMock.mockReset();
     createBossMessageMock.mockReset();

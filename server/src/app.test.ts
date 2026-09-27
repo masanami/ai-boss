@@ -5,14 +5,15 @@ import { join } from "node:path";
 import type Database from "better-sqlite3";
 import { openDatabase } from "./db/connection.js";
 import { runMigrations } from "./db/migrate.js";
+import { portFor } from "./db/transitional-bridge.js";
 import { createApp } from "./app.js";
 
 describe("createApp", () => {
   let db: Database.Database;
 
-  beforeEach(() => {
+  beforeEach(async () => {
     db = openDatabase(":memory:");
-    runMigrations(db);
+    await runMigrations(portFor(db));
   });
 
   afterEach(() => {

@@ -3,6 +3,7 @@ import type Database from "better-sqlite3";
 import type Anthropic from "@anthropic-ai/sdk";
 import { openDatabase } from "../db/connection.js";
 import { runMigrations } from "../db/migrate.js";
+import { portFor } from "../db/transitional-bridge.js";
 import { insertTask } from "../tasks/tasks-repository.js";
 
 const { createClaudeClientMock, createBossMessageMock } = vi.hoisted(() => ({
@@ -53,11 +54,11 @@ describe("generateMeetingOpening", () => {
   let db: Database.Database;
   const env = { ANTHROPIC_API_KEY: "sk-ant-test-key", LLM_BACKEND: "api" };
 
-  beforeEach(() => {
+  beforeEach(async () => {
     vi.useFakeTimers({ shouldAdvanceTime: true });
     vi.setSystemTime(new Date(2026, 7, 20, 8, 0));
     db = openDatabase(":memory:");
-    runMigrations(db);
+    await runMigrations(portFor(db));
     createClaudeClientMock.mockReset();
     createBossMessageMock.mockReset();
     createClaudeClientMock.mockReturnValue({});

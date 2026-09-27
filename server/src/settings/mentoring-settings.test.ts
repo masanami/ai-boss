@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type Database from "better-sqlite3";
 import { openDatabase } from "../db/connection.js";
 import { runMigrations } from "../db/migrate.js";
+import { portFor } from "../db/transitional-bridge.js";
 import { setSettingValue } from "./settings-repository.js";
 import { resolveMorningMentoringRequired } from "./mentoring-settings.js";
 
@@ -10,9 +11,9 @@ import { resolveMorningMentoringRequired } from "./mentoring-settings.js";
 describe("resolveMorningMentoringRequired", () => {
   let db: Database.Database;
 
-  beforeEach(() => {
+  beforeEach(async () => {
     db = openDatabase(":memory:");
-    runMigrations(db);
+    await runMigrations(portFor(db));
   });
 
   afterEach(() => {
