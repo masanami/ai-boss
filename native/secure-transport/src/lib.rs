@@ -11,7 +11,10 @@ mod key_store;
 mod keychain;
 mod transport;
 
-pub use destination::{Credential, Destination, DestinationTable, ANTHROPIC_MESSAGES, ANTHROPIC_MESSAGES_URL, ANTHROPIC_VERSION};
+pub use destination::{
+    Credential, Destination, DestinationTable, ANTHROPIC_MESSAGES, ANTHROPIC_MESSAGES_URL, ANTHROPIC_VERSION,
+    OPENAI_RESPONSES, OPENAI_RESPONSES_URL,
+};
 pub use key_store::{KeyStore, MemoryKeyStore, Provider, StoreError};
 #[cfg(target_vendor = "apple")]
 pub use keychain::{KeychainKeyStore, KEYCHAIN_SERVICE};

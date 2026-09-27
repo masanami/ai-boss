@@ -58,6 +58,7 @@ use secrecy::SecretString;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Provider {
     Anthropic,
+    OpenAi,
 }
 
 impl Provider {
@@ -65,6 +66,7 @@ impl Provider {
     pub fn account(self) -> &'static str {
         match self {
             Provider::Anthropic => "anthropic",
+            Provider::OpenAi => "openai",
         }
     }
 }

@@ -15,6 +15,7 @@ use reqwest::header::{HeaderMap, HeaderName, HeaderValue, CONTENT_TYPE};
 use reqwest::redirect;
 use secrecy::ExposeSecret;
 use tokio_util::sync::CancellationToken;
+use zeroize::Zeroizing;
 
 use crate::destination::{Credential, DestinationTable, ANTHROPIC_VERSION};
 use crate::key_store::{KeyStore, Seal, StoreError};
@@ -174,6 +175,20 @@ impl SecureTransport {
                 api_key.set_sensitive(true);
                 headers.insert(HeaderName::from_static("x-api-key"), api_key);
                 headers.insert(HeaderName::from_static("anthropic-version"), HeaderValue::from_static(ANTHROPIC_VERSION));
+            }
+            Credential::OpenAiBearer => {
+                let key = self
+                    .store
+                    .load(credential.provider(), Seal::new())
+                    .map_err(TransportError::KeyStore)?
+                    .ok_or(TransportError::KeyNotRegistered)?;
+                // 組み立てた `Bearer <キー>` の文字列も、drop 時に消去する（keychain.rs の
+                // 読み出しと同じ `Zeroizing` の規律）。
+                let bearer_value = Zeroizing::new(format!("Bearer {}", key.expose_secret()));
+                let mut authorization = HeaderValue::from_str(&bearer_value)
+                    .map_err(|_| TransportError::KeyStore(StoreError::InvalidKeyFormat))?;
+                authorization.set_sensitive(true);
+                headers.insert(HeaderName::from_static("authorization"), authorization);
             }
         }
 

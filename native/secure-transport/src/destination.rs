@@ -13,17 +13,28 @@ pub const ANTHROPIC_MESSAGES_URL: &str = "https://api.anthropic.com/v1/messages"
 /// 付与する `anthropic-version`（現行の `@anthropic-ai/sdk` が送る値）。
 pub const ANTHROPIC_VERSION: &str = "2023-06-01";
 
+/// OpenAI Responses API の宛先の名前（機能仕様
+/// docs/features/llm-provider-abstraction.md「IF / API（S1）」）。
+pub const OPENAI_RESPONSES: &str = "openai-responses";
+/// OpenAI Responses API の送信先。
+pub const OPENAI_RESPONSES_URL: &str = "https://api.openai.com/v1/responses";
+
 /// 送信時に付与する資格情報の種類。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Credential {
     /// `x-api-key`（保管した Anthropic のキー）と `anthropic-version` を付ける。
     AnthropicApiKey,
+    /// `authorization: Bearer <保管した OpenAI のキー>` を付ける。呼び出し元が
+    /// 渡した `authorization` は（`x-api-key`/`anthropic-version` と同じく）
+    /// この層が既に捨てている。
+    OpenAiBearer,
 }
 
 impl Credential {
     pub(crate) fn provider(self) -> Provider {
         match self {
             Credential::AnthropicApiKey => Provider::Anthropic,
+            Credential::OpenAiBearer => Provider::OpenAi,
         }
     }
 }
@@ -44,6 +55,14 @@ impl Destination {
         }
     }
 
+    /// OpenAI Responses API 形式の宛先。
+    pub fn openai_responses(url: impl Into<String>) -> Self {
+        Self {
+            url: url.into(),
+            credential: Credential::OpenAiBearer,
+        }
+    }
+
     pub fn url(&self) -> &str {
         &self.url
     }
@@ -60,12 +79,19 @@ pub struct DestinationTable {
 }
 
 impl DestinationTable {
-    /// 製品版の表（`anthropic-messages` → `https://api.anthropic.com/v1/messages` の 1 行だけ）。
+    /// 製品版の表（`anthropic-messages`・`openai-responses` の2行だけ。機能仕様
+    /// docs/features/llm-provider-abstraction.md 受入基準（S1）「Rust の通信層」）。
     pub fn production() -> Self {
-        Self::from_entries([(
-            ANTHROPIC_MESSAGES,
-            Destination::anthropic_messages(ANTHROPIC_MESSAGES_URL),
-        )])
+        Self::from_entries([
+            (
+                ANTHROPIC_MESSAGES,
+                Destination::anthropic_messages(ANTHROPIC_MESSAGES_URL),
+            ),
+            (
+                OPENAI_RESPONSES,
+                Destination::openai_responses(OPENAI_RESPONSES_URL),
+            ),
+        ])
     }
 
     /// 任意の表（テストが模擬サーバーの URL を渡すため）。

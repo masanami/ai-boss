@@ -121,7 +121,10 @@ export type BossLlmClient =
   // （Anthropic）のバリアントはポート（`SecureTransportPort`）を持つ——
   // キーは持たない（`createClient` は `env` を読まず、キーの値を TS 側の
   // どのオブジェクトにも保持しない）。
-  | { backend: "byok-anthropic"; transport: SecureTransportPort };
+  | { backend: "byok-anthropic"; transport: SecureTransportPort }
+  // 機能仕様 docs/features/secure-transport-byok.md 仮定 A12 と同じ形:
+  // BYOK（OpenAI）も転送のポートだけを持つ。
+  | { backend: "byok-openai"; transport: SecureTransportPort };
 
 export interface BossTextBlock {
   type: "text";
@@ -141,20 +144,34 @@ export interface BossLlmMessage {
   content: BossContentBlock[];
   /**
    * The backend's *unmodified* assistant content blocks, when it can supply
-   * them (`api` only — see `backends/api-backend.ts`'s `normalizeMessage`).
-   * Used solely by {@link streamBossMessage}'s tool loop to echo the
-   * assistant turn back verbatim on the follow-up round.
+   * them (`api`, `byok-anthropic`, `byok-openai` — see `backends/api-
+   * backend.ts`'s `normalizeMessage`, `backends/byok-anthropic-backend.ts`'s
+   * streaming/non-streaming parsers, `backends/byok-openai-backend.ts`'s
+   * `interpretResponse`). Used solely by {@link streamBossMessage}'s tool
+   * loop to echo the assistant turn back verbatim on the follow-up round.
+   *
+   * **機能仕様 docs/features/llm-provider-abstraction.md クリティカル設計
+   * 決定1**: `rawContent` は「そのバックエンドにだけ送り返す、ファサードが
+   * 中身を解釈しない値」——このファサード（`streamBossMessage`）は同じ
+   * バックエンドの次のラウンドへ、中身を解釈せずそのまま渡すだけ。値の形は
+   * バックエンドごとに異なる（`api`/`byok-anthropic` は Anthropic の
+   * content block 配列、`byok-openai` は OpenAI Responses の出力の項目
+   * 配列——`reasoning`/`function_call`/`message` 等）。
    *
    * Issue #117: `content` deliberately drops every block type outside
-   * `text`/`tool_use`, including `thinking`. That is correct for boss
-   * callers, but wrong for the tool loop: with extended thinking enabled,
-   * the assistant turn that produced a `tool_use` must be replayed to the
-   * API *with its original `thinking` block and signature intact* (the SDK
-   * documents the signature as being returned "for multi-turn continuity"),
-   * otherwise the follow-up request is rejected. Echoing the normalized
-   * content instead would have made every tool-using chat turn fail the
-   * moment thinking became reachable — which the `DEFAULT_MAX_TOKENS`
-   * increase in this same fix is exactly what makes it reachable.
+   * `text`/`tool_use`, including `thinking`/`reasoning`. That is correct for
+   * boss callers, but wrong for the tool loop: with extended thinking
+   * enabled, the assistant turn that produced a `tool_use` must be replayed
+   * to the API *with its original `thinking` block and signature intact*
+   * (the SDK documents the signature as being returned "for multi-turn
+   * continuity"), otherwise the follow-up request is rejected. Echoing the
+   * normalized content instead would have made every tool-using chat turn
+   * fail the moment thinking became reachable — which the
+   * `DEFAULT_MAX_TOKENS` increase in this same fix is exactly what makes it
+   * reachable. OpenAI's official guidance for function calling says the same
+   * thing in its own words: pass the items from the previous turn's output
+   * back unmodified (機能仕様「実コードの実測」節の OpenAI 公式ドキュメント
+   * 確認事項）。
    *
    * Optional on purpose: `claude-code` does not set it (D6 — that backend
    * runs its own internal tool loop and this facade never replays turns for

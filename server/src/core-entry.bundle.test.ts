@@ -34,6 +34,8 @@ const FORBIDDEN_PACKAGE_SUBSTRINGS = [
   "@anthropic-ai/claude-agent-sdk",
   "@hono/node-server",
   "@anthropic-ai/sdk",
+  // #582 S1: OpenAI の npm SDK もコアに入れない（変換器は SDK を使わない）。
+  "node_modules/openai/",
   // #597 AC-1: better-sqlite3 実装（`db/connection.ts`）は Node の周辺にだけ置く。
   "better-sqlite3",
 ] as const;
@@ -438,6 +440,33 @@ describe("core-entry bundle — S2 (BYOK〔Anthropic〕の登録関数を呼ば�
   });
 
   it("merely loading the bundle does not register BYOK (Anthropic) — registeredCoreLlmBackendNames() stays empty", () => {
+    const context = createSandboxContext();
+    vm.runInContext(bundleCode, context);
+    const exported = (context as Record<string, unknown>).AiBossCore as CoreExports;
+    expect(exported.registeredCoreLlmBackendNames()).toEqual([]);
+  });
+});
+
+describe("core-entry bundle — S1（#582。BYOK〔OpenAI〕の登録関数を呼ばずに re-export する。機能仕様 docs/features/llm-provider-abstraction.md 案 A）", () => {
+  it("bundles the BYOK (OpenAI) backend module (reachable from core-entry.ts)", () => {
+    const inputs = metafileInputPaths(buildResult!.metafile!);
+    expect(includesAnyInput(inputs, "llm/backends/byok-openai-backend.ts")).toBe(true);
+  });
+
+  it("bundles the model catalog module (reachable from core-entry.ts)", () => {
+    const inputs = metafileInputPaths(buildResult!.metafile!);
+    expect(includesAnyInput(inputs, "llm/model-catalog.ts")).toBe(true);
+  });
+
+  it("exports registerByokOpenAiBackend as a function and OPENAI_RESPONSES_DESTINATION as 'openai-responses'", () => {
+    const context = createSandboxContext();
+    vm.runInContext(bundleCode, context);
+    const exported = (context as Record<string, unknown>).AiBossCore as Record<string, unknown>;
+    expect(typeof exported.registerByokOpenAiBackend).toBe("function");
+    expect(exported.OPENAI_RESPONSES_DESTINATION).toBe("openai-responses");
+  });
+
+  it("merely loading the bundle does not register BYOK (OpenAI) — registeredCoreLlmBackendNames() stays empty", () => {
     const context = createSandboxContext();
     vm.runInContext(bundleCode, context);
     const exported = (context as Record<string, unknown>).AiBossCore as CoreExports;

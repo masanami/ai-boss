@@ -18,6 +18,7 @@ import {
   type SecureTransportResponse,
 } from "../secure-transport-port.js";
 import { parseRetryAfterMs } from "./retry-after.js";
+import { ByokModelNotAllowedError, assertByokModelAllowed } from "../model-catalog.js";
 
 /**
  * SDK を使わない Anthropic Messages のクライアントと、BYOK（Anthropic）の
@@ -118,6 +119,12 @@ async function sendAnthropicRequest(
   stream: boolean,
   signal: AbortSignal,
 ): Promise<SecureTransportResponse> {
+  // 機能仕様 docs/features/llm-provider-abstraction.md クリティカル設計決定3
+  // （#582 S1）: streamRound/createRound の入口（転送のポートを呼ぶ前）で
+  // モデルの一覧の関門を通す。BYOK（Anthropic）への S1 の変更はこの呼び出し
+  // と classifyByokAnthropicError の判定の2点のみに限る（機能仕様「影響
+  // 範囲」）。
+  assertByokModelAllowed("anthropic", request.model);
   const body = buildRequestBody(request, stream);
   const response = await transport({ destination: ANTHROPIC_MESSAGES_DESTINATION, body }, signal);
   if (response.status < 200 || response.status >= 300) {
@@ -455,6 +462,12 @@ async function createAnthropicMessage(
  *   テストがこの既定を意図どおりと固定している）。
  */
 export function classifyByokAnthropicError(error: unknown, now: Date = new Date()): RetryDecision {
+  // 機能仕様 docs/features/llm-provider-abstraction.md クリティカル設計決定3
+  // （#582 S1）: モデルの一覧に無いモデルによる拒否は再試行不可（別のモデル
+  // へ自動で切り替えないため、再試行しても同じ拒否になる）。
+  if (error instanceof ByokModelNotAllowedError) {
+    return { retryable: false };
+  }
   if (error instanceof SecureTransportError) {
     return { retryable: error.kind === "connection" };
   }
