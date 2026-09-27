@@ -1,12 +1,7 @@
 import { Hono } from "hono";
 import type { Db } from "../db/db-port.js";
 import { readJsonBody } from "../lib/read-json-body.js";
-import {
-  insertTask,
-  isEvidenceGateBlocking,
-  listTasks,
-  updateTask,
-} from "./tasks-repository.js";
+import { createTask, listTasks, updateTask } from "./tasks-repository.js";
 import {
   COMMITMENT_REQUIRES_TODO_ERROR,
   validateCreateTaskInput,
@@ -57,28 +52,16 @@ export function createTasksRouter(db: Db, evidenceStore?: EvidenceStore): Hono {
 
     // 決定 2-h: POST /api/tasks が status: "done" を直接受け付ける「第5の
     // 経路」も、updateTask と同じ共有述語で判定する（関門を2つに増やさない）。
-    // taskId: null は「まだ存在しないタスク＝エビデンス件数は常に0」を表す。
-    // 判定（証跡の強制設定の読み出し）と挿入は 1 つのトランザクションで行う
-    // （#604・決定 2 の全数監査: 判定と書き込みの間に設定の保存を挟ませない）。
-    const task = await db.transaction(async (tx) => {
-      if (
-        result.data.status === "done" &&
-        (await isEvidenceGateBlocking(tx, {
-          taskId: null,
-          evidenceRequired: result.data.evidence_required ?? false,
-        }))
-      ) {
-        return undefined;
-      }
-      return insertTask(tx, result.data);
-    });
-    if (!task) {
+    // 判定と挿入のトランザクションは createTask が持つ（ボスの create_task
+    // ツールと共有。Issue #619）。
+    const createResult = await createTask(db, result.data);
+    if (!createResult.ok) {
       return c.json(
         { error: EVIDENCE_REQUIRED_ERROR_MESSAGE, code: "evidence_required" },
         409,
       );
     }
-    return c.json(task, 201);
+    return c.json(createResult.task, 201);
   });
 
   tasks.patch("/:id", async (c) => {

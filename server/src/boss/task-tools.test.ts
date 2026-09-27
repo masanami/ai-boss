@@ -212,6 +212,54 @@ describe("executeTaskTool", () => {
       const created = JSON.parse(result.content);
       expect(created.evidence_required).toBe(false);
     });
+
+    // Issue #619 / 機能仕様 docs/features/completion-evidence-enforcement.md
+    // 決定2-h: スキーマに status は無いが、validateCreateTaskInput は status を
+    // 受け付けるため、LLM がスキーマ外の status: "done" を渡すと直接 done の
+    // タスクを作れてしまう。POST /api/tasks と同じ関門を通すことを固定する。
+    describe("evidence_required の完了ゲート（Issue #619）", () => {
+      function countTasks(): number {
+        return (db.prepare("SELECT COUNT(*) AS n FROM tasks").get() as { n: number }).n;
+      }
+
+      it("returns isError: true and creates no task when status is done, evidence is required, and enforcement is on", async () => {
+        await enableEnforcement(db);
+
+        const result = await executeTaskTool(portFor(db), "create_task", {
+          title: "資料作成",
+          status: "done",
+          evidence_required: true,
+        });
+
+        expect(result.isError).toBe(true);
+        expect(result.content).toContain("エビデンス");
+        expect(countTasks()).toBe(0);
+      });
+
+      it("creates a done task when enforcement is off (the gate, not a blanket ban on done)", async () => {
+        const result = await executeTaskTool(portFor(db), "create_task", {
+          title: "資料作成",
+          status: "done",
+          evidence_required: true,
+        });
+
+        expect(result.isError).toBe(false);
+        expect(JSON.parse(result.content).status).toBe("done");
+        expect(countTasks()).toBe(1);
+      });
+
+      it("creates a todo task that requires evidence even when enforcement is on (only done is gated)", async () => {
+        await enableEnforcement(db);
+
+        const result = await executeTaskTool(portFor(db), "create_task", {
+          title: "資料作成",
+          evidence_required: true,
+        });
+
+        expect(result.isError).toBe(false);
+        expect(countTasks()).toBe(1);
+      });
+    });
   });
 
   describe("update_task", () => {
