@@ -65,20 +65,26 @@ export class OpenAiResponsesHttpError extends Error {
  * 終端のイベント（`response.completed`／`response.incomplete`）前の途絶
  * （ストリーミングのみ）・壊れた JSON
  * （`"malformed-payload"`。SSE の `data:` ペイロード・非ストリーミングの
- * 応答本文のいずれも対象）。**応答本文の文字列を message に含めない**
+ * 応答本文のいずれも対象）・2xx の非ストリーミングの応答が失敗を示す
+ * （`"failed-response"`。`status: "failed"` または `error` あり）。
+ * **応答本文の文字列を message に含めない**
  * （`byok-anthropic-backend.ts` の `AnthropicMessagesStreamError` と同じ
  * 規律）。
  */
+type OpenAiResponsesStreamErrorReason = "sse-error-event" | "failed-response" | "incomplete-stream" | "malformed-payload";
+
 export class OpenAiResponsesStreamError extends Error {
-  constructor(reason: "sse-error-event" | "incomplete-stream" | "malformed-payload") {
+  constructor(reason: OpenAiResponsesStreamErrorReason) {
     super(OpenAiResponsesStreamError.describe(reason));
     this.name = "OpenAiResponsesStreamError";
   }
 
-  private static describe(reason: "sse-error-event" | "incomplete-stream" | "malformed-payload"): string {
+  private static describe(reason: OpenAiResponsesStreamErrorReason): string {
     switch (reason) {
       case "sse-error-event":
         return "OpenAI Responses streaming response contained an error/response.failed event";
+      case "failed-response":
+        return "OpenAI Responses response reported a failed status or an error";
       case "incomplete-stream":
         return "OpenAI Responses streaming response ended before a terminal event";
       case "malformed-payload":
@@ -415,6 +421,13 @@ async function parseStreamingResponse(
 
 function parseNonStreamingResponse(text: string): BossLlmMessage {
   const response = parseJsonWithoutLeakingPayload(text) as Record<string, unknown>;
+  // PR #633 の Codex の指摘（P2）: 2xx でも応答が失敗を示すなら、成功扱いで
+  // 空の内容に正規化せず、ストリーミングの `response.failed` と同じ失敗の
+  // クラス（＝同じ分類・再試行可）で投げる。`status: "incomplete"` は
+  // ストリーミングの `response.incomplete` と揃えて正常な応答として解釈する。
+  if (response.status === "failed" || (response.error !== undefined && response.error !== null)) {
+    throw new OpenAiResponsesStreamError("failed-response");
+  }
   return interpretResponse(response);
 }
 

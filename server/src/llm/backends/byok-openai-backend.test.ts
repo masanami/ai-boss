@@ -848,6 +848,40 @@ describe("エラーの分類", () => {
     expect((caught as Error).message).not.toContain(secretResponseMarker);
     expect((caught as Error).message).not.toContain("not-json");
   });
+
+  // PR #633 の Codex の指摘（P2・2 巡目）: 非ストリーミングで 2xx の JSON が
+  // 失敗（`status: "failed"`・`error` あり）を返したら、成功扱いで空の内容に
+  // 正規化せず、ストリーミングの `response.failed` と同じ失敗・分類に乗せる。
+  it.each([
+    ["status: failed と error", { status: "failed", error: { code: "server_error", message: "LEAK_MARKER_failed" }, output: [] }],
+    ["error だけ（status 無し）", { error: { code: "server_error", message: "LEAK_MARKER_failed" }, output: [] }],
+    ["status: failed だけ（error は null）", { status: "failed", error: null, output: [] }],
+  ])("非ストリーミングの 2xx の応答が失敗（%s）を示すと、そのラウンドは失敗し、分類は再試行可で、message に応答の本文が含まれない", async (_label, body) => {
+    const { transport } = singleResponseTransport(okResponse(textBody(JSON.stringify(body))));
+    const { impl, client } = registerAndGetImpl(transport);
+    let caught: unknown;
+    try {
+      await impl.createRound(client, baseRequest(), new AbortController().signal);
+    } catch (err) {
+      caught = err;
+    }
+    expect(caught).toBeInstanceOf(OpenAiResponsesStreamError);
+    expect(classifyByokOpenAiError(caught).retryable).toBe(true);
+    expect((caught as Error).message).not.toContain("LEAK_MARKER_failed");
+  });
+
+  it("非ストリーミングの 2xx の応答が status: incomplete（error は null）なら、ストリーミングの response.incomplete と同じく失敗にせず応答として解釈される", async () => {
+    const body = {
+      status: "incomplete",
+      error: null,
+      incomplete_details: { reason: "max_output_tokens" },
+      output: [{ type: "message", role: "assistant", content: [{ type: "output_text", text: "partial" }] }],
+    };
+    const { transport } = singleResponseTransport(okResponse(textBody(JSON.stringify(body))));
+    const { impl, client } = registerAndGetImpl(transport);
+    const message = await impl.createRound(client, baseRequest(), new AbortController().signal);
+    expect(message.content).toEqual([{ type: "text", text: "partial" }]);
+  });
 });
 
 describe("失敗時に別の宛先・別のモデルへ自動で切り替えない（claude-client.ts のファサードの再試行経由）", () => {
