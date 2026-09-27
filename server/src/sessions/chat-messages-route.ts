@@ -44,7 +44,7 @@ const GENERIC_STREAM_ERROR_MESSAGE = "ボスの応答中にエラーが発生し
 
 /**
  * 対象タスクの過去記録としてプロンプトへ積む最大件数（S2b・Issue #545, 親
- * #438 決定16）。`await listRecentDecisions(db, 5)` と同じ「直近5件」の慣習
+ * #438 決定16）。`listRecentDecisions(db, 5)` と同じ「直近5件」の慣習
  * （件数の指定はこのルートの責務。`listDecisionsByTaskId` 自身は limit を
  * 受け取るだけで既定値を持たない）。
  */
@@ -299,13 +299,13 @@ export function registerChatMessageRoute(
 
     // 切り捨て（やりなおし時のみ）と新しい発言の挿入は単一トランザクション
     // （ADR 0005 決定 5）。片方だけが確定する中間状態を作らない
-    // （AC-21）。`insertMessage` より前・`toClaudeMessages(await listMessagesBySessionId(...))`
+    // （AC-21）。`insertMessage` より前・`toClaudeMessages(listMessagesBySessionId(...))`
     // より前に切り捨てを終える必要がある（後段だと書き直した発言自身を消す、
     // あるいは元の発言が LLM へ渡ってしまう）。
     //
     // **この位置は下の 2 つの文脈読み出しより前でなければならない**（#270 を
     // 取り込んだ時点で担保対象が 1 本から 2 本に増えた）:
-    //   1. `toClaudeMessages(await listMessagesBySessionId(...))` — このセッションの会話履歴
+    //   1. `toClaudeMessages(listMessagesBySessionId(...))` — このセッションの会話履歴
     //   2. `collectTodaysAdhocContext(...)` — 会中のボスへ渡す当日の随時チャット（#367）
     // どちらも DB を都度読み直すため、物理 DELETE がここで先に確定していれば
     // 「書き直した後、元の発言はボスの文脈に含まれない」（#255 完了条件）が

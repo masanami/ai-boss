@@ -199,6 +199,7 @@ describe("T6 chat message rewrite on the async DB port (#605)", () => {
     );
 
     const res = await rewrite(app, sessionId, lastUserMessageId);
+    await res.text();
     const endRes = await end();
 
     expect(res.status).toBe(200);
@@ -223,6 +224,34 @@ describe("T6 chat message rewrite on the async DB port (#605)", () => {
     expect(res.status).toBe(409);
     expect(await res.json()).toMatchObject({ code: "session_already_ended" });
     expect(messageContents(raw, sessionId)).toEqual(["最初の相談", "やれ", "書き直す前の発言"]);
+  });
+});
+
+describe("T6 rewrite target re-check inside the transaction (#605)", () => {
+  it("a rewrite whose target is removed by another flow after the early check is rejected with message_not_found and writes nothing", async () => {
+    const { db, raw, hooks, app } = await setup();
+    const sessionId = insertRawSession(raw, "adhoc", new Date(2026, 6, 5, 9, 0, 0));
+    insertRawMessage(raw, sessionId, "user", "u1", new Date(2026, 6, 5, 9, 1, 0));
+    insertRawMessage(raw, sessionId, "boss", "b", new Date(2026, 6, 5, 9, 2, 0));
+    const target = insertRawMessage(raw, sessionId, "user", "y", new Date(2026, 6, 5, 9, 3, 0));
+    // 早期の検査が対象の発言の存在を確かめた直後に、別の流れ（例: 手前から
+    // 切り捨てる別の書き直し）がその発言を消す。この削除は直列化層で早期の
+    // 検査の直後・書き直しのトランザクションより前に確定する。
+    const removal = injectOnce(
+      hooks,
+      (sql) => sql === "SELECT * FROM messages WHERE id = ? AND session_id = ?",
+      () => db.run("DELETE FROM messages WHERE id = ?", [target]),
+    );
+
+    const res = await post(app, `/api/sessions/${sessionId}/messages`, {
+      content: "y を書き直した",
+      replaceFromMessageId: target,
+    });
+    await removal();
+
+    expect(res.status).toBe(404);
+    expect(await res.json()).toMatchObject({ code: "message_not_found" });
+    expect(messageContents(raw, sessionId)).toEqual(["u1", "b"]);
   });
 });
 

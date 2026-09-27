@@ -65,7 +65,7 @@ describe("generateSessionSummary", () => {
       fakeTextMessage("資料作成を最優先にすることを決定した。"),
     );
 
-    const summary = await await generateSessionSummary(portFor(db), env, "api", session.id);
+    const summary = await generateSessionSummary(portFor(db), env, "api", session.id);
 
     expect(summary).toBe("資料作成を最優先にすることを決定した。");
     expect(createBossMessageMock).toHaveBeenCalledTimes(1);
@@ -78,7 +78,7 @@ describe("generateSessionSummary", () => {
     await insertMessage(portFor(db), { session_id: session.id, role: "user", content: "報告します" });
     createBossMessageMock.mockResolvedValue(fakeTextMessage("要約"));
 
-    await await generateSessionSummary(portFor(db), env, "api", session.id);
+    await generateSessionSummary(portFor(db), env, "api", session.id);
 
     const request = createBossMessageMock.mock.calls[0][1] as { thinking: unknown };
     expect(request.thinking).toEqual({ type: "disabled" });
@@ -87,7 +87,7 @@ describe("generateSessionSummary", () => {
   it("does not call the LLM and returns null when the session has no messages", async () => {
     const session = await insertSession(portFor(db), { type: "morning" });
 
-    const summary = await await generateSessionSummary(portFor(db), env, "api", session.id);
+    const summary = await generateSessionSummary(portFor(db), env, "api", session.id);
 
     expect(summary).toBeNull();
     expect(createClaudeClientMock).not.toHaveBeenCalled();
@@ -101,7 +101,7 @@ describe("generateSessionSummary", () => {
       throw new MissingApiKeyError();
     });
 
-    const summary = await await generateSessionSummary(portFor(db), {}, "api", session.id);
+    const summary = await generateSessionSummary(portFor(db), {}, "api", session.id);
 
     expect(summary).toBeNull();
     expect(createBossMessageMock).not.toHaveBeenCalled();
@@ -112,7 +112,7 @@ describe("generateSessionSummary", () => {
     await insertMessage(portFor(db), { session_id: session.id, role: "user", content: "報告します" });
     createBossMessageMock.mockRejectedValue(new Error("connection reset with request id xyz"));
 
-    const summary = await await generateSessionSummary(portFor(db), env, "api", session.id);
+    const summary = await generateSessionSummary(portFor(db), env, "api", session.id);
 
     expect(summary).toBeNull();
   });
@@ -122,7 +122,7 @@ describe("generateSessionSummary", () => {
     await insertMessage(portFor(db), { session_id: session.id, role: "user", content: "報告します" });
     createBossMessageMock.mockResolvedValue(fakeTextMessage(""));
 
-    const summary = await await generateSessionSummary(portFor(db), env, "api", session.id);
+    const summary = await generateSessionSummary(portFor(db), env, "api", session.id);
 
     expect(summary).toBeNull();
   });
@@ -134,7 +134,7 @@ describe("generateSessionSummary", () => {
       new Error("connection reset with secret request id xyz789"),
     );
 
-    await await generateSessionSummary(portFor(db), env, "api", session.id);
+    await generateSessionSummary(portFor(db), env, "api", session.id);
 
     expect(errorSpy).toHaveBeenCalled();
     const loggedArgs = errorSpy.mock.calls.flat().map(String);
