@@ -25,6 +25,7 @@ import {
   parseEveningSummaryToolInput,
   SUBMIT_EVENING_SUMMARY_TOOL,
 } from "./evening-summary-tool.js";
+import { portFor } from "../db/transitional-bridge.js";
 
 const ROLE_LABELS: Record<Message["role"], string> = {
   user: "ユーザー",
@@ -135,7 +136,7 @@ export async function extractEveningSummary(
   try {
     const backend = resolveLlmBackend(env);
     const client: BossLlmClient = createClaudeClient(env, backend);
-    const { model, persona } = resolveBossSettings(db);
+    const { model, persona } = await resolveBossSettings(portFor(db));
     const system = buildPersonaPrompt(persona, {
       tasks: [],
       recentDecisions: [],

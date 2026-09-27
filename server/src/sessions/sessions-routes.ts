@@ -26,6 +26,7 @@ import { generateDailyReport } from "../reports/generate-daily-report.js";
 import { countMentoringDecisionsBySessionId } from "../decisions/decisions-repository.js";
 import { isMentoringComplete } from "./mentoring-gate.js";
 import { resolveMorningMentoringRequired } from "../settings/mentoring-settings.js";
+import { portFor } from "../db/transitional-bridge.js";
 
 function isValidSessionType(value: string): value is SessionType {
   return SESSION_TYPES.includes(value as SessionType);
@@ -149,14 +150,17 @@ async function triggerMeetingOpening(
  * - `isMentoringComplete` (mentoring-gate.ts, a pure function) says the
  *   session's mentoring record/user-message counts are incomplete
  */
-function isBlockedByMentoringGate(db: Database.Database, before: Session | undefined): boolean {
+async function isBlockedByMentoringGate(
+  db: Database.Database,
+  before: Session | undefined,
+): Promise<boolean> {
   if (before === undefined || before.ended_at !== null) {
     return false;
   }
   if (before.type !== "morning") {
     return false;
   }
-  if (!resolveMorningMentoringRequired(db)) {
+  if (!(await resolveMorningMentoringRequired(portFor(db)))) {
     return false;
   }
 
@@ -259,7 +263,7 @@ export function createSessionsRouter(
     // #276 判断2 (AC-16〜22): must be evaluated against `before`, and before
     // calling `endSession` below — see isBlockedByMentoringGate's doc
     // comment for why.
-    if (isBlockedByMentoringGate(db, before)) {
+    if (await isBlockedByMentoringGate(db, before)) {
       return c.json(
         {
           error: "仕事の進め方のメンタリングを終えると朝会を終了できます（設定でオフにもできます）",

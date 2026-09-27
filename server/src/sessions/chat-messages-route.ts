@@ -36,6 +36,7 @@ import {
 import { validateChatMessageInput } from "./sessions-validation.js";
 import type { Message } from "./message.js";
 import type { SessionType } from "./session.js";
+import { portFor } from "../db/transitional-bridge.js";
 
 /** Sanitized message surfaced to the client; never includes raw error details
  * (which may contain request internals) per the critical API-key/error
@@ -318,7 +319,7 @@ export function registerChatMessageRoute(
     // 直近の報告履歴の参照). Feeds AC-2: the boss can refer back to recent
     // morning/evening reports without the user re-explaining them.
     const recentSessionSummaries = listRecentSessionSummaries(db, 5);
-    const { model, persona } = resolveBossSettings(db);
+    const { model, persona } = await resolveBossSettings(portFor(db));
     // 時刻の読みは1回にまとめる（Issue #367）。`listTodaysAdhocMessages` は
     // ローカル暦日の半開区間の両端をこの値から導出するため、プロンプト側の
     // `now` と読みが割れると真夜中をまたいで窓が壊れる（`local-day.ts` の
@@ -331,7 +332,7 @@ export function registerChatMessageRoute(
     // （機能仕様「IF（境界となる契約）」・`PersonaPromptContext.mentoring`
     // の JSDoc）。
     const mentoring =
-      (session.type === "morning" && resolveMorningMentoringRequired(db)) ||
+      (session.type === "morning" && (await resolveMorningMentoringRequired(portFor(db)))) ||
       requestedMentoring === true;
     // Issue #471（親 #444 決定3・決定7の結線）: mentoringTaskId は
     // mentoring が真のときだけ後段（プロンプト・ツール実行）へ渡す。

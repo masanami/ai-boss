@@ -12,6 +12,7 @@ import {
 } from "../llm/claude-client.js";
 import type { Task } from "../tasks/task.js";
 import { toLocalDateTimeKey } from "../detection/time-utils.js";
+import { portFor } from "../db/transitional-bridge.js";
 
 /**
  * 通知文面生成。人格プロンプト生成器（purpose: "notification"）＋ Claude
@@ -200,7 +201,7 @@ export async function generateNotificationBody(
   // （resolveBossSettings は db.prepare を呼ぶため DB 例外もここで保護する）。
   try {
     const client: BossLlmClient = createClaudeClient(env, resolveLlmBackend(env));
-    const { model, persona } = resolveBossSettings(db);
+    const { model, persona } = await resolveBossSettings(portFor(db));
     const system = buildPersonaPrompt(persona, {
       tasks: request.task ? [request.task] : [],
       recentDecisions: [],

@@ -25,6 +25,7 @@ import { mapToNotificationRuleType, toEscalationLevel } from "./rule-type-mappin
 import { toDateKey } from "../detection/time-utils.js";
 import { findOverridesByDate } from "../meeting-schedule/meeting-schedule-repository.js";
 import { resolveEffectiveMeetingTimes } from "../meeting-schedule/meeting-schedule.js";
+import { portFor } from "../db/transitional-bridge.js";
 
 /**
  * Lower bound for `listEventsSince` / `listNotificationsSince`: this ticket
@@ -90,7 +91,7 @@ function resolveTodaysMeetingSettings(
 }
 
 async function buildTickInput(deps: TickDeps, now: Date): Promise<DetectionInput> {
-  const baseSettings = loadDetectionSettings(deps.db);
+  const baseSettings = await loadDetectionSettings(portFor(deps.db));
   const settings = resolveTodaysMeetingSettings(deps.db, baseSettings, now);
   return {
     now,

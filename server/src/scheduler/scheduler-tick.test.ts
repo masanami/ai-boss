@@ -350,7 +350,7 @@ it("RULE_GATE_SCENARIOS declares exactly one scenario per rule type the working-
 // 落ちる）。ここでその前提を独立した1テストとして明示的にアサートし、壊れた
 // 場合はこのテスト自体が分かりやすい理由で落ちるようにする。
 //
-// ラダー側と同じ `loadDetectionSettings(db)`（settings テーブル経由で
+// ラダー側と同じ `(await loadDetectionSettings(portFor(db)))`（settings テーブル経由で
 // escalation の間隔が上書きされうる本番同様の読み出し経路）を使うため、この
 // テスト専用の :memory: db を自前で開閉する（DB を使わない他の module-scope
 // ガード — 上の「RULE_GATE_SCENARIOS declares...」— とは異なり、ここでは
@@ -360,7 +360,7 @@ it("guards the invariant the avoidance scenario below depends on: the escalation
   const guardDb = openDatabase(":memory:");
   try {
     await runMigrations(portFor(guardDb));
-    const { escalation, avoidanceWindowMinutes } = loadDetectionSettings(guardDb);
+    const { escalation, avoidanceWindowMinutes } = (await loadDetectionSettings(portFor(guardDb)));
     const avoidanceSeedToL1GapMinutes =
       AVOIDANCE_L1_FIRE_OFFSET_MINUTES - AVOIDANCE_OTHER_TASK_UPDATE_OFFSET_MINUTES;
     const elapsedFromSeedToL3 =
@@ -391,7 +391,7 @@ async function tickThroughL1ToL3(
   ruleType: DetectionRuleType,
   expectedRuleKey: string,
 ): Promise<void> {
-  const { level1ToLevel2Minutes, level2ToLevel3Minutes } = loadDetectionSettings(db).escalation;
+  const { level1ToLevel2Minutes, level2ToLevel3Minutes } = (await loadDetectionSettings(portFor(db))).escalation;
 
   // L1 (tick 1): setup already advanced the clock past the rule's firing
   // threshold.
@@ -1542,7 +1542,7 @@ describe("createTicker().tick", () => {
           // `loadDetectionSettings` the scheduler itself uses (not the
           // hardcoded default), so this stays correct even if `settings`
           // ever overrides it.
-          const interval = loadDetectionSettings(db).escalation.level1ToLevel2Minutes;
+          const interval = (await loadDetectionSettings(portFor(db))).escalation.level1ToLevel2Minutes;
           const fireTime = currentMockedTime();
 
           vi.setSystemTime(withinEscalationInterval(fireTime, interval, 1 / 3));
@@ -1602,9 +1602,9 @@ describe("createTicker().tick", () => {
           // Re-tick strictly *within* the L1->L2 escalation interval without
           // recording any new activity signal, so it is resolveEscalation's
           // interval check (not the hasActivitySince reset) that is under
-          // test here. Interval read via loadDetectionSettings(db) — see the
+          // test here. Interval read via (await loadDetectionSettings(portFor(db))) — see the
           // comment on the GAP-01 describe above for why.
-          const interval = loadDetectionSettings(db).escalation.level1ToLevel2Minutes;
+          const interval = (await loadDetectionSettings(portFor(db))).escalation.level1ToLevel2Minutes;
           const fireTime = currentMockedTime();
           vi.setSystemTime(withinEscalationInterval(fireTime, interval, 1 / 2));
           await ticker.tick();
@@ -1677,7 +1677,7 @@ describe("createTicker().tick", () => {
           // Repeat tick at exactly the L3-repeat interval boundary (same
           // boundary-inclusive semantics as tickThroughL1ToL3) — must not
           // become 4.
-          const { level3RepeatMinutes } = loadDetectionSettings(db).escalation;
+          const { level3RepeatMinutes } = (await loadDetectionSettings(portFor(db))).escalation;
           advanceSystemTimeByMinutes(level3RepeatMinutes);
           await ticker.tick();
 
@@ -1748,7 +1748,7 @@ describe("daily notification cap via tick on a file-backed DB (#562)", () => {
 
     vi.setSystemTime(new Date(2026, 6, 5, 9, 31));
     await ticker.tick();
-    advanceSystemTimeByMinutes(loadDetectionSettings(db).escalation.level1ToLevel2Minutes);
+    advanceSystemTimeByMinutes((await loadDetectionSettings(portFor(db))).escalation.level1ToLevel2Minutes);
     await ticker.tick();
 
     return { ruleKey: `unstarted:${task.id}`, sends: execFile.mock.calls.length };
@@ -1761,7 +1761,7 @@ describe("daily notification cap via tick on a file-backed DB (#562)", () => {
   }
 
   it("records only one unstarted notification when the cap is 1 (the second tick neither records nor sends)", async () => {
-    setSettingValue(db, "detection_daily_notification_cap", "1");
+    await setSettingValue(portFor(db), "detection_daily_notification_cap", "1");
 
     const { ruleKey, sends } = await tickTwiceWhileUnstarted();
 
@@ -1770,7 +1770,7 @@ describe("daily notification cap via tick on a file-backed DB (#562)", () => {
   });
 
   it("records the second notification on the second tick when the cap is 2 (the stored cap reaches the engine)", async () => {
-    setSettingValue(db, "detection_daily_notification_cap", "2");
+    await setSettingValue(portFor(db), "detection_daily_notification_cap", "2");
 
     const { ruleKey } = await tickTwiceWhileUnstarted();
 

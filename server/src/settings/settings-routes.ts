@@ -1,7 +1,11 @@
 import { Hono } from "hono";
-import type Database from "better-sqlite3";
+import type { Db } from "../db/db-port.js";
 import { readJsonBody } from "../lib/read-json-body.js";
-import { getSettingValue, setSettingValue } from "./settings-repository.js";
+import {
+  readSettingsSnapshot,
+  setSettingValue,
+  type SettingsSnapshot,
+} from "./settings-repository.js";
 import {
   isValidWorkingHoursRange,
   validatePutSettingsInput,
@@ -9,10 +13,10 @@ import {
   WORKING_HOURS_CODE,
   type SettingsPatch,
 } from "./settings-validation.js";
-import { resolveBossSettings } from "../boss/boss-settings.js";
-import { loadDetectionSettings } from "../scheduler/detection-settings.js";
-import { resolveEvidenceSettings } from "./evidence-settings.js";
-import { resolveMorningMentoringRequired } from "./mentoring-settings.js";
+import { resolveBossSettingsFrom } from "../boss/boss-settings.js";
+import { resolveDetectionSettings } from "../scheduler/detection-settings.js";
+import { resolveEvidenceSettingsFrom } from "./evidence-settings.js";
+import { resolveMorningMentoringRequiredFrom } from "./mentoring-settings.js";
 import {
   DEFAULT_DETECTION_SETTINGS,
   TIME_PATTERN,
@@ -23,12 +27,18 @@ import {
  * `GET /api/settings`. Built from the same readers the rest of the app
  * uses (`resolveBossSettings` / `loadDetectionSettings`) so the API can
  * never drift from what those readers actually see.
+ *
+ * Every key is read from one {@link SettingsSnapshot} (#603・Issue #597 の
+ * コメント P2): reading each reader's keys with separate awaits would let a
+ * concurrent `PUT /api/settings` commit land in between and return a mix of
+ * old and new values that never existed together in the DB.
  */
-function readEffectiveSettings(db: Database.Database) {
-  const { model, persona } = resolveBossSettings(db);
-  const detection = loadDetectionSettings(db);
-  const evidence = resolveEvidenceSettings(db);
-  const morningMentoringRequired = resolveMorningMentoringRequired(db);
+async function readEffectiveSettings(db: Db) {
+  const stored = await readSettingsSnapshot(db);
+  const { model, persona } = resolveBossSettingsFrom(stored);
+  const detection = resolveDetectionSettings(stored);
+  const evidence = resolveEvidenceSettingsFrom(stored);
+  const morningMentoringRequired = resolveMorningMentoringRequiredFrom(stored);
 
   return {
     boss_name: persona.name,
@@ -59,10 +69,10 @@ function readEffectiveSettings(db: Database.Database) {
  *
  * For a key present in `patch`, that incoming value is what will be
  * written, so it wins. For a key *not* present in `patch`, this reads the
- * **raw** stored value via `getSettingValue` — not a fallback-applying
+ * **raw** stored value from the snapshot — not a fallback-applying
  * reader such as `loadDetectionSettings` — so an already-invalid stored
  * value isn't masked by its would-be-effective fallback (決定 1). A
- * genuinely unset key (`getSettingValue` returns `undefined`) falls back
+ * genuinely unset key (absent from the snapshot) falls back
  * to the default, which is the value that *would* actually take effect for
  * an unset key (決定 6) — matching `DEFAULT_DETECTION_SETTINGS.workingHours`,
  * the same defaults `loadDetectionSettings` resolves an unset key to.
@@ -80,11 +90,11 @@ function readEffectiveSettings(db: Database.Database) {
  * `TIME_PATTERN` validation into the predicate itself.
  */
 function resolveStoredOrDefaultTime(
-  db: Database.Database,
+  stored: SettingsSnapshot,
   key: "work_start" | "work_end",
   fallback: string,
 ): string {
-  const raw = getSettingValue(db, key);
+  const raw = stored.get(key);
   if (raw !== undefined && TIME_PATTERN.test(raw)) {
     return raw;
   }
@@ -92,20 +102,20 @@ function resolveStoredOrDefaultTime(
 }
 
 function resolveEffectiveWorkingHours(
-  db: Database.Database,
+  stored: SettingsSnapshot,
   patch: SettingsPatch,
 ): { start: string; end: string } {
   const start =
     patch.work_start ??
     resolveStoredOrDefaultTime(
-      db,
+      stored,
       "work_start",
       DEFAULT_DETECTION_SETTINGS.workingHours.start,
     );
   const end =
     patch.work_end ??
     resolveStoredOrDefaultTime(
-      db,
+      stored,
       "work_end",
       DEFAULT_DETECTION_SETTINGS.workingHours.end,
     );
@@ -119,11 +129,11 @@ function resolveEffectiveWorkingHours(
  * effective settings so the response always reflects what was actually
  * persisted.
  */
-export function createSettingsRouter(db: Database.Database): Hono {
+export function createSettingsRouter(db: Db): Hono {
   const settings = new Hono();
 
-  settings.get("/", (c) => {
-    return c.json(readEffectiveSettings(db));
+  settings.get("/", async (c) => {
+    return c.json(await readEffectiveSettings(db));
   });
 
   settings.put("/", async (c) => {
@@ -150,33 +160,44 @@ export function createSettingsRouter(db: Database.Database): Hono {
     // actually touches one of the two keys, so patches that leave working
     // hours untouched are never blocked by a pre-existing invalid pair
     // (that pair is the read-side guard's job, #482 — not this route's).
-    if (result.data.work_start !== undefined || result.data.work_end !== undefined) {
-      const { start, end } = resolveEffectiveWorkingHours(db, result.data);
-      if (!isValidWorkingHoursRange(start, end)) {
-        // #517 決定5: :272（settings-validation.ts）とは独立にオブジェクトを
-        // 組む（定数は共有するが組み立て文は共有しない。片方だけを崩す変異で
-        // 片方のテストだけが落ちることを担保するため）。
-        return c.json(
-          { error: WORKING_HOURS_ERROR, code: WORKING_HOURS_CODE },
-          400,
+    //
+    // T1（#603・機能仕様 docs/features/async-db-layer.md 決定 2）: the stored
+    // counterpart is read *inside* the same transaction that writes the patch.
+    // Reading it before the transaction would let a concurrent `work_start`-
+    // only and `work_end`-only request each validate against the other's
+    // stale value and both commit, persisting a start-not-before-end pair
+    // (AC-17). The transaction also keeps "invalid input saves nothing" true
+    // as "any failure saves nothing" (AC-5).
+    const touchesWorkingHours =
+      result.data.work_start !== undefined || result.data.work_end !== undefined;
+    const patch: Record<string, string | null> = result.data;
+    const saved = await db.transaction(async (tx) => {
+      if (touchesWorkingHours) {
+        const { start, end } = resolveEffectiveWorkingHours(
+          await readSettingsSnapshot(tx),
+          result.data,
         );
+        if (!isValidWorkingHoursRange(start, end)) {
+          return false;
+        }
       }
+      for (const [key, value] of Object.entries(patch)) {
+        await setSettingValue(tx, key, value);
+      }
+      return true;
+    });
+
+    if (!saved) {
+      // #517 決定5: :272（settings-validation.ts）とは独立にオブジェクトを
+      // 組む（定数は共有するが組み立て文は共有しない。片方だけを崩す変異で
+      // 片方のテストだけが落ちることを担保するため）。
+      return c.json(
+        { error: WORKING_HOURS_ERROR, code: WORKING_HOURS_CODE },
+        400,
+      );
     }
 
-    // All keys are already validated above, so this write is the only
-    // place a partial failure could occur (e.g. an unexpected DB error).
-    // Wrapping it in a transaction keeps "invalid input saves nothing"
-    // true as "any failure saves nothing" too.
-    const applyPatch = db.transaction(
-      (patch: Record<string, string | null>) => {
-        for (const [key, value] of Object.entries(patch)) {
-          setSettingValue(db, key, value);
-        }
-      },
-    );
-    applyPatch(result.data);
-
-    return c.json(readEffectiveSettings(db));
+    return c.json(await readEffectiveSettings(db));
   });
 
   return settings;

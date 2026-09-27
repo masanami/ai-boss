@@ -181,7 +181,7 @@ describe("meeting-schedule routes", () => {
     });
 
     it("reflects an overridden constant setting (morning_meeting_time) as defaultTime", async () => {
-      setSettingValue(db, "morning_meeting_time", "08:30");
+      await setSettingValue(portFor(db), "morning_meeting_time", "08:30");
       const app = createApp(db);
 
       const res = await app.request(`/api/meeting-schedule/${TODAY_KEY}`);

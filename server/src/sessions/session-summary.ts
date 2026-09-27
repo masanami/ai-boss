@@ -9,6 +9,7 @@ import {
 } from "../llm/claude-client.js";
 import { listMessagesBySessionId } from "./messages-repository.js";
 import type { Message, MessageRole } from "./message.js";
+import { portFor } from "../db/transitional-bridge.js";
 
 /**
  * セッション終了時の要約生成（Issue #96）。会話履歴（messages）から、後日
@@ -74,7 +75,7 @@ export async function generateSessionSummary(
     }
 
     const client = createClaudeClient(env, llmBackend);
-    const { model } = resolveBossSettings(db);
+    const { model } = await resolveBossSettings(portFor(db));
 
     const message = await createBossMessage(client, {
       model,

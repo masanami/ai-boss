@@ -3,6 +3,10 @@ import type Database from "better-sqlite3";
 import { openDatabase } from "../db/connection.js";
 import { runMigrations } from "../db/migrate.js";
 import { portFor } from "../db/transitional-bridge.js";
+import { Hono } from "hono";
+import type { DbPort } from "../db/db-port.js";
+import { createHookedTestDb } from "../db/test-support/create-test-db.js";
+import { createSettingsRouter } from "./settings-routes.js";
 import { createApp } from "../app.js";
 import { resolveBossSettings } from "../boss/boss-settings.js";
 import { loadDetectionSettings } from "../scheduler/detection-settings.js";
@@ -220,10 +224,10 @@ describe("settings routes", () => {
         }),
       });
 
-      const bossSettings = resolveBossSettings(db);
+      const bossSettings = (await resolveBossSettings(portFor(db)));
       expect(bossSettings.persona.name).toBe("スパルタ上司");
 
-      const detectionSettings = loadDetectionSettings(db);
+      const detectionSettings = (await loadDetectionSettings(portFor(db)));
       expect(detectionSettings.escalation.level1ToLevel2Minutes).toBe(5);
     });
 
@@ -1232,5 +1236,120 @@ describe("settings routes", () => {
         },
       );
     });
+  });
+});
+
+// #603・機能仕様 docs/features/async-db-layer.md T1 / Issue #597 のコメント P2:
+// ルーターをフック付きドライバのポートへ直に載せ、失敗と割り込みを決定的に
+// 差し込む（壁時計の待ち時間に頼らない）。
+describe("settings route on the async DB port (#603)", () => {
+  function mountSettings(db: DbPort): Hono {
+    const app = new Hono();
+    app.route("/api/settings", createSettingsRouter(db));
+    return app;
+  }
+
+  function putSettings(app: Hono, body: Record<string, unknown>) {
+    return app.request("/api/settings", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+  }
+
+  function storedSettings(raw: Database.Database): Record<string, string | null> {
+    const rows = raw.prepare("SELECT key, value FROM settings").all() as {
+      key: string;
+      value: string | null;
+    }[];
+    return Object.fromEntries(rows.map((row) => [row.key, row.value]));
+  }
+
+  it("AC-5: a DB write failure in the middle of a multi-key update leaves every key unchanged", async () => {
+    const { db, raw, hooks } = await createHookedTestDb();
+    raw.prepare("INSERT INTO settings (key, value) VALUES (?, ?)").run("boss_name", "旧ボス");
+    let settingWrites = 0;
+    hooks.push({
+      matches: (sql) => sql.trimStart().startsWith("INSERT INTO settings"),
+      after: () => {
+        settingWrites += 1;
+        if (settingWrites === 2) {
+          throw new Error("injected write failure");
+        }
+      },
+    });
+    const app = mountSettings(db);
+
+    const res = await putSettings(app, {
+      boss_name: "新ボス",
+      model: "claude-opus-4-8",
+      boss_strictness: 4,
+    });
+
+    expect(res.status).toBe(500);
+    expect(settingWrites).toBe(2);
+    expect(storedSettings(raw)).toEqual({ boss_name: "旧ボス" });
+    raw.close();
+  });
+
+  it("AC-17: concurrent work_start-only and work_end-only updates never persist a start-not-before-end pair", async () => {
+    const { db, raw, hooks } = await createHookedTestDb();
+    raw.prepare("INSERT INTO settings (key, value) VALUES (?, ?), (?, ?)").run(
+      "work_start",
+      "09:00",
+      "work_end",
+      "18:00",
+    );
+    const app = mountSettings(db);
+    let concurrent: Promise<Response> | undefined;
+    hooks.push({
+      // 1 件目の要求が保存済みの相方（勤務時間の組）を読んだ直後に、もう 1 件を
+      // 発行する。
+      matches: (sql) => concurrent === undefined && sql.includes("FROM settings"),
+      after: () => {
+        concurrent = Promise.resolve(putSettings(app, { work_end: "10:00" }));
+      },
+    });
+
+    const first = await putSettings(app, { work_start: "17:00" });
+    const second = await concurrent!;
+
+    expect(first.status).toBe(200);
+    // 直列なら後の要求は確定済みの 17:00 と突き合わされて拒否される。
+    expect(second.status).toBe(400);
+    const stored = storedSettings(raw);
+    expect(stored.work_start! < stored.work_end!).toBe(true);
+    expect(stored).toMatchObject({ work_start: "17:00", work_end: "18:00" });
+    raw.close();
+  });
+
+  it("GET returns every key from one consistent snapshot, never a mix of a concurrent save's old and new values (Issue #597 P2)", async () => {
+    const { db, raw, hooks } = await createHookedTestDb();
+    raw.prepare("INSERT INTO settings (key, value) VALUES (?, ?), (?, ?)").run(
+      "boss_name",
+      "旧ボス",
+      "work_start",
+      "08:00",
+    );
+    const app = mountSettings(db);
+    let concurrent: Promise<Response> | undefined;
+    hooks.push({
+      // GET の最初の読み出しの直後に、ボスの名前と勤務開始を同時に変える保存を
+      // 割り込ませる。
+      matches: (sql) => concurrent === undefined && sql.includes("FROM settings"),
+      after: () => {
+        concurrent = Promise.resolve(putSettings(app, { boss_name: "新ボス", work_start: "10:00" }));
+      },
+    });
+
+    const res = await app.request("/api/settings");
+    expect((await concurrent!).status).toBe(200);
+
+    const body = (await res.json()) as { boss_name: string; work_start: string };
+    expect([
+      { boss_name: "旧ボス", work_start: "08:00" },
+      { boss_name: "新ボス", work_start: "10:00" },
+    ]).toContainEqual({ boss_name: body.boss_name, work_start: body.work_start });
+    raw.close();
   });
 });

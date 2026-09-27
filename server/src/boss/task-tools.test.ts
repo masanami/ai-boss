@@ -9,8 +9,8 @@ import type { ActivityEvent } from "../activity/activity-event.js";
 import { TASK_TOOLS, executeTaskTool } from "./task-tools.js";
 import { toDateKey } from "../detection/time-utils.js";
 
-function enableEnforcement(db: Database.Database): void {
-  setSettingValue(db, "evidence_enforcement_enabled", "true");
+async function enableEnforcement(db: Database.Database): Promise<void> {
+  await setSettingValue(portFor(db), "evidence_enforcement_enabled", "true");
 }
 
 describe("TASK_TOOLS", () => {
@@ -356,7 +356,7 @@ describe("executeTaskTool", () => {
 
     // 機能仕様 docs/features/completion-evidence-enforcement.md 決定2-e
     describe("evidence_required の完了ゲート（Issue #389）", () => {
-      it("returns isError: true when evidence is required, enforcement is on, and there is no evidence (AC-32)", () => {
+      it("returns isError: true when evidence is required, enforcement is on, and there is no evidence (AC-32)", async () => {
         const task = insertTask(db, {
           title: "資料作成",
           description: null,
@@ -368,7 +368,7 @@ describe("executeTaskTool", () => {
           estimated_minutes: null,
           evidence_required: true,
         });
-        enableEnforcement(db);
+        await enableEnforcement(db);
 
         const result = executeTaskTool(db, "update_task", {
           id: task.id,
@@ -378,7 +378,7 @@ describe("executeTaskTool", () => {
         expect(result.isError).toBe(true);
       });
 
-      it("the error result text mentions the evidence shortfall (AC-33)", () => {
+      it("the error result text mentions the evidence shortfall (AC-33)", async () => {
         const task = insertTask(db, {
           title: "資料作成",
           description: null,
@@ -390,7 +390,7 @@ describe("executeTaskTool", () => {
           estimated_minutes: null,
           evidence_required: true,
         });
-        enableEnforcement(db);
+        await enableEnforcement(db);
 
         const result = executeTaskTool(db, "update_task", {
           id: task.id,
@@ -400,7 +400,7 @@ describe("executeTaskTool", () => {
         expect(result.content).toContain("エビデンス");
       });
 
-      it("does not record a task_update event when the gate rejects the update", () => {
+      it("does not record a task_update event when the gate rejects the update", async () => {
         const task = insertTask(db, {
           title: "資料作成",
           description: null,
@@ -412,7 +412,7 @@ describe("executeTaskTool", () => {
           estimated_minutes: null,
           evidence_required: true,
         });
-        enableEnforcement(db);
+        await enableEnforcement(db);
 
         executeTaskTool(db, "update_task", { id: task.id, status: "done" });
 

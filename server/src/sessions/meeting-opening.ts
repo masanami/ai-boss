@@ -11,6 +11,7 @@ import {
 import { listTasks } from "../tasks/tasks-repository.js";
 import { countTaskEvidencesByTaskIds } from "../tasks/task-evidences-repository.js";
 import type { SessionType } from "./session.js";
+import { portFor } from "../db/transitional-bridge.js";
 
 /**
  * 朝会・夕会の開始ひとこと生成（Issue #271、機能仕様
@@ -127,7 +128,7 @@ export async function generateMeetingOpening(
   try {
     const backend = resolveLlmBackend(env);
     const client = createClaudeClient(env, backend);
-    const { model, persona } = resolveBossSettings(db);
+    const { model, persona } = await resolveBossSettings(portFor(db));
     const tasks = listTasks(db);
     // purpose は指定しない（既定 "chat"）。sessionType を渡すことで
     // MORNING_FLOW_INSTRUCTION / EVENING_FLOW_INSTRUCTION が乗る

@@ -1,6 +1,6 @@
-import type Database from "better-sqlite3";
+import type { Db } from "../db/db-port.js";
 import {
-  getSettingValue,
+  readSettingsSnapshot,
   setSettingValue,
 } from "../settings/settings-repository.js";
 
@@ -33,17 +33,21 @@ const DASHBOARD_COMMENT_TEXT_KEY = "dashboard_comment_text";
  * キャッシュが無い、日付が異なる、またはフィンガープリントが異なる場合は
  * `undefined`。
  */
-export function getCachedBossComment(
-  db: Database.Database,
+export async function getCachedBossComment(
+  db: Db,
   todayKey: string,
   fingerprint: string,
-): string | undefined {
-  const cachedDate = getSettingValue(db, DASHBOARD_COMMENT_DATE_KEY);
-  const cachedFingerprint = getSettingValue(db, DASHBOARD_COMMENT_FINGERPRINT_KEY);
+): Promise<string | undefined> {
+  // 3 キーを 1 つのスナップショットで読む（#603）: キーごとに await すると、
+  // 並行する保存のコミットが間に入り、新しい日付・指紋と古い本文を組み合わせて
+  // 返しうる。
+  const settings = await readSettingsSnapshot(db);
+  const cachedDate = settings.get(DASHBOARD_COMMENT_DATE_KEY);
+  const cachedFingerprint = settings.get(DASHBOARD_COMMENT_FINGERPRINT_KEY);
   if (cachedDate !== todayKey || cachedFingerprint !== fingerprint) {
     return undefined;
   }
-  return getSettingValue(db, DASHBOARD_COMMENT_TEXT_KEY);
+  return settings.get(DASHBOARD_COMMENT_TEXT_KEY);
 }
 
 /**
@@ -55,16 +59,15 @@ export function getCachedBossComment(
  * 判定になって#98と同種の「古い文面を新しい状態のものとして返す」不整合を
  * 招く（自己レビューで指摘・修正）。
  */
-export function setCachedBossComment(
-  db: Database.Database,
+export async function setCachedBossComment(
+  db: Db,
   todayKey: string,
   fingerprint: string,
   comment: string,
-): void {
-  const applyUpdate = db.transaction(() => {
-    setSettingValue(db, DASHBOARD_COMMENT_DATE_KEY, todayKey);
-    setSettingValue(db, DASHBOARD_COMMENT_FINGERPRINT_KEY, fingerprint);
-    setSettingValue(db, DASHBOARD_COMMENT_TEXT_KEY, comment);
+): Promise<void> {
+  await db.transaction(async (tx) => {
+    await setSettingValue(tx, DASHBOARD_COMMENT_DATE_KEY, todayKey);
+    await setSettingValue(tx, DASHBOARD_COMMENT_FINGERPRINT_KEY, fingerprint);
+    await setSettingValue(tx, DASHBOARD_COMMENT_TEXT_KEY, comment);
   });
-  applyUpdate();
 }

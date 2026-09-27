@@ -558,7 +558,7 @@ describe("sessions routes", () => {
       );
       // #276: このテストの主題は ended_at の記録であり、メンタリング完了とは
       // 無関係 — 朝会終了ゲートに巻き込まれないよう強制設定をオフにする。
-      setSettingValue(db, "morning_mentoring_required", "false");
+      await setSettingValue(portFor(db), "morning_mentoring_required", "false");
       vi.useFakeTimers();
       vi.setSystemTime(new Date("2026-07-06T09:30:00+09:00"));
 
@@ -641,7 +641,7 @@ describe("sessions routes", () => {
       });
       // #276: このテストの主題は要約生成であり、メンタリング完了とは無関係
       // — 朝会終了ゲートに巻き込まれないよう強制設定をオフにする。
-      setSettingValue(db, "morning_mentoring_required", "false");
+      await setSettingValue(portFor(db), "morning_mentoring_required", "false");
       createBossMessageMock.mockResolvedValue(
         fakeTextMessage("資料作成を最優先にすることを決定した。"),
       );
@@ -719,7 +719,7 @@ describe("sessions routes", () => {
       insertMessage(db, { session_id: session.id, role: "user", content: "報告します" });
       // #276: このテストの主題は要約の非再生成であり、メンタリング完了とは
       // 無関係 — 朝会終了ゲートに巻き込まれないよう強制設定をオフにする。
-      setSettingValue(db, "morning_mentoring_required", "false");
+      await setSettingValue(portFor(db), "morning_mentoring_required", "false");
       // Issue #271: session creation above already invoked createBossMessage
       // once for the (unconfigured, fallback-triggering) meeting-opening
       // generation. Clear the call count here so this test's assertion below
@@ -809,7 +809,7 @@ describe("sessions routes", () => {
 
       it("AC-20: allows ending a morning session with no mentoring record when the setting is forced off", async () => {
         const app = createApp(db);
-        setSettingValue(db, "morning_mentoring_required", "false");
+        await setSettingValue(portFor(db), "morning_mentoring_required", "false");
         const session = await postMorningSession(app);
 
         const res = await app.request(`/api/sessions/${session.id}/end`, {
@@ -838,7 +838,7 @@ describe("sessions routes", () => {
 
       it("AC-22: re-ending an already-ended morning session returns 200 regardless of mentoring record state", async () => {
         const app = createApp(db);
-        setSettingValue(db, "morning_mentoring_required", "false");
+        await setSettingValue(portFor(db), "morning_mentoring_required", "false");
         const session = await postMorningSession(app);
         const first = await app.request(`/api/sessions/${session.id}/end`, {
           method: "POST",
@@ -847,7 +847,7 @@ describe("sessions routes", () => {
 
         // Flip the setting back on (default) with no mentoring record present
         // — if the gate were re-evaluated on re-end, this would 409.
-        setSettingValue(db, "morning_mentoring_required", "true");
+        await setSettingValue(portFor(db), "morning_mentoring_required", "true");
         const res = await app.request(`/api/sessions/${session.id}/end`, {
           method: "POST",
         });
