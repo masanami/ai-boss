@@ -1,0 +1,22 @@
+[package]
+name = "secure-transport"
+version = "0.1.0"
+edition = "2021"
+publish = false
+description = "BYOK の API キーを OS のセキュアストレージに保管し、キーを付与して決められた送信先へだけ送る通信層（Tauri 非依存）"
+
+[dependencies]
+bytes = "1"
+reqwest = { version = "0.12", default-features = false, features = ["default-tls"] }
+secrecy = "0.10"
+tokio = { version = "1", features = ["macros", "sync"] }
+tokio-util = "0.7"
+
+[target.'cfg(target_vendor = "apple")'.dependencies]
+core-foundation = "0.10"
+core-foundation-sys = "0.8"
+security-framework-sys = { version = "2.17", features = ["OSX_10_15"] }
+zeroize = "1"
+
+[dev-dependencies]
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "net", "io-util", "sync", "time"] }

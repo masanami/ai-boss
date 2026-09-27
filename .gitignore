@@ -12,6 +12,8 @@ node_modules/
 # build
 dist/
 build/
+# Rust（cargo のビルド成果物）
+target/
 
 # local data
 server/data/

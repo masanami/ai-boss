@@ -19,6 +19,8 @@
     "typecheck": "npm run typecheck --workspaces --if-present",
     "test": "npm run test --workspaces --if-present",
     "test:tz": "npm run test:tz --workspaces --if-present",
+    "test:rust": "cargo test --manifest-path native/secure-transport/Cargo.toml",
+    "test:rust:keychain": "cargo test --manifest-path native/secure-transport/Cargo.toml --lib -- --ignored --test-threads=1",
     "build": "npm run build --workspaces --if-present"
   },
   "devDependencies": {
