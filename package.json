@@ -6,7 +6,8 @@
   "description": "AI が上司を演じるセルフマネジメント支援アプリ（モノレポルート）",
   "workspaces": [
     "server",
-    "web"
+    "web",
+    "relay"
   ],
   "engines": {
     "node": ">=20"
