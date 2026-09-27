@@ -352,6 +352,57 @@ describe("ストリーミングの応答の解釈", () => {
     expect(joined).not.toContain("�");
   });
 
+  // #636: SSE の行末は CRLF・CR・LF のいずれでもよい（OpenAI 側の PR #633 と対）。
+  it.each([
+    ["CRLF", "\r\n"],
+    ["CR", "\r"],
+    ["LF", "\n"],
+  ])("行末が %s の SSE でも、複数のイベントの境界を解釈して onTextDelta が順に呼ばれ本文が組み上がる", async (_label, eol) => {
+    const sseText = buildSseText(textStreamEvents(["Hel", "lo"])).replace(/\n/g, eol);
+    const { transport } = singleResponseTransport(okResponse(textBody(sseText)));
+    const { impl, client } = registerAndGetImpl(transport);
+    const onTextDelta = vi.fn();
+    const message = await impl.streamRound(client, baseRequest(), { onTextDelta }, new AbortController().signal);
+    expect(onTextDelta.mock.calls).toEqual([["Hel"], ["lo"]]);
+    expect(message.content).toEqual([{ type: "text", text: "Hello" }]);
+  });
+
+  it("CRLF の \\r と \\n が断片の境目で分かれても、複数行の data を1つのイベントとして解釈する", async () => {
+    // 1つのイベントの JSON を2つの data: 行に分ける（SSE では "\n" で連結される）。
+    // 断片の末尾の "\r" を単独の CR として先に行末へ変えると、続く "\n" と
+    // 合わせて偽の空行（イベントの境界）になり、JSON が途中で切れる。
+    const [start, blockStart, delta, ...rest] = textStreamEvents(["Hi"]);
+    const deltaJson = JSON.stringify(delta);
+    const splitAt = deltaJson.indexOf(",") + 1;
+    const toCrlf = (text: string) => text.replace(/\n/g, "\r\n");
+    const firstPart = `${toCrlf(buildSseText([start, blockStart]))}event: content_block_delta\r\ndata: ${deltaJson.slice(0, splitAt)}\r`;
+    const secondPart = `\ndata: ${deltaJson.slice(splitAt)}\r\n\r\n${toCrlf(buildSseText(rest))}`;
+    const encoder = new TextEncoder();
+    const { transport } = singleResponseTransport(
+      okResponse(asyncBody([encoder.encode(firstPart), encoder.encode(secondPart)])),
+    );
+    const { impl, client } = registerAndGetImpl(transport);
+    const onTextDelta = vi.fn();
+    const message = await impl.streamRound(client, baseRequest(), { onTextDelta }, new AbortController().signal);
+    expect(onTextDelta.mock.calls).toEqual([["Hi"]]);
+    expect(message.content).toEqual([{ type: "text", text: "Hi" }]);
+  });
+
+  it("CR 区切りで、イベントの境界の2つの \\r が断片の境目で分かれても、イベントの境界として解釈する", async () => {
+    const sseText = buildSseText(textStreamEvents(["Hel", "lo"])).replace(/\n/g, "\r");
+    // 最初のイベントの境界（"\r\r"）の間で分割する。
+    const splitAt = sseText.indexOf("\r\r") + 1;
+    const encoder = new TextEncoder();
+    const { transport } = singleResponseTransport(
+      okResponse(asyncBody([encoder.encode(sseText.slice(0, splitAt)), encoder.encode(sseText.slice(splitAt))])),
+    );
+    const { impl, client } = registerAndGetImpl(transport);
+    const onTextDelta = vi.fn();
+    const message = await impl.streamRound(client, baseRequest(), { onTextDelta }, new AbortController().signal);
+    expect(onTextDelta.mock.calls).toEqual([["Hel"], ["lo"]]);
+    expect(message.content).toEqual([{ type: "text", text: "Hello" }]);
+  });
+
   it("tool_use のブロックで input_json_delta を2回以上に分けて返すと、content の tool_use は id/name と、連結してJSONとして解釈した input を持つ", async () => {
     const events = [
       { type: "message_start", message: { model: "m" } },
