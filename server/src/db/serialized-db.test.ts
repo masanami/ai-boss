@@ -696,3 +696,174 @@ describe("createSerializedDb — #617: トップレベルの ROLLBACK が実行�
     raw.close();
   });
 });
+
+describe("createSerializedDb — #623: トップレベルの BEGIN IMMEDIATE が失敗を返しても、放置されたトランザクションへ書き込みを漏らさない", () => {
+  function createItemsRaw(): Database.Database {
+    const raw = new Database(":memory:");
+    raw.exec(`CREATE TABLE items (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL)`);
+    return raw;
+  }
+
+  it("(a) BEGIN IMMEDIATE を実行したうえで失敗を返すと、BEGIN の元の例外が同じオブジェクトのまま伝わり、開いたトランザクションは ROLLBACK で閉じられ、以後の操作はオートコミットで正常に進む", async () => {
+    const raw = createItemsRaw();
+    const inner = createBetterSqlite3Driver(raw);
+    const beginError = new Error("BEGIN IMMEDIATE executed, but the driver reported a failure");
+    let beginFailed = false;
+    const db = createSerializedDb({
+      ...inner,
+      async exec(sql: string) {
+        await inner.exec(sql);
+        if (sql === "BEGIN IMMEDIATE" && !beginFailed) {
+          beginFailed = true;
+          throw beginError;
+        }
+      },
+    });
+
+    let fnCalled = false;
+    await expect(
+      db.transaction(async () => {
+        fnCalled = true;
+      }),
+    ).rejects.toBe(beginError);
+    expect(fnCalled).toBe(false);
+
+    // 開いたまま放置されず、閉じられている。
+    expect(raw.inTransaction).toBe(false);
+
+    // 以後の操作は放置トランザクションへ合流せず、オートコミットで確定する。
+    await db.run("INSERT INTO items (name) VALUES (?)", ["after-begin-failure"]);
+    expect(raw.inTransaction).toBe(false);
+    expect(await db.transaction(async (tx) => tx.all("SELECT name FROM items"))).toEqual([
+      { name: "after-begin-failure" },
+    ]);
+    raw.close();
+  });
+
+  it("(b) BEGIN IMMEDIATE を実行したうえで失敗を返し、後始末の ROLLBACK も実行前に拒否されると、以後このポートは使用不可になり、放置されたトランザクションへ書き込みは混ざらない", async () => {
+    const raw = createItemsRaw();
+    const { driver, execLog } = driverWithExecLog(
+      driverThatRejectsBeforeExec(
+        driverThatFailsOnceAfterRealExec(createBetterSqlite3Driver(raw), (sql) => sql === "BEGIN IMMEDIATE"),
+        (sql) => sql === "ROLLBACK",
+      ),
+    );
+    const db = createSerializedDb(driver);
+
+    const txPromise = db.transaction(async () => "should-not-run");
+    // `transaction` と同時に（await せず）発行した操作も、排他区間の内側で拒否される。
+    const concurrentRunPromise = db.run("INSERT INTO items (name) VALUES (?)", ["concurrent"]);
+
+    await expect(txPromise).rejects.toThrow(/simulated failure after actually executing: BEGIN IMMEDIATE$/);
+    await expect(concurrentRunPromise).rejects.toThrow(/unusable/);
+
+    // SQLite 側のトランザクションは開いたまま（後始末できていない）。
+    expect(raw.inTransaction).toBe(true);
+
+    execLog.length = 0;
+    await expect(db.run("INSERT INTO items (name) VALUES (?)", ["after"])).rejects.toThrow(/unusable/);
+    await expect(db.get("SELECT * FROM items")).rejects.toThrow(/unusable/);
+    await expect(db.all("SELECT * FROM items")).rejects.toThrow(/unusable/);
+    await expect(db.exec("SELECT 1")).rejects.toThrow(/unusable/);
+    await expect(db.transaction(async () => "should-not-run")).rejects.toThrow(/unusable/);
+    // 使用不可後の操作はドライバへ一切渡らない。
+    expect(execLog).toEqual([]);
+
+    expect(raw.prepare("SELECT COUNT(*) AS n FROM items").get()).toEqual({ n: 0 });
+    raw.close();
+  });
+
+  it("(c) 使用不可のエラーは BEGIN の失敗が原因であることを示し、cause は状態を確かめられなかった直接の理由（確認の BEGIN の失敗）である", async () => {
+    const raw = createItemsRaw();
+    const db = createSerializedDb(
+      driverThatRejectsBeforeExec(
+        driverThatFailsOnceAfterRealExec(createBetterSqlite3Driver(raw), (sql) => sql === "BEGIN IMMEDIATE"),
+        (sql) => sql === "ROLLBACK" || sql === "BEGIN",
+      ),
+    );
+
+    await expect(db.transaction(async () => undefined)).rejects.toThrow(/BEGIN IMMEDIATE/);
+
+    let caught: unknown;
+    try {
+      await db.run("INSERT INTO items (name) VALUES (?)", ["after"]);
+    } catch (err) {
+      caught = err;
+    }
+    expect(caught).toBeInstanceOf(Error);
+    expect((caught as Error).message).toMatch(/BEGIN IMMEDIATE/);
+    expect((caught as Error).message).toMatch(/unusable/);
+    expect(((caught as Error).cause as Error).message).toMatch(/simulated rejection before executing: BEGIN$/);
+    raw.close();
+  });
+
+  it("(d) BEGIN IMMEDIATE が実行前に拒否された通常の失敗（例: SQLITE_BUSY）では、BEGIN の元の例外が同じオブジェクトのまま伝わり、ポートは使用不可にならない", async () => {
+    const raw = createItemsRaw();
+    const inner = createBetterSqlite3Driver(raw);
+    const busyError = new Error("simulated SQLITE_BUSY: BEGIN IMMEDIATE rejected before executing");
+    let rejected = false;
+    const db = createSerializedDb({
+      ...inner,
+      async exec(sql: string) {
+        if (sql === "BEGIN IMMEDIATE" && !rejected) {
+          rejected = true;
+          throw busyError;
+        }
+        await inner.exec(sql);
+      },
+    });
+
+    await expect(db.transaction(async () => "should-not-run")).rejects.toBe(busyError);
+    expect(raw.inTransaction).toBe(false);
+
+    // ポートは使用可能なまま。次のトランザクションは正常にコミットされる。
+    await db.transaction(async (tx) => {
+      await tx.run("INSERT INTO items (name) VALUES (?)", ["after-busy"]);
+    });
+    expect(raw.inTransaction).toBe(false);
+    expect(raw.prepare("SELECT name FROM items").all()).toEqual([{ name: "after-busy" }]);
+    raw.close();
+  });
+
+  it("(e) BEGIN が実行前に拒否され続け、トランザクション状態を確かめられない（ドライバが BEGIN を受け付けない）場合は、使用不可に倒す", async () => {
+    const raw = createItemsRaw();
+    const db = createSerializedDb(
+      driverThatRejectsBeforeExec(createBetterSqlite3Driver(raw), (sql) => sql.startsWith("BEGIN")),
+    );
+
+    await expect(db.transaction(async () => undefined)).rejects.toThrow(
+      /simulated rejection before executing: BEGIN IMMEDIATE$/,
+    );
+    await expect(db.run("INSERT INTO items (name) VALUES (?)", ["after"])).rejects.toThrow(/unusable/);
+    expect(raw.prepare("SELECT COUNT(*) AS n FROM items").get()).toEqual({ n: 0 });
+    raw.close();
+  });
+
+  it("(f) BEGIN IMMEDIATE が実行前に拒否され、確認の BEGIN は通ったのに確認後の ROLLBACK が実行前に拒否されると、確認で開いたトランザクションが残るので使用不可に倒す", async () => {
+    const raw = createItemsRaw();
+    const inner = createBetterSqlite3Driver(raw);
+    let rollbackCount = 0;
+    const db = createSerializedDb({
+      ...inner,
+      async exec(sql: string) {
+        if (sql === "BEGIN IMMEDIATE") {
+          throw new Error("simulated rejection before executing: BEGIN IMMEDIATE");
+        }
+        // 1 回目（後始末の ROLLBACK）は実際に実行させ「トランザクションが無い」で失敗させ、
+        // 2 回目（確認後の ROLLBACK）は実行前に拒否する。
+        if (sql === "ROLLBACK" && ++rollbackCount === 2) {
+          throw new Error("simulated rejection before executing: probe ROLLBACK");
+        }
+        await inner.exec(sql);
+      },
+    });
+
+    await expect(db.transaction(async () => undefined)).rejects.toThrow(/BEGIN IMMEDIATE$/);
+    // 確認の BEGIN で開いたトランザクションが閉じられずに残っている。
+    expect(raw.inTransaction).toBe(true);
+
+    await expect(db.run("INSERT INTO items (name) VALUES (?)", ["after"])).rejects.toThrow(/unusable/);
+    expect(raw.prepare("SELECT COUNT(*) AS n FROM items").get()).toEqual({ n: 0 });
+    raw.close();
+  });
+});

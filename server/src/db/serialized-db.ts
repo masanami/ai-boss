@@ -112,14 +112,30 @@ function nestedRollbackFailedError(cause: unknown): Error {
 }
 
 /**
- * #617: トップレベルの `transaction(fn)` の後始末の `ROLLBACK` 自体が失敗
- * したときのエラー。`nestedRollbackFailedError` と同じ考え方——後始末が
- * 実際に効いたかを `DbDriver` の契約から判別する手段が無いため、再接続・
- * 自動回復は行わず一律にポート全体を使用不可にする（YAGNI）。
+ * トップレベルのトランザクション状態が不明になった原因（ポートを使用不可に
+ * した理由）。
+ * - `rollback`（#617）: `transaction(fn)` の後始末の `ROLLBACK` 自体が失敗した
+ * - `begin`（#623）: `BEGIN IMMEDIATE` が失敗し、その後の後始末でも
+ *   オートコミットへ戻ったことを確かめられなかった
  */
-function portUnusableAfterTopLevelRollbackFailureError(cause: unknown): Error {
+type UnknownStateReason = "rollback" | "begin";
+
+const UNKNOWN_STATE_REASON_TEXT: Record<UnknownStateReason, string> = {
+  rollback: "a top-level `transaction(fn)`'s `ROLLBACK` failed",
+  begin:
+    "a top-level `transaction(fn)`'s `BEGIN IMMEDIATE` failed and the cleanup after it " +
+    "could not confirm that no transaction was left open",
+};
+
+/**
+ * #617/#623: トップレベルのトランザクション状態が不明になった後のエラー。
+ * `nestedRollbackFailedError` と同じ考え方——後始末が実際に効いたかを
+ * `DbDriver` の契約から判別する手段が無いため、再接続・自動回復は行わず
+ * 一律にポート全体を使用不可にする（YAGNI）。
+ */
+function portUnusableError(reason: UnknownStateReason, cause: unknown): Error {
   return new Error(
-    "a top-level `transaction(fn)`'s `ROLLBACK` failed, so the transaction state is unknown " +
+    `${UNKNOWN_STATE_REASON_TEXT[reason]}, so the transaction state is unknown ` +
       "and this DB port is now unusable; there is no way to tell whether the driver's " +
       "autocommit state was actually restored, so every further operation on this port is " +
       "rejected instead of silently joining the abandoned transaction — restart the process " +
@@ -281,10 +297,52 @@ async function runNestedTransaction<T>(
 }
 
 /**
+ * #623: `BEGIN IMMEDIATE` が失敗した後の後始末。オートコミットへ戻ったことを
+ * 確かめられたら `undefined`、確かめられなければ `{ error }`（後始末の失敗）
+ * を返す。
+ *
+ * `BEGIN` の失敗には2通りあり、`DbDriver` の契約からは区別できない:
+ * - 実行前に拒否された（トランザクションは開いていない。例: `SQLITE_BUSY`）
+ * - 実行されたのに失敗が返った（トランザクションが開いたまま残る。製品版の
+ *   非同期ドライバで IPC の失敗・タイムアウト等により起きうる）
+ *
+ * そこでまず `ROLLBACK` を試す。成功すれば、開いていたトランザクションは
+ * 閉じられ、オートコミットに戻っている。失敗した場合、前者（そもそも開いて
+ * いない＝「ロールバックするトランザクションが無い」で失敗する通常の経路）
+ * か、後者で `ROLLBACK` 自体も失敗したのかが分からないため、ロックを取らない
+ * `BEGIN`（DEFERRED。`SQLITE_BUSY` にならない）で確かめる——SQLite は
+ * トランザクションの中で `BEGIN` を拒否するので、`BEGIN` が通ればオート
+ * コミットだったと分かる（確かめた後はすぐ `ROLLBACK` で閉じる）。
+ * これにより、`SQLITE_BUSY` のような通常の失敗でポートを不必要に使用不可に
+ * しない。
+ */
+async function cleanUpAfterBeginFailure(driver: DbDriver): Promise<{ error: unknown } | undefined> {
+  try {
+    await driver.exec("ROLLBACK");
+    return undefined;
+  } catch {
+    // `ROLLBACK` の失敗は「そもそも開いていない」通常の経路でも起きるため、
+    // 使用不可にした原因としては示さない。確かめられなかった直接の理由（下の
+    // 確認の `BEGIN`／`ROLLBACK` の失敗）を原因にする。
+  }
+  try {
+    await driver.exec("BEGIN");
+  } catch (probeBeginError) {
+    return { error: probeBeginError };
+  }
+  try {
+    await driver.exec("ROLLBACK");
+    return undefined;
+  } catch (probeRollbackError) {
+    return { error: probeRollbackError };
+  }
+}
+
+/**
  * トップレベルのトランザクション。呼び出し時点で直列化層のロックはすでに
  * `createSerializedDb` 側の `runExclusive` が保持している。
  *
- * `onRollbackFailure` は、この `transaction(fn)` の後始末の `ROLLBACK` 自体が
+ * `onUnknownState("rollback", ...)` は、この `transaction(fn)` の後始末の `ROLLBACK` 自体が
  * 失敗したときに呼ばれる（#617）。ドライバが `ROLLBACK` を**実行前に**拒否
  * すると、SQLite 側のトランザクションは開いたまま残るのに、この呼び出しの
  * ロック（`createSerializedDb` の `mutex`）はここでは解放してしまう——その
@@ -295,18 +353,31 @@ async function runNestedTransaction<T>(
  * （`createSerializedDb`）に委ねる——呼び出し元がポート全体を使用不可にする
  * ことで、放置されたトランザクションへの合流を防ぐ（入れ子の `ROLLBACK TO`
  * 失敗と同じ理屈。`TxState.rollbackFailure` 参照）。
+ *
+ * `BEGIN IMMEDIATE` 自体が失敗したとき（#623）は `fn` を呼ばず、
+ * {@link cleanUpAfterBeginFailure} で後始末してから `BEGIN` の元の例外を
+ * 同じオブジェクトのまま投げ直す。後始末でもオートコミットへ戻ったことを
+ * 確かめられなければ `onUnknownState("begin", ...)` を呼ぶ。
  */
 async function runTopLevelTransaction<T>(
   driver: DbDriver,
   fn: (tx: DbTx) => Promise<T> | T,
-  onRollbackFailure: (error: unknown) => void,
+  onUnknownState: (reason: UnknownStateReason, error: unknown) => void,
 ): Promise<T> {
   const state: TxState = { finished: false, busy: false };
   const tx = createTxHandle(driver, state);
 
   // A2（機能仕様・仮定）: `BEGIN IMMEDIATE` を使う。接続1本では DEFERRED と
   // 差は無いが、将来の複数接続で書き込みロックの取り損ねを避ける。
-  await driver.exec("BEGIN IMMEDIATE");
+  try {
+    await driver.exec("BEGIN IMMEDIATE");
+  } catch (beginError) {
+    const cleanupFailure = await cleanUpAfterBeginFailure(driver);
+    if (cleanupFailure !== undefined) {
+      onUnknownState("begin", cleanupFailure.error);
+    }
+    throw beginError;
+  }
   try {
     const result = await fn(tx);
     if (state.rollbackFailure) {
@@ -320,13 +391,13 @@ async function runTopLevelTransaction<T>(
   } catch (err) {
     // 入れ子版と同じ理由（上記コメント参照）で、`ROLLBACK` 自体の失敗を
     // 握りつぶし、`fn` が投げた元の例外 `err` を必ず投げ直す（AC-2b）。
-    // ただし #617: 握りつぶす前に `onRollbackFailure` へ通知し、呼び出し元
+    // ただし #617: 握りつぶす前に `onUnknownState("rollback", ...)` へ通知し、呼び出し元
     // がポート全体を使用不可にできるようにする（後始末が効いたかどうかを
     // 判別できない以上、以後の操作を放置トランザクションへ合流させない）。
     try {
       await driver.exec("ROLLBACK");
     } catch (rollbackError) {
-      onRollbackFailure(rollbackError);
+      onUnknownState("rollback", rollbackError);
     } finally {
       state.finished = true;
     }
@@ -345,7 +416,9 @@ async function runTopLevelTransaction<T>(
 export function createSerializedDb(driver: DbDriver): DbPort {
   const mutex = createMutex();
   /**
-   * トップレベルの `ROLLBACK` が失敗したときの記録（#617）。入れ子の
+   * トップレベルの `ROLLBACK` が失敗したとき（#617）、または `BEGIN IMMEDIATE`
+   * の失敗後にオートコミットへ戻ったことを確かめられなかったとき（#623）の
+   * 記録。入れ子の
    * `ROLLBACK TO` 失敗（`TxState.rollbackFailure`）と同じ考え方だが、対象は
    * この `createSerializedDb` が返すポート**全体**——記録後はどの操作
    * （`run`/`get`/`all`/`exec`/`transaction`）も、ドライバへ一切触れずに
@@ -357,11 +430,11 @@ export function createSerializedDb(driver: DbDriver): DbPort {
    * 手段が無く、後始末が効いたか判別できないため、入れ子版と同じ理屈で
    * 一律に使用不可へ倒す）。
    */
-  let unusable: { error: unknown } | undefined;
+  let unusable: { reason: UnknownStateReason; error: unknown } | undefined;
 
   function assertUsable(): void {
     if (unusable) {
-      throw portUnusableAfterTopLevelRollbackFailureError(unusable.error);
+      throw portUnusableError(unusable.reason, unusable.error);
     }
   }
 
@@ -394,8 +467,8 @@ export function createSerializedDb(driver: DbDriver): DbPort {
       // `mutex.runExclusive` にキューイングされ、待ち続ける
       // （= デッドロック。db-port.ts の `Db.transaction` の JSDoc 参照）。
       return runUsable(() =>
-        runTopLevelTransaction(driver, fn, (rollbackError) => {
-          unusable ??= { error: rollbackError };
+        runTopLevelTransaction(driver, fn, (reason, error) => {
+          unusable ??= { reason, error };
         }),
       );
     },
