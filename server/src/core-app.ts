@@ -121,10 +121,10 @@ export function createCoreApp(
     return c.json({ status: "ok", db: checkDatabaseConnection(db) });
   });
 
-  api.route("/tasks", createTasksRouter(db, options.evidenceStore));
+  api.route("/tasks", createTasksRouter(portFor(db), options.evidenceStore));
   api.route("/sessions", createSessionsRouter(db, env, llmBackend));
-  api.route("/checkins", createCheckinsRouter(db));
-  api.route("/activity", createActivityRouter(db));
+  api.route("/checkins", createCheckinsRouter(portFor(db)));
+  api.route("/activity", createActivityRouter(portFor(db)));
   api.route("/decisions", createDecisionsRouter(db));
   api.route("/dashboard", createDashboardRouter(db, env));
   api.route("/reports", createReportsRouter(db, env));

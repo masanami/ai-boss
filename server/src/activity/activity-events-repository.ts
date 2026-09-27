@@ -4,7 +4,7 @@
 // 決定 1「活動シグナルを activity_events に一元化する」), and
 // keeping this repository dependency-free avoids circular imports as other
 // modules (e.g. tasks-repository.ts) call into it to record signals.
-import type Database from "better-sqlite3";
+import type { Db } from "../db/db-port.js";
 import type { ActivityEvent, ActivityEventType } from "./activity-event.js";
 
 export interface NewActivityEventRecord {
@@ -26,28 +26,27 @@ export interface NewActivityEventRecord {
  * This is a repository-level helper only (no HTTP endpoint in this
  * ticket) — callers such as the chat message flow invoke it directly.
  */
-export function recordActivityEvent(
-  db: Database.Database,
+export async function recordActivityEvent(
+  db: Db,
   record: NewActivityEventRecord,
-): ActivityEvent {
+): Promise<ActivityEvent> {
   const createdAt = record.created_at ?? new Date().toISOString();
 
-  const result = db
-    .prepare(
-      `INSERT INTO activity_events (type, task_id, note, expected_minutes, created_at)
-       VALUES (?, ?, ?, ?, ?)`,
-    )
-    .run(
+  const result = await db.run(
+    `INSERT INTO activity_events (type, task_id, note, expected_minutes, created_at)
+     VALUES (?, ?, ?, ?, ?)`,
+    [
       record.type,
       record.task_id ?? null,
       record.note ?? null,
       record.expected_minutes ?? null,
       createdAt,
-    );
+    ],
+  );
 
-  const event = db
-    .prepare("SELECT * FROM activity_events WHERE id = ?")
-    .get(Number(result.lastInsertRowid)) as ActivityEvent | undefined;
+  const event = await db.get<ActivityEvent>("SELECT * FROM activity_events WHERE id = ?", [
+    result.lastInsertRowid,
+  ]);
   if (!event) {
     throw new Error("failed to read back the recorded activity event");
   }
@@ -70,11 +69,11 @@ export function recordActivityEvent(
  * convention — check the caller's own contract before pushing a filter down
  * into this query (Issue #230).
  */
-export function listEventsSince(
-  db: Database.Database,
+export async function listEventsSince(
+  db: Db,
   isoTime: string,
   untilIsoExclusive?: string,
-): ActivityEvent[] {
+): Promise<ActivityEvent[]> {
   let sql = "SELECT * FROM activity_events WHERE created_at >= ?";
   const params: string[] = [isoTime];
 
@@ -85,7 +84,7 @@ export function listEventsSince(
 
   sql += " ORDER BY created_at ASC, id ASC";
 
-  return db.prepare(sql).all(...params) as ActivityEvent[];
+  return db.all<ActivityEvent>(sql, params);
 }
 
 /**
@@ -98,14 +97,10 @@ export function listEventsSince(
  * which will use it to determine the last signal for silence detection and
  * escalation reset.
  */
-export function findLatestEvent(
-  db: Database.Database,
-): ActivityEvent | undefined {
-  return db
-    .prepare(
-      "SELECT * FROM activity_events ORDER BY created_at DESC, id DESC LIMIT 1",
-    )
-    .get() as ActivityEvent | undefined;
+export async function findLatestEvent(db: Db): Promise<ActivityEvent | undefined> {
+  return db.get<ActivityEvent>(
+    "SELECT * FROM activity_events ORDER BY created_at DESC, id DESC LIMIT 1",
+  );
 }
 
 /**
@@ -119,17 +114,16 @@ export function findLatestEvent(
  * `task_start`/`task_pause` (an `occurred_at` older/newer than this event)
  * should still transition `tasks.status`.
  */
-export function findLatestTaskStartOrPauseEvent(
-  db: Database.Database,
+export async function findLatestTaskStartOrPauseEvent(
+  db: Db,
   taskId: number,
-): ActivityEvent | undefined {
-  return db
-    .prepare(
-      `SELECT * FROM activity_events
-       WHERE task_id = ? AND type IN ('task_start', 'task_pause')
-       ORDER BY created_at DESC, id DESC LIMIT 1`,
-    )
-    .get(taskId) as ActivityEvent | undefined;
+): Promise<ActivityEvent | undefined> {
+  return db.get<ActivityEvent>(
+    `SELECT * FROM activity_events
+     WHERE task_id = ? AND type IN ('task_start', 'task_pause')
+     ORDER BY created_at DESC, id DESC LIMIT 1`,
+    [taskId],
+  );
 }
 
 export type BreakEndOrderCheck =
@@ -151,15 +145,14 @@ export type BreakEndOrderCheck =
  * reject a valid backdated `break_end` when a later break has already been
  * recorded (see AC-8).
  */
-export function checkBreakEndOrder(
-  db: Database.Database,
+export async function checkBreakEndOrder(
+  db: Db,
   occurredAt: string,
-): BreakEndOrderCheck {
-  const sameTimeBreakStart = db
-    .prepare(
-      "SELECT 1 FROM activity_events WHERE type = 'break_start' AND created_at = ? LIMIT 1",
-    )
-    .get(occurredAt);
+): Promise<BreakEndOrderCheck> {
+  const sameTimeBreakStart = await db.get(
+    "SELECT 1 FROM activity_events WHERE type = 'break_start' AND created_at = ? LIMIT 1",
+    [occurredAt],
+  );
   if (sameTimeBreakStart !== undefined) {
     // getActiveBreak (detection/break-overrun.ts) only closes a break with a
     // break_end strictly *after* break_start, so an exactly-simultaneous
@@ -167,12 +160,11 @@ export function checkBreakEndOrder(
     return { valid: false, reason: "same_as_break_start" };
   }
 
-  const priorBreakStart = db
-    .prepare(
-      `SELECT * FROM activity_events WHERE type = 'break_start' AND created_at < ?
-       ORDER BY created_at DESC, id DESC LIMIT 1`,
-    )
-    .get(occurredAt) as ActivityEvent | undefined;
+  const priorBreakStart = await db.get<ActivityEvent>(
+    `SELECT * FROM activity_events WHERE type = 'break_start' AND created_at < ?
+     ORDER BY created_at DESC, id DESC LIMIT 1`,
+    [occurredAt],
+  );
   if (!priorBreakStart) {
     return { valid: false, reason: "no_prior_break_start" };
   }
@@ -181,12 +173,11 @@ export function checkBreakEndOrder(
   // `occurredAt` (e.g. a retried request whose first response was lost) has
   // already closed this break, so recording another one would be a duplicate
   // (Codex review on PR #353).
-  const alreadyClosed = db
-    .prepare(
-      `SELECT 1 FROM activity_events
-       WHERE type = 'break_end' AND created_at > ? AND created_at <= ? LIMIT 1`,
-    )
-    .get(priorBreakStart.created_at, occurredAt);
+  const alreadyClosed = await db.get(
+    `SELECT 1 FROM activity_events
+     WHERE type = 'break_end' AND created_at > ? AND created_at <= ? LIMIT 1`,
+    [priorBreakStart.created_at, occurredAt],
+  );
   if (alreadyClosed !== undefined) {
     return { valid: false, reason: "already_closed" };
   }

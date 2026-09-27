@@ -1,5 +1,5 @@
 import { Hono } from "hono";
-import type Database from "better-sqlite3";
+import type { Db } from "../db/db-port.js";
 import { readJsonBody } from "../lib/read-json-body.js";
 import {
   insertTask,
@@ -32,7 +32,7 @@ const EVIDENCE_REQUIRED_ERROR_MESSAGE =
  * task CRUD handlers below, so omitting it (as most existing tests that
  * don't touch evidences do) is harmless.
  */
-export function createTasksRouter(db: Database.Database, evidenceStore?: EvidenceStore): Hono {
+export function createTasksRouter(db: Db, evidenceStore?: EvidenceStore): Hono {
   const tasks = new Hono();
 
   // Hono merges path params across `.route()` boundaries, so the nested
@@ -40,8 +40,8 @@ export function createTasksRouter(db: Database.Database, evidenceStore?: Evidenc
   // (verified directly against this Hono version before relying on it).
   tasks.route("/:id/evidences", createTaskEvidencesRouter(db, evidenceStore));
 
-  tasks.get("/", (c) => {
-    return c.json(listTasks(db));
+  tasks.get("/", async (c) => {
+    return c.json(await listTasks(db));
   });
 
   tasks.post("/", async (c) => {
@@ -58,20 +58,26 @@ export function createTasksRouter(db: Database.Database, evidenceStore?: Evidenc
     // 決定 2-h: POST /api/tasks が status: "done" を直接受け付ける「第5の
     // 経路」も、updateTask と同じ共有述語で判定する（関門を2つに増やさない）。
     // taskId: null は「まだ存在しないタスク＝エビデンス件数は常に0」を表す。
-    if (
-      result.data.status === "done" &&
-      isEvidenceGateBlocking(db, {
-        taskId: null,
-        evidenceRequired: result.data.evidence_required ?? false,
-      })
-    ) {
+    // 判定（証跡の強制設定の読み出し）と挿入は 1 つのトランザクションで行う
+    // （#604・決定 2 の全数監査: 判定と書き込みの間に設定の保存を挟ませない）。
+    const task = await db.transaction(async (tx) => {
+      if (
+        result.data.status === "done" &&
+        (await isEvidenceGateBlocking(tx, {
+          taskId: null,
+          evidenceRequired: result.data.evidence_required ?? false,
+        }))
+      ) {
+        return undefined;
+      }
+      return insertTask(tx, result.data);
+    });
+    if (!task) {
       return c.json(
         { error: EVIDENCE_REQUIRED_ERROR_MESSAGE, code: "evidence_required" },
         409,
       );
     }
-
-    const task = insertTask(db, result.data);
     return c.json(task, 201);
   });
 
@@ -84,7 +90,7 @@ export function createTasksRouter(db: Database.Database, evidenceStore?: Evidenc
       return c.json({ error: result.error }, 400);
     }
 
-    const updateResult = updateTask(db, id, result.data);
+    const updateResult = await updateTask(db, id, result.data);
     if (!updateResult.ok) {
       if (updateResult.reason === "not_found") {
         return c.json({ error: `task ${id} not found` }, 404);

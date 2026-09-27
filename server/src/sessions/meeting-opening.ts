@@ -129,7 +129,7 @@ export async function generateMeetingOpening(
     const backend = resolveLlmBackend(env);
     const client = createClaudeClient(env, backend);
     const { model, persona } = await resolveBossSettings(portFor(db));
-    const tasks = listTasks(db);
+    const tasks = await listTasks(portFor(db));
     // purpose は指定しない（既定 "chat"）。sessionType を渡すことで
     // MORNING_FLOW_INSTRUCTION / EVENING_FLOW_INSTRUCTION が乗る
     // （persona-prompt.ts の resolveSessionFlowInstruction は purpose ===
@@ -138,7 +138,10 @@ export async function generateMeetingOpening(
       tasks,
       // 決定 3-a: 朝会/夕会の開始ひとこともボスチャットと同じ会話の一部
       // なので、実件数を渡す（notification 用途の呼び出し元とは異なる）。
-      taskEvidenceCounts: countTaskEvidencesByTaskIds(db, tasks.map((task) => task.id)),
+      taskEvidenceCounts: await countTaskEvidencesByTaskIds(
+        portFor(db),
+        tasks.map((task) => task.id),
+      ),
       recentDecisions: [],
       now,
       sessionType,

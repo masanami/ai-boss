@@ -22,11 +22,11 @@ import type { Task } from "./task.js";
  * エラー文言）は `tasks-routes.test.ts` / `task-tools.test.ts` の担当。
  */
 
-function insertWorkTask(
+async function insertWorkTask(
   db: Database.Database,
   overrides: Partial<NewTaskRecord> = {},
-): Task {
-  return insertTask(db, {
+): Promise<Task> {
+  return await insertTask(portFor(db), {
     title: "資料作成",
     description: null,
     category: "work",
@@ -64,38 +64,38 @@ describe("isEvidenceGateBlocking", () => {
 
   it("returns false when evidenceRequired is false, even with enforcement on and no evidence", async () => {
     await enableEnforcement(db);
-    const task = insertWorkTask(db, { evidence_required: false });
+    const task = await insertWorkTask(db, { evidence_required: false });
 
     expect(
-      isEvidenceGateBlocking(db, { taskId: task.id, evidenceRequired: false }),
+      await isEvidenceGateBlocking(portFor(db), { taskId: task.id, evidenceRequired: false }),
     ).toBe(false);
   });
 
-  it("returns false when the enforcement setting is off, even when evidenceRequired is true and there is no evidence", () => {
-    const task = insertWorkTask(db, { evidence_required: true });
+  it("returns false when the enforcement setting is off, even when evidenceRequired is true and there is no evidence", async () => {
+    const task = await insertWorkTask(db, { evidence_required: true });
 
     expect(
-      isEvidenceGateBlocking(db, { taskId: task.id, evidenceRequired: true }),
+      await isEvidenceGateBlocking(portFor(db), { taskId: task.id, evidenceRequired: true }),
     ).toBe(false);
   });
 
   it("returns true when enforcement is on, evidenceRequired is true, and the task has zero evidence", async () => {
     await enableEnforcement(db);
-    const task = insertWorkTask(db, { evidence_required: true });
+    const task = await insertWorkTask(db, { evidence_required: true });
 
     expect(
-      isEvidenceGateBlocking(db, { taskId: task.id, evidenceRequired: true }),
+      await isEvidenceGateBlocking(portFor(db), { taskId: task.id, evidenceRequired: true }),
     ).toBe(true);
   });
 
   // AC-30 の境界: 1件あれば通す（0 → 1 の境界。変異確認4で検証）。
   it("returns false when enforcement is on, evidenceRequired is true, and the task has at least one evidence", async () => {
     await enableEnforcement(db);
-    const task = insertWorkTask(db, { evidence_required: true });
-    insertTaskEvidence(db, { task_id: task.id, kind: "link", url: "https://example.com" });
+    const task = await insertWorkTask(db, { evidence_required: true });
+    await insertTaskEvidence(portFor(db), { task_id: task.id, kind: "link", url: "https://example.com" });
 
     expect(
-      isEvidenceGateBlocking(db, { taskId: task.id, evidenceRequired: true }),
+      await isEvidenceGateBlocking(portFor(db), { taskId: task.id, evidenceRequired: true }),
     ).toBe(false);
   });
 
@@ -105,7 +105,7 @@ describe("isEvidenceGateBlocking", () => {
     await enableEnforcement(db);
 
     expect(
-      isEvidenceGateBlocking(db, { taskId: null, evidenceRequired: true }),
+      await isEvidenceGateBlocking(portFor(db), { taskId: null, evidenceRequired: true }),
     ).toBe(true);
   });
 
@@ -113,7 +113,7 @@ describe("isEvidenceGateBlocking", () => {
     await enableEnforcement(db);
 
     expect(
-      isEvidenceGateBlocking(db, { taskId: null, evidenceRequired: false }),
+      await isEvidenceGateBlocking(portFor(db), { taskId: null, evidenceRequired: false }),
     ).toBe(false);
   });
 });
@@ -130,15 +130,15 @@ describe("updateTask", () => {
     db.close();
   });
 
-  it("returns { ok: false, reason: 'not_found' } for a non-existent id", () => {
-    const result = updateTask(db, 9999, { title: "更新" });
+  it("returns { ok: false, reason: 'not_found' } for a non-existent id", async () => {
+    const result = await updateTask(portFor(db), 9999, { title: "更新" });
     expect(result).toEqual({ ok: false, reason: "not_found" });
   });
 
-  it("returns { ok: true, task } with the applied patch on success", () => {
-    const task = insertWorkTask(db);
+  it("returns { ok: true, task } with the applied patch on success", async () => {
+    const task = await insertWorkTask(db);
 
-    const result = updateTask(db, task.id, { priority: "high" });
+    const result = await updateTask(portFor(db), task.id, { priority: "high" });
 
     expect(result.ok).toBe(true);
     if (result.ok) {
@@ -150,18 +150,18 @@ describe("updateTask", () => {
     // AC-23〜AC-27
     it("rejects a transition to done with reason 'evidence_required' when enforcement is on, evidence_required is true, and there is no evidence (AC-23)", async () => {
       await enableEnforcement(db);
-      const task = insertWorkTask(db, { evidence_required: true });
+      const task = await insertWorkTask(db, { evidence_required: true });
 
-      const result = updateTask(db, task.id, { status: "done" });
+      const result = await updateTask(portFor(db), task.id, { status: "done" });
 
       expect(result).toEqual({ ok: false, reason: "evidence_required" });
     });
 
     it("writes nothing to the task row on rejection (status/updated_at/completed_at all unchanged, AC-25/AC-26)", async () => {
       await enableEnforcement(db);
-      const task = insertWorkTask(db, { evidence_required: true });
+      const task = await insertWorkTask(db, { evidence_required: true });
 
-      updateTask(db, task.id, { status: "done" });
+      await updateTask(portFor(db), task.id, { status: "done" });
 
       const after = db.prepare("SELECT * FROM tasks WHERE id = ?").get(task.id) as {
         status: string;
@@ -175,45 +175,45 @@ describe("updateTask", () => {
 
     it("records no task_update activity event on rejection (AC-27)", async () => {
       await enableEnforcement(db);
-      const task = insertWorkTask(db, { evidence_required: true });
+      const task = await insertWorkTask(db, { evidence_required: true });
 
-      updateTask(db, task.id, { status: "done" });
+      await updateTask(portFor(db), task.id, { status: "done" });
 
       expect(listTaskUpdateEvents(db)).toHaveLength(0);
     });
 
-    it("allows the done transition when the enforcement setting is off (AC-28)", () => {
-      const task = insertWorkTask(db, { evidence_required: true });
+    it("allows the done transition when the enforcement setting is off (AC-28)", async () => {
+      const task = await insertWorkTask(db, { evidence_required: true });
 
-      const result = updateTask(db, task.id, { status: "done" });
+      const result = await updateTask(portFor(db), task.id, { status: "done" });
 
       expect(result.ok).toBe(true);
     });
 
     it("allows the done transition when evidence_required is false, even with zero evidence (AC-29)", async () => {
       await enableEnforcement(db);
-      const task = insertWorkTask(db, { evidence_required: false });
+      const task = await insertWorkTask(db, { evidence_required: false });
 
-      const result = updateTask(db, task.id, { status: "done" });
+      const result = await updateTask(portFor(db), task.id, { status: "done" });
 
       expect(result.ok).toBe(true);
     });
 
     it("allows the done transition when there is at least one evidence (AC-30)", async () => {
       await enableEnforcement(db);
-      const task = insertWorkTask(db, { evidence_required: true });
-      insertTaskEvidence(db, { task_id: task.id, kind: "link", url: "https://example.com" });
+      const task = await insertWorkTask(db, { evidence_required: true });
+      await insertTaskEvidence(portFor(db), { task_id: task.id, kind: "link", url: "https://example.com" });
 
-      const result = updateTask(db, task.id, { status: "done" });
+      const result = await updateTask(portFor(db), task.id, { status: "done" });
 
       expect(result.ok).toBe(true);
     });
 
     it("allows transitioning to dropped even with zero evidence (AC-31 — the gate only applies to done)", async () => {
       await enableEnforcement(db);
-      const task = insertWorkTask(db, { evidence_required: true });
+      const task = await insertWorkTask(db, { evidence_required: true });
 
-      const result = updateTask(db, task.id, { status: "dropped" });
+      const result = await updateTask(portFor(db), task.id, { status: "dropped" });
 
       expect(result.ok).toBe(true);
       if (result.ok) {
@@ -224,9 +224,9 @@ describe("updateTask", () => {
     // 決定 2-a: 判定条件は「done への遷移」であって「done であること」ではない
     it("does not retroactively block a patch on an already-done task, even with zero evidence (AC-35)", async () => {
       await enableEnforcement(db);
-      const task = insertWorkTask(db, { evidence_required: true, status: "done" });
+      const task = await insertWorkTask(db, { evidence_required: true, status: "done" });
 
-      const result = updateTask(db, task.id, { title: "更新後のタイトル" });
+      const result = await updateTask(portFor(db), task.id, { title: "更新後のタイトル" });
 
       expect(result.ok).toBe(true);
       if (result.ok) {
@@ -238,9 +238,9 @@ describe("updateTask", () => {
     // 決定 2-c: 関門はパッチ適用後の値を見る
     it("allows { evidence_required: false, status: 'done' } in one patch, even with zero evidence (AC-36)", async () => {
       await enableEnforcement(db);
-      const task = insertWorkTask(db, { evidence_required: true });
+      const task = await insertWorkTask(db, { evidence_required: true });
 
-      const result = updateTask(db, task.id, {
+      const result = await updateTask(portFor(db), task.id, {
         evidence_required: false,
         status: "done",
       });
@@ -254,9 +254,9 @@ describe("updateTask", () => {
 
     it("records a task_update event whose note reflects the evidence_required change for the combined patch above (AC-37)", async () => {
       await enableEnforcement(db);
-      const task = insertWorkTask(db, { evidence_required: true });
+      const task = await insertWorkTask(db, { evidence_required: true });
 
-      updateTask(db, task.id, { evidence_required: false, status: "done" });
+      await updateTask(portFor(db), task.id, { evidence_required: false, status: "done" });
 
       const events = listTaskUpdateEvents(db);
       expect(events).toHaveLength(1);
@@ -267,20 +267,20 @@ describe("updateTask", () => {
   });
 
   describe("evidence_required の変更を活動ログの note に残す（決定3-b）", () => {
-    it("records a note describing the change when evidence_required changes (AC-19)", () => {
-      const task = insertWorkTask(db, { evidence_required: true });
+    it("records a note describing the change when evidence_required changes (AC-19)", async () => {
+      const task = await insertWorkTask(db, { evidence_required: true });
 
-      updateTask(db, task.id, { evidence_required: false });
+      await updateTask(portFor(db), task.id, { evidence_required: false });
 
       const events = listTaskUpdateEvents(db);
       expect(events).toHaveLength(1);
       expect(events[0].note).not.toBeNull();
     });
 
-    it("leaves note null when the patch does not include evidence_required (AC-20)", () => {
-      const task = insertWorkTask(db, { evidence_required: false });
+    it("leaves note null when the patch does not include evidence_required (AC-20)", async () => {
+      const task = await insertWorkTask(db, { evidence_required: false });
 
-      updateTask(db, task.id, { title: "タイトルだけ変更" });
+      await updateTask(portFor(db), task.id, { title: "タイトルだけ変更" });
 
       const events = listTaskUpdateEvents(db);
       expect(events).toHaveLength(1);
@@ -289,8 +289,8 @@ describe("updateTask", () => {
   });
 
   describe("evidence_required の変換（HTTP境界 boolean / DB INTEGER、明示的な仮定8）", () => {
-    it("persists evidence_required as boolean true after insertTask(true)", () => {
-      const task = insertWorkTask(db, { evidence_required: true });
+    it("persists evidence_required as boolean true after (await insertTask(portFor(true)))", async () => {
+      const task = await insertWorkTask(db, { evidence_required: true });
       expect(task.evidence_required).toBe(true);
 
       const raw = db
@@ -299,10 +299,10 @@ describe("updateTask", () => {
       expect(raw.evidence_required).toBe(1);
     });
 
-    it("PATCH evidence_required: true from false persists and reads back as boolean (AC-17)", () => {
-      const task = insertWorkTask(db, { evidence_required: false });
+    it("PATCH evidence_required: true from false persists and reads back as boolean (AC-17)", async () => {
+      const task = await insertWorkTask(db, { evidence_required: false });
 
-      const result = updateTask(db, task.id, { evidence_required: true });
+      const result = await updateTask(portFor(db), task.id, { evidence_required: true });
 
       expect(result.ok).toBe(true);
       if (result.ok) {
@@ -322,10 +322,10 @@ describe("updateTask", () => {
       // すべてで試す（1 つだけだと「拒否を in_progress に限る」誤りを検出できない）。
       it.each(["in_progress", "paused", "done", "dropped"] as const)(
         "rejects with reason 'commitment_requires_todo' when the resulting status is %s and committed_start_at is set (mutation: drop the rejection / limit it to in_progress)",
-        (status) => {
-          const task = insertWorkTask(db, { status });
+        async (status) => {
+          const task = await insertWorkTask(db, { status });
 
-          const result = updateTask(db, task.id, {
+          const result = await updateTask(portFor(db), task.id, {
             committed_start_at: "2026-09-14T11:00:00.000Z",
           });
 
@@ -333,10 +333,10 @@ describe("updateTask", () => {
         },
       );
 
-      it("rejects even when the transition source is todo (status included in the same patch, mutation: judge by the pre-update status)", () => {
-        const task = insertWorkTask(db, { status: "todo" });
+      it("rejects even when the transition source is todo (status included in the same patch, mutation: judge by the pre-update status)", async () => {
+        const task = await insertWorkTask(db, { status: "todo" });
 
-        const result = updateTask(db, task.id, {
+        const result = await updateTask(portFor(db), task.id, {
           status: "in_progress",
           committed_start_at: "2026-09-14T11:00:00.000Z",
         });
@@ -344,10 +344,10 @@ describe("updateTask", () => {
         expect(result).toEqual({ ok: false, reason: "commitment_requires_todo" });
       });
 
-      it("writes nothing on rejection: other fields in the same patch are not applied and no task_update event is recorded", () => {
-        const task = insertWorkTask(db, { status: "in_progress", title: "元のタイトル" });
+      it("writes nothing on rejection: other fields in the same patch are not applied and no task_update event is recorded", async () => {
+        const task = await insertWorkTask(db, { status: "in_progress", title: "元のタイトル" });
 
-        updateTask(db, task.id, {
+        await updateTask(portFor(db), task.id, {
           title: "改題",
           committed_start_at: "2026-09-14T11:00:00.000Z",
         });
@@ -360,10 +360,10 @@ describe("updateTask", () => {
         expect(listTaskUpdateEvents(db)).toHaveLength(0);
       });
 
-      it("writes nothing on rejection for status set to a non-todo value together with committed_start_at (todo source): other fields are not applied and no task_update event is recorded", () => {
-        const task = insertWorkTask(db, { status: "todo", title: "元のタイトル" });
+      it("writes nothing on rejection for status set to a non-todo value together with committed_start_at (todo source): other fields are not applied and no task_update event is recorded", async () => {
+        const task = await insertWorkTask(db, { status: "todo", title: "元のタイトル" });
 
-        const result = updateTask(db, task.id, {
+        const result = await updateTask(portFor(db), task.id, {
           title: "改題",
           status: "in_progress",
           committed_start_at: "2026-09-14T11:00:00.000Z",
@@ -379,18 +379,18 @@ describe("updateTask", () => {
         expect(listTaskUpdateEvents(db)).toHaveLength(0);
       });
 
-      it("does not reject committed_start_at: null regardless of status (mutation: reject regardless of value presence)", () => {
-        const task = insertWorkTask(db, { status: "in_progress" });
+      it("does not reject committed_start_at: null regardless of status (mutation: reject regardless of value presence)", async () => {
+        const task = await insertWorkTask(db, { status: "in_progress" });
 
-        const result = updateTask(db, task.id, { committed_start_at: null });
+        const result = await updateTask(portFor(db), task.id, { committed_start_at: null });
 
         expect(result.ok).toBe(true);
       });
 
-      it("accepts status: 'todo' together with committed_start_at on a non-todo task (mutation: judge by the pre-update status)", () => {
-        const task = insertWorkTask(db, { status: "in_progress" });
+      it("accepts status: 'todo' together with committed_start_at on a non-todo task (mutation: judge by the pre-update status)", async () => {
+        const task = await insertWorkTask(db, { status: "in_progress" });
 
-        const result = updateTask(db, task.id, {
+        const result = await updateTask(portFor(db), task.id, {
           status: "todo",
           committed_start_at: "2026-09-14T11:00:00.000Z",
         });
@@ -403,13 +403,13 @@ describe("updateTask", () => {
     });
 
     describe("退役", () => {
-      it("clears committed_start_at and committed_at when a todo task with a commitment changes status away from todo (mutation: drop retirement)", () => {
-        const task = insertWorkTask(db, {
+      it("clears committed_start_at and committed_at when a todo task with a commitment changes status away from todo (mutation: drop retirement)", async () => {
+        const task = await insertWorkTask(db, {
           status: "todo",
           committed_start_at: "2026-09-14T11:00:00.000Z",
         });
 
-        const result = updateTask(db, task.id, { status: "in_progress" });
+        const result = await updateTask(portFor(db), task.id, { status: "in_progress" });
 
         expect(result.ok).toBe(true);
         if (result.ok) {
@@ -418,16 +418,16 @@ describe("updateTask", () => {
         }
       });
 
-      it("retires regardless of the transition source (paused -> in_progress, mutation: limit retirement to a todo source)", () => {
+      it("retires regardless of the transition source (paused -> in_progress, mutation: limit retirement to a todo source)", async () => {
         // paused かつ約束を持つタスクは拒否（T2）があると API 経由では作れない
         // ため、DB へ直接書いて作る（Issue #527 本文の指示）。
-        const task = insertWorkTask(db, { status: "todo" });
+        const task = await insertWorkTask(db, { status: "todo" });
         const committedAt = "2026-09-14T02:00:00.000Z";
         db.prepare(
           "UPDATE tasks SET status = 'paused', committed_start_at = ?, committed_at = ? WHERE id = ?",
         ).run("2026-09-14T11:00:00.000Z", committedAt, task.id);
 
-        const result = updateTask(db, task.id, { status: "in_progress" });
+        const result = await updateTask(portFor(db), task.id, { status: "in_progress" });
 
         expect(result.ok).toBe(true);
         if (result.ok) {
@@ -436,13 +436,13 @@ describe("updateTask", () => {
         }
       });
 
-      it("records a note describing the retirement with the before/after values (mutation: write no note on retirement)", () => {
-        const task = insertWorkTask(db, {
+      it("records a note describing the retirement with the before/after values (mutation: write no note on retirement)", async () => {
+        const task = await insertWorkTask(db, {
           status: "todo",
           committed_start_at: "2026-09-14T11:00:00.000Z",
         });
 
-        updateTask(db, task.id, { status: "in_progress" });
+        await updateTask(portFor(db), task.id, { status: "in_progress" });
 
         const events = listTaskUpdateEvents(db);
         expect(events).toHaveLength(1);
@@ -451,13 +451,13 @@ describe("updateTask", () => {
         );
       });
 
-      it("does not retire when the status does not change (mutation: retire on any patch that includes a commitment-bearing task)", () => {
-        const task = insertWorkTask(db, {
+      it("does not retire when the status does not change (mutation: retire on any patch that includes a commitment-bearing task)", async () => {
+        const task = await insertWorkTask(db, {
           status: "todo",
           committed_start_at: "2026-09-14T11:00:00.000Z",
         });
 
-        const result = updateTask(db, task.id, { title: "改題" });
+        const result = await updateTask(portFor(db), task.id, { title: "改題" });
 
         expect(result.ok).toBe(true);
         if (result.ok) {
@@ -467,13 +467,13 @@ describe("updateTask", () => {
 
       it("does not retire when the evidence gate rejects the update (mutation: retire before the gate check)", async () => {
         await enableEnforcement(db);
-        const task = insertWorkTask(db, {
+        const task = await insertWorkTask(db, {
           status: "todo",
           evidence_required: true,
           committed_start_at: "2026-09-14T11:00:00.000Z",
         });
 
-        const result = updateTask(db, task.id, { status: "done" });
+        const result = await updateTask(portFor(db), task.id, { status: "done" });
 
         expect(result).toEqual({ ok: false, reason: "evidence_required" });
         const after = db
@@ -497,13 +497,13 @@ describe("insertTask evidence_required (AC-12/AC-13)", () => {
     db.close();
   });
 
-  it("defaults evidence_required to false when omitted", () => {
-    const task = insertWorkTask(db);
+  it("defaults evidence_required to false when omitted", async () => {
+    const task = await insertWorkTask(db);
     expect(task.evidence_required).toBe(false);
   });
 
-  it("persists evidence_required: true", () => {
-    const task = insertWorkTask(db, { evidence_required: true });
+  it("persists evidence_required: true", async () => {
+    const task = await insertWorkTask(db, { evidence_required: true });
     expect(task.evidence_required).toBe(true);
   });
 });

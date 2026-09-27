@@ -75,7 +75,7 @@ describe("GET /api/dashboard", () => {
 
   it("reflects task progress, session flags, and the max escalation level", async () => {
     vi.setSystemTime(new Date(2026, 6, 6, 20, 0));
-    insertTask(db, {
+    await insertTask(portFor(db), {
       title: "資料作成",
       description: null,
       category: "work",
@@ -85,7 +85,7 @@ describe("GET /api/dashboard", () => {
       boss_comment: null,
       estimated_minutes: null,
     });
-    insertTask(db, {
+    await insertTask(portFor(db), {
       title: "メール返信",
       description: null,
       category: "work",

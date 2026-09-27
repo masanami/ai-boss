@@ -86,7 +86,7 @@ describe("TASK_TOOLS", () => {
     // 決定6: update_task の committed_start_at は null で取り消せる。JSON Schema
     // は type: ["string", "null"] で null を許容する（変異: type を "string" だけ
     // に戻す）。
-    it("update_task のスキーマの committed_start_at は null を含む型を持ち、説明文が null での取り消しを明示する", () => {
+    it("update_task のスキーマの committed_start_at は null を含む型を持ち、説明文が null での取り消しを明示する", async () => {
       const updateTaskTool = TASK_TOOLS.find((tool) => tool.name === "update_task");
       const properties = updateTaskTool?.input_schema.properties as
         | Record<string, { type?: unknown; description?: string } | undefined>
@@ -100,7 +100,7 @@ describe("TASK_TOOLS", () => {
 
     // create_task の committed_start_at は値のみ（決定6: 作成時に取り消す約束は
     // 無い）。null 取り消し文言を持たないことを update_task と区別して担保する。
-    it("create_task のスキーマの committed_start_at の説明文は null での取り消しに言及しない", () => {
+    it("create_task のスキーマの committed_start_at の説明文は null での取り消しに言及しない", async () => {
       const createTaskTool = TASK_TOOLS.find((tool) => tool.name === "create_task");
       const properties = createTaskTool?.input_schema.properties as
         | Record<string, { type?: unknown; description?: string } | undefined>
@@ -122,29 +122,29 @@ describe("executeTaskTool", () => {
     await runMigrations(portFor(db));
   });
 
-  afterEach(() => {
+  afterEach(async () => {
     vi.useRealTimers();
     db.close();
   });
 
   describe("create_task", () => {
-    it("creates a task and returns it as the tool result content", () => {
-      const result = executeTaskTool(db, "create_task", { title: "資料作成" });
+    it("creates a task and returns it as the tool result content", async () => {
+      const result = await executeTaskTool(portFor(db), "create_task", { title: "資料作成" });
 
       expect(result.isError).toBe(false);
       const created = JSON.parse(result.content);
       expect(created).toMatchObject({ title: "資料作成", status: "todo", category: "work" });
     });
 
-    it("returns an error result when title is missing", () => {
-      const result = executeTaskTool(db, "create_task", {});
+    it("returns an error result when title is missing", async () => {
+      const result = await executeTaskTool(portFor(db), "create_task", {});
 
       expect(result.isError).toBe(true);
       expect(result.content).toContain("title");
     });
 
-    it("respects optional fields (priority, due_at, estimated_minutes, boss_comment)", () => {
-      const result = executeTaskTool(db, "create_task", {
+    it("respects optional fields (priority, due_at, estimated_minutes, boss_comment)", async () => {
+      const result = await executeTaskTool(portFor(db), "create_task", {
         title: "資料作成",
         priority: "high",
         due_at: "2026-07-10",
@@ -164,9 +164,9 @@ describe("executeTaskTool", () => {
     // AC-14（ボスのツール経路）: ボスが時刻付きの旧形式を送ってきても拒否せず
     // 受理し、その瞬時のローカル暦日へ正規化して保存する（ADR 0010 決定 3・4）。
     // 実測では、ボスは説明文に引きずられて T18:00:00+09:00 を送っていた。
-    it("normalizes a legacy time-of-day due_at to a local calendar day (AC-14)", () => {
+    it("normalizes a legacy time-of-day due_at to a local calendar day (AC-14)", async () => {
       const legacy = "2026-07-10T18:00:00+09:00";
-      const result = executeTaskTool(db, "create_task", {
+      const result = await executeTaskTool(portFor(db), "create_task", {
         title: "資料作成",
         due_at: legacy,
       });
@@ -180,14 +180,14 @@ describe("executeTaskTool", () => {
     });
 
     // AC-14（ボスのツール経路・update）: 更新経路も同じく暦日へ落とす
-    it("normalizes a legacy time-of-day due_at on update too (AC-14)", () => {
+    it("normalizes a legacy time-of-day due_at on update too (AC-14)", async () => {
       const created = JSON.parse(
-        executeTaskTool(db, "create_task", { title: "資料作成" }).content,
+        (await executeTaskTool(portFor(db), "create_task", { title: "資料作成" })).content,
       );
       const legacy = "2026-07-11T18:00:00+09:00";
 
       const updated = JSON.parse(
-        executeTaskTool(db, "update_task", { id: created.id, due_at: legacy })
+        (await executeTaskTool(portFor(db), "update_task", { id: created.id, due_at: legacy }))
           .content,
       );
 
@@ -196,8 +196,8 @@ describe("executeTaskTool", () => {
     });
 
     // 機能仕様 docs/features/completion-evidence-enforcement.md 決定3
-    it("sets evidence_required: true when passed explicitly (AC-15)", () => {
-      const result = executeTaskTool(db, "create_task", {
+    it("sets evidence_required: true when passed explicitly (AC-15)", async () => {
+      const result = await executeTaskTool(portFor(db), "create_task", {
         title: "資料作成",
         evidence_required: true,
       });
@@ -206,8 +206,8 @@ describe("executeTaskTool", () => {
       expect(created.evidence_required).toBe(true);
     });
 
-    it("defaults evidence_required to false when omitted (AC-16)", () => {
-      const result = executeTaskTool(db, "create_task", { title: "資料作成" });
+    it("defaults evidence_required to false when omitted (AC-16)", async () => {
+      const result = await executeTaskTool(portFor(db), "create_task", { title: "資料作成" });
 
       const created = JSON.parse(result.content);
       expect(created.evidence_required).toBe(false);
@@ -215,8 +215,8 @@ describe("executeTaskTool", () => {
   });
 
   describe("update_task", () => {
-    it("updates an existing task and returns it as the tool result content", () => {
-      const task = insertTask(db, {
+    it("updates an existing task and returns it as the tool result content", async () => {
+      const task = await insertTask(portFor(db), {
         title: "資料作成",
         description: null,
         category: "work",
@@ -227,7 +227,7 @@ describe("executeTaskTool", () => {
         estimated_minutes: null,
       });
 
-      const result = executeTaskTool(db, "update_task", {
+      const result = await executeTaskTool(portFor(db), "update_task", {
         id: task.id,
         priority: "high",
       });
@@ -237,22 +237,22 @@ describe("executeTaskTool", () => {
       expect(updated).toMatchObject({ id: task.id, priority: "high" });
     });
 
-    it("returns an error result when id is missing", () => {
-      const result = executeTaskTool(db, "update_task", { priority: "high" });
+    it("returns an error result when id is missing", async () => {
+      const result = await executeTaskTool(portFor(db), "update_task", { priority: "high" });
 
       expect(result.isError).toBe(true);
       expect(result.content).toContain("id");
     });
 
-    it("returns an error result when the task does not exist", () => {
-      const result = executeTaskTool(db, "update_task", { id: 9999, priority: "high" });
+    it("returns an error result when the task does not exist", async () => {
+      const result = await executeTaskTool(portFor(db), "update_task", { id: 9999, priority: "high" });
 
       expect(result.isError).toBe(true);
       expect(result.content).toContain("9999");
     });
 
-    it("returns an error result when a field violates validation constraints (invalid status)", () => {
-      const task = insertTask(db, {
+    it("returns an error result when a field violates validation constraints (invalid status)", async () => {
+      const task = await insertTask(portFor(db), {
         title: "資料作成",
         description: null,
         category: "work",
@@ -263,14 +263,14 @@ describe("executeTaskTool", () => {
         estimated_minutes: null,
       });
 
-      const result = executeTaskTool(db, "update_task", { id: task.id, status: "urgent" });
+      const result = await executeTaskTool(portFor(db), "update_task", { id: task.id, status: "urgent" });
 
       expect(result.isError).toBe(true);
       expect(result.content).toContain("status");
     });
 
-    it("records a task_update activity event on success", () => {
-      const task = insertTask(db, {
+    it("records a task_update activity event on success", async () => {
+      const task = await insertTask(portFor(db), {
         title: "資料作成",
         description: null,
         category: "work",
@@ -281,7 +281,7 @@ describe("executeTaskTool", () => {
         estimated_minutes: null,
       });
 
-      executeTaskTool(db, "update_task", { id: task.id, priority: "high" });
+      await executeTaskTool(portFor(db), "update_task", { id: task.id, priority: "high" });
 
       const events = db
         .prepare("SELECT * FROM activity_events WHERE type = 'task_update'")
@@ -290,8 +290,8 @@ describe("executeTaskTool", () => {
       expect(events[0]).toMatchObject({ type: "task_update", task_id: task.id });
     });
 
-    it("does not record a task_update activity event when the task does not exist", () => {
-      executeTaskTool(db, "update_task", { id: 9999, priority: "high" });
+    it("does not record a task_update activity event when the task does not exist", async () => {
+      await executeTaskTool(portFor(db), "update_task", { id: 9999, priority: "high" });
 
       const events = db
         .prepare("SELECT * FROM activity_events WHERE type = 'task_update'")
@@ -301,8 +301,8 @@ describe("executeTaskTool", () => {
 
     // AC-19（Issue #188）: TASK_STATUSES を spread しているため、#183 の定数
     // 拡張で自動的に受理される見込みだったことをテストで担保する。
-    it("accepts status: 'paused' and transitions the task to paused", () => {
-      const task = insertTask(db, {
+    it("accepts status: 'paused' and transitions the task to paused", async () => {
+      const task = await insertTask(portFor(db), {
         title: "資料作成",
         description: null,
         category: "work",
@@ -313,7 +313,7 @@ describe("executeTaskTool", () => {
         estimated_minutes: null,
       });
 
-      const result = executeTaskTool(db, "update_task", {
+      const result = await executeTaskTool(portFor(db), "update_task", {
         id: task.id,
         status: "paused",
       });
@@ -328,8 +328,8 @@ describe("executeTaskTool", () => {
     // 「一時停止」（task_pause + task_update の2件）とは非対称。既存の
     // 「ボスが in_progress にしても task_start は記録されない」と同じ非対称性
     // であり、本チケットでは揃えない（抑制の実装を足さない・既存挙動の固定）。
-    it("does not record a task_pause activity event when the boss pauses a task via update_task (仮定4の既存非対称性)", () => {
-      const task = insertTask(db, {
+    it("does not record a task_pause activity event when the boss pauses a task via update_task (仮定4の既存非対称性)", async () => {
+      const task = await insertTask(portFor(db), {
         title: "資料作成",
         description: null,
         category: "work",
@@ -340,7 +340,7 @@ describe("executeTaskTool", () => {
         estimated_minutes: null,
       });
 
-      executeTaskTool(db, "update_task", { id: task.id, status: "paused" });
+      await executeTaskTool(portFor(db), "update_task", { id: task.id, status: "paused" });
 
       const pauseEvents = db
         .prepare("SELECT * FROM activity_events WHERE type = 'task_pause'")
@@ -357,7 +357,7 @@ describe("executeTaskTool", () => {
     // 機能仕様 docs/features/completion-evidence-enforcement.md 決定2-e
     describe("evidence_required の完了ゲート（Issue #389）", () => {
       it("returns isError: true when evidence is required, enforcement is on, and there is no evidence (AC-32)", async () => {
-        const task = insertTask(db, {
+        const task = await insertTask(portFor(db), {
           title: "資料作成",
           description: null,
           category: "work",
@@ -370,7 +370,7 @@ describe("executeTaskTool", () => {
         });
         await enableEnforcement(db);
 
-        const result = executeTaskTool(db, "update_task", {
+        const result = await executeTaskTool(portFor(db), "update_task", {
           id: task.id,
           status: "done",
         });
@@ -379,7 +379,7 @@ describe("executeTaskTool", () => {
       });
 
       it("the error result text mentions the evidence shortfall (AC-33)", async () => {
-        const task = insertTask(db, {
+        const task = await insertTask(portFor(db), {
           title: "資料作成",
           description: null,
           category: "work",
@@ -392,7 +392,7 @@ describe("executeTaskTool", () => {
         });
         await enableEnforcement(db);
 
-        const result = executeTaskTool(db, "update_task", {
+        const result = await executeTaskTool(portFor(db), "update_task", {
           id: task.id,
           status: "done",
         });
@@ -401,7 +401,7 @@ describe("executeTaskTool", () => {
       });
 
       it("does not record a task_update event when the gate rejects the update", async () => {
-        const task = insertTask(db, {
+        const task = await insertTask(portFor(db), {
           title: "資料作成",
           description: null,
           category: "work",
@@ -414,7 +414,7 @@ describe("executeTaskTool", () => {
         });
         await enableEnforcement(db);
 
-        executeTaskTool(db, "update_task", { id: task.id, status: "done" });
+        await executeTaskTool(portFor(db), "update_task", { id: task.id, status: "done" });
 
         const events = db
           .prepare("SELECT * FROM activity_events WHERE type = 'task_update'")
@@ -426,8 +426,8 @@ describe("executeTaskTool", () => {
 
   // 機能仕様 docs/features/task-start-commitment.md 決定6
   describe("committed_start_at（着手の約束、Issue #525）", () => {
-    it("returns isError: true and does not update the task when committed_start_at cannot be parsed (e.g. \"20:00\")", () => {
-      const task = insertTask(db, {
+    it("returns isError: true and does not update the task when committed_start_at cannot be parsed (e.g. \"20:00\")", async () => {
+      const task = await insertTask(portFor(db), {
         title: "資料作成",
         description: null,
         category: "work",
@@ -438,7 +438,7 @@ describe("executeTaskTool", () => {
         estimated_minutes: null,
       });
 
-      const result = executeTaskTool(db, "update_task", {
+      const result = await executeTaskTool(portFor(db), "update_task", {
         id: task.id,
         committed_start_at: "20:00",
       });
@@ -453,8 +453,8 @@ describe("executeTaskTool", () => {
 
   // 機能仕様 docs/features/task-start-commitment.md 決定3-2（Issue #527）
   describe("committed_start_at の退役・拒否（決定3-2、Issue #527）", () => {
-    it("returns isError: true and does not update the task when the target status is not todo (mutation: skip the rejection)", () => {
-      const task = insertTask(db, {
+    it("returns isError: true and does not update the task when the target status is not todo (mutation: skip the rejection)", async () => {
+      const task = await insertTask(portFor(db), {
         title: "資料作成",
         description: null,
         category: "work",
@@ -465,7 +465,7 @@ describe("executeTaskTool", () => {
         estimated_minutes: null,
       });
 
-      const result = executeTaskTool(db, "update_task", {
+      const result = await executeTaskTool(portFor(db), "update_task", {
         id: task.id,
         committed_start_at: "2026-09-14T20:00:00+09:00",
       });
@@ -478,8 +478,8 @@ describe("executeTaskTool", () => {
       expect(events).toHaveLength(0);
     });
 
-    it("clears committed_start_at when a status change on a committed todo task retires the commitment (mutation: limit retirement to the PATCH route handler)", () => {
-      const task = insertTask(db, {
+    it("clears committed_start_at when a status change on a committed todo task retires the commitment (mutation: limit retirement to the PATCH route handler)", async () => {
+      const task = await insertTask(portFor(db), {
         title: "資料作成",
         description: null,
         category: "work",
@@ -491,7 +491,7 @@ describe("executeTaskTool", () => {
         committed_start_at: "2026-09-14T11:00:00.000Z",
       });
 
-      const result = executeTaskTool(db, "update_task", {
+      const result = await executeTaskTool(portFor(db), "update_task", {
         id: task.id,
         status: "in_progress",
       });
@@ -504,8 +504,8 @@ describe("executeTaskTool", () => {
   });
 
   describe("unknown tool name", () => {
-    it("returns an error result", () => {
-      const result = executeTaskTool(db, "delete_task", {});
+    it("returns an error result", async () => {
+      const result = await executeTaskTool(portFor(db), "delete_task", {});
 
       expect(result.isError).toBe(true);
       expect(result.content).toContain("delete_task");

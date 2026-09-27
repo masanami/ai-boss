@@ -1,4 +1,4 @@
-import type Database from "better-sqlite3";
+import type { Db } from "../db/db-port.js";
 import type { TaskEvidence } from "./task-evidence.js";
 
 /**
@@ -24,18 +24,19 @@ export type NewTaskEvidenceRecord =
     };
 
 /** 指定タスクのエビデンスを作成順（id 昇順）で返す。 */
-export function listTaskEvidences(db: Database.Database, taskId: number): TaskEvidence[] {
-  return db
-    .prepare("SELECT * FROM task_evidences WHERE task_id = ? ORDER BY id ASC")
-    .all(taskId) as TaskEvidence[];
+export async function listTaskEvidences(db: Db, taskId: number): Promise<TaskEvidence[]> {
+  return db.all<TaskEvidence>("SELECT * FROM task_evidences WHERE task_id = ? ORDER BY id ASC", [
+    taskId,
+  ]);
 }
 
 /** 指定タスクのエビデンス件数（件数上限判定・ボスへ渡す添付件数に使う）。 */
-export function countTaskEvidences(db: Database.Database, taskId: number): number {
-  const row = db
-    .prepare("SELECT COUNT(*) AS count FROM task_evidences WHERE task_id = ?")
-    .get(taskId) as { count: number };
-  return row.count;
+export async function countTaskEvidences(db: Db, taskId: number): Promise<number> {
+  const row = await db.get<{ count: number }>(
+    "SELECT COUNT(*) AS count FROM task_evidences WHERE task_id = ?",
+    [taskId],
+  );
+  return row?.count ?? 0;
 }
 
 /**
@@ -47,10 +48,10 @@ export function countTaskEvidences(db: Database.Database, taskId: number): numbe
  * も含め、渡した全 `taskIds` についてキーを持つ（欠落キーが無い＝呼び出し側
  * が `?? 0` フォールバックを重ねて書かなくてよい）。
  */
-export function countTaskEvidencesByTaskIds(
-  db: Database.Database,
+export async function countTaskEvidencesByTaskIds(
+  db: Db,
   taskIds: number[],
-): Record<number, number> {
+): Promise<Record<number, number>> {
   const counts: Record<number, number> = {};
   for (const taskId of taskIds) {
     counts[taskId] = 0;
@@ -60,25 +61,22 @@ export function countTaskEvidencesByTaskIds(
   }
 
   const placeholders = taskIds.map(() => "?").join(", ");
-  const rows = db
-    .prepare(
-      `SELECT task_id, COUNT(*) AS count FROM task_evidences
-       WHERE task_id IN (${placeholders}) GROUP BY task_id`,
-    )
-    .all(...taskIds) as { task_id: number; count: number }[];
+  const rows = await db.all<{ task_id: number; count: number }>(
+    `SELECT task_id, COUNT(*) AS count FROM task_evidences
+     WHERE task_id IN (${placeholders}) GROUP BY task_id`,
+    taskIds,
+  );
   for (const row of rows) {
     counts[row.task_id] = row.count;
   }
   return counts;
 }
 
-export function findTaskEvidenceById(
-  db: Database.Database,
+export async function findTaskEvidenceById(
+  db: Db,
   id: number,
-): TaskEvidence | undefined {
-  return db.prepare("SELECT * FROM task_evidences WHERE id = ?").get(id) as
-    | TaskEvidence
-    | undefined;
+): Promise<TaskEvidence | undefined> {
+  return db.get<TaskEvidence>("SELECT * FROM task_evidences WHERE id = ?", [id]);
 }
 
 /**
@@ -86,19 +84,17 @@ export function findTaskEvidenceById(
  * 非対象の列（file なら `url`、link なら `stored_filename` /
  * `original_filename` / `mime_type` / `size_bytes`）は NULL で埋める。
  */
-export function insertTaskEvidence(
-  db: Database.Database,
+export async function insertTaskEvidence(
+  db: Db,
   record: NewTaskEvidenceRecord,
-): TaskEvidence {
+): Promise<TaskEvidence> {
   const now = new Date().toISOString();
 
-  const result = db
-    .prepare(
-      `INSERT INTO task_evidences (
-        task_id, kind, stored_filename, original_filename, mime_type, size_bytes, url, created_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-    )
-    .run(
+  const result = await db.run(
+    `INSERT INTO task_evidences (
+      task_id, kind, stored_filename, original_filename, mime_type, size_bytes, url, created_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+    [
       record.task_id,
       record.kind,
       record.kind === "file" ? record.stored_filename : null,
@@ -107,9 +103,10 @@ export function insertTaskEvidence(
       record.kind === "file" ? record.size_bytes : null,
       record.kind === "link" ? record.url : null,
       now,
-    );
+    ],
+  );
 
-  const evidence = findTaskEvidenceById(db, Number(result.lastInsertRowid));
+  const evidence = await findTaskEvidenceById(db, result.lastInsertRowid);
   if (!evidence) {
     throw new Error("failed to read back the inserted task evidence");
   }
@@ -120,7 +117,7 @@ export function insertTaskEvidence(
  * `task_evidences` から 1 行削除する。存在しない id は no-op で `false` を
  * 返す（呼び出し元がこれ以上のエラー処理を要らない設計にできる）。
  */
-export function deleteTaskEvidence(db: Database.Database, id: number): boolean {
-  const result = db.prepare("DELETE FROM task_evidences WHERE id = ?").run(id);
+export async function deleteTaskEvidence(db: Db, id: number): Promise<boolean> {
+  const result = await db.run("DELETE FROM task_evidences WHERE id = ?", [id]);
   return result.changes > 0;
 }

@@ -31,12 +31,12 @@ describe("recordActivityEvent", () => {
     await runMigrations(portFor(db));
   });
 
-  afterEach(() => {
+  afterEach(async () => {
     db.close();
   });
 
-  it("records a chat_message event with only a type, defaulting optional fields to null", () => {
-    const event = recordActivityEvent(db, { type: "chat_message" });
+  it("records a chat_message event with only a type, defaulting optional fields to null", async () => {
+    const event = await recordActivityEvent(portFor(db), { type: "chat_message" });
 
     expect(event).toMatchObject({
       type: "chat_message",
@@ -48,8 +48,8 @@ describe("recordActivityEvent", () => {
     expect(typeof event.created_at).toBe("string");
   });
 
-  it("records an event with task_id, note, and expected_minutes set", () => {
-    const event = recordActivityEvent(db, {
+  it("records an event with task_id, note, and expected_minutes set", async () => {
+    const event = await recordActivityEvent(portFor(db), {
       type: "break_start",
       note: "休憩します",
       expected_minutes: 15,
@@ -63,8 +63,8 @@ describe("recordActivityEvent", () => {
     });
   });
 
-  it("persists the event so it can be read back from the database", () => {
-    const task = insertTask(db, {
+  it("persists the event so it can be read back from the database", async () => {
+    const task = await insertTask(portFor(db), {
       title: "資料作成",
       description: null,
       category: "work",
@@ -75,7 +75,7 @@ describe("recordActivityEvent", () => {
       estimated_minutes: null,
     });
 
-    const event = recordActivityEvent(db, {
+    const event = await recordActivityEvent(portFor(db), {
       type: "task_update",
       task_id: task.id,
     });
@@ -86,10 +86,10 @@ describe("recordActivityEvent", () => {
     expect(row).toMatchObject({ type: "task_update", task_id: task.id });
   });
 
-  it("uses the given created_at instead of the current time when provided (backdated checkin)", () => {
+  it("uses the given created_at instead of the current time when provided (backdated checkin)", async () => {
     const backdated = "2026-07-05T09:00:00.000Z";
 
-    const event = recordActivityEvent(db, {
+    const event = await recordActivityEvent(portFor(db), {
       type: "task_pause",
       created_at: backdated,
     });
@@ -110,12 +110,12 @@ describe("findLatestTaskStartOrPauseEvent", () => {
     await runMigrations(portFor(db));
   });
 
-  afterEach(() => {
+  afterEach(async () => {
     db.close();
   });
 
-  it("returns undefined when the task has no task_start/task_pause events", () => {
-    const task = insertTask(db, {
+  it("returns undefined when the task has no task_start/task_pause events", async () => {
+    const task = await insertTask(portFor(db), {
       title: "資料作成",
       description: null,
       category: "work",
@@ -126,11 +126,11 @@ describe("findLatestTaskStartOrPauseEvent", () => {
       estimated_minutes: null,
     });
 
-    expect(findLatestTaskStartOrPauseEvent(db, task.id)).toBeUndefined();
+    expect(await findLatestTaskStartOrPauseEvent(portFor(db), task.id)).toBeUndefined();
   });
 
-  it("returns the most recent task_start/task_pause event by created_at", () => {
-    const task = insertTask(db, {
+  it("returns the most recent task_start/task_pause event by created_at", async () => {
+    const task = await insertTask(portFor(db), {
       title: "資料作成",
       description: null,
       category: "work",
@@ -144,7 +144,7 @@ describe("findLatestTaskStartOrPauseEvent", () => {
     insertEvent(db, "task_pause", "2026-07-05T11:00:00.000Z", task.id);
     insertEvent(db, "task_start", "2026-07-05T10:00:00.000Z", task.id);
 
-    const latest = findLatestTaskStartOrPauseEvent(db, task.id);
+    const latest = await findLatestTaskStartOrPauseEvent(portFor(db), task.id);
 
     expect(latest).toMatchObject({
       type: "task_pause",
@@ -152,8 +152,8 @@ describe("findLatestTaskStartOrPauseEvent", () => {
     });
   });
 
-  it("excludes task_update events from the comparison", () => {
-    const task = insertTask(db, {
+  it("excludes task_update events from the comparison", async () => {
+    const task = await insertTask(portFor(db), {
       title: "資料作成",
       description: null,
       category: "work",
@@ -166,7 +166,7 @@ describe("findLatestTaskStartOrPauseEvent", () => {
     insertEvent(db, "task_start", "2026-07-05T09:00:00.000Z", task.id);
     insertEvent(db, "task_update", "2026-07-05T12:00:00.000Z", task.id);
 
-    const latest = findLatestTaskStartOrPauseEvent(db, task.id);
+    const latest = await findLatestTaskStartOrPauseEvent(portFor(db), task.id);
 
     expect(latest).toMatchObject({
       type: "task_start",
@@ -174,8 +174,8 @@ describe("findLatestTaskStartOrPauseEvent", () => {
     });
   });
 
-  it("excludes events belonging to a different task", () => {
-    const taskA = insertTask(db, {
+  it("excludes events belonging to a different task", async () => {
+    const taskA = await insertTask(portFor(db), {
       title: "タスクA",
       description: null,
       category: "work",
@@ -185,7 +185,7 @@ describe("findLatestTaskStartOrPauseEvent", () => {
       boss_comment: null,
       estimated_minutes: null,
     });
-    const taskB = insertTask(db, {
+    const taskB = await insertTask(portFor(db), {
       title: "タスクB",
       description: null,
       category: "work",
@@ -197,7 +197,7 @@ describe("findLatestTaskStartOrPauseEvent", () => {
     });
     insertEvent(db, "task_start", "2026-07-05T09:00:00.000Z", taskB.id);
 
-    expect(findLatestTaskStartOrPauseEvent(db, taskA.id)).toBeUndefined();
+    expect(await findLatestTaskStartOrPauseEvent(portFor(db), taskA.id)).toBeUndefined();
   });
 });
 
@@ -213,38 +213,38 @@ describe("checkBreakEndOrder", () => {
     db.close();
   });
 
-  it("is invalid when there is no break_start before occurredAt", () => {
-    const result = checkBreakEndOrder(db, "2026-07-05T10:00:00.000Z");
+  it("is invalid when there is no break_start before occurredAt", async () => {
+    const result = await checkBreakEndOrder(portFor(db), "2026-07-05T10:00:00.000Z");
 
     expect(result).toEqual({ valid: false, reason: "no_prior_break_start" });
   });
 
-  it("is invalid when occurredAt is exactly equal to a break_start", () => {
+  it("is invalid when occurredAt is exactly equal to a break_start", async () => {
     insertEvent(db, "break_start", "2026-07-05T09:00:00.000Z");
 
-    const result = checkBreakEndOrder(db, "2026-07-05T09:00:00.000Z");
+    const result = await checkBreakEndOrder(portFor(db), "2026-07-05T09:00:00.000Z");
 
     expect(result).toEqual({ valid: false, reason: "same_as_break_start" });
   });
 
-  it("is invalid when a break_end already exists between the prior break_start and occurredAt", () => {
+  it("is invalid when a break_end already exists between the prior break_start and occurredAt", async () => {
     insertEvent(db, "break_start", "2026-07-05T09:00:00.000Z");
     insertEvent(db, "break_end", "2026-07-05T09:30:00.000Z");
 
-    const result = checkBreakEndOrder(db, "2026-07-05T10:00:00.000Z");
+    const result = await checkBreakEndOrder(portFor(db), "2026-07-05T10:00:00.000Z");
 
     expect(result).toEqual({ valid: false, reason: "already_closed" });
   });
 
-  it("is valid when the prior break_start has no break_end before occurredAt yet", () => {
+  it("is valid when the prior break_start has no break_end before occurredAt yet", async () => {
     insertEvent(db, "break_start", "2026-07-05T09:00:00.000Z");
 
-    const result = checkBreakEndOrder(db, "2026-07-05T09:30:00.000Z");
+    const result = await checkBreakEndOrder(portFor(db), "2026-07-05T09:30:00.000Z");
 
     expect(result).toEqual({ valid: true });
   });
 
-  it("is valid even when a later, already-completed break has been recorded (AC-8)", () => {
+  it("is valid even when a later, already-completed break has been recorded (AC-8)", async () => {
     insertEvent(db, "break_start", "2026-07-05T09:00:00.000Z");
     // A later break, already recorded, should not affect the check against
     // the prior break_start for occurredAt = 09:30 (the rejected alternative
@@ -253,7 +253,7 @@ describe("checkBreakEndOrder", () => {
     insertEvent(db, "break_start", "2026-07-05T10:00:00.000Z");
     insertEvent(db, "break_end", "2026-07-05T10:30:00.000Z");
 
-    const result = checkBreakEndOrder(db, "2026-07-05T09:30:00.000Z");
+    const result = await checkBreakEndOrder(portFor(db), "2026-07-05T09:30:00.000Z");
 
     expect(result).toEqual({ valid: true });
   });
@@ -271,7 +271,7 @@ describe("listEventsSince", () => {
     db.close();
   });
 
-  it("returns only events created at or after the given time, ordered by created_at ascending", () => {
+  it("returns only events created at or after the given time, ordered by created_at ascending", async () => {
     db.prepare(
       "INSERT INTO activity_events (type, created_at) VALUES (?, ?)",
     ).run("checkin", "2026-07-05T09:00:00.000Z");
@@ -282,7 +282,7 @@ describe("listEventsSince", () => {
       "INSERT INTO activity_events (type, created_at) VALUES (?, ?)",
     ).run("checkin", "2026-07-05T11:00:00.000Z");
 
-    const events = listEventsSince(db, "2026-07-05T10:00:00.000Z");
+    const events = await listEventsSince(portFor(db), "2026-07-05T10:00:00.000Z");
 
     expect(events.map((e) => e.created_at)).toEqual([
       "2026-07-05T10:00:00.000Z",
@@ -290,17 +290,17 @@ describe("listEventsSince", () => {
     ]);
   });
 
-  it("returns an empty array when no events are at or after the given time", () => {
+  it("returns an empty array when no events are at or after the given time", async () => {
     db.prepare(
       "INSERT INTO activity_events (type, created_at) VALUES (?, ?)",
     ).run("checkin", "2026-07-05T09:00:00.000Z");
 
-    const events = listEventsSince(db, "2026-07-05T10:00:00.000Z");
+    const events = await listEventsSince(portFor(db), "2026-07-05T10:00:00.000Z");
 
     expect(events).toEqual([]);
   });
 
-  it("excludes a record exactly at the exclusive upper bound when one is given", () => {
+  it("excludes a record exactly at the exclusive upper bound when one is given", async () => {
     const lowerBound = new Date(2026, 6, 5, 0, 0, 0, 0).toISOString();
     const justBeforeUpperBound = new Date(2026, 6, 5, 9, 0, 0, 0).toISOString();
     const upperBound = new Date(2026, 6, 6, 0, 0, 0, 0).toISOString();
@@ -312,7 +312,7 @@ describe("listEventsSince", () => {
       "INSERT INTO activity_events (type, created_at) VALUES (?, ?)",
     ).run("checkin", upperBound);
 
-    const events = listEventsSince(db, lowerBound, upperBound);
+    const events = await listEventsSince(portFor(db), lowerBound, upperBound);
 
     expect(events.map((e) => e.created_at)).toEqual([justBeforeUpperBound]);
   });
@@ -330,11 +330,11 @@ describe("findLatestEvent", () => {
     db.close();
   });
 
-  it("returns undefined when there are no events", () => {
-    expect(findLatestEvent(db)).toBeUndefined();
+  it("returns undefined when there are no events", async () => {
+    expect((await findLatestEvent(portFor(db)))).toBeUndefined();
   });
 
-  it("returns the most recently created event", () => {
+  it("returns the most recently created event", async () => {
     db.prepare(
       "INSERT INTO activity_events (type, created_at) VALUES (?, ?)",
     ).run("checkin", "2026-07-05T09:00:00.000Z");
@@ -345,7 +345,7 @@ describe("findLatestEvent", () => {
       "INSERT INTO activity_events (type, created_at) VALUES (?, ?)",
     ).run("break_end", "2026-07-05T10:00:00.000Z");
 
-    const latest = findLatestEvent(db);
+    const latest = (await findLatestEvent(portFor(db)));
 
     expect(latest).toMatchObject({ type: "break_start" });
   });

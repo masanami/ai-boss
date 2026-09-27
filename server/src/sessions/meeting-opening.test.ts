@@ -103,7 +103,7 @@ describe("generateMeetingOpening", () => {
   // 機能仕様 docs/features/completion-evidence-enforcement.md 決定3-a
   it("includes a task's evidence requirement in the system prompt (AC-21)", async () => {
     const now = new Date(2026, 7, 20, 8, 0);
-    insertTask(db, {
+    await insertTask(portFor(db), {
       title: "資料作成",
       description: null,
       category: "work",

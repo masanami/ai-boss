@@ -109,7 +109,7 @@ describe("activity routes", () => {
   describe("task_update auto-recording", () => {
     it("records a task_update event when PATCH /api/tasks/:id succeeds", async () => {
       const app = createApp(db);
-      const task = insertTask(db, {
+      const task = await insertTask(portFor(db), {
         title: "資料作成",
         description: null,
         category: "work",
@@ -152,7 +152,7 @@ describe("activity routes", () => {
 
     it("does not record a task_update event when the PATCH body has no fields (no real change requested)", async () => {
       const app = createApp(db);
-      const task = insertTask(db, {
+      const task = await insertTask(portFor(db), {
         title: "資料作成",
         description: null,
         category: "work",

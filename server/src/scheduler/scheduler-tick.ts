@@ -95,8 +95,8 @@ async function buildTickInput(deps: TickDeps, now: Date): Promise<DetectionInput
   const settings = resolveTodaysMeetingSettings(deps.db, baseSettings, now);
   return {
     now,
-    tasks: listTasks(deps.db),
-    activityEvents: listEventsSince(deps.db, EPOCH_ISO),
+    tasks: await listTasks(portFor(deps.db)),
+    activityEvents: await listEventsSince(portFor(deps.db), EPOCH_ISO),
     notifications: toNotificationHistory(listNotificationsSince(deps.db, EPOCH_ISO)),
     settings,
     todaysSessionTypes: listTodaysSessionTypes(deps.db, now),
@@ -109,7 +109,7 @@ async function processFiring(
   now: Date,
 ): Promise<void> {
   const title = deps.notificationTitle ?? DEFAULT_NOTIFICATION_TITLE;
-  const task = firing.taskId !== null ? (findTaskById(deps.db, firing.taskId) ?? null) : null;
+  const task = firing.taskId !== null ? ((await findTaskById(portFor(deps.db), firing.taskId)) ?? null) : null;
 
   // `notifications.type` intentionally stores the *detection* vocabulary
   // (e.g. "unstarted"), not the notification-body vocabulary it gets mapped

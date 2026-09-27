@@ -82,7 +82,7 @@ describe("GET /api/decisions", () => {
   it("carries the related task's title as task_title", async () => {
     const app = createApp(db);
     const session = insertSession(db, { type: "adhoc" });
-    const task = insertTask(db, newTask("見積もり資料の作成"));
+    const task = await insertTask(portFor(db), newTask("見積もり資料の作成"));
     insertDecision(db, {
       session_id: session.id,
       task_id: task.id,
