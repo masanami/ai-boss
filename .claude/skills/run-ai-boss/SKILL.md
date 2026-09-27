@@ -127,6 +127,7 @@ npm run lint        # exit 0
 npm run typecheck   # exit 0
 npm test            # server 94 files / 2029 tests, web 52 files / 798 tests, 全 pass（実測 約7秒）
 npm run test:tz     # 日付境界に触る変更ではこれも通す（TZ=America/New_York）
+npm run test:rust   # Rust の通信層（native/secure-transport/）の cargo test。必須ゲート（npm test は cargo を呼ばない）
 ```
 
 1ファイルだけ流す（実装内部を直す PR ではこれが主戦場）:

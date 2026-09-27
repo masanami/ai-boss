@@ -31,7 +31,8 @@ AI が「上司（ボス）」を演じるセルフマネジメント支援ア�
 | Backend | Node.js + Hono（REST + SSE）+ node-cron（`server/`） |
 | DB | SQLite（better-sqlite3、完全ローカル保存） |
 | LLM | 既定: Claude Code（`@anthropic-ai/claude-agent-sdk`、サブスクリプション認証・`ANTHROPIC_API_KEY` 不要）。`LLM_BACKEND=api` で Claude API（`@anthropic-ai/sdk`、従量課金）へ切替可（既定モデル claude-sonnet-5・設定で変更可、両バックエンド共通） |
-| Test | Vitest（unit / integration） |
+| Native（製品版の通信層） | Rust（`native/secure-transport/`。BYOK キーのキーチェーン保管とキーを付与する HTTP 転送。Tauri 非依存のライブラリ） |
+| Test | Vitest（unit / integration）、Rust は `cargo test`（`npm run test:rust`） |
 | Infra | macOS ローカル実行のみ。通知は terminal-notifier 優先 / osascript フォールバック |
 | Package | npm（workspaces: `server/` + `web/`） |
 
@@ -99,7 +100,7 @@ AI が「上司（ボス）」を演じるセルフマネジメント支援ア�
 ## 品質方針
 
 ```text
-- 必須ゲート: lint / typecheck / test の全通過（/quality-check が機械可読で pass を返すこと）
+- 必須ゲート: lint / typecheck / test / test:rust の全通過（/quality-check が機械可読で pass を返すこと）。`npm test` は `cargo` を呼ばない（Rust のツールチェーンが無くても動く）ため、`npm run test:rust` は別に実行する
 - クリティカル箇所（変更時は人間レビュー必須）: Claude API 連携・DB スキーマ・API キーの取り扱い・通知の実行系
 - サボり検知の閾値・エスカレーションはユニットテストが仕様の正本（[ADR 0004](docs/adr/0004-deterministic-detection-engine.md)）。閾値を変える PR はテストを同時に変える
 ```
@@ -123,6 +124,12 @@ npm test
 
 # 非 UTC タイムゾーンでの追加実行（日付境界に触る変更ではこれも通す）
 npm run test:tz
+
+# Rust の通信層のテスト（必須ゲート。実キーチェーンの結合テストは除く）
+npm run test:rust
+
+# 実キーチェーンの結合テスト（手動。native/secure-transport/README.md）
+npm run test:rust:keychain
 
 # ビルド
 npm run build
