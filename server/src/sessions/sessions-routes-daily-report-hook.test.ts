@@ -186,7 +186,7 @@ describe("evening session end -> daily report generation hook", () => {
   // 強制設定を明示的にオン（既定と同じ）にしたうえで、メンタリング記録が
   // 1 件も無い夕会でも両方の副作用が走ることを確かめる。
   it("AC-24/AC-25: still saves the summary and generates the daily report for an evening session with no mentoring record, even with the morning gate forced on", async () => {
-    setSettingValue(db, "morning_mentoring_required", "true");
+    await setSettingValue(portFor(db), "morning_mentoring_required", "true");
     const app = createApp(db, env);
     const session = await readJson<Session>(await postSession(app, "evening"));
     insertUserMessage(db, session.id, "報告です");
@@ -271,7 +271,7 @@ describe("evening session end -> daily report generation hook", () => {
       // #276: 朝会終了ゲートに巻き込まれないよう強制設定をオフにする —
       // このテストの主題は日報生成フックが朝会/随時では発火しないことで
       // あり、メンタリング完了とは無関係。
-      setSettingValue(db, "morning_mentoring_required", "false");
+      await setSettingValue(portFor(db), "morning_mentoring_required", "false");
       const session = await readJson<Session>(await postSession(app, type));
 
       const res = await app.request(`/api/sessions/${session.id}/end`, { method: "POST" });

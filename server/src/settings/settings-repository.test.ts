@@ -13,21 +13,21 @@ describe("getSettingValue", () => {
     await runMigrations(portFor(db));
   });
 
-  afterEach(() => {
+  afterEach(async () => {
     db.close();
   });
 
-  it("returns undefined when the key does not exist", () => {
-    expect(getSettingValue(db, "model")).toBeUndefined();
+  it("returns undefined when the key does not exist", async () => {
+    expect(await getSettingValue(portFor(db), "model")).toBeUndefined();
   });
 
-  it("returns the stored value when the key exists", () => {
+  it("returns the stored value when the key exists", async () => {
     db.prepare("INSERT INTO settings (key, value) VALUES (?, ?)").run(
       "model",
       "claude-opus-4-8",
     );
 
-    expect(getSettingValue(db, "model")).toBe("claude-opus-4-8");
+    expect(await getSettingValue(portFor(db), "model")).toBe("claude-opus-4-8");
   });
 });
 
@@ -39,29 +39,29 @@ describe("setSettingValue", () => {
     await runMigrations(portFor(db));
   });
 
-  afterEach(() => {
+  afterEach(async () => {
     db.close();
   });
 
-  it("inserts a new key that does not exist yet", () => {
-    setSettingValue(db, "model", "claude-opus-4-8");
+  it("inserts a new key that does not exist yet", async () => {
+    await setSettingValue(portFor(db), "model", "claude-opus-4-8");
 
-    expect(getSettingValue(db, "model")).toBe("claude-opus-4-8");
+    expect(await getSettingValue(portFor(db), "model")).toBe("claude-opus-4-8");
   });
 
-  it("updates the value when the key already exists (upsert)", () => {
-    setSettingValue(db, "model", "claude-opus-4-8");
+  it("updates the value when the key already exists (upsert)", async () => {
+    await setSettingValue(portFor(db), "model", "claude-opus-4-8");
 
-    setSettingValue(db, "model", "claude-sonnet-5");
+    await setSettingValue(portFor(db), "model", "claude-sonnet-5");
 
-    expect(getSettingValue(db, "model")).toBe("claude-sonnet-5");
+    expect(await getSettingValue(portFor(db), "model")).toBe("claude-sonnet-5");
   });
 
-  it("clears the effective value when set to null (getSettingValue then returns undefined)", () => {
-    setSettingValue(db, "boss_custom_instructions", "既存の指示");
+  it("clears the effective value when set to null (getSettingValue then returns undefined)", async () => {
+    await setSettingValue(portFor(db), "boss_custom_instructions", "既存の指示");
 
-    setSettingValue(db, "boss_custom_instructions", null);
+    await setSettingValue(portFor(db), "boss_custom_instructions", null);
 
-    expect(getSettingValue(db, "boss_custom_instructions")).toBeUndefined();
+    expect(await getSettingValue(portFor(db), "boss_custom_instructions")).toBeUndefined();
   });
 });

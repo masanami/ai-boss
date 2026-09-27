@@ -40,8 +40,8 @@ function insertWorkTask(
   });
 }
 
-function enableEnforcement(db: Database.Database): void {
-  setSettingValue(db, "evidence_enforcement_enabled", "true");
+async function enableEnforcement(db: Database.Database): Promise<void> {
+  await setSettingValue(portFor(db), "evidence_enforcement_enabled", "true");
 }
 
 function listTaskUpdateEvents(db: Database.Database): ActivityEvent[] {
@@ -62,8 +62,8 @@ describe("isEvidenceGateBlocking", () => {
     db.close();
   });
 
-  it("returns false when evidenceRequired is false, even with enforcement on and no evidence", () => {
-    enableEnforcement(db);
+  it("returns false when evidenceRequired is false, even with enforcement on and no evidence", async () => {
+    await enableEnforcement(db);
     const task = insertWorkTask(db, { evidence_required: false });
 
     expect(
@@ -79,8 +79,8 @@ describe("isEvidenceGateBlocking", () => {
     ).toBe(false);
   });
 
-  it("returns true when enforcement is on, evidenceRequired is true, and the task has zero evidence", () => {
-    enableEnforcement(db);
+  it("returns true when enforcement is on, evidenceRequired is true, and the task has zero evidence", async () => {
+    await enableEnforcement(db);
     const task = insertWorkTask(db, { evidence_required: true });
 
     expect(
@@ -89,8 +89,8 @@ describe("isEvidenceGateBlocking", () => {
   });
 
   // AC-30 の境界: 1件あれば通す（0 → 1 の境界。変異確認4で検証）。
-  it("returns false when enforcement is on, evidenceRequired is true, and the task has at least one evidence", () => {
-    enableEnforcement(db);
+  it("returns false when enforcement is on, evidenceRequired is true, and the task has at least one evidence", async () => {
+    await enableEnforcement(db);
     const task = insertWorkTask(db, { evidence_required: true });
     insertTaskEvidence(db, { task_id: task.id, kind: "link", url: "https://example.com" });
 
@@ -101,16 +101,16 @@ describe("isEvidenceGateBlocking", () => {
 
   // 決定 2-h: taskId: null は「作成中でまだ存在しないタスク」を表し、
   // エビデンス件数は常に0として扱う。
-  it("taskId: null (create path) blocks when enforcement is on and evidenceRequired is true", () => {
-    enableEnforcement(db);
+  it("taskId: null (create path) blocks when enforcement is on and evidenceRequired is true", async () => {
+    await enableEnforcement(db);
 
     expect(
       isEvidenceGateBlocking(db, { taskId: null, evidenceRequired: true }),
     ).toBe(true);
   });
 
-  it("taskId: null (create path) does not block when evidenceRequired is false", () => {
-    enableEnforcement(db);
+  it("taskId: null (create path) does not block when evidenceRequired is false", async () => {
+    await enableEnforcement(db);
 
     expect(
       isEvidenceGateBlocking(db, { taskId: null, evidenceRequired: false }),
@@ -148,8 +148,8 @@ describe("updateTask", () => {
 
   describe("completion-evidence gate (決定2)", () => {
     // AC-23〜AC-27
-    it("rejects a transition to done with reason 'evidence_required' when enforcement is on, evidence_required is true, and there is no evidence (AC-23)", () => {
-      enableEnforcement(db);
+    it("rejects a transition to done with reason 'evidence_required' when enforcement is on, evidence_required is true, and there is no evidence (AC-23)", async () => {
+      await enableEnforcement(db);
       const task = insertWorkTask(db, { evidence_required: true });
 
       const result = updateTask(db, task.id, { status: "done" });
@@ -157,8 +157,8 @@ describe("updateTask", () => {
       expect(result).toEqual({ ok: false, reason: "evidence_required" });
     });
 
-    it("writes nothing to the task row on rejection (status/updated_at/completed_at all unchanged, AC-25/AC-26)", () => {
-      enableEnforcement(db);
+    it("writes nothing to the task row on rejection (status/updated_at/completed_at all unchanged, AC-25/AC-26)", async () => {
+      await enableEnforcement(db);
       const task = insertWorkTask(db, { evidence_required: true });
 
       updateTask(db, task.id, { status: "done" });
@@ -173,8 +173,8 @@ describe("updateTask", () => {
       expect(after.updated_at).toBe(task.updated_at);
     });
 
-    it("records no task_update activity event on rejection (AC-27)", () => {
-      enableEnforcement(db);
+    it("records no task_update activity event on rejection (AC-27)", async () => {
+      await enableEnforcement(db);
       const task = insertWorkTask(db, { evidence_required: true });
 
       updateTask(db, task.id, { status: "done" });
@@ -190,8 +190,8 @@ describe("updateTask", () => {
       expect(result.ok).toBe(true);
     });
 
-    it("allows the done transition when evidence_required is false, even with zero evidence (AC-29)", () => {
-      enableEnforcement(db);
+    it("allows the done transition when evidence_required is false, even with zero evidence (AC-29)", async () => {
+      await enableEnforcement(db);
       const task = insertWorkTask(db, { evidence_required: false });
 
       const result = updateTask(db, task.id, { status: "done" });
@@ -199,8 +199,8 @@ describe("updateTask", () => {
       expect(result.ok).toBe(true);
     });
 
-    it("allows the done transition when there is at least one evidence (AC-30)", () => {
-      enableEnforcement(db);
+    it("allows the done transition when there is at least one evidence (AC-30)", async () => {
+      await enableEnforcement(db);
       const task = insertWorkTask(db, { evidence_required: true });
       insertTaskEvidence(db, { task_id: task.id, kind: "link", url: "https://example.com" });
 
@@ -209,8 +209,8 @@ describe("updateTask", () => {
       expect(result.ok).toBe(true);
     });
 
-    it("allows transitioning to dropped even with zero evidence (AC-31 — the gate only applies to done)", () => {
-      enableEnforcement(db);
+    it("allows transitioning to dropped even with zero evidence (AC-31 — the gate only applies to done)", async () => {
+      await enableEnforcement(db);
       const task = insertWorkTask(db, { evidence_required: true });
 
       const result = updateTask(db, task.id, { status: "dropped" });
@@ -222,8 +222,8 @@ describe("updateTask", () => {
     });
 
     // 決定 2-a: 判定条件は「done への遷移」であって「done であること」ではない
-    it("does not retroactively block a patch on an already-done task, even with zero evidence (AC-35)", () => {
-      enableEnforcement(db);
+    it("does not retroactively block a patch on an already-done task, even with zero evidence (AC-35)", async () => {
+      await enableEnforcement(db);
       const task = insertWorkTask(db, { evidence_required: true, status: "done" });
 
       const result = updateTask(db, task.id, { title: "更新後のタイトル" });
@@ -236,8 +236,8 @@ describe("updateTask", () => {
     });
 
     // 決定 2-c: 関門はパッチ適用後の値を見る
-    it("allows { evidence_required: false, status: 'done' } in one patch, even with zero evidence (AC-36)", () => {
-      enableEnforcement(db);
+    it("allows { evidence_required: false, status: 'done' } in one patch, even with zero evidence (AC-36)", async () => {
+      await enableEnforcement(db);
       const task = insertWorkTask(db, { evidence_required: true });
 
       const result = updateTask(db, task.id, {
@@ -252,8 +252,8 @@ describe("updateTask", () => {
       }
     });
 
-    it("records a task_update event whose note reflects the evidence_required change for the combined patch above (AC-37)", () => {
-      enableEnforcement(db);
+    it("records a task_update event whose note reflects the evidence_required change for the combined patch above (AC-37)", async () => {
+      await enableEnforcement(db);
       const task = insertWorkTask(db, { evidence_required: true });
 
       updateTask(db, task.id, { evidence_required: false, status: "done" });
@@ -465,8 +465,8 @@ describe("updateTask", () => {
         }
       });
 
-      it("does not retire when the evidence gate rejects the update (mutation: retire before the gate check)", () => {
-        enableEnforcement(db);
+      it("does not retire when the evidence gate rejects the update (mutation: retire before the gate check)", async () => {
+        await enableEnforcement(db);
         const task = insertWorkTask(db, {
           status: "todo",
           evidence_required: true,

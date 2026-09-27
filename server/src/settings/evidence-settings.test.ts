@@ -14,26 +14,26 @@ describe("resolveEvidenceSettings", () => {
     await runMigrations(portFor(db));
   });
 
-  afterEach(() => {
+  afterEach(async () => {
     db.close();
   });
 
-  it("defaults enforcementEnabled to false when the key is unset (AC-7)", () => {
-    expect(resolveEvidenceSettings(db)).toEqual({ enforcementEnabled: false });
+  it("defaults enforcementEnabled to false when the key is unset (AC-7)", async () => {
+    expect((await resolveEvidenceSettings(portFor(db)))).toEqual({ enforcementEnabled: false });
   });
 
-  it('reads enforcementEnabled as true when stored as the string "true"', () => {
-    setSettingValue(db, "evidence_enforcement_enabled", "true");
-    expect(resolveEvidenceSettings(db)).toEqual({ enforcementEnabled: true });
+  it('reads enforcementEnabled as true when stored as the string "true"', async () => {
+    await setSettingValue(portFor(db), "evidence_enforcement_enabled", "true");
+    expect((await resolveEvidenceSettings(portFor(db)))).toEqual({ enforcementEnabled: true });
   });
 
-  it('reads enforcementEnabled as false when stored as the string "false"', () => {
-    setSettingValue(db, "evidence_enforcement_enabled", "false");
-    expect(resolveEvidenceSettings(db)).toEqual({ enforcementEnabled: false });
+  it('reads enforcementEnabled as false when stored as the string "false"', async () => {
+    await setSettingValue(portFor(db), "evidence_enforcement_enabled", "false");
+    expect((await resolveEvidenceSettings(portFor(db)))).toEqual({ enforcementEnabled: false });
   });
 
-  it("falls back to false for an unrecognized stored value", () => {
-    setSettingValue(db, "evidence_enforcement_enabled", "1");
-    expect(resolveEvidenceSettings(db)).toEqual({ enforcementEnabled: false });
+  it("falls back to false for an unrecognized stored value", async () => {
+    await setSettingValue(portFor(db), "evidence_enforcement_enabled", "1");
+    expect((await resolveEvidenceSettings(portFor(db)))).toEqual({ enforcementEnabled: false });
   });
 });

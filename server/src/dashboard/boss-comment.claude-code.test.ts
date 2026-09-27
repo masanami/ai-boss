@@ -80,7 +80,7 @@ describe("getOrGenerateBossComment (claude-code backend, end-to-end via the real
     expect(comment).toBe("今日も一日決めた通りにやれ");
     // This suite never creates tasks, so the fingerprint is the stable
     // "zero tasks" value (Issue #121).
-    expect(getCachedBossComment(db, "2026-07-06", computeTaskFingerprint([]))).toBe(
+    expect(await getCachedBossComment(portFor(db), "2026-07-06", computeTaskFingerprint([]))).toBe(
       "今日も一日決めた通りにやれ",
     );
   });
@@ -103,7 +103,7 @@ describe("getOrGenerateBossComment (claude-code backend, end-to-end via the real
     const comment = await getOrGenerateBossComment(db, env, now);
 
     expect(comment).toBe("今日も決めたことを淡々とこなせ。");
-    expect(getCachedBossComment(db, "2026-07-06", computeTaskFingerprint([]))).toBeUndefined();
+    expect(await getCachedBossComment(portFor(db), "2026-07-06", computeTaskFingerprint([]))).toBeUndefined();
   });
 
   it("accepts a response exactly at the 全角80字 limit (boundary)", async () => {

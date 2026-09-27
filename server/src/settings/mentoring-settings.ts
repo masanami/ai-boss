@@ -1,5 +1,5 @@
-import type Database from "better-sqlite3";
-import { getSettingValue } from "./settings-repository.js";
+import type { Db } from "../db/db-port.js";
+import { readSettingsSnapshot, type SettingsSnapshot } from "./settings-repository.js";
 
 /**
  * Reads the `morning_mentoring_required` setting from the `settings`
@@ -17,6 +17,10 @@ import { getSettingValue } from "./settings-repository.js";
  * end gate (a later ticket's `mentoring-gate.ts` wiring) must call, so the
  * two can never drift apart (同型の一貫性を `evidence-settings.ts` に揃える).
  */
-export function resolveMorningMentoringRequired(db: Database.Database): boolean {
-  return getSettingValue(db, "morning_mentoring_required") !== "false";
+export function resolveMorningMentoringRequiredFrom(settings: SettingsSnapshot): boolean {
+  return settings.get("morning_mentoring_required") !== "false";
+}
+
+export async function resolveMorningMentoringRequired(db: Db): Promise<boolean> {
+  return resolveMorningMentoringRequiredFrom(await readSettingsSnapshot(db));
 }

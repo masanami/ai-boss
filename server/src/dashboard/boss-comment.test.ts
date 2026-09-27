@@ -103,8 +103,8 @@ describe("getOrGenerateBossComment", () => {
     const { setCachedBossComment } = await import("./boss-comment-cache.js");
     const { toDateKey } = await import("../detection/time-utils.js");
     const { listTasks } = await import("../tasks/tasks-repository.js");
-    setCachedBossComment(
-      db,
+    await setCachedBossComment(
+      portFor(db),
       toDateKey(now),
       computeTaskFingerprint(listTasks(db)),
       "<p>先に書かれた生のひとこと</p>",
@@ -124,8 +124,8 @@ describe("getOrGenerateBossComment", () => {
     const { setCachedBossComment } = await import("./boss-comment-cache.js");
     const { toDateKey } = await import("../detection/time-utils.js");
     const { listTasks } = await import("../tasks/tasks-repository.js");
-    setCachedBossComment(
-      db,
+    await setCachedBossComment(
+      portFor(db),
       toDateKey(now),
       computeTaskFingerprint(listTasks(db)),
       "<p></p>",
@@ -148,7 +148,7 @@ describe("getOrGenerateBossComment", () => {
     const comment = await getOrGenerateBossComment(db, env, now);
 
     expect(comment).toBe("今日も決めたことを淡々とこなせ。");
-    expect(getCachedBossComment(db, "2026-07-06", computeTaskFingerprint([]))).toBeUndefined();
+    expect(await getCachedBossComment(portFor(db), "2026-07-06", computeTaskFingerprint([]))).toBeUndefined();
   });
 
   it("calls the Claude API and returns the generated text on first request", async () => {
@@ -208,7 +208,7 @@ describe("getOrGenerateBossComment", () => {
 
     await getOrGenerateBossComment(db, env, now);
 
-    expect(getCachedBossComment(db, "2026-07-06", computeTaskFingerprint([]))).toBe(
+    expect(await getCachedBossComment(portFor(db), "2026-07-06", computeTaskFingerprint([]))).toBe(
       "今日も一日決めた通りにやれ",
     );
   });

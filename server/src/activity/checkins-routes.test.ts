@@ -490,7 +490,7 @@ describe("POST /api/checkins", () => {
     // 変わらないことをここで確認する。
     it("does not return 409 even when evidence enforcement is on and the task requires evidence (AC-38)", async () => {
       const app = createApp(db);
-      setSettingValue(db, "evidence_enforcement_enabled", "true");
+      await setSettingValue(portFor(db), "evidence_enforcement_enabled", "true");
       const task = insertWorkTask(db, { status: "todo", evidence_required: true });
 
       const res = await app.request("/api/checkins", {

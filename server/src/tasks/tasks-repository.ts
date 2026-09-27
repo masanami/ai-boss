@@ -1,6 +1,9 @@
 import type Database from "better-sqlite3";
 import { recordActivityEvent } from "../activity/activity-events-repository.js";
-import { resolveEvidenceSettings } from "../settings/evidence-settings.js";
+import {
+  EVIDENCE_ENFORCEMENT_ENABLED_KEY,
+  resolveEvidenceSettingsFrom,
+} from "../settings/evidence-settings.js";
 import { countTaskEvidences } from "./task-evidences-repository.js";
 import type { Task, TaskPriority, TaskStatus } from "./task.js";
 
@@ -164,7 +167,16 @@ export function isEvidenceGateBlocking(
   if (!input.evidenceRequired) {
     return false;
   }
-  const { enforcementEnabled } = resolveEvidenceSettings(db);
+  // 移行期（#603 → #604）: このモジュールはまだ同期（better-sqlite3 の
+  // db.transaction の中から呼ばれる）なので、非同期の resolveEvidenceSettings
+  // を await できない。#604 でこのモジュールをポートへ移すまで、同じキーを
+  // 同期で読み、判定は共有の純粋関数に任せる。
+  const row = db
+    .prepare("SELECT value FROM settings WHERE key = ?")
+    .get(EVIDENCE_ENFORCEMENT_ENABLED_KEY) as { value: string | null } | undefined;
+  const { enforcementEnabled } = resolveEvidenceSettingsFrom(
+    new Map(row?.value == null ? [] : [[EVIDENCE_ENFORCEMENT_ENABLED_KEY, row.value]]),
+  );
   if (!enforcementEnabled) {
     return false;
   }

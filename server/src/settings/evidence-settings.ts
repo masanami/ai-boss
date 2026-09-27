@@ -1,5 +1,7 @@
-import type Database from "better-sqlite3";
-import { getSettingValue } from "./settings-repository.js";
+import type { Db } from "../db/db-port.js";
+import { readSettingsSnapshot, type SettingsSnapshot } from "./settings-repository.js";
+
+export const EVIDENCE_ENFORCEMENT_ENABLED_KEY = "evidence_enforcement_enabled";
 
 export interface EvidenceSettings {
   /**
@@ -22,8 +24,12 @@ export interface EvidenceSettings {
  * (a later ticket's `updateTask` change) must call, so the two can never
  * drift apart (決定 7-b: 同じ reader を読む).
  */
-export function resolveEvidenceSettings(db: Database.Database): EvidenceSettings {
+export function resolveEvidenceSettingsFrom(settings: SettingsSnapshot): EvidenceSettings {
   return {
-    enforcementEnabled: getSettingValue(db, "evidence_enforcement_enabled") === "true",
+    enforcementEnabled: settings.get(EVIDENCE_ENFORCEMENT_ENABLED_KEY) === "true",
   };
+}
+
+export async function resolveEvidenceSettings(db: Db): Promise<EvidenceSettings> {
+  return resolveEvidenceSettingsFrom(await readSettingsSnapshot(db));
 }

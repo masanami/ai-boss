@@ -13,8 +13,8 @@ interface ErrorBody {
   code?: string;
 }
 
-function enableEnforcement(db: Database.Database): void {
-  setSettingValue(db, "evidence_enforcement_enabled", "true");
+async function enableEnforcement(db: Database.Database): Promise<void> {
+  await setSettingValue(portFor(db), "evidence_enforcement_enabled", "true");
 }
 
 async function readJson<T>(res: Response): Promise<T> {
@@ -444,7 +444,7 @@ describe("tasks routes", () => {
 
       // 決定 2-h: POST /api/tasks が status: "done" を直接指定する「第5の経路」
       it("returns 409 with code evidence_required for a direct-done create when enforcement is on, evidence is required, and there is no evidence (AC-34)", async () => {
-        enableEnforcement(db);
+        await enableEnforcement(db);
         const app = createApp(db);
 
         const res = await app.request("/api/tasks", {
@@ -463,7 +463,7 @@ describe("tasks routes", () => {
       });
 
       it("does not create a task row when the direct-done create is rejected (AC-34)", async () => {
-        enableEnforcement(db);
+        await enableEnforcement(db);
         const app = createApp(db);
 
         await app.request("/api/tasks", {
@@ -481,7 +481,7 @@ describe("tasks routes", () => {
       });
 
       it("allows a direct-done create when enforcement is on but evidence_required is false", async () => {
-        enableEnforcement(db);
+        await enableEnforcement(db);
         const app = createApp(db);
 
         const res = await app.request("/api/tasks", {
@@ -933,7 +933,7 @@ describe("tasks routes", () => {
       }
 
       it("returns 409 with code evidence_required when enforcement is on, evidence is required, and there is no evidence (AC-23/AC-24)", async () => {
-        enableEnforcement(db);
+        await enableEnforcement(db);
         const app = createApp(db);
         const created = await createTask(app, true);
 
@@ -949,7 +949,7 @@ describe("tasks routes", () => {
       });
 
       it("leaves status and completed_at unchanged after a 409 (AC-25/AC-26)", async () => {
-        enableEnforcement(db);
+        await enableEnforcement(db);
         const app = createApp(db);
         const created = await createTask(app, true);
 
@@ -979,7 +979,7 @@ describe("tasks routes", () => {
       });
 
       it("allows completion when evidence_required is false (AC-29)", async () => {
-        enableEnforcement(db);
+        await enableEnforcement(db);
         const app = createApp(db);
         const created = await createTask(app, false);
 
@@ -995,17 +995,17 @@ describe("tasks routes", () => {
       // 決定 2-a（AC-35）: 遡及しない — 既に done のタスクへの他フィールドの
       // PATCH はゲートを通らない
       it("does not retroactively block a title-only patch on an already-done task (AC-35)", async () => {
-        enableEnforcement(db);
+        await enableEnforcement(db);
         const app = createApp(db);
         const created = await createTask(app, true);
         // 一旦 enforcement を切って done にする（このテストの前提を作るため）
-        setSettingValue(db, "evidence_enforcement_enabled", "false");
+        await setSettingValue(portFor(db), "evidence_enforcement_enabled", "false");
         await app.request(`/api/tasks/${created.id}`, {
           method: "PATCH",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ status: "done" }),
         });
-        enableEnforcement(db);
+        await enableEnforcement(db);
 
         const res = await app.request(`/api/tasks/${created.id}`, {
           method: "PATCH",
@@ -1021,7 +1021,7 @@ describe("tasks routes", () => {
 
       // 決定 2-c（AC-36/AC-37）: 関門はパッチ適用後の値を見る
       it("allows { evidence_required: false, status: 'done' } in a single patch (AC-36)", async () => {
-        enableEnforcement(db);
+        await enableEnforcement(db);
         const app = createApp(db);
         const created = await createTask(app, true);
 
@@ -1633,7 +1633,7 @@ describe("tasks routes", () => {
         });
 
         it("does not retire when the evidence gate rejects the same update (mutation: retire before the gate check)", async () => {
-          enableEnforcement(db);
+          await enableEnforcement(db);
           const app = createApp(db);
           const res = await app.request("/api/tasks", {
             method: "POST",

@@ -12,6 +12,7 @@ import { createSettingsRouter } from "./settings/settings-routes.js";
 import { createMeetingScheduleRouter } from "./meeting-schedule/meeting-schedule-routes.js";
 import { resolveLlmBackend, type LlmBackend, type AppEnv } from "./config.js";
 import type { EvidenceStore } from "./tasks/evidence-store.js";
+import { portFor } from "./db/transitional-bridge.js";
 
 /**
  * `server/src` を「実行環境に依存しないコア」と「Node の周辺」に分ける
@@ -128,7 +129,7 @@ export function createCoreApp(
   api.route("/dashboard", createDashboardRouter(db, env));
   api.route("/reports", createReportsRouter(db, env));
   api.route("/work-logs", createWorkLogsRouter(db));
-  api.route("/settings", createSettingsRouter(db));
+  api.route("/settings", createSettingsRouter(portFor(db)));
   api.route("/meeting-schedule", createMeetingScheduleRouter(db));
 
   const app = new Hono();

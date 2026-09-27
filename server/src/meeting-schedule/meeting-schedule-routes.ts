@@ -17,6 +17,7 @@ import {
   upsertOverride,
   deleteOverride,
 } from "./meeting-schedule-repository.js";
+import { portFor } from "../db/transitional-bridge.js";
 
 /**
  * 当日限りの朝会・夕会の時刻変更（#432 /
@@ -43,8 +44,8 @@ interface MeetingScheduleResponse {
   evening: MeetingSlotResponse;
 }
 
-function buildMeetingDefaults(db: Database.Database): MeetingTimeDefaults {
-  const settings = loadDetectionSettings(db);
+async function buildMeetingDefaults(db: Database.Database): Promise<MeetingTimeDefaults> {
+  const settings = await loadDetectionSettings(portFor(db));
   return {
     morning: settings.morningMeetingTime,
     evening: settings.eveningMeetingTime,
@@ -114,12 +115,12 @@ function validateDateParam(c: Context, dateParam: string): Response | undefined 
 export function createMeetingScheduleRouter(db: Database.Database): Hono {
   const router = new Hono();
 
-  router.get("/:date", (c) => {
+  router.get("/:date", async (c) => {
     const dateParam = c.req.param("date");
     const dateError = validateDateParam(c, dateParam);
     if (dateError) return dateError;
 
-    const defaults = buildMeetingDefaults(db);
+    const defaults = await buildMeetingDefaults(db);
     return c.json(buildResponseBody(db, dateParam, defaults), 200);
   });
 
@@ -139,7 +140,7 @@ export function createMeetingScheduleRouter(db: Database.Database): Hono {
       }
     }
 
-    const defaults = buildMeetingDefaults(db);
+    const defaults = await buildMeetingDefaults(db);
 
     type PendingOperation =
       | { type: MeetingType; action: "upsert"; time: string }

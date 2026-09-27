@@ -3,6 +3,9 @@ import { openDatabase } from "../connection.js";
 import { runMigrations } from "../migrate.js";
 import { portFor } from "../transitional-bridge.js";
 import type { DbPort } from "../db-port.js";
+import { createBetterSqlite3Driver } from "../better-sqlite3-driver.js";
+import { createSerializedDb } from "../serialized-db.js";
+import { createHookedDriver, type DriverHook } from "./hooked-driver.js";
 
 /**
  * テスト専用の補助（better-sqlite3 に依存してよい。機能仕様
@@ -18,4 +21,27 @@ export async function createTestDb(): Promise<{ db: DbPort; raw: Database.Databa
   const db = portFor(raw);
   await runMigrations(db);
   return { db, raw };
+}
+
+/**
+ * Like {@link createTestDb}, but the returned port runs on a hooked driver
+ * (`createHookedDriver`) whose hook list is the returned mutable `hooks`
+ * array — push hooks *after* creation (migrations run before any hook is
+ * registered), and they can reference `db` directly to inject another flow's
+ * operation right after a matching statement, or throw to make that
+ * statement fail (#603).
+ *
+ * All DB access in such a test must go through this `db`: `portFor(raw)` is
+ * a *different* port (different lock, no hooks).
+ */
+export async function createHookedTestDb(): Promise<{
+  db: DbPort;
+  raw: Database.Database;
+  hooks: DriverHook[];
+}> {
+  const raw = openDatabase(":memory:");
+  const hooks: DriverHook[] = [];
+  const db = createSerializedDb(createHookedDriver(createBetterSqlite3Driver(raw), hooks));
+  await runMigrations(db);
+  return { db, raw, hooks };
 }
