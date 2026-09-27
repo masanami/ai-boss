@@ -22,6 +22,32 @@ vi.mock("../llm/claude-client.js", async (importOriginal) => {
 });
 
 const { generateDailyReport } = await import("./generate-daily-report.js");
+const { registerLlmBackend, resetLlmBackendRegistryForTest } = await import(
+  "../llm/llm-backend-registry.js"
+);
+
+/**
+ * 機能仕様 docs/features/secure-transport-byok.md クリティカル設計決定5:
+ * `generateDailyReport` は内部で `extractEveningSummary` を呼び、そちらが
+ * `getLlmBackendCapabilities(backend).supportsToolChoice` を参照する。この
+ * ファイルは `../llm/claude-client.js` を `createClaudeClient`/
+ * `requestVerdict` だけモックして呼ぶ（レジストリ自体は実物）ため、
+ * `api`/`claude-code` の能力宣言をテストの準備として登録する。
+ */
+function registerCapabilityFixtures(): void {
+  registerLlmBackend("api", {
+    capabilities: { runsOwnToolLoop: false, supportsToolChoice: true, limitsResponseLength: true },
+    createClient: () => ({ backend: "api", client: {} as never }),
+    streamRound: async () => ({ content: [] }),
+    createRound: async () => ({ content: [] }),
+  });
+  registerLlmBackend("claude-code", {
+    capabilities: { runsOwnToolLoop: true, supportsToolChoice: false, limitsResponseLength: false },
+    createClient: () => ({ backend: "claude-code", env: {} }),
+    streamRound: async () => ({ content: [] }),
+    createRound: async () => ({ content: [] }),
+  });
+}
 
 function calledWithValid(data: {
   reportSummary: string;
@@ -93,11 +119,14 @@ describe("generateDailyReport", () => {
     createClaudeClientMock.mockReset();
     requestVerdictMock.mockReset();
     createClaudeClientMock.mockReturnValue({ backend: "api", client: {} });
+    resetLlmBackendRegistryForTest();
+    registerCapabilityFixtures();
   });
 
   afterEach(() => {
     db.close();
     vi.useRealTimers();
+    resetLlmBackendRegistryForTest();
   });
 
   function reportRowCount(): number {

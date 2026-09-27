@@ -48,7 +48,49 @@ export interface ResolvedLlmRequest {
   outputConfig?: Anthropic.OutputConfig;
 }
 
+/**
+ * バックエンドが宣言する能力（機能仕様 docs/features/secure-transport-byok.md
+ * クリティカル設計決定 5・#582 の決定 Q5）。呼び出し元・ファサードは
+ * バックエンドの**名前**ではなく、ここで宣言された能力で振る舞いを変える
+ * （`llm/claude-client.ts` の `streamBossMessage`・`reports/extract-evening-
+ * summary.ts`・`dashboard/boss-comment.ts` の名前分岐を置き換える）。
+ *
+ * 3項目とも**必須**（任意項目にしない）: 宣言し忘れた実装が既定値へ黙って
+ * 倒れるのを型で防ぐ（機能仕様の「理由」節）。
+ */
+export interface LlmBackendCapabilities {
+  /** 真なら、このバックエンドは tool_use ループを自分で回す（現行の
+   * `claude-code` — Agent SDK の内部ループ）。ファサード
+   * （`streamBossMessage`）は1回だけ dispatch して返し、自身のツールループ
+   * は回さない。偽なら、ファサードが最大 `MAX_TOOL_ROUNDS` ラウンド回す
+   * （現行の `api`）。 */
+  runsOwnToolLoop: boolean;
+  /** 真のときだけ、呼び出し元（例: 夕会の要約抽出）は `toolChoice` で
+   * ツール呼び出しを強制できる。偽なら渡さない（プロンプトの指示で
+   * 代替する）。 */
+  supportsToolChoice: boolean;
+  /** 真のときだけ、要求ごとに応答の長さを制限できる（`api`/BYOK の
+   * `maxTokens`）。偽なら、呼び出し元（ダッシュボードのひとこと）は
+   * 短文指示をプロンプトへ足し、生成後に長さを検証してフォールバックする
+   * 代替をとる。 */
+  limitsResponseLength: boolean;
+}
+
+/**
+ * レジストリの鍵の型（機能仕様 docs/features/secure-transport-byok.md
+ * 仮定 A11）。`config.ts` の `LlmBackend`（`LLM_BACKEND` 環境変数の検証に
+ * 使う、開発者用の版の許容値 `"api" | "claude-code"` の閉じた型）とは
+ * **意図して分けている**: `LlmBackend` をそのまま広げると
+ * `LLM_BACKEND=byok-anthropic` が開発者用の版で通ってしまう
+ * （`resolveLlmBackend` は `config.ts` の狭い型のまま変えない）。
+ * BYOK（Anthropic。S2）・将来の BYOK（OpenAI。#582）はこちらの広い型の
+ * 鍵としてのみレジストリへ登録される。
+ */
+export type LlmBackendName = LlmBackend | "byok-anthropic";
+
 export interface LlmBackendImplementation {
+  /** このバックエンドが宣言する能力。 */
+  capabilities: LlmBackendCapabilities;
   /** バックエンド固有のクライアント（`BossLlmClient` の該当バリアント）を
    * 組み立てる。API キー未設定等、クライアント構築自体が失敗しうる場合は
    * ここで例外を投げる（`api` の `MissingApiKeyError` 等）。 */
@@ -72,17 +114,17 @@ export interface LlmBackendImplementation {
   classifyError?(error: unknown): RetryDecision;
 }
 
-const registry = new Map<LlmBackend, LlmBackendImplementation>();
+const registry = new Map<LlmBackendName, LlmBackendImplementation>();
 
-export function registerLlmBackend(name: LlmBackend, implementation: LlmBackendImplementation): void {
+export function registerLlmBackend(name: LlmBackendName, implementation: LlmBackendImplementation): void {
   registry.set(name, implementation);
 }
 
-export function getLlmBackendImplementation(name: LlmBackend): LlmBackendImplementation | undefined {
+export function getLlmBackendImplementation(name: LlmBackendName): LlmBackendImplementation | undefined {
   return registry.get(name);
 }
 
-export function registeredLlmBackendNames(): LlmBackend[] {
+export function registeredLlmBackendNames(): LlmBackendName[] {
   return [...registry.keys()];
 }
 

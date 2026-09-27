@@ -21,6 +21,47 @@ vi.mock("../llm/claude-client.js", async (importOriginal) => {
 
 const { extractEveningSummary } = await import("./extract-evening-summary.js");
 const { MissingApiKeyError } = await import("../llm/claude-client.js");
+const { registerLlmBackend, resetLlmBackendRegistryForTest } = await import(
+  "../llm/llm-backend-registry.js"
+);
+
+/**
+ * 機能仕様 docs/features/secure-transport-byok.md クリティカル設計決定5
+ * （受入基準 S2「能力の宣言」）: `extractEveningSummary` はもう
+ * `backend === "api"` ではなく `getLlmBackendCapabilities(backend)
+ * .supportsToolChoice` で toolChoice の強制を決める。この関数は `../llm/
+ * claude-client.js` を `createClaudeClient`/`requestVerdict` だけモックして
+ * 呼ぶ（レジストリ自体は実物）ため、`getLlmBackendCapabilities` が引く
+ * 「api」「claude-code」の宣言をテストの準備として登録する（親の決定
+ * 「既存の呼び出し元のテストの準備に模擬のバックエンドの登録を足す」）。
+ * 期待値（アサーション）は変えていない——本物の `registerDevLlmBackends()`
+ * と同じ能力を宣言するだけの模擬の実装。
+ */
+function registerCapabilityFixtures(overrides: {
+  api?: { supportsToolChoice: boolean };
+  claudeCode?: { supportsToolChoice: boolean };
+} = {}): void {
+  registerLlmBackend("api", {
+    capabilities: {
+      runsOwnToolLoop: false,
+      supportsToolChoice: overrides.api?.supportsToolChoice ?? true,
+      limitsResponseLength: true,
+    },
+    createClient: () => ({ backend: "api", client: {} as never }),
+    streamRound: async () => ({ content: [] }),
+    createRound: async () => ({ content: [] }),
+  });
+  registerLlmBackend("claude-code", {
+    capabilities: {
+      runsOwnToolLoop: true,
+      supportsToolChoice: overrides.claudeCode?.supportsToolChoice ?? false,
+      limitsResponseLength: false,
+    },
+    createClient: () => ({ backend: "claude-code", env: {} }),
+    streamRound: async () => ({ content: [] }),
+    createRound: async () => ({ content: [] }),
+  });
+}
 
 function calledWithValid(data: {
   reportSummary: string;
@@ -58,11 +99,14 @@ describe("extractEveningSummary", () => {
     createClaudeClientMock.mockReset();
     requestVerdictMock.mockReset();
     createClaudeClientMock.mockReturnValue({ backend: "api", client: {} });
+    resetLlmBackendRegistryForTest();
+    registerCapabilityFixtures();
   });
 
   afterEach(() => {
     db.close();
     vi.useRealTimers();
+    resetLlmBackendRegistryForTest();
   });
 
   it("正常系: ツールが有効な4値で呼ばれたら、そのままの値（camelCase）を返す", async () => {
@@ -332,6 +376,51 @@ describe("extractEveningSummary", () => {
       bossComment: "b",
       keyDecisions: "なし",
       carryOver: "なし",
+    });
+  });
+
+  // 機能仕様 docs/features/secure-transport-byok.md 受入基準（S2）「能力の
+  // 宣言」: 名前と逆の能力を宣言した模擬のバックエンドを名前 api/claude-code
+  // の下に登録して、名前で分岐する実装を検知する。
+  describe("能力の宣言（名前ではなく宣言された能力で分岐する）", () => {
+    it("LLM_BACKEND=claude-code で、名前 claude-code の下に「強制に対応する」と宣言した模擬のバックエンドを登録すると、toolChoice が submit_evening_summary を強制する", async () => {
+      resetLlmBackendRegistryForTest();
+      registerCapabilityFixtures({ claudeCode: { supportsToolChoice: true } });
+      createClaudeClientMock.mockReturnValue({ backend: "claude-code", env: {} });
+      requestVerdictMock.mockResolvedValue(
+        calledWithValid({ reportSummary: "a", bossComment: "b", keyDecisions: "なし", carryOver: "なし" }),
+      );
+
+      await extractEveningSummary(
+        portFor(db),
+        { ...env, LLM_BACKEND: "claude-code" },
+        eveningMessages,
+        noDecisions,
+        now,
+      );
+
+      const [, request] = requestVerdictMock.mock.calls[0];
+      expect(request.toolChoice).toEqual({ type: "tool", name: "submit_evening_summary" });
+    });
+
+    it("LLM_BACKEND=api で、名前 api の下に「強制に対応しない」と宣言した模擬のバックエンドを登録すると、toolChoice が渡らない", async () => {
+      resetLlmBackendRegistryForTest();
+      registerCapabilityFixtures({ api: { supportsToolChoice: false } });
+      createClaudeClientMock.mockReturnValue({ backend: "api", client: {} });
+      requestVerdictMock.mockResolvedValue(
+        calledWithValid({ reportSummary: "a", bossComment: "b", keyDecisions: "なし", carryOver: "なし" }),
+      );
+
+      await extractEveningSummary(
+        portFor(db),
+        { ...env, LLM_BACKEND: "api" },
+        eveningMessages,
+        noDecisions,
+        now,
+      );
+
+      const [, request] = requestVerdictMock.mock.calls[0];
+      expect(request.toolChoice).toBeUndefined();
     });
   });
 });

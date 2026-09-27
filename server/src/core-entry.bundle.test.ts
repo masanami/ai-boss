@@ -424,6 +424,27 @@ describe("core-entry bundle — AC1 (esbuild で platform=browser として束�
   });
 });
 
+describe("core-entry bundle — S2 (BYOK〔Anthropic〕の登録関数を呼ばずに re-export する。機能仕様 docs/features/secure-transport-byok.md 親の決定・案 (A))", () => {
+  it("bundles the BYOK (Anthropic) backend module (reachable from core-entry.ts)", () => {
+    const inputs = metafileInputPaths(buildResult!.metafile!);
+    expect(includesAnyInput(inputs, "llm/backends/byok-anthropic-backend.ts")).toBe(true);
+  });
+
+  it("exports registerByokAnthropicBackend as a function", () => {
+    const context = createSandboxContext();
+    vm.runInContext(bundleCode, context);
+    const exported = (context as Record<string, unknown>).AiBossCore as Record<string, unknown>;
+    expect(typeof exported.registerByokAnthropicBackend).toBe("function");
+  });
+
+  it("merely loading the bundle does not register BYOK (Anthropic) — registeredCoreLlmBackendNames() stays empty", () => {
+    const context = createSandboxContext();
+    vm.runInContext(bundleCode, context);
+    const exported = (context as Record<string, unknown>).AiBossCore as CoreExports;
+    expect(exported.registeredCoreLlmBackendNames()).toEqual([]);
+  });
+});
+
 describe("core-entry bundle — AC2〜5 (バンドルの入力に禁止パッケージが含まれない)", () => {
   it.each(FORBIDDEN_PACKAGE_SUBSTRINGS)("does not include %s among the bundle inputs", (substring) => {
     const inputs = metafileInputPaths(buildResult!.metafile!);

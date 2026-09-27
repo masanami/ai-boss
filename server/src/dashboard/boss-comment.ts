@@ -6,6 +6,7 @@ import { stripHtmlTags } from "../lib/strip-html-tags.js";
 import {
   createClaudeClient,
   createBossMessage,
+  getLlmBackendCapabilities,
   type BossLlmMessage,
   type BossTextBlock,
 } from "../llm/claude-client.js";
@@ -63,8 +64,12 @@ function zenkakuEquivalentLength(text: string): number {
   return length;
 }
 
+// 機能仕様 docs/features/secure-transport-byok.md クリティカル設計決定5
+// （#582 の決定 Q5）: バックエンドの**名前**ではなく、宣言された能力
+// limitsResponseLength で分岐する。応答長を制限できないバックエンドだけに
+// 短文指示（CLAUDE_CODE_SHORT_TEXT_INSTRUCTION）を追加する。
 function buildUserInstruction(backend: LlmBackend): string {
-  if (backend === "claude-code") {
+  if (!getLlmBackendCapabilities(backend).limitsResponseLength) {
     return `${USER_INSTRUCTION}\n${CLAUDE_CODE_SHORT_TEXT_INSTRUCTION}`;
   }
   return USER_INSTRUCTION;
@@ -131,7 +136,10 @@ async function generateBossComment(
     // 1 文字以下（ブロック境界タグ→改行1個、インラインタグ→空文字）であることに
     // 依存している。置換先を 2 文字以上にする変更を入れるなら、この検証を
     // 正規化後の値に対して行うよう変えること（Issue #461 レビュー指摘）。
-    if (backend === "claude-code" && zenkakuEquivalentLength(text) > DASHBOARD_COMMENT_MAX_ZENKAKU_LENGTH) {
+    if (
+      !getLlmBackendCapabilities(backend).limitsResponseLength &&
+      zenkakuEquivalentLength(text) > DASHBOARD_COMMENT_MAX_ZENKAKU_LENGTH
+    ) {
       return { text: FALLBACK_COMMENT, succeeded: false };
     }
     // Issue #461（親 #446 S1）: 応答が許可リストのタグだけで構成される場合

@@ -23,8 +23,48 @@ vi.mock("../llm/claude-client.js", async (importOriginal) => {
   };
 });
 
-const { getOrGenerateBossComment } = await import("./boss-comment.js");
+const { getOrGenerateBossComment, CLAUDE_CODE_SHORT_TEXT_INSTRUCTION } = await import("./boss-comment.js");
 const { MissingApiKeyError } = await import("../llm/claude-client.js");
+const { registerLlmBackend, resetLlmBackendRegistryForTest } = await import(
+  "../llm/llm-backend-registry.js"
+);
+
+/**
+ * 機能仕様 docs/features/secure-transport-byok.md クリティカル設計決定5
+ * （受入基準 S2「能力の宣言」）: `getOrGenerateBossComment`（内部の
+ * `generateBossComment`/`buildUserInstruction`）はもう `backend ===
+ * "claude-code"` ではなく `getLlmBackendCapabilities(backend)
+ * .limitsResponseLength` で短文指示・全角80字フォールバックの適用を決める。
+ * `../llm/claude-client.js` は `createClaudeClient`/`createBossMessage` だけ
+ * モックして呼ぶ（レジストリ自体は実物）ため、この宣言をテストの準備として
+ * 登録する（親の決定「既存の呼び出し元のテストの準備に模擬のバックエンドの
+ * 登録を足す」）。期待値（アサーション）は変えていない。
+ */
+function registerCapabilityFixtures(overrides: {
+  api?: { limitsResponseLength: boolean };
+  claudeCode?: { limitsResponseLength: boolean };
+} = {}): void {
+  registerLlmBackend("api", {
+    capabilities: {
+      runsOwnToolLoop: false,
+      supportsToolChoice: true,
+      limitsResponseLength: overrides.api?.limitsResponseLength ?? true,
+    },
+    createClient: () => ({ backend: "api", client: {} as never }),
+    streamRound: async () => ({ content: [] }),
+    createRound: async () => ({ content: [] }),
+  });
+  registerLlmBackend("claude-code", {
+    capabilities: {
+      runsOwnToolLoop: true,
+      supportsToolChoice: false,
+      limitsResponseLength: overrides.claudeCode?.limitsResponseLength ?? false,
+    },
+    createClient: () => ({ backend: "claude-code", env: {} }),
+    streamRound: async () => ({ content: [] }),
+    createRound: async () => ({ content: [] }),
+  });
+}
 
 function fakeTextMessage(text: string): Anthropic.Message {
   return {
@@ -55,11 +95,14 @@ describe("getOrGenerateBossComment", () => {
     createClaudeClientMock.mockReset();
     createBossMessageMock.mockReset();
     createClaudeClientMock.mockReturnValue({});
+    resetLlmBackendRegistryForTest();
+    registerCapabilityFixtures();
   });
 
   afterEach(() => {
     db.close();
     vi.useRealTimers();
+    resetLlmBackendRegistryForTest();
   });
 
   // Issue #461（親 #446 S1）: docs/features/boss-reply-plain-text-output.md
@@ -414,5 +457,52 @@ describe("getOrGenerateBossComment", () => {
 
     expect(secondComment).toBe(firstComment);
     expect(createBossMessageMock).toHaveBeenCalledTimes(1);
+  });
+
+  // 機能仕様 docs/features/secure-transport-byok.md 受入基準（S2）「能力の
+  // 宣言」: 名前と逆の能力を宣言した模擬のバックエンドを名前 api/claude-code
+  // の下に登録して、名前で分岐する実装を検知する。
+  describe("能力の宣言（名前ではなく宣言された能力で分岐する）", () => {
+    it("LLM_BACKEND=api で、名前 api の下に「応答長を制限できない」と宣言した模擬のバックエンドを登録すると、短文指示が追加され、81字応答はテンプレートへ退避する", async () => {
+      resetLlmBackendRegistryForTest();
+      registerCapabilityFixtures({ api: { limitsResponseLength: false } });
+      createClaudeClientMock.mockReturnValue({ backend: "api", client: {} });
+
+      createBossMessageMock.mockResolvedValueOnce(fakeTextMessage("あ"));
+      await getOrGenerateBossComment(portFor(db), env, new Date(2026, 6, 6, 8, 0));
+      const request = createBossMessageMock.mock.calls[0][1] as { messages: { content: string }[] };
+      expect(request.messages[0].content).toContain(CLAUDE_CODE_SHORT_TEXT_INSTRUCTION);
+
+      const zenkaku81 = "あ".repeat(81);
+      createBossMessageMock.mockReset();
+      createBossMessageMock.mockResolvedValueOnce(fakeTextMessage(zenkaku81));
+      const comment = await getOrGenerateBossComment(portFor(db), env, new Date(2026, 6, 7, 8, 0));
+      expect(comment).not.toBe(zenkaku81);
+    });
+
+    it("LLM_BACKEND=claude-code で、名前 claude-code の下に「応答長を制限できる」と宣言した模擬のバックエンドを登録すると、短文指示が追加されず、81字応答もそのまま使われる", async () => {
+      resetLlmBackendRegistryForTest();
+      registerCapabilityFixtures({ claudeCode: { limitsResponseLength: true } });
+      createClaudeClientMock.mockReturnValue({ backend: "claude-code", env: {} });
+
+      createBossMessageMock.mockResolvedValueOnce(fakeTextMessage("あ"));
+      await getOrGenerateBossComment(
+        portFor(db),
+        { ...env, LLM_BACKEND: "claude-code" },
+        new Date(2026, 6, 6, 8, 0),
+      );
+      const request = createBossMessageMock.mock.calls[0][1] as { messages: { content: string }[] };
+      expect(request.messages[0].content).not.toContain(CLAUDE_CODE_SHORT_TEXT_INSTRUCTION);
+
+      const zenkaku81 = "あ".repeat(81);
+      createBossMessageMock.mockReset();
+      createBossMessageMock.mockResolvedValueOnce(fakeTextMessage(zenkaku81));
+      const comment = await getOrGenerateBossComment(
+        portFor(db),
+        { ...env, LLM_BACKEND: "claude-code" },
+        new Date(2026, 6, 7, 8, 0),
+      );
+      expect(comment).toBe(zenkaku81);
+    });
   });
 });
