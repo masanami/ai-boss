@@ -11,8 +11,9 @@ import {
   listDecisionsByTaskId,
   listRecentDecisions,
 } from "../decisions/decisions-repository.js";
-import { resolveBossSettings } from "../boss/boss-settings.js";
-import { resolveMorningMentoringRequired } from "../settings/mentoring-settings.js";
+import { resolveBossSettingsFrom } from "../boss/boss-settings.js";
+import { resolveMorningMentoringRequiredFrom } from "../settings/mentoring-settings.js";
+import { readSettingsSnapshot } from "../settings/settings-repository.js";
 import {
   buildPersonaPrompt,
   type TodaysAdhocMessage,
@@ -352,66 +353,81 @@ export function registerChatMessageRoute(
     }
     await recordActivityEvent(db, { type: "chat_message" });
 
-    const tasks = await listTasks(db);
-    const recentDecisions = await listRecentDecisions(db, 5);
-    // Same "5 most recent" convention as recentDecisions above (Issue #96 —
-    // 直近の報告履歴の参照). Feeds AC-2: the boss can refer back to recent
-    // morning/evening reports without the user re-explaining them.
-    const recentSessionSummaries = await listRecentSessionSummaries(db, 5);
-    const { model, persona } = await resolveBossSettings(db);
-    // 時刻の読みは1回にまとめる（Issue #367）。`listTodaysAdhocMessages` は
-    // ローカル暦日の半開区間の両端をこの値から導出するため、プロンプト側の
-    // `now` と読みが割れると真夜中をまたいで窓が壊れる（`local-day.ts` の
-    // `startOfNextLocalDayIso` の JSDoc が同じ理由で引数を必須にしている）。
-    const now = new Date();
-    // Issue #409（親 #276）: 「朝会 かつ 強制オン」または「リクエストの
-    // mentoring」を 1 つの boolean へ合成してから渡す。設定の読み取りと
-    // 条件の合成はこのルート（呼び出し側）の責務であり、buildPersonaPrompt
-    // は受け取った boolean で分岐するだけの純粋関数のまま
-    // （機能仕様「IF（境界となる契約）」・`PersonaPromptContext.mentoring`
-    // の JSDoc）。
-    const mentoring =
-      (session.type === "morning" && (await resolveMorningMentoringRequired(db))) ||
-      requestedMentoring === true;
-    // Issue #471（親 #444 決定3・決定7の結線）: mentoringTaskId は
-    // mentoring が真のときだけ後段（プロンプト・ツール実行）へ渡す。
-    // バリデーションで mentoringTaskId は requestedMentoring === true の
-    // ときにしか存在しない（決定7）ので、この時点では常に mentoring も
-    // 真だが、契約として明示的に mentoring でゲートする。
-    const mentoringTaskIdForTurn = mentoring ? mentoringTaskId : undefined;
-    // S2b・Issue #545（親 #438 決定16・17）: 対象タスクに紐づく過去の決定・
-    // メンタリング記録を、listRecentDecisions とは別経路
-    // （listDecisionsByTaskId、kind で絞らない）で引く。mentoringTaskIdForTurn
-    // が undefined のとき（mentoring が偽、または mentoringTaskId 未指定）は
-    // クエリ自体を発行しない — buildPersonaPrompt 側でも AND 条件でゲート
-    // されるが、無駄な DB アクセスを避ける。
-    const taskRelatedRecords =
-      mentoringTaskIdForTurn === undefined
-        ? undefined
-        : await listDecisionsByTaskId(db, mentoringTaskIdForTurn, TASK_RELATED_RECORD_LIMIT);
-    const system = buildPersonaPrompt(persona, {
-      tasks,
-      // 決定 3-a: ボスが自分の裁定（要否）と現状（添付件数）を参照できる
-      // ようにする。ボスチャットは update_task ツールで完了操作にも使われる
-      // 経路なので、この呼び出し元だけは実件数を渡す必要がある。
-      taskEvidenceCounts: await countTaskEvidencesByTaskIds(
-        db,
-        tasks.map((task) => task.id),
-      ),
-      recentDecisions,
-      recentSessionSummaries,
-      todaysAdhocMessages: await collectTodaysAdhocContext(db, session.type, now),
-      now,
-      sessionType: session.type,
-      mentoring,
-      // Issue #468（親 #444 決定3）: 対象タスクをプロンプトへ積む結線。
-      mentoringTaskId: mentoringTaskIdForTurn,
-      // Issue #545（親 #438 決定16・17）: 対象タスクの過去記録の結線。
-      taskRelatedRecords,
-      // 「今何時か」「締切まであと何時間か」の主経路（Issue #288）
-      includeCurrentDateTime: true,
-    });
-    const messages = toClaudeMessages(await listMessagesBySessionId(db, id));
+    // 1 ターン分のプロンプト材料は 1 つのトランザクションでスナップショット
+    // として読む（#618・機能仕様 docs/features/async-db-layer.md 決定 2）。
+    // 個別の `await` の間には直列化層のロックが外れるため、途中で設定の保存や
+    // タスクの更新が割り込むと、どの時点にも存在しなかった新旧の組み合わせが
+    // プロンプトに入りうる。LLM の呼び出しはこのトランザクションの外に置く
+    // （ロックを応答生成のあいだ持ち続けない）。
+    const { model, system, messages, mentoringTaskIdForTurn } = await db.transaction(
+      async (tx) => {
+        const tasks = await listTasks(tx);
+        const recentDecisions = await listRecentDecisions(tx, 5);
+        // Same "5 most recent" convention as recentDecisions above (Issue #96 —
+        // 直近の報告履歴の参照). Feeds AC-2: the boss can refer back to recent
+        // morning/evening reports without the user re-explaining them.
+        const recentSessionSummaries = await listRecentSessionSummaries(tx, 5);
+        // 設定由来の値（モデル・ペルソナ・朝会の必須メンタリング）は 1 つの
+        // スナップショットから導く（#618。`resolveBossSettings` と
+        // `resolveMorningMentoringRequired` を別々に読むと、その間の保存で新旧が混ざる）。
+        const settings = await readSettingsSnapshot(tx);
+        const { model, persona } = resolveBossSettingsFrom(settings);
+        // 時刻の読みは1回にまとめる（Issue #367）。`listTodaysAdhocMessages` は
+        // ローカル暦日の半開区間の両端をこの値から導出するため、プロンプト側の
+        // `now` と読みが割れると真夜中をまたいで窓が壊れる（`local-day.ts` の
+        // `startOfNextLocalDayIso` の JSDoc が同じ理由で引数を必須にしている）。
+        const now = new Date();
+        // Issue #409（親 #276）: 「朝会 かつ 強制オン」または「リクエストの
+        // mentoring」を 1 つの boolean へ合成してから渡す。設定の読み取りと
+        // 条件の合成はこのルート（呼び出し側）の責務であり、buildPersonaPrompt
+        // は受け取った boolean で分岐するだけの純粋関数のまま
+        // （機能仕様「IF（境界となる契約）」・`PersonaPromptContext.mentoring`
+        // の JSDoc）。
+        const mentoring =
+          (session.type === "morning" && resolveMorningMentoringRequiredFrom(settings)) ||
+          requestedMentoring === true;
+        // Issue #471（親 #444 決定3・決定7の結線）: mentoringTaskId は
+        // mentoring が真のときだけ後段（プロンプト・ツール実行）へ渡す。
+        // バリデーションで mentoringTaskId は requestedMentoring === true の
+        // ときにしか存在しない（決定7）ので、この時点では常に mentoring も
+        // 真だが、契約として明示的に mentoring でゲートする。
+        const mentoringTaskIdForTurn = mentoring ? mentoringTaskId : undefined;
+        // S2b・Issue #545（親 #438 決定16・17）: 対象タスクに紐づく過去の決定・
+        // メンタリング記録を、listRecentDecisions とは別経路
+        // （listDecisionsByTaskId、kind で絞らない）で引く。mentoringTaskIdForTurn
+        // が undefined のとき（mentoring が偽、または mentoringTaskId 未指定）は
+        // クエリ自体を発行しない — buildPersonaPrompt 側でも AND 条件でゲート
+        // されるが、無駄な DB アクセスを避ける。
+        const taskRelatedRecords =
+          mentoringTaskIdForTurn === undefined
+            ? undefined
+            : await listDecisionsByTaskId(tx, mentoringTaskIdForTurn, TASK_RELATED_RECORD_LIMIT);
+        const system = buildPersonaPrompt(persona, {
+          tasks,
+          // 決定 3-a: ボスが自分の裁定（要否）と現状（添付件数）を参照できる
+          // ようにする。ボスチャットは update_task ツールで完了操作にも使われる
+          // 経路なので、この呼び出し元だけは実件数を渡す必要がある。
+          taskEvidenceCounts: await countTaskEvidencesByTaskIds(
+            tx,
+            tasks.map((task) => task.id),
+          ),
+          recentDecisions,
+          recentSessionSummaries,
+          todaysAdhocMessages: await collectTodaysAdhocContext(tx, session.type, now),
+          now,
+          sessionType: session.type,
+          mentoring,
+          // Issue #468（親 #444 決定3）: 対象タスクをプロンプトへ積む結線。
+          mentoringTaskId: mentoringTaskIdForTurn,
+          // Issue #545（親 #438 決定16・17）: 対象タスクの過去記録の結線。
+          taskRelatedRecords,
+          // 「今何時か」「締切まであと何時間か」の主経路（Issue #288）
+          includeCurrentDateTime: true,
+        });
+        const messages = toClaudeMessages(await listMessagesBySessionId(tx, id));
+        return { model, system, messages, mentoringTaskIdForTurn };
+      },
+    );
 
     // The client stopping the generation *is* the client hanging up: there is
     // no stop endpoint, just an aborted `fetch` (#254 論点2). On Node, an
