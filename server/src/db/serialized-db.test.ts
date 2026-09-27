@@ -280,7 +280,7 @@ describe("createSerializedDb — 失敗後もロックが解放され次の操�
 });
 
 describe("createSerializedDb — self-review で見つかった回帰: ROLLBACK 自体の失敗", () => {
-  it("トップレベル: ROLLBACK 自体が失敗しても、fn が投げた元の例外が同じオブジェクトのまま伝わり、ロックは解放される", async () => {
+  it("トップレベル: ROLLBACK 自体が失敗すると、fn が投げた元の例外が同じオブジェクトのまま伝わり、ロックは解放されるが、以後このポートは使用不可になる（#617: 後始末が実際に効いたかは判別できないため一律に使用不可へ倒す）", async () => {
     const raw = new Database(":memory:");
     raw.exec(`CREATE TABLE items (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL)`);
     const flakyDriver = driverThatFailsOnceAfterRealExec(
@@ -302,13 +302,15 @@ describe("createSerializedDb — self-review で見つかった回帰: ROLLBACK 
 
     expect(caught).toBe(originalError);
 
-    // ROLLBACK は（失敗を報告する前に）実際に実行されているので、書き込みは残らない。
-    const rows = await db.all<{ name: string }>("SELECT name FROM items");
-    expect(rows).toEqual([]);
+    // ROLLBACK は（失敗を報告する前に）実際に実行されているので、書き込みは
+    // 生の接続で確認しても残らない。
+    expect(raw.prepare("SELECT COUNT(*) AS n FROM items").get()).toEqual({ n: 0 });
 
-    // ロックは解放され、次の操作は正常に進む。
-    const result = await db.run("INSERT INTO items (name) VALUES (?)", ["after-rollback-failure"]);
-    expect(result.changes).toBe(1);
+    // ロックは解放されている（次の操作は固まらず、即座に決着する）が、
+    // ROLLBACK 失敗後は使用不可になっているため、この操作は例外になる。
+    await expect(db.run("INSERT INTO items (name) VALUES (?)", ["after-rollback-failure"])).rejects.toThrow(
+      /unusable/,
+    );
     raw.close();
   });
 
@@ -363,6 +365,43 @@ function driverThatRejectsBeforeExec(
       }
       await inner.exec(sql);
     },
+  };
+}
+
+/**
+ * #617 のテスト用。`run`/`get`/`all`/`exec` のどれであっても、`inner` に渡さ
+ * れた（＝ `createSerializedDb` の層を通り抜けてドライバまで届いた）呼び出し
+ * を `"<メソッド名>: <sql>"` の形で記録する。「ポートが使用不可になった後は
+ * `run`/`get`/`all`/`exec` のどのメソッドも（`BEGIN` すら）ドライバへ渡らない
+ * （＝判定がドライバに触れる前に排他区間の内側で完結する）」ことを、`exec`
+ * だけでなく4メソッドすべてについて確認するために使う（self-review・
+ * code-reviewer 指摘・CONFIRMED: 当初は `exec` だけを記録していたため、
+ * `get`/`all` の判定がドライバ呼び出しの後ろへ動いても検出できなかった）。
+ */
+function driverWithExecLog(
+  inner: ReturnType<typeof createBetterSqlite3Driver>,
+): { driver: ReturnType<typeof createBetterSqlite3Driver>; execLog: string[] } {
+  const execLog: string[] = [];
+  return {
+    driver: {
+      run: (sql, params) => {
+        execLog.push(`run: ${sql}`);
+        return inner.run(sql, params);
+      },
+      get: (sql, params) => {
+        execLog.push(`get: ${sql}`);
+        return inner.get(sql, params);
+      },
+      all: (sql, params) => {
+        execLog.push(`all: ${sql}`);
+        return inner.all(sql, params);
+      },
+      async exec(sql: string) {
+        execLog.push(`exec: ${sql}`);
+        await inner.exec(sql);
+      },
+    },
+    execLog,
   };
 }
 
@@ -524,6 +563,136 @@ describe("createSerializedDb — self-review で見つかった回帰: 同じ tx
 
     const rows = await db.all<{ name: string }>("SELECT name FROM items");
     expect(rows).toEqual([]);
+    raw.close();
+  });
+});
+
+describe("createSerializedDb — #617: トップレベルの ROLLBACK が実行前に拒否されたらポート全体を使用不可にする", () => {
+  it("(a) 元の例外は同じオブジェクトのまま伝わり、以後の run/get/all/exec/transaction はすべてドライバに触れず（BEGIN も打たず）即座に拒否され、放置されたトランザクションに書き込みは混ざらない", async () => {
+    const raw = new Database(":memory:");
+    raw.exec(`CREATE TABLE items (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL)`);
+    const { driver, execLog } = driverWithExecLog(
+      driverThatRejectsBeforeExec(createBetterSqlite3Driver(raw), (sql) => sql === "ROLLBACK"),
+    );
+    const db = createSerializedDb(driver);
+    const originalError = new Error("fn failure (top-level ROLLBACK will be rejected before executing)");
+
+    let caught: unknown;
+    try {
+      await db.transaction(async (tx) => {
+        await tx.run("INSERT INTO items (name) VALUES (?)", ["should-not-remain"]);
+        throw originalError;
+      });
+    } catch (err) {
+      caught = err;
+    }
+    expect(caught).toBe(originalError);
+
+    // ドライバは ROLLBACK を実行前に拒否したので、SQLite 側のトランザクション
+    // は開いたまま残っている（後始末できていない）。
+    expect(raw.inTransaction).toBe(true);
+
+    // ここまでのログ（BEGIN IMMEDIATE・INSERT・ROLLBACK の試行）をクリアし、
+    // 以後の呼び出しでドライバに何も渡らないことを確認する。
+    execLog.length = 0;
+
+    await expect(db.run("INSERT INTO items (name) VALUES (?)", ["after"])).rejects.toThrow(/unusable/);
+    await expect(db.get("SELECT * FROM items")).rejects.toThrow(/unusable/);
+    await expect(db.all("SELECT * FROM items")).rejects.toThrow(/unusable/);
+    await expect(db.exec("SELECT 1")).rejects.toThrow(/unusable/);
+    await expect(db.transaction(async () => "should-not-run")).rejects.toThrow(/unusable/);
+
+    // 使用不可後の操作はドライバへ一切渡らない（`BEGIN` すら打たれない）。
+    expect(execLog).toEqual([]);
+
+    // 放置されたトランザクションに、その後の `run`（"after"）の書き込みは
+    // 混ざっていない（生の接続で確認する — ポート経由の `all` はすでに使用
+    // 不可で使えない）。"should-not-remain" は `fn` 自身が放置された
+    // トランザクションの中で書いた行で、同じ生の接続からはコミット前でも
+    // 見える（未コミットの自分の書き込み）ため、それ自体は消えない——
+    // ここで確かめたいのは「その後の操作」の書き込みが入り込んでいないこと。
+    expect(raw.prepare("SELECT name FROM items ORDER BY id").all()).toEqual([{ name: "should-not-remain" }]);
+
+    raw.close();
+  });
+
+  it("(b) 失敗する transaction と同時に（await せず）呼んだ db.run も、排他区間の内側で判定され拒否される", async () => {
+    const raw = new Database(":memory:");
+    raw.exec(`CREATE TABLE items (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL)`);
+    const db = createSerializedDb(
+      driverThatRejectsBeforeExec(createBetterSqlite3Driver(raw), (sql) => sql === "ROLLBACK"),
+    );
+    const originalError = new Error("fn failure (top-level ROLLBACK will be rejected before executing)");
+
+    const txPromise = db.transaction(async (tx) => {
+      await tx.run("INSERT INTO items (name) VALUES (?)", ["should-not-remain"]);
+      throw originalError;
+    });
+    // `transaction` の呼び出しと同時に、`await` せず別の操作を発行する。
+    // ミューテックスのキューにより、この操作は `transaction` の排他区間が
+    // 終わってから実行されるので、失敗の判定（`unusable` の記録）はこの
+    // 操作の実行前に済んでいるはず。
+    const concurrentRunPromise = db.run("INSERT INTO items (name) VALUES (?)", ["concurrent-should-not-remain"]);
+
+    await expect(txPromise).rejects.toBe(originalError);
+    await expect(concurrentRunPromise).rejects.toThrow(/unusable/);
+
+    // 同時に発行した `run`（"concurrent-should-not-remain"）は排他区間の
+    // 内側で拒否され、ドライバへ渡っていない。"should-not-remain" は `fn`
+    // 自身が放置されたトランザクションの中で書いた行なので、同じ生の接続
+    // からは（未コミットのまま）残って見える。
+    expect(raw.prepare("SELECT name FROM items ORDER BY id").all()).toEqual([{ name: "should-not-remain" }]);
+    raw.close();
+  });
+
+  it("(c) エラーの cause は ROLLBACK の拒否エラーである", async () => {
+    const raw = new Database(":memory:");
+    raw.exec(`CREATE TABLE items (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL)`);
+    const db = createSerializedDb(
+      driverThatRejectsBeforeExec(createBetterSqlite3Driver(raw), (sql) => sql === "ROLLBACK"),
+    );
+
+    await expect(
+      db.transaction(async () => {
+        throw new Error("fn failure");
+      }),
+    ).rejects.toThrow("fn failure");
+
+    let caught: unknown;
+    try {
+      await db.run("INSERT INTO items (name) VALUES (?)", ["after"]);
+    } catch (err) {
+      caught = err;
+    }
+
+    expect(caught).toBeInstanceOf(Error);
+    expect((caught as Error).cause).toBeInstanceOf(Error);
+    expect(((caught as Error).cause as Error).message).toMatch(/simulated rejection before executing: ROLLBACK$/);
+    raw.close();
+  });
+
+  it("(d) 入れ子の ROLLBACK TO が失敗して外側がコミット不可になり、続くトップレベルの ROLLBACK まで拒否された場合も、ポートは使用不可になる", async () => {
+    const raw = new Database(":memory:");
+    raw.exec(`CREATE TABLE items (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL)`);
+    // `ROLLBACK TO ...` と `ROLLBACK` の両方を実行前に拒否する。
+    const db = createSerializedDb(
+      driverThatRejectsBeforeExec(createBetterSqlite3Driver(raw), (sql) => sql.startsWith("ROLLBACK")),
+    );
+
+    await expect(
+      db.transaction(async (tx) => {
+        await tx
+          .transaction(async () => {
+            throw new Error("inner failure");
+          })
+          .catch(() => undefined);
+        return "outer-returned-normally";
+      }),
+    ).rejects.toThrow(/ROLLBACK TO/);
+    expect(raw.inTransaction).toBe(true);
+
+    await expect(db.run("INSERT INTO items (name) VALUES (?)", ["after"])).rejects.toThrow(/unusable/);
+    expect(raw.prepare("SELECT COUNT(*) AS n FROM items").get()).toEqual({ n: 0 });
     raw.close();
   });
 });
