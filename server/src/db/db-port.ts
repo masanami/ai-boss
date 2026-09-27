@@ -118,7 +118,11 @@ export interface Db {
   transaction<T>(fn: (tx: DbTx) => Promise<T> | T): Promise<T>;
 }
 
-/** トップレベルの非同期 DB ポート。`Db` と同じ操作を持つ（{@link Db} 参照）。 */
+/** トップレベルの非同期 DB ポート。`Db` と同じ操作を持つ（{@link Db} 参照）。
+ * トップレベルの `transaction(fn)` の後始末の `ROLLBACK` 自体が失敗すると、
+ * トランザクション状態が不明になったとみなし、このポート**全体**が使用不可
+ * になる（以後どの操作を呼んでも例外になる。再接続・自動回復はしない。
+ * #617・`serialized-db.ts` の `TxState.rollbackFailure` と同じ理屈）。 */
 export type DbPort = Db;
 
 /** `transaction(fn)` の中で `fn` に渡されるハンドル。`Db` と同じ操作を持つ

@@ -111,6 +111,23 @@ function nestedRollbackFailedError(cause: unknown): Error {
   );
 }
 
+/**
+ * #617: トップレベルの `transaction(fn)` の後始末の `ROLLBACK` 自体が失敗
+ * したときのエラー。`nestedRollbackFailedError` と同じ考え方——後始末が
+ * 実際に効いたかを `DbDriver` の契約から判別する手段が無いため、再接続・
+ * 自動回復は行わず一律にポート全体を使用不可にする（YAGNI）。
+ */
+function portUnusableAfterTopLevelRollbackFailureError(cause: unknown): Error {
+  return new Error(
+    "a top-level `transaction(fn)`'s `ROLLBACK` failed, so the transaction state is unknown " +
+      "and this DB port is now unusable; there is no way to tell whether the driver's " +
+      "autocommit state was actually restored, so every further operation on this port is " +
+      "rejected instead of silently joining the abandoned transaction — restart the process " +
+      "and open a new DB port",
+    { cause },
+  );
+}
+
 function assertActive(state: TxState): void {
   const { rollbackFailure } = rootOf(state);
   if (rollbackFailure) {
@@ -266,8 +283,24 @@ async function runNestedTransaction<T>(
 /**
  * トップレベルのトランザクション。呼び出し時点で直列化層のロックはすでに
  * `createSerializedDb` 側の `runExclusive` が保持している。
+ *
+ * `onRollbackFailure` は、この `transaction(fn)` の後始末の `ROLLBACK` 自体が
+ * 失敗したときに呼ばれる（#617）。ドライバが `ROLLBACK` を**実行前に**拒否
+ * すると、SQLite 側のトランザクションは開いたまま残るのに、この呼び出しの
+ * ロック（`createSerializedDb` の `mutex`）はここでは解放してしまう——その
+ * 状態で呼び出し元が次の `db.run` 等を呼ぶと、放置されたトランザクションへ
+ * 黙って合流してしまう（Issue #617）。後始末が実際に効いたかは
+ * `DbDriver` の契約からは判別できないため、`runTopLevelTransaction` 自身は
+ * 何もせず（ロックは解放して固まらせない）、記録は呼び出し元
+ * （`createSerializedDb`）に委ねる——呼び出し元がポート全体を使用不可にする
+ * ことで、放置されたトランザクションへの合流を防ぐ（入れ子の `ROLLBACK TO`
+ * 失敗と同じ理屈。`TxState.rollbackFailure` 参照）。
  */
-async function runTopLevelTransaction<T>(driver: DbDriver, fn: (tx: DbTx) => Promise<T> | T): Promise<T> {
+async function runTopLevelTransaction<T>(
+  driver: DbDriver,
+  fn: (tx: DbTx) => Promise<T> | T,
+  onRollbackFailure: (error: unknown) => void,
+): Promise<T> {
   const state: TxState = { finished: false, busy: false };
   const tx = createTxHandle(driver, state);
 
@@ -287,10 +320,13 @@ async function runTopLevelTransaction<T>(driver: DbDriver, fn: (tx: DbTx) => Pro
   } catch (err) {
     // 入れ子版と同じ理由（上記コメント参照）で、`ROLLBACK` 自体の失敗を
     // 握りつぶし、`fn` が投げた元の例外 `err` を必ず投げ直す（AC-2b）。
+    // ただし #617: 握りつぶす前に `onRollbackFailure` へ通知し、呼び出し元
+    // がポート全体を使用不可にできるようにする（後始末が効いたかどうかを
+    // 判別できない以上、以後の操作を放置トランザクションへ合流させない）。
     try {
       await driver.exec("ROLLBACK");
-    } catch {
-      // 握りつぶす。
+    } catch (rollbackError) {
+      onRollbackFailure(rollbackError);
     } finally {
       state.finished = true;
     }
@@ -308,19 +344,47 @@ async function runTopLevelTransaction<T>(driver: DbDriver, fn: (tx: DbTx) => Pro
  */
 export function createSerializedDb(driver: DbDriver): DbPort {
   const mutex = createMutex();
+  /**
+   * トップレベルの `ROLLBACK` が失敗したときの記録（#617）。入れ子の
+   * `ROLLBACK TO` 失敗（`TxState.rollbackFailure`）と同じ考え方だが、対象は
+   * この `createSerializedDb` が返すポート**全体**——記録後はどの操作
+   * （`run`/`get`/`all`/`exec`/`transaction`）も、ドライバへ一切触れずに
+   * （`BEGIN` も打たずに）即座に拒否する。判定は `mutex.runExclusive` の
+   * コールバックの中（排他区間の内側）で行うため、失敗した `transaction`
+   * の直後にすでにキューされていた操作（`transaction` の呼び出しと同時に
+   * `await` せず呼んだ別の操作を含む）も漏れなく拒否される。再接続・
+   * 自動回復は行わない（YAGNI — `DbDriver` に autocommit 状態を問い合わせる
+   * 手段が無く、後始末が効いたか判別できないため、入れ子版と同じ理屈で
+   * 一律に使用不可へ倒す）。
+   */
+  let unusable: { error: unknown } | undefined;
+
+  function assertUsable(): void {
+    if (unusable) {
+      throw portUnusableAfterTopLevelRollbackFailureError(unusable.error);
+    }
+  }
+
+  /** 排他区間の内側で使用可否を確かめてから `task` を実行する（全操作の共通の入口）。 */
+  function runUsable<T>(task: () => T | Promise<T>): Promise<T> {
+    return mutex.runExclusive(async () => {
+      assertUsable();
+      return task();
+    });
+  }
 
   const port: Db = {
     run(sql: string, params?: SqlValue[]) {
-      return mutex.runExclusive(async () => driver.run(sql, params));
+      return runUsable(() => driver.run(sql, params));
     },
     get<T>(sql: string, params?: SqlValue[]) {
-      return mutex.runExclusive(async () => driver.get<T>(sql, params));
+      return runUsable(() => driver.get<T>(sql, params));
     },
     all<T>(sql: string, params?: SqlValue[]) {
-      return mutex.runExclusive(async () => driver.all<T>(sql, params));
+      return runUsable(() => driver.all<T>(sql, params));
     },
     exec(sql: string) {
-      return mutex.runExclusive(async () => driver.exec(sql));
+      return runUsable(() => driver.exec(sql));
     },
     transaction<T>(fn: (tx: DbTx) => Promise<T> | T) {
       // トランザクション全体（BEGIN〜COMMIT/ROLLBACK と、その間に `fn` が
@@ -329,7 +393,11 @@ export function createSerializedDb(driver: DbDriver): DbPort {
       // メソッドを呼ぶと、この排他区間が終わるまで解決しない
       // `mutex.runExclusive` にキューイングされ、待ち続ける
       // （= デッドロック。db-port.ts の `Db.transaction` の JSDoc 参照）。
-      return mutex.runExclusive(async () => runTopLevelTransaction(driver, fn));
+      return runUsable(() =>
+        runTopLevelTransaction(driver, fn, (rollbackError) => {
+          unusable ??= { error: rollbackError };
+        }),
+      );
     },
   };
 
