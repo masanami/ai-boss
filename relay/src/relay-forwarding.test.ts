@@ -132,6 +132,8 @@ describe("設定の検証", () => {
     ["dailyLimit が NaN", { dailyLimit: Number.NaN }],
     ["upstreamUrl が URL でない", { upstreamUrl: "not a url" }],
     ["upstreamUrl が平文の http", { upstreamUrl: "http://upstream.test/v1/messages" }],
+    ["upstreamUrl がユーザー名とパスワードを含む", { upstreamUrl: "https://user:pass@upstream.test/v1/messages" }],
+    ["upstreamUrl がユーザー名だけを含む", { upstreamUrl: "https://user@upstream.test/v1/messages" }],
   ])("%s の設定では例外を投げる", (_label, overrides) => {
     expect(build(overrides)).toThrow(RelayConfigError);
   });

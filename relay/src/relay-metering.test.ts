@@ -427,6 +427,24 @@ describe("PR #638 のレビュー対応", () => {
       expect(h.store.dump().records[0]).toMatchObject(ZERO_TOKENS);
     });
 
+    it.each([
+      ["JSON として解釈できない", "data: {not json\n\n"],
+      ["JSON だがオブジェクトでない", "data: 42\n\n"],
+    ])("正しい usage の後に%sイベントが来たら、終端まで届いても予約額で確定する（Codex 2 巡目 P2）", async (_label, broken) => {
+      const events = [
+        sseEvent({ type: "message_start", message: { usage: { input_tokens: 1000, output_tokens: 1 } } }),
+        sseEvent({ type: "message_delta", delta: {}, usage: { output_tokens: 200 } }),
+        broken,
+        sseEvent({ type: "message_stop" }),
+      ];
+      const h = createHarness({ upstream: () => sseResponse(events.join("")) });
+      const body = streamingBody();
+      await drain(await h.send(body));
+      expect(h.store.dump().records).toEqual([
+        expect.objectContaining({ units: expectedReservedUnits(JSON.stringify(body), 1000), ...ZERO_TOKENS }),
+      ]);
+    });
+
     it("非ストリーミングでキャッシュの項目が壊れていれば（0 として数えず）予約額で確定する", async () => {
       const h = createHarness({
         upstream: () => jsonResponse(messageJson({ input_tokens: 10, output_tokens: 5, cache_creation_input_tokens: -1 })),

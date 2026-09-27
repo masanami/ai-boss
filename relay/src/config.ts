@@ -110,6 +110,10 @@ export function validateRelayConfig(config: RelayConfig): RelayModel {
   if (upstream.protocol !== "https:") {
     throw new RelayConfigError("upstreamUrl must be an https URL");
   }
+  // 資格情報を含む URL は fetch の Request が拒否する（予約の後で失敗させない）。
+  if (upstream.username !== "" || upstream.password !== "") {
+    throw new RelayConfigError("upstreamUrl must not contain credentials");
+  }
   if (!Array.isArray(config.models) || config.models.length === 0) {
     throw new RelayConfigError("models must be a non-empty list");
   }

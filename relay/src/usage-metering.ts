@@ -162,10 +162,13 @@ export function createSseUsageMeter(): UsageMeter {
     try {
       event = JSON.parse(payload);
     } catch {
-      // 壊れた断片は計測に使わない（終端に届かなければ予約額で確定する）。
+      // 解釈できないイベントが 1 つでもあれば、終端まで届いても実額には使わない
+      // （そのイベントが usage を運んでいた可能性がある。PR #638 の Codex の 2 巡目の指摘）。
+      malformed = true;
       return;
     }
     if (typeof event !== "object" || event === null) {
+      malformed = true;
       return;
     }
     const record = event as Record<string, unknown>;
