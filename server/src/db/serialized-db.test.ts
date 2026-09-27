@@ -312,7 +312,7 @@ describe("createSerializedDb — self-review で見つかった回帰: ROLLBACK 
     raw.close();
   });
 
-  it("入れ子: ROLLBACK TO 自体が失敗しても、fn が投げた元の例外が同じオブジェクトのまま伝わり、外側は続けられる", async () => {
+  it("入れ子: ROLLBACK TO 自体が失敗しても、fn が投げた元の例外が同じオブジェクトのまま伝わる（外側はコミットされない — PR #615 Codex 指摘で、後始末の成否を判別できない以上は安全側に倒す）", async () => {
     const raw = new Database(":memory:");
     raw.exec(`CREATE TABLE items (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL)`);
     const flakyDriver = driverThatFailsOnceAfterRealExec(createBetterSqlite3Driver(raw), (sql) =>
@@ -321,27 +321,119 @@ describe("createSerializedDb — self-review で見つかった回帰: ROLLBACK 
     const db = createSerializedDb(flakyDriver);
     const originalInnerError = new Error("inner failure (ROLLBACK TO itself will also fail)");
 
-    const result = await db.transaction(async (tx) => {
-      await tx.run("INSERT INTO items (name) VALUES (?)", ["outer-before"]);
+    let innerCaught: unknown;
+    await expect(
+      db.transaction(async (tx) => {
+        await tx.run("INSERT INTO items (name) VALUES (?)", ["outer-before"]);
+        try {
+          await tx.transaction(async (innerTx) => {
+            await innerTx.run("INSERT INTO items (name) VALUES (?)", ["inner-should-not-remain"]);
+            throw originalInnerError;
+          });
+        } catch (err) {
+          innerCaught = err;
+        }
+      }),
+    ).rejects.toBeInstanceOf(Error);
 
-      let innerCaught: unknown;
-      try {
-        await tx.transaction(async (innerTx) => {
-          await innerTx.run("INSERT INTO items (name) VALUES (?)", ["inner-should-not-remain"]);
-          throw originalInnerError;
-        });
-      } catch (err) {
-        innerCaught = err;
-      }
-
-      await tx.run("INSERT INTO items (name) VALUES (?)", ["outer-after"]);
-      return innerCaught;
-    });
-
-    expect(result).toBe(originalInnerError);
+    expect(innerCaught).toBe(originalInnerError);
 
     const rows = await db.all<{ name: string }>("SELECT name FROM items ORDER BY id");
-    expect(rows).toEqual([{ name: "outer-before" }, { name: "outer-after" }]);
+    expect(rows).toEqual([]);
+    raw.close();
+  });
+});
+
+/**
+ * PR #615 の Codex レビュー（P2）のための test double。`shouldReject(sql)` が
+ * 真になる文を、内側のドライバへ**渡さずに**（＝実行前に）拒否する。
+ * `driverThatFailsOnceAfterRealExec` と違い、後始末は実際には行われない。
+ */
+function driverThatRejectsBeforeExec(
+  inner: ReturnType<typeof createBetterSqlite3Driver>,
+  shouldReject: (sql: string) => boolean,
+): ReturnType<typeof createBetterSqlite3Driver> {
+  return {
+    run: (sql, params) => inner.run(sql, params),
+    get: (sql, params) => inner.get(sql, params),
+    all: (sql, params) => inner.all(sql, params),
+    async exec(sql: string) {
+      if (shouldReject(sql)) {
+        throw new Error(`simulated rejection before executing: ${sql}`);
+      }
+      await inner.exec(sql);
+    },
+  };
+}
+
+describe("createSerializedDb — PR #615 Codex 指摘: ROLLBACK TO が実行前に拒否されたら外側をコミットさせない", () => {
+  it("内側の元の例外は同じオブジェクトのまま伝わり、外側の transaction は例外で終わって、内側・外側どちらの書き込みも残らない", async () => {
+    const raw = new Database(":memory:");
+    raw.exec(`CREATE TABLE items (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL)`);
+    const db = createSerializedDb(
+      driverThatRejectsBeforeExec(createBetterSqlite3Driver(raw), (sql) => sql.startsWith("ROLLBACK TO")),
+    );
+    const originalInnerError = new Error("inner failure (ROLLBACK TO will be rejected before executing)");
+
+    let innerCaught: unknown;
+    let outerCaught: unknown;
+    try {
+      await db.transaction(async (tx) => {
+        await tx.run("INSERT INTO items (name) VALUES (?)", ["outer-before"]);
+        try {
+          await tx.transaction(async (innerTx) => {
+            await innerTx.run("INSERT INTO items (name) VALUES (?)", ["inner-should-not-remain"]);
+            throw originalInnerError;
+          });
+        } catch (err) {
+          innerCaught = err;
+        }
+        return "outer-returned-normally";
+      });
+    } catch (err) {
+      outerCaught = err;
+    }
+
+    expect(innerCaught).toBe(originalInnerError);
+    expect(outerCaught).toBeInstanceOf(Error);
+    expect(outerCaught).not.toBe(originalInnerError);
+
+    const rows = await db.all<{ name: string }>("SELECT name FROM items ORDER BY id");
+    expect(rows).toEqual([]);
+
+    // ロックは解放され、次の操作は正常に進む。
+    const result = await db.run("INSERT INTO items (name) VALUES (?)", ["after"]);
+    expect(result.changes).toBe(1);
+    raw.close();
+  });
+
+  it("後始末に失敗した後で外側の tx を使い続けると、その操作は即座に例外になる（オートコミットへ漏らさない）", async () => {
+    const raw = new Database(":memory:");
+    raw.exec(`CREATE TABLE items (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL)`);
+    const db = createSerializedDb(
+      driverThatRejectsBeforeExec(createBetterSqlite3Driver(raw), (sql) => sql.startsWith("ROLLBACK TO")),
+    );
+
+    let continueError: unknown;
+    await expect(
+      db.transaction(async (tx) => {
+        await tx
+          .transaction(async (innerTx) => {
+            await innerTx.run("INSERT INTO items (name) VALUES (?)", ["inner-should-not-remain"]);
+            throw new Error("inner failure");
+          })
+          .catch(() => undefined);
+        try {
+          await tx.run("INSERT INTO items (name) VALUES (?)", ["outer-after-should-not-remain"]);
+        } catch (err) {
+          continueError = err;
+        }
+      }),
+    ).rejects.toBeInstanceOf(Error);
+
+    expect(continueError).toBeInstanceOf(Error);
+    const rows = await db.all<{ name: string }>("SELECT name FROM items ORDER BY id");
+    expect(rows).toEqual([]);
     raw.close();
   });
 });

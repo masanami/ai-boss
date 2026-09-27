@@ -79,9 +79,43 @@ interface TxState {
    * 窓は開かない。
    */
   busy: boolean;
+  /**
+   * 最上位の `tx` の状態にだけ置く。入れ子の `ROLLBACK TO` が失敗したとき、
+   * その失敗の例外を記録する（PR #615 Codex 指摘・P2）。ドライバが
+   * `ROLLBACK TO` を**実行前に**拒否した場合、内側の書き込みは戻っていない
+   * のに `RELEASE` で外側へ合流してしまう。後始末が実際に効いたかは
+   * 呼び出し元から判別できないため、失敗したら一律にトランザクション全体を
+   * 「コミット不可」にする: 以後この木のどの `tx` の操作も即座に例外にし
+   * （SQLite が自分でトランザクションを畳んでいた場合に、後続の書き込みが
+   * オートコミットへ漏れないようにする）、最上位は `fn` が正常に返っても
+   * `COMMIT` せず `ROLLBACK` して例外で終わる。`fn` が投げた元の例外は
+   * 従来どおり同じオブジェクトのまま内側の呼び出し元へ伝わる（AC-2b）。
+   */
+  rollbackFailure?: { error: unknown };
+}
+
+function rootOf(state: TxState): TxState {
+  let current = state;
+  while (current.parent) {
+    current = current.parent;
+  }
+  return current;
+}
+
+function nestedRollbackFailedError(cause: unknown): Error {
+  return new Error(
+    "a nested `transaction(fn)` failed and its `ROLLBACK TO` also failed, so the inner " +
+      "writes may not have been rolled back; the whole transaction has been rolled back " +
+      "instead of committed",
+    { cause },
+  );
 }
 
 function assertActive(state: TxState): void {
+  const { rollbackFailure } = rootOf(state);
+  if (rollbackFailure) {
+    throw nestedRollbackFailedError(rollbackFailure.error);
+  }
   let current: TxState | undefined = state;
   while (current) {
     if (current.finished) {
@@ -204,8 +238,11 @@ async function runNestedTransaction<T>(
     // （SAVEPOINT をスタックに残さないため）。
     try {
       await driver.exec(`ROLLBACK TO ${savepoint}`);
-    } catch {
-      // 握りつぶす。下の `RELEASE` は独立に試し、最終的に `err` を throw する。
+    } catch (rollbackError) {
+      // `err` は優先して投げ直すが、内側の書き込みが戻ったとは言えないので、
+      // トランザクション全体をコミット不可にする（`TxState.rollbackFailure`
+      // 参照）。下の `RELEASE` は独立に試し、最終的に `err` を throw する。
+      rootOf(parentState).rollbackFailure ??= { error: rollbackError };
     }
     try {
       await driver.exec(`RELEASE ${savepoint}`);
@@ -239,6 +276,11 @@ async function runTopLevelTransaction<T>(driver: DbDriver, fn: (tx: DbTx) => Pro
   await driver.exec("BEGIN IMMEDIATE");
   try {
     const result = await fn(tx);
+    if (state.rollbackFailure) {
+      // 入れ子の後始末が失敗している（`TxState.rollbackFailure` 参照）。
+      // コミットせず、下の catch で `ROLLBACK` してこの例外で終わる。
+      throw nestedRollbackFailedError(state.rollbackFailure.error);
+    }
     await driver.exec("COMMIT");
     state.finished = true;
     return result;
