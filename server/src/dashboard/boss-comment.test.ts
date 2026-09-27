@@ -106,7 +106,7 @@ describe("getOrGenerateBossComment", () => {
     await setCachedBossComment(
       portFor(db),
       toDateKey(now),
-      computeTaskFingerprint(listTasks(db)),
+      computeTaskFingerprint((await listTasks(portFor(db)))),
       "<p>先に書かれた生のひとこと</p>",
     );
 
@@ -127,7 +127,7 @@ describe("getOrGenerateBossComment", () => {
     await setCachedBossComment(
       portFor(db),
       toDateKey(now),
-      computeTaskFingerprint(listTasks(db)),
+      computeTaskFingerprint((await listTasks(portFor(db)))),
       "<p></p>",
     );
 
@@ -291,7 +291,7 @@ describe("getOrGenerateBossComment", () => {
 
     const firstComment = await getOrGenerateBossComment(db, env, first);
 
-    insertTask(db, {
+    await insertTask(portFor(db), {
       title: "新しいタスク",
       description: null,
       category: "work",
@@ -315,7 +315,7 @@ describe("getOrGenerateBossComment", () => {
   // zero-tasks case, so this confirms the fingerprint itself doesn't churn
   // when nothing about the tasks changes.
   it("does not call the Claude API again when task state is unchanged, with existing tasks present", async () => {
-    insertTask(db, {
+    await insertTask(portFor(db), {
       title: "既存タスク",
       description: null,
       category: "work",
@@ -353,7 +353,7 @@ describe("getOrGenerateBossComment", () => {
     // fake timer は shouldAdvanceTime: true（await が実タイマー待ちで
     // 止まらないようにするため）なので、書き込みの直前ごとに固定し直す。
     vi.setSystemTime(now);
-    const inserted = insertTask(db, {
+    const inserted = await insertTask(portFor(db), {
       title: "変更前のタイトル",
       description: null,
       category: "work",
@@ -367,7 +367,7 @@ describe("getOrGenerateBossComment", () => {
     const firstComment = await getOrGenerateBossComment(db, env, now);
 
     vi.setSystemTime(now);
-    const updated = updateTask(db, inserted.id, { title: "変更後のタイトル" });
+    const updated = await updateTask(portFor(db), inserted.id, { title: "変更後のタイトル" });
 
     // 狙った経路（updated_at が動かないまま内容だけが変わる）を実際に
     // 踏んでいることの表明。ここが同値でなければ AC-2 は何も検証していない。
@@ -396,7 +396,7 @@ describe("getOrGenerateBossComment", () => {
     createBossMessageMock.mockResolvedValue(fakeTextMessage("今日も一日決めた通りにやれ"));
 
     vi.setSystemTime(first);
-    insertTask(db, {
+    await insertTask(portFor(db), {
       title: "全フィールドが埋まったタスク",
       description: "説明",
       category: "private",

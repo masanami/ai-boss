@@ -140,7 +140,7 @@ describe("backdated checkins: effect on notifications / escalation / break detec
       const notifications = toNotificationHistory(
         listNotificationsSince(db, new Date(0).toISOString()),
       );
-      const activityEvents = listEventsSince(db, new Date(0).toISOString());
+      const activityEvents = await listEventsSince(portFor(db), new Date(0).toISOString());
       const result = resolveEscalation(
         "unstarted:1",
         NOW,
@@ -181,7 +181,7 @@ describe("backdated checkins: effect on notifications / escalation / break detec
       const notifications = toNotificationHistory(
         listNotificationsSince(db, new Date(0).toISOString()),
       );
-      const activityEvents = listEventsSince(db, new Date(0).toISOString());
+      const activityEvents = await listEventsSince(portFor(db), new Date(0).toISOString());
       const result = resolveEscalation(
         "unstarted:1",
         shortlyAfterSentAt,
@@ -273,7 +273,7 @@ describe("backdated checkins: effect on notifications / escalation / break detec
   describe("判断5 調査結果: break_end 無しの後追い break_start は継続中の休憩として扱われる (AC-17)", () => {
     it("getActiveBreak still returns the backdated break_start after a later task_start", async () => {
       const app = createApp(db);
-      const task: Task = insertTask(db, {
+      const task: Task = await insertTask(portFor(db), {
         title: "資料作成",
         description: null,
         category: "work",
@@ -299,7 +299,7 @@ describe("backdated checkins: effect on notifications / escalation / break detec
       });
       expect(taskStartRes.status).toBe(201);
 
-      const activityEvents: ActivityEvent[] = listEventsSince(db, new Date(0).toISOString());
+      const activityEvents: ActivityEvent[] = await listEventsSince(portFor(db), new Date(0).toISOString());
       const activeBreak = getActiveBreak(activityEvents);
 
       expect(activeBreak).toBeDefined();

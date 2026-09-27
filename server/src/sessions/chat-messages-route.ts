@@ -212,7 +212,7 @@ export function registerChatMessageRoute(
     // （純粋関数である sessions-validation.ts には持ち込まない）。ユーザー
     // 発言を保存する前（insertMessage より前）に判定する — 拒否されたリク
     // エストのユーザー発言だけが残る中間状態を作らないため。
-    if (mentoringTaskId !== undefined && !findTaskById(db, mentoringTaskId)) {
+    if (mentoringTaskId !== undefined && !(await findTaskById(portFor(db), mentoringTaskId))) {
       return c.json(
         {
           error: "対象のタスクが見つかりません",
@@ -311,9 +311,9 @@ export function registerChatMessageRoute(
     } else {
       insertMessage(db, { session_id: id, role: "user", content });
     }
-    recordActivityEvent(db, { type: "chat_message" });
+    await recordActivityEvent(portFor(db), { type: "chat_message" });
 
-    const tasks = listTasks(db);
+    const tasks = await listTasks(portFor(db));
     const recentDecisions = listRecentDecisions(db, 5);
     // Same "5 most recent" convention as recentDecisions above (Issue #96 —
     // 直近の報告履歴の参照). Feeds AC-2: the boss can refer back to recent
@@ -355,7 +355,10 @@ export function registerChatMessageRoute(
       // 決定 3-a: ボスが自分の裁定（要否）と現状（添付件数）を参照できる
       // ようにする。ボスチャットは update_task ツールで完了操作にも使われる
       // 経路なので、この呼び出し元だけは実件数を渡す必要がある。
-      taskEvidenceCounts: countTaskEvidencesByTaskIds(db, tasks.map((task) => task.id)),
+      taskEvidenceCounts: await countTaskEvidencesByTaskIds(
+        portFor(db),
+        tasks.map((task) => task.id),
+      ),
       recentDecisions,
       recentSessionSummaries,
       todaysAdhocMessages: collectTodaysAdhocContext(db, session.type, now),

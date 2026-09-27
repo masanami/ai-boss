@@ -7,6 +7,7 @@ import { calculateProgress } from "./progress.js";
 import { calculateTodayMaxEscalationLevel } from "./today-escalation.js";
 import { getOrGenerateBossComment } from "./boss-comment.js";
 import type { DashboardResponse } from "./dashboard.js";
+import { portFor } from "../db/transitional-bridge.js";
 
 /**
  * Creates the dashboard sub-router, mounted under `/api/dashboard` by the
@@ -24,7 +25,7 @@ export function createDashboardRouter(
     const todaysSessionTypes = listTodaysSessionTypes(db, now);
 
     const response: DashboardResponse = {
-      progress: calculateProgress(listTasks(db), now),
+      progress: calculateProgress(await listTasks(portFor(db)), now),
       morningSessionHeld: todaysSessionTypes.includes("morning"),
       eveningSessionHeld: todaysSessionTypes.includes("evening"),
       todayMaxEscalationLevel: calculateTodayMaxEscalationLevel(db, now),

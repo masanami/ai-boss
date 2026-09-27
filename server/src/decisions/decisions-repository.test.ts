@@ -168,9 +168,9 @@ describe("insertDecision", () => {
     expect(typeof decision.created_at).toBe("string");
   });
 
-  it("persists task_id and rationale when provided", () => {
+  it("persists task_id and rationale when provided", async () => {
     const session = insertSession(db, { type: "adhoc" });
-    const task = insertTask(db, {
+    const task = await insertTask(portFor(db), {
       title: "資料作成",
       description: null,
       category: "work",
@@ -304,9 +304,9 @@ describe("listDecisions", () => {
     ]);
   });
 
-  it("resolves the related task's title as task_title", () => {
+  it("resolves the related task's title as task_title", async () => {
     const session = insertSession(db, { type: "adhoc" });
-    const task = insertTask(db, newTask("見積もり資料の作成"));
+    const task = await insertTask(portFor(db), newTask("見積もり資料の作成"));
     insertRawDecision(
       db,
       session.id,
@@ -445,20 +445,20 @@ describe("listDecisionsByTaskId", () => {
     await runMigrations(portFor(db));
   });
 
-  afterEach(() => {
+  afterEach(async () => {
     db.close();
   });
 
-  it("returns an empty array when the task has no decisions", () => {
-    const task = insertTask(db, newTask("資料作成"));
+  it("returns an empty array when the task has no decisions", async () => {
+    const task = await insertTask(portFor(db), newTask("資料作成"));
 
     expect(listDecisionsByTaskId(db, task.id, 5)).toEqual([]);
   });
 
-  it("returns only rows for the given task_id, excluding other tasks' rows and task_id IS NULL rows", () => {
+  it("returns only rows for the given task_id, excluding other tasks' rows and task_id IS NULL rows", async () => {
     const session = insertSession(db, { type: "adhoc" });
-    const target = insertTask(db, newTask("対象タスク"));
-    const other = insertTask(db, newTask("別タスク"));
+    const target = await insertTask(portFor(db), newTask("対象タスク"));
+    const other = await insertTask(portFor(db), newTask("別タスク"));
     insertRawDecision(db, session.id, "対象の決定", localIso(2026, 7, 5, 9), target.id);
     insertRawDecision(db, session.id, "別タスクの決定", localIso(2026, 7, 5, 10), other.id);
     insertRawDecision(db, session.id, "タスク紐づけ無しの決定", localIso(2026, 7, 5, 11), null);
@@ -468,9 +468,9 @@ describe("listDecisionsByTaskId", () => {
     expect(result.map((r) => r.content)).toEqual(["対象の決定"]);
   });
 
-  it("returns both kind='decision' and kind='mentoring' rows for the task", () => {
+  it("returns both kind='decision' and kind='mentoring' rows for the task", async () => {
     const session = insertSession(db, { type: "adhoc" });
-    const task = insertTask(db, newTask("対象タスク"));
+    const task = await insertTask(portFor(db), newTask("対象タスク"));
     insertRawDecision(db, session.id, "通常の決定", localIso(2026, 7, 5, 9), task.id, "decision");
     insertRawDecision(
       db,
@@ -486,9 +486,9 @@ describe("listDecisionsByTaskId", () => {
     expect(result.map((r) => r.kind).sort()).toEqual(["decision", "mentoring"]);
   });
 
-  it("orders newest first (created_at descending, id descending on ties)", () => {
+  it("orders newest first (created_at descending, id descending on ties)", async () => {
     const session = insertSession(db, { type: "adhoc" });
-    const task = insertTask(db, newTask("対象タスク"));
+    const task = await insertTask(portFor(db), newTask("対象タスク"));
     insertRawDecision(db, session.id, "古い", localIso(2026, 7, 1, 9));
     insertRawDecision(db, session.id, "新しい", localIso(2026, 7, 5, 9));
     // 上の2件は task_id 未指定 -> 対象外。task_id を明示した2件で並び順を見る。
@@ -502,9 +502,9 @@ describe("listDecisionsByTaskId", () => {
     expect(result.map((r) => r.content)).toEqual(["後に入れた", "先に入れた", "最も古い"]);
   });
 
-  it("caps the result at the given limit, keeping the newest ones (older rows dropped)", () => {
+  it("caps the result at the given limit, keeping the newest ones (older rows dropped)", async () => {
     const session = insertSession(db, { type: "adhoc" });
-    const task = insertTask(db, newTask("対象タスク"));
+    const task = await insertTask(portFor(db), newTask("対象タスク"));
     for (let i = 0; i < 7; i++) {
       insertRawDecision(db, session.id, `記録${i}`, localIso(2026, 7, i + 1, 9), task.id);
     }
@@ -520,9 +520,9 @@ describe("listDecisionsByTaskId", () => {
     ]);
   });
 
-  it("maps content/rationale/kind/created_at to the TaskRelatedRecord shape (recordedAt)", () => {
+  it("maps content/rationale/kind/created_at to the TaskRelatedRecord shape (recordedAt)", async () => {
     const session = insertSession(db, { type: "adhoc" });
-    const task = insertTask(db, newTask("対象タスク"));
+    const task = await insertTask(portFor(db), newTask("対象タスク"));
     insertRawDecision(
       db,
       session.id,

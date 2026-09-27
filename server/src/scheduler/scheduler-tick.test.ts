@@ -195,15 +195,15 @@ const AVOIDANCE_L1_FIRE_OFFSET_MINUTES = 20;
  */
 interface RuleGateScenario {
   ruleType: DetectionRuleType;
-  setup: (db: Database.Database, baseTime: Date) => string;
+  setup: (db: Database.Database, baseTime: Date) => Promise<string>;
 }
 
 const RULE_GATE_SCENARIOS: RuleGateScenario[] = [
   {
     ruleType: "unstarted",
-    setup: (db, baseTime) => {
+    setup: async (db, baseTime) => {
       vi.setSystemTime(baseTime);
-      const task = insertTask(db, {
+      const task = await insertTask(portFor(db), {
         title: "資料作成",
         description: null,
         category: "work",
@@ -221,9 +221,9 @@ const RULE_GATE_SCENARIOS: RuleGateScenario[] = [
   },
   {
     ruleType: "avoidance",
-    setup: (db, baseTime) => {
+    setup: async (db, baseTime) => {
       vi.setSystemTime(baseTime);
-      const topTask = insertTask(db, {
+      const topTask = await insertTask(portFor(db), {
         title: "資料作成",
         description: null,
         category: "work",
@@ -233,7 +233,7 @@ const RULE_GATE_SCENARIOS: RuleGateScenario[] = [
         boss_comment: null,
         estimated_minutes: 15,
       });
-      const otherTask = insertTask(db, {
+      const otherTask = await insertTask(portFor(db), {
         title: "別件",
         description: null,
         category: "work",
@@ -247,7 +247,7 @@ const RULE_GATE_SCENARIOS: RuleGateScenario[] = [
       // Recent activity on the *other* (non-top-priority) task, inside the
       // avoidance window (30 min default).
       vi.setSystemTime(addMinutes(baseTime, AVOIDANCE_OTHER_TASK_UPDATE_OFFSET_MINUTES));
-      recordActivityEvent(db, { type: "task_update", task_id: otherTask.id });
+      await recordActivityEvent(portFor(db), { type: "task_update", task_id: otherTask.id });
       // Past the top task's (scaled) unstarted threshold (15 min) and still
       // inside the avoidance window relative to the task_update above.
       vi.setSystemTime(addMinutes(baseTime, AVOIDANCE_L1_FIRE_OFFSET_MINUTES));
@@ -256,9 +256,9 @@ const RULE_GATE_SCENARIOS: RuleGateScenario[] = [
   },
   {
     ruleType: "break_overrun",
-    setup: (db, baseTime) => {
+    setup: async (db, baseTime) => {
       vi.setSystemTime(baseTime);
-      recordActivityEvent(db, { type: "break_start", expected_minutes: 15 });
+      await recordActivityEvent(portFor(db), { type: "break_start", expected_minutes: 15 });
       markTodaysMeetingsDone(db);
       // Past the declared 15-minute break.
       vi.setSystemTime(addMinutes(baseTime, 31));
@@ -267,9 +267,9 @@ const RULE_GATE_SCENARIOS: RuleGateScenario[] = [
   },
   {
     ruleType: "silence",
-    setup: (db, baseTime) => {
+    setup: async (db, baseTime) => {
       vi.setSystemTime(baseTime);
-      recordActivityEvent(db, { type: "checkin" });
+      await recordActivityEvent(portFor(db), { type: "checkin" });
       markTodaysMeetingsDone(db);
       // Past the silence fallback threshold (45 min default; no in-progress
       // task with estimated_minutes exists, so the fallback applies).
@@ -279,7 +279,7 @@ const RULE_GATE_SCENARIOS: RuleGateScenario[] = [
   },
   {
     ruleType: "deadline_overdue",
-    setup: (db, baseTime) => {
+    setup: async (db, baseTime) => {
       vi.setSystemTime(baseTime);
       // due_at はローカル暦日で、超過が成立するのは翌暦日 00:00 から
       // （ADR 0010 決定 2）。baseTime の**前日**の暦日キーにすることで、
@@ -292,7 +292,7 @@ const RULE_GATE_SCENARIOS: RuleGateScenario[] = [
           baseTime.getDate() - 1,
         ),
       );
-      const task = insertTask(db, {
+      const task = await insertTask(portFor(db), {
         title: "資料作成",
         description: null,
         category: "work",
@@ -457,7 +457,7 @@ describe("createTicker().tick", () => {
   });
 
   it("fires, generates a body, sends the notification, and records it when a rule condition is met", async () => {
-    const task = insertTask(db, {
+    const task = await insertTask(portFor(db), {
       title: "資料作成",
       description: null,
       category: "work",
@@ -498,7 +498,7 @@ describe("createTicker().tick", () => {
   // docs/features/task-start-commitment.md 受入基準「通知文面」3件目）。
   it("records a commitment_missed notification with its type/rule_key/escalation_level when a commitment is missed", async () => {
     const committedStartAt = new Date(2026, 6, 5, 9, 31).toISOString();
-    const task = insertTask(db, {
+    const task = await insertTask(portFor(db), {
       title: "資料作成",
       description: null,
       category: "work",
@@ -534,7 +534,7 @@ describe("createTicker().tick", () => {
   // すれば commitment_missed も発火しない（変異: 退役処理を外す）。
   it("does not record commitment_missed when the commitment was retired by a status change and the task later returns to todo (T2)", async () => {
     const committedStartAt = new Date(2026, 6, 5, 14, 0).toISOString();
-    const task = insertTask(db, {
+    const task = await insertTask(portFor(db), {
       title: "資料作成",
       description: null,
       category: "work",
@@ -548,11 +548,11 @@ describe("createTicker().tick", () => {
     markTodaysMeetingsDone(db);
 
     // task_start チェックイン相当（todo -> in_progress）で約束が退役する。
-    updateTask(db, task.id, { status: "in_progress" });
+    await updateTask(portFor(db), task.id, { status: "in_progress" });
     // PATCH /api/tasks/:id 相当で todo に戻しても、退役済みの約束は復活
     // しない（決定3-2「退役した約束は、後でタスクを todo に戻しても復活
     // しない」）。
-    updateTask(db, task.id, { status: "todo" });
+    await updateTask(portFor(db), task.id, { status: "todo" });
 
     vi.setSystemTime(new Date(2026, 6, 5, 14, 30));
 
@@ -570,7 +570,7 @@ describe("createTicker().tick", () => {
   // が空振りでないことを示す。
   it("records commitment_missed for the same commitment input when the commitment is not retired (control for the test above)", async () => {
     const committedStartAt = new Date(2026, 6, 5, 14, 0).toISOString();
-    insertTask(db, {
+    await insertTask(portFor(db), {
       title: "資料作成",
       description: null,
       category: "work",
@@ -595,7 +595,7 @@ describe("createTicker().tick", () => {
   });
 
   it("does not resend within the escalation interval on the next tick (duplicate suppression)", async () => {
-    insertTask(db, {
+    await insertTask(portFor(db), {
       title: "資料作成",
       description: null,
       category: "work",
@@ -624,7 +624,7 @@ describe("createTicker().tick", () => {
   });
 
   it("resets the escalation level to L1 after an activity signal is recorded", async () => {
-    const task = insertTask(db, {
+    const task = await insertTask(portFor(db), {
       title: "資料作成",
       description: null,
       category: "work",
@@ -643,7 +643,7 @@ describe("createTicker().tick", () => {
     await ticker.tick();
 
     vi.setSystemTime(new Date("2026-07-05T09:32:00.000"));
-    recordActivityEvent(db, { type: "task_update", task_id: task.id });
+    await recordActivityEvent(portFor(db), { type: "task_update", task_id: task.id });
 
     vi.setSystemTime(new Date("2026-07-05T09:33:00.000"));
     await ticker.tick();
@@ -655,7 +655,7 @@ describe("createTicker().tick", () => {
   });
 
   it("does not crash and still records the notification when sending fails (both channels reject)", async () => {
-    insertTask(db, {
+    await insertTask(portFor(db), {
       title: "資料作成",
       description: null,
       category: "work",
@@ -689,7 +689,7 @@ describe("createTicker().tick", () => {
   // naturally", which is the pre-existing Issue #38 contract (a failed send is
   // not retried; the still-holding condition re-fires on its own schedule).
   it("records the notification before sending it, so a send is never delivered unrecorded (Issue #221)", async () => {
-    insertTask(db, {
+    await insertTask(portFor(db), {
       title: "資料作成",
       description: null,
       category: "work",
@@ -725,7 +725,7 @@ describe("createTicker().tick", () => {
   });
 
   it("does not send the notification at all when recording it fails (Issue #221)", async () => {
-    insertTask(db, {
+    await insertTask(portFor(db), {
       title: "資料作成",
       description: null,
       category: "work",
@@ -782,7 +782,7 @@ describe("createTicker().tick", () => {
     }
 
     it("records delivered=1 / channel=terminal-notifier when terminal-notifier succeeds, without logging a delivery error", async () => {
-      const expectedRuleKey = seedUnstartedFiring(db, BASE_TIME);
+      const expectedRuleKey = await seedUnstartedFiring(db, BASE_TIME);
       const consoleErrorSpy = vi.spyOn(console, "error").mockImplementation(() => undefined);
       const execFile = vi.fn().mockImplementation(ok);
 
@@ -804,7 +804,7 @@ describe("createTicker().tick", () => {
     });
 
     it("records delivered=1 / channel=osascript when only the osascript fallback succeeds", async () => {
-      const expectedRuleKey = seedUnstartedFiring(db, BASE_TIME);
+      const expectedRuleKey = await seedUnstartedFiring(db, BASE_TIME);
       const consoleErrorSpy = vi.spyOn(console, "error").mockImplementation(() => undefined);
       const execFile = vi.fn().mockImplementation(failTerminalNotifierOnly);
 
@@ -826,7 +826,7 @@ describe("createTicker().tick", () => {
     });
 
     it("records delivered=0 / channel=none and logs an error naming rule_key and channel when both channels fail, keeping the record and not retrying", async () => {
-      const expectedRuleKey = seedUnstartedFiring(db, BASE_TIME);
+      const expectedRuleKey = await seedUnstartedFiring(db, BASE_TIME);
       const consoleErrorSpy = vi.spyOn(console, "error").mockImplementation(() => undefined);
       const execFile = vi.fn().mockRejectedValue(new Error("boom"));
 
@@ -873,7 +873,7 @@ describe("createTicker().tick", () => {
     ] as const)(
       "keeps the record, does not resend, and logs the %s outcome distinctly when writing the outcome itself fails",
       async (_label, execFileImpl, expected) => {
-        const expectedRuleKey = seedUnstartedFiring(db, BASE_TIME);
+        const expectedRuleKey = await seedUnstartedFiring(db, BASE_TIME);
         recordNotificationDeliveryMock.mockImplementation(() => {
           throw new Error("update boom");
         });
@@ -911,7 +911,7 @@ describe("createTicker().tick", () => {
   });
 
   it("skips a tick that starts while the previous one is still running (concurrency guard)", async () => {
-    insertTask(db, {
+    await insertTask(portFor(db), {
       title: "資料作成",
       description: null,
       category: "work",
@@ -968,7 +968,7 @@ describe("createTicker().tick", () => {
       ),
     );
     for (const title of ["資料A", "資料B"]) {
-      const task = insertTask(db, {
+      const task = await insertTask(portFor(db), {
         title,
         description: null,
         category: "work",
@@ -978,7 +978,7 @@ describe("createTicker().tick", () => {
         boss_comment: null,
         estimated_minutes: null,
       });
-      recordActivityEvent(db, { type: "task_start", task_id: task.id });
+      await recordActivityEvent(portFor(db), { type: "task_start", task_id: task.id });
     }
     markTodaysMeetingsDone(db);
     vi.setSystemTime(mockedNow);
@@ -1008,7 +1008,7 @@ describe("createTicker().tick", () => {
   });
 
   it("sends and records the notification using a fallback template when notification body generation itself throws (Issue #205)", async () => {
-    const task = insertTask(db, {
+    const task = await insertTask(portFor(db), {
       title: "資料作成",
       description: null,
       category: "work",
@@ -1089,7 +1089,7 @@ describe("createTicker().tick", () => {
         // itself) still closes `db` (this test reuses beforeEach's `db` for
         // the first half only).
         try {
-          const expectedRuleKey = setup(db, WORKING_HOURS_BASE_TIME);
+          const expectedRuleKey = await setup(db, WORKING_HOURS_BASE_TIME);
           const withinExecFile = vi.fn().mockImplementation(ok);
           await createTicker({ db, env, execFile: withinExecFile }).tick();
 
@@ -1109,7 +1109,7 @@ describe("createTicker().tick", () => {
         const outsideDb = openDatabase(":memory:");
         try {
           await runMigrations(portFor(outsideDb));
-          const outsideRuleKey = setup(outsideDb, OUTSIDE_WORKING_HOURS_BASE_TIME);
+          const outsideRuleKey = await setup(outsideDb, OUTSIDE_WORKING_HOURS_BASE_TIME);
           const outsideDayKey = toDateKey(new Date());
           const outsideExecFile = vi.fn().mockImplementation(ok);
           const outsideTicker = createTicker({ db: outsideDb, env, execFile: outsideExecFile });
@@ -1152,7 +1152,7 @@ describe("createTicker().tick", () => {
         // try/finally so a failure anywhere in this half (including `setup`
         // itself) still closes `db`.
         try {
-          const expectedRuleKey = setup(db, BASE_TIME);
+          const expectedRuleKey = await setup(db, BASE_TIME);
           const withoutBreakExecFile = vi.fn().mockImplementation(ok);
           await createTicker({ db, env, execFile: withoutBreakExecFile }).tick();
 
@@ -1183,11 +1183,11 @@ describe("createTicker().tick", () => {
         try {
           await runMigrations(portFor(breakDb));
           vi.setSystemTime(BASE_TIME);
-          recordActivityEvent(breakDb, {
+          await recordActivityEvent(portFor(breakDb), {
             type: "break_start",
             expected_minutes: NEVER_OVERRUNNING_BREAK_MINUTES,
           });
-          setup(breakDb, BASE_TIME);
+          await setup(breakDb, BASE_TIME);
           const withBreakExecFile = vi.fn().mockImplementation(ok);
           await createTicker({ db: breakDb, env, execFile: withBreakExecFile }).tick();
 
@@ -1241,7 +1241,7 @@ describe("createTicker().tick", () => {
           insertSession(db, { type: otherSessionType });
 
           vi.setSystemTime(new Date("2026-07-05T19:50:00.000"));
-          recordActivityEvent(db, {
+          await recordActivityEvent(portFor(db), {
             type: "break_start",
             expected_minutes: NEVER_OVERRUNNING_BREAK_MINUTES,
           });
@@ -1416,7 +1416,7 @@ describe("createTicker().tick", () => {
       // case below records nothing.
       try {
         vi.setSystemTime(BASE_TIME);
-        recordActivityEvent(db, { type: "checkin" });
+        await recordActivityEvent(portFor(db), { type: "checkin" });
         insertSession(db, { type: "morning" });
         upsertOverride(db, TODAY_KEY, "evening", "21:00");
 
@@ -1434,7 +1434,7 @@ describe("createTicker().tick", () => {
       try {
         await runMigrations(portFor(outsideDb));
         vi.setSystemTime(BASE_TIME);
-        recordActivityEvent(outsideDb, { type: "checkin" });
+        await recordActivityEvent(portFor(outsideDb), { type: "checkin" });
         insertSession(outsideDb, { type: "morning" });
         upsertOverride(outsideDb, TODAY_KEY, "evening", "21:00");
 
@@ -1518,7 +1518,7 @@ describe("createTicker().tick", () => {
           // task's own id (not some other task) — otherwise
           // `hasRecentActivityOnOtherTasks` would flip the rule from
           // `unstarted` to `avoidance`, changing `rule_key`.
-          const expectedRuleKey = unstartedScenario.setup(db, BASE_TIME);
+          const expectedRuleKey = await await unstartedScenario.setup(db, BASE_TIME);
           const taskId = Number(expectedRuleKey.split(":")[1]);
           if (!Number.isInteger(taskId)) {
             throw new Error(
@@ -1546,7 +1546,7 @@ describe("createTicker().tick", () => {
           const fireTime = currentMockedTime();
 
           vi.setSystemTime(withinEscalationInterval(fireTime, interval, 1 / 3));
-          recordActivityEvent(db, {
+          await recordActivityEvent(portFor(db), {
             type: activityType,
             task_id: TASK_SCOPED_ACTIVITY_TYPES.includes(activityType) ? taskId : null,
           });
@@ -1585,7 +1585,7 @@ describe("createTicker().tick", () => {
       "records %s once with its expected rule_key/type, then suppresses a duplicate within the escalation interval",
       async (ruleType, setup) => {
         try {
-          const expectedRuleKey = setup(db, BASE_TIME);
+          const expectedRuleKey = await setup(db, BASE_TIME);
           const execFile = vi.fn().mockImplementation(ok);
           const ticker = createTicker({ db, env, execFile });
 
@@ -1635,7 +1635,7 @@ describe("createTicker().tick", () => {
       "escalates %s from L1 to L2 to L3 across successive ticks spaced by the configured intervals",
       async (ruleType, setup) => {
         try {
-          const expectedRuleKey = setup(db, ESCALATION_LADDER_BASE_TIME);
+          const expectedRuleKey = await setup(db, ESCALATION_LADDER_BASE_TIME);
           const execFile = vi.fn().mockImplementation(ok);
           const ticker = createTicker({ db, env, execFile });
 
@@ -1668,7 +1668,7 @@ describe("createTicker().tick", () => {
       "keeps %s at escalation_level 3 (not 4) on the repeat tick after L3 is reached",
       async (ruleType, setup) => {
         try {
-          const expectedRuleKey = setup(db, ESCALATION_LADDER_BASE_TIME);
+          const expectedRuleKey = await setup(db, ESCALATION_LADDER_BASE_TIME);
           const execFile = vi.fn().mockImplementation(ok);
           const ticker = createTicker({ db, env, execFile });
 
@@ -1732,7 +1732,7 @@ describe("daily notification cap via tick on a file-backed DB (#562)", () => {
 
   /** unstarted が成立し続ける状態で、帯の中の tick を L1→L2 の間隔を空けて 2 回走らせる */
   async function tickTwiceWhileUnstarted(): Promise<{ ruleKey: string; sends: number }> {
-    const task = insertTask(db, {
+    const task = await insertTask(portFor(db), {
       title: "資料作成",
       description: null,
       category: "work",

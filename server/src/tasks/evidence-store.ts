@@ -1,4 +1,4 @@
-import type Database from "better-sqlite3";
+import type { Db } from "../db/db-port.js";
 import type { TaskEvidence } from "./task-evidence.js";
 import { extractExtension, resolveEvidenceMimeType } from "./evidence-validation.js";
 import {
@@ -63,11 +63,11 @@ function generateStoredFilename(originalFilename: string): string {
  * 拡張子がホワイトリスト外の場合は MIME を導出できないため、書き込む前に
  * エラーを投げる（HTTP 400 としての整形はルート層の責務）。
  */
-export function saveFileEvidence(
-  db: Database.Database,
+export async function saveFileEvidence(
+  db: Db,
   store: EvidenceStore,
   input: SaveFileEvidenceInput,
-): TaskEvidence {
+): Promise<TaskEvidence> {
   const mimeType = resolveEvidenceMimeType(input.originalFilename);
   if (!mimeType) {
     throw new Error(`evidence extension not allowed: ${input.originalFilename}`);
@@ -93,10 +93,10 @@ export interface SaveLinkEvidenceInput {
 
 /** リンクエビデンスを保存する。ファイルシステム（`EvidenceStore`）には
  * 一切触れない — DB のみで完結するため、実行環境に依存しない。 */
-export function saveLinkEvidence(
-  db: Database.Database,
+export async function saveLinkEvidence(
+  db: Db,
   input: SaveLinkEvidenceInput,
-): TaskEvidence {
+): Promise<TaskEvidence> {
   return insertTaskEvidence(db, {
     task_id: input.taskId,
     kind: "link",
@@ -116,24 +116,42 @@ export function saveLinkEvidence(
  * 持つ（`evidence-storage.ts` の Node fs 実装は `unlinkSync` の前に
  * `existsSync` で確認する）。
  */
-export function deleteEvidence(
-  db: Database.Database,
+export async function deleteEvidence(
+  db: Db,
   store: EvidenceStore,
   evidenceId: number,
-): boolean {
-  const evidence = findTaskEvidenceById(db, evidenceId);
+): Promise<boolean> {
+  const evidence = await db.transaction((tx) => deleteEvidenceRow(tx, evidenceId));
   if (!evidence) {
     return false;
   }
+  removeEvidenceFile(store, evidence);
+  return true;
+}
 
-  const deleted = deleteTaskEvidence(db, evidenceId);
-  if (!deleted) {
-    return false;
+/**
+ * {@link deleteEvidence} の DB 側だけ: 行を読んで削除し、削除した行を返す
+ * （無ければ `undefined`）。呼び出し元のトランザクション（`tx`）の中で、
+ * 削除の可否の判定と一緒に使う（E1・#604: `task-evidences-routes.ts` の
+ * `DELETE`）。ファイルの実体は消さない — トランザクションの確定後に
+ * {@link removeEvidenceFile} を呼ぶ（ファイル操作をトランザクションに
+ * 入れない。機能仕様 docs/features/async-db-layer.md 決定 2）。
+ */
+export async function deleteEvidenceRow(
+  db: Db,
+  evidenceId: number,
+): Promise<TaskEvidence | undefined> {
+  const evidence = await findTaskEvidenceById(db, evidenceId);
+  if (!evidence) {
+    return undefined;
   }
+  const deleted = await deleteTaskEvidence(db, evidenceId);
+  return deleted ? evidence : undefined;
+}
 
+/** 削除済みの行がファイルエビデンスなら、その実体を消す（リンクは何もしない）。 */
+export function removeEvidenceFile(store: EvidenceStore, evidence: TaskEvidence): void {
   if (evidence.kind === "file" && evidence.stored_filename) {
     store.remove(evidence.stored_filename);
   }
-
-  return true;
 }

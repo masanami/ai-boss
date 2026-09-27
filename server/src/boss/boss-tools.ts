@@ -4,6 +4,7 @@ import { TASK_TOOLS, executeTaskTool, type ToolExecutionResult } from "./task-to
 import { RECORD_DECISION_TOOL, executeRecordDecisionTool } from "./decision-tool.js";
 import { RECORD_MENTORING_TOOL, executeRecordMentoringTool } from "./mentoring-tool.js";
 import { GET_ACTIVITY_LOG_TOOL, executeGetActivityLogTool } from "./activity-log-tool.js";
+import { portFor } from "../db/transitional-bridge.js";
 
 /**
  * All tools exposed to the boss during chat tool use: the existing task
@@ -39,13 +40,13 @@ export const BOSS_TOOLS: Anthropic.Tool[] = [
  * by it, since this is a `record_mentoring`-specific fallback, not a
  * general decision-logging one.
  */
-export function executeBossTool(
+export async function executeBossTool(
   db: Database.Database,
   sessionId: number,
   name: string,
   input: unknown,
   mentoringTaskId?: number,
-): ToolExecutionResult {
+): Promise<ToolExecutionResult> {
   if (name === "record_decision") {
     return executeRecordDecisionTool(db, sessionId, input);
   }
@@ -53,7 +54,7 @@ export function executeBossTool(
     return executeRecordMentoringTool(db, sessionId, input, mentoringTaskId);
   }
   if (name === "get_activity_log") {
-    return executeGetActivityLogTool(db, input);
+    return executeGetActivityLogTool(portFor(db), input);
   }
-  return executeTaskTool(db, name, input);
+  return executeTaskTool(portFor(db), name, input);
 }

@@ -12,8 +12,8 @@ import {
   listTaskEvidences,
 } from "./task-evidences-repository.js";
 
-function createTask(db: Database.Database): number {
-  const task = insertTask(db, {
+async function createTask(db: Database.Database): Promise<number> {
+  const task = await insertTask(portFor(db), {
     title: "テストタスク",
     description: null,
     category: "work",
@@ -34,28 +34,28 @@ describe("task-evidences-repository", () => {
     await runMigrations(portFor(db));
   });
 
-  afterEach(() => {
+  afterEach(async () => {
     db.close();
   });
 
   describe("listTaskEvidences", () => {
-    it("returns an empty array for a task with no evidences", () => {
-      const taskId = createTask(db);
+    it("returns an empty array for a task with no evidences", async () => {
+      const taskId = await createTask(db);
 
-      expect(listTaskEvidences(db, taskId)).toEqual([]);
+      expect(await listTaskEvidences(portFor(db), taskId)).toEqual([]);
     });
 
-    it("returns only the evidences belonging to the given task", () => {
-      const taskId = createTask(db);
-      const otherTaskId = createTask(db);
-      insertTaskEvidence(db, { task_id: taskId, kind: "link", url: "https://example.com/a" });
-      insertTaskEvidence(db, {
+    it("returns only the evidences belonging to the given task", async () => {
+      const taskId = await createTask(db);
+      const otherTaskId = await createTask(db);
+      await insertTaskEvidence(portFor(db), { task_id: taskId, kind: "link", url: "https://example.com/a" });
+      await insertTaskEvidence(portFor(db), {
         task_id: otherTaskId,
         kind: "link",
         url: "https://example.com/b",
       });
 
-      const evidences = listTaskEvidences(db, taskId);
+      const evidences = await listTaskEvidences(portFor(db), taskId);
 
       expect(evidences).toHaveLength(1);
       expect(evidences[0].task_id).toBe(taskId);
@@ -63,10 +63,10 @@ describe("task-evidences-repository", () => {
   });
 
   describe("insertTaskEvidence", () => {
-    it("inserts a file evidence with all file fields populated and url null", () => {
-      const taskId = createTask(db);
+    it("inserts a file evidence with all file fields populated and url null", async () => {
+      const taskId = await createTask(db);
 
-      const evidence = insertTaskEvidence(db, {
+      const evidence = await insertTaskEvidence(portFor(db), {
         task_id: taskId,
         kind: "file",
         stored_filename: "generated-name.png",
@@ -86,10 +86,10 @@ describe("task-evidences-repository", () => {
       expect(evidence.created_at.length).toBeGreaterThan(0);
     });
 
-    it("inserts a link evidence with url populated and file fields null", () => {
-      const taskId = createTask(db);
+    it("inserts a link evidence with url populated and file fields null", async () => {
+      const taskId = await createTask(db);
 
-      const evidence = insertTaskEvidence(db, {
+      const evidence = await insertTaskEvidence(portFor(db), {
         task_id: taskId,
         kind: "link",
         url: "https://example.com/pr/1",
@@ -103,67 +103,67 @@ describe("task-evidences-repository", () => {
       expect(evidence.size_bytes).toBeNull();
     });
 
-    it("makes the inserted evidence visible via listTaskEvidences", () => {
-      const taskId = createTask(db);
+    it("makes the inserted evidence visible via listTaskEvidences", async () => {
+      const taskId = await createTask(db);
 
-      insertTaskEvidence(db, { task_id: taskId, kind: "link", url: "https://example.com/x" });
+      await insertTaskEvidence(portFor(db), { task_id: taskId, kind: "link", url: "https://example.com/x" });
 
-      expect(listTaskEvidences(db, taskId)).toHaveLength(1);
+      expect(await listTaskEvidences(portFor(db), taskId)).toHaveLength(1);
     });
   });
 
   describe("countTaskEvidences", () => {
-    it("returns 0 for a task with no evidences", () => {
-      const taskId = createTask(db);
+    it("returns 0 for a task with no evidences", async () => {
+      const taskId = await createTask(db);
 
-      expect(countTaskEvidences(db, taskId)).toBe(0);
+      expect(await countTaskEvidences(portFor(db), taskId)).toBe(0);
     });
 
-    it("returns the number of evidences for the given task", () => {
-      const taskId = createTask(db);
-      insertTaskEvidence(db, { task_id: taskId, kind: "link", url: "https://example.com/1" });
-      insertTaskEvidence(db, { task_id: taskId, kind: "link", url: "https://example.com/2" });
+    it("returns the number of evidences for the given task", async () => {
+      const taskId = await createTask(db);
+      await insertTaskEvidence(portFor(db), { task_id: taskId, kind: "link", url: "https://example.com/1" });
+      await insertTaskEvidence(portFor(db), { task_id: taskId, kind: "link", url: "https://example.com/2" });
 
-      expect(countTaskEvidences(db, taskId)).toBe(2);
+      expect(await countTaskEvidences(portFor(db), taskId)).toBe(2);
     });
   });
 
   describe("findTaskEvidenceById", () => {
-    it("returns undefined for a non-existent id", () => {
-      expect(findTaskEvidenceById(db, 999999)).toBeUndefined();
+    it("returns undefined for a non-existent id", async () => {
+      expect(await findTaskEvidenceById(portFor(db), 999999)).toBeUndefined();
     });
 
-    it("returns the evidence row for an existing id", () => {
-      const taskId = createTask(db);
-      const inserted = insertTaskEvidence(db, {
+    it("returns the evidence row for an existing id", async () => {
+      const taskId = await createTask(db);
+      const inserted = await insertTaskEvidence(portFor(db), {
         task_id: taskId,
         kind: "link",
         url: "https://example.com/x",
       });
 
-      const found = findTaskEvidenceById(db, inserted.id);
+      const found = await findTaskEvidenceById(portFor(db), inserted.id);
 
       expect(found).toEqual(inserted);
     });
   });
 
   describe("deleteTaskEvidence", () => {
-    it("removes the row and returns true", () => {
-      const taskId = createTask(db);
-      const inserted = insertTaskEvidence(db, {
+    it("removes the row and returns true", async () => {
+      const taskId = await createTask(db);
+      const inserted = await insertTaskEvidence(portFor(db), {
         task_id: taskId,
         kind: "link",
         url: "https://example.com/x",
       });
 
-      const result = deleteTaskEvidence(db, inserted.id);
+      const result = await deleteTaskEvidence(portFor(db), inserted.id);
 
       expect(result).toBe(true);
-      expect(findTaskEvidenceById(db, inserted.id)).toBeUndefined();
+      expect(await findTaskEvidenceById(portFor(db), inserted.id)).toBeUndefined();
     });
 
-    it("returns false and does nothing when the id does not exist", () => {
-      expect(deleteTaskEvidence(db, 999999)).toBe(false);
+    it("returns false and does nothing when the id does not exist", async () => {
+      expect(await deleteTaskEvidence(portFor(db), 999999)).toBe(false);
     });
   });
 });

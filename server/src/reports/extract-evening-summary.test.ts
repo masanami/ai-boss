@@ -178,7 +178,7 @@ describe("extractEveningSummary", () => {
   it("エビデンス付きタスクが存在しても、抽出への入力にエビデンスの中身・保管パスが含まれない（AC-81）", async () => {
     const { insertTask } = await import("../tasks/tasks-repository.js");
     const { insertTaskEvidence } = await import("../tasks/task-evidences-repository.js");
-    const task = insertTask(db, {
+    const task = await insertTask(portFor(db), {
       title: "資料作成",
       description: null,
       category: "work",
@@ -189,7 +189,7 @@ describe("extractEveningSummary", () => {
       estimated_minutes: null,
       evidence_required: true,
     });
-    insertTaskEvidence(db, {
+    await insertTaskEvidence(portFor(db), {
       task_id: task.id,
       kind: "file",
       stored_filename: "abc123.png",

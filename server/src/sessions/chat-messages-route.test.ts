@@ -1054,7 +1054,7 @@ describe("POST /api/sessions/:id/messages", () => {
     );
 
     it("returns 400 and does not persist the user message when mentoringTaskId is present without mentoring: true (AC-13/AC-15)", async () => {
-      const task = insertTask(db, {
+      const task = await insertTask(portFor(db), {
         title: "資料作成",
         description: null,
         category: "work",
@@ -1110,7 +1110,7 @@ describe("POST /api/sessions/:id/messages", () => {
     });
 
     it("wires a validated mentoringTaskId into buildPersonaPrompt, adding the 対象タスク section (結線の担保)", async () => {
-      const task = insertTask(db, {
+      const task = await insertTask(portFor(db), {
         title: "資料作成",
         description: null,
         category: "work",
@@ -1150,7 +1150,7 @@ describe("POST /api/sessions/:id/messages", () => {
     // 積まれていることも確認し、mentoring ゲートごと壊れて全セクションが
     // 消えるケースを見逃さないようにする。
     it("does not add the 対象タスク section when mentoringTaskId is omitted, even with mentoring: true and an existing task (AC-16 非回帰)", async () => {
-      insertTask(db, {
+      await insertTask(portFor(db), {
         title: "資料作成",
         description: null,
         category: "work",
@@ -1178,7 +1178,7 @@ describe("POST /api/sessions/:id/messages", () => {
     });
 
     it("wires a validated mentoringTaskId into executeBossTool, filling record_mentoring's task_id fallback (結線の担保)", async () => {
-      const task = insertTask(db, {
+      const task = await insertTask(portFor(db), {
         title: "資料作成",
         description: null,
         category: "work",
@@ -1254,7 +1254,7 @@ describe("POST /api/sessions/:id/messages", () => {
     }
 
     it("mentoring: true と有効な mentoringTaskId を伴うリクエストで、対象タスクの過去記録が最大5件プロンプトへ渡される（AC-24）", async () => {
-      const task = insertTask(db, {
+      const task = await insertTask(portFor(db), {
         title: "資料作成",
         description: null,
         category: "work",
@@ -1301,7 +1301,7 @@ describe("POST /api/sessions/:id/messages", () => {
     });
 
     it("mentoringTaskId を伴わないメンタリングのターンでは対象タスクの過去記録セクションが現れない（AC-25）", async () => {
-      const task = insertTask(db, {
+      const task = await insertTask(portFor(db), {
         title: "資料作成",
         description: null,
         category: "work",
@@ -1332,7 +1332,7 @@ describe("POST /api/sessions/:id/messages", () => {
     });
 
     it("メンタリングでない通常のターンでは対象タスクの過去記録セクションが現れない（AC-26）", async () => {
-      const task = insertTask(db, {
+      const task = await insertTask(portFor(db), {
         title: "資料作成",
         description: null,
         category: "work",
@@ -1517,7 +1517,7 @@ describe("POST /api/sessions/:id/messages", () => {
     const events = parseSseEvents(await res.text());
     expect(streamBossMessageMock).toHaveBeenCalledTimes(1);
 
-    const tasks = listTasks(db);
+    const tasks = (await listTasks(portFor(db)));
     expect(tasks).toHaveLength(1);
     expect(tasks[0]).toMatchObject({ title: "資料作成", status: "todo" });
 
@@ -1828,7 +1828,7 @@ describe("POST /api/sessions/:id/messages", () => {
     });
     const events = parseSseEvents(await res.text());
 
-    expect(listTasks(db)).toHaveLength(1);
+    expect((await listTasks(portFor(db)))).toHaveLength(1);
 
     const doneEvent = events.find((e) => e.event === "done");
     const bossMessage = JSON.parse(doneEvent!.data) as Message;

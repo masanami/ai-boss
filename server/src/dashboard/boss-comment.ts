@@ -185,7 +185,7 @@ export async function getOrGenerateBossComment(
   now: Date,
 ): Promise<string> {
   const todayKey = toDateKey(now);
-  const tasks = listTasks(db);
+  const tasks = await listTasks(portFor(db));
   const fingerprint = computeTaskFingerprint(tasks);
 
   const cached = await getCachedBossComment(portFor(db), todayKey, fingerprint);
