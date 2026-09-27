@@ -420,6 +420,41 @@ describe("OpenAI の応答の解釈", () => {
     expect(onTextDelta.mock.calls.map((c) => c[0]).join("")).toBe("Hello world");
   });
 
+  // PR #633 の Codex の指摘（P2）: SSE の行末は CRLF・CR・LF のいずれでもよい。
+  it.each([
+    ["CRLF", "\r\n"],
+    ["CR", "\r"],
+  ])("行末が %s の SSE でも、複数のイベントの境界を解釈して onTextDelta が順に呼ばれ本文が組み上がる", async (_label, eol) => {
+    const sseText = buildSseText(textStreamEvents(["Hel", "lo"])).replace(/\n/g, eol);
+    const { transport } = singleResponseTransport(okResponse(textBody(sseText)));
+    const { impl, client } = registerAndGetImpl(transport);
+    const onTextDelta = vi.fn();
+    const message = await impl.streamRound(client, baseRequest(), { onTextDelta }, new AbortController().signal);
+    expect(onTextDelta.mock.calls).toEqual([["Hel"], ["lo"]]);
+    expect(message.content).toEqual([{ type: "text", text: "Hello" }]);
+  });
+
+  it("CRLF の \\r と \\n が断片の境目で分かれても、複数行の data を1つのイベントとして解釈する", async () => {
+    // 1つのイベントの JSON を2つの data: 行に分ける（SSE では "\n" で連結される）。
+    const [deltaEvent, completedEvent] = [
+      { type: "response.output_text.delta", delta: "Hi" },
+      textStreamEvents(["Hi"])[2],
+    ];
+    const deltaJson = JSON.stringify(deltaEvent);
+    const splitAt = deltaJson.indexOf(",") + 1;
+    const firstPart = `event: response.output_text.delta\r\ndata: ${deltaJson.slice(0, splitAt)}\r`;
+    const secondPart = `\ndata: ${deltaJson.slice(splitAt)}\r\n\r\n${sseEventText(completedEvent).replace(/\n/g, "\r\n")}`;
+    const encoder = new TextEncoder();
+    const { transport } = singleResponseTransport(
+      okResponse(asyncBody([encoder.encode(firstPart), encoder.encode(secondPart)])),
+    );
+    const { impl, client } = registerAndGetImpl(transport);
+    const onTextDelta = vi.fn();
+    const message = await impl.streamRound(client, baseRequest(), { onTextDelta }, new AbortController().signal);
+    expect(onTextDelta.mock.calls).toEqual([["Hi"]]);
+    expect(message.content).toEqual([{ type: "text", text: "Hi" }]);
+  });
+
   it("完了時の出力に function_call の項目があると、content に同じ call_id を id に持ち、同じ name と、arguments を JSON として解釈した値を input に持つ tool_use ブロックが入る", async () => {
     const events = [
       {

@@ -271,11 +271,22 @@ function parseJsonWithoutLeakingPayload(text: string): unknown {
   }
 }
 
+/** SSE の行末（CRLF・CR・LF のいずれも可）を LF に揃える（PR #633 の Codex の指摘）。 */
+function normalizeSseLineEndings(text: string): string {
+  return text.replace(/\r\n?/g, "\n");
+}
+
 async function* iterateSseDataPayloads(body: AsyncIterable<Uint8Array>): AsyncGenerator<unknown> {
   const decoder = new TextDecoder();
   let buffer = "";
+  // 断片の末尾の "\r" は、次の断片の先頭の "\n" と組の CRLF でありうるため、
+  // 次の断片が来るまで行末の正規化を保留する（単独の CR として先に LF へ
+  // 変えると、続く "\n" と合わせて偽の空行＝イベントの境界になる）。
+  let pendingCr = "";
   for await (const chunk of body) {
-    buffer += decoder.decode(chunk, { stream: true });
+    const text = pendingCr + decoder.decode(chunk, { stream: true });
+    pendingCr = text.endsWith("\r") ? "\r" : "";
+    buffer += normalizeSseLineEndings(pendingCr ? text.slice(0, -1) : text);
     let boundary = buffer.indexOf("\n\n");
     while (boundary !== -1) {
       const rawEvent = buffer.slice(0, boundary);
@@ -287,7 +298,7 @@ async function* iterateSseDataPayloads(body: AsyncIterable<Uint8Array>): AsyncGe
       boundary = buffer.indexOf("\n\n");
     }
   }
-  buffer += decoder.decode();
+  buffer += normalizeSseLineEndings(pendingCr + decoder.decode());
   const trimmed = buffer.trim();
   if (trimmed !== "") {
     const payload = extractSseDataPayload(trimmed);
