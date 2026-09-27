@@ -215,7 +215,7 @@
 | `thinking`・`outputConfig.effort` | `reasoning.effort`（値はモデルの一覧の行の対応） |
 | — | `store`・`previous_response_id` は含めない |
 
-- **応答の対応**: `response.output_text.delta` → `onTextDelta`。完了時の出力のうち、`message` の `output_text` → `text` のブロック、`function_call`（`call_id`・`name`・`arguments` の JSON）→ `tool_use` のブロック（`id` = `call_id`、`input` = `arguments` を JSON として解釈した値）。出力の項目の配列全体 → `rawContent`。`status: "incomplete"` や `text`・`tool_use` が 1 つも無い応答は、`normalizeMessage` と同じくメタ情報だけをログに出す
+- **応答の対応**: `response.output_text.delta` → `onTextDelta`。完了時の出力のうち、`message` の `output_text` → `text` のブロック、`function_call`（`call_id`・`name`・`arguments` の JSON）→ `tool_use` のブロック（`id` = `call_id`、`input` = `arguments` を JSON として解釈した値）。出力の項目の配列全体 → `rawContent`。`status: "incomplete"` や `text`・`tool_use` が 1 つも無い応答は、`normalizeMessage` と同じくメタ情報だけをログに出す。ただし未完了の `function_call`（項目の `status` が completed でないもの、または incomplete な応答の中のもの）は引数を解釈せず、再試行不可の失敗として扱う（#637。打ち切りは同じ要求の再送で直らない）
 - **エラーの分類**: 408・429・5xx は再試行可、他の 4xx は再試行不可（`isRetryableApiError` と同じ規則）。ただしエラー本文の `error.code` が `insufficient_quota` の 429 は再試行不可（残高・クォータ切れは再試行で直らない）。`retry-after` があれば待ち時間にする
 - **Rust の通信層**（#581 のクリティカル設計決定 3 の「1 行ずつ足す」）: 宛先 `openai-responses` → `https://api.openai.com/v1/responses`、資格情報 `OpenAiBearer`（`authorization: Bearer <キー>` を付与。呼び出し元の `authorization` は既に捨てている）、保管の `Provider::OpenAi`（account `"openai"`）
 

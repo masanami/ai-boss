@@ -71,12 +71,23 @@ export class OpenAiResponsesHttpError extends Error {
  * （`byok-anthropic-backend.ts` の `AnthropicMessagesStreamError` と同じ
  * 規律）。
  */
-type OpenAiResponsesStreamErrorReason = "sse-error-event" | "failed-response" | "incomplete-stream" | "malformed-payload";
+type OpenAiResponsesStreamErrorReason =
+  | "sse-error-event"
+  | "failed-response"
+  | "incomplete-stream"
+  | "malformed-payload"
+  // Issue #637: max_output_tokens 等で打ち切られた未完了の function_call。
+  // 同じ要求を再送しても同じ上限で再び打ち切られるだけなので、
+  // classifyByokOpenAiError はこの理由を無条件に再試行不可とする。
+  | "truncated-function-call";
 
 export class OpenAiResponsesStreamError extends Error {
+  readonly reason: OpenAiResponsesStreamErrorReason;
+
   constructor(reason: OpenAiResponsesStreamErrorReason) {
     super(OpenAiResponsesStreamError.describe(reason));
     this.name = "OpenAiResponsesStreamError";
+    this.reason = reason;
   }
 
   private static describe(reason: OpenAiResponsesStreamErrorReason): string {
@@ -89,6 +100,9 @@ export class OpenAiResponsesStreamError extends Error {
         return "OpenAI Responses streaming response ended before a terminal event";
       case "malformed-payload":
         return "OpenAI Responses response contained a malformed payload";
+      case "truncated-function-call":
+        // 引数（arguments）・応答本文は含めない（漏洩防止の規律）。
+        return "OpenAI Responses response contained a truncated function_call";
     }
   }
 }
@@ -342,12 +356,35 @@ function extractOutputText(messageItem: Record<string, unknown>): string | undef
   return texts.length > 0 ? texts.join("") : undefined;
 }
 
-/** `response`（`response.completed` イベントの `response` フィールド、また
- * 非ストリーミング応答の JSON そのもの）→ `BossLlmMessage`。出力の項目配列
- * 全体（reasoning を含む）を、同じ順・同じ値で `rawContent` に入れる
- * （機能仕様「応答の対応」）。 */
-function interpretResponse(response: Record<string, unknown>): BossLlmMessage {
+/** function_call の項目が未完了か（Issue #637）。次の2条件の OR:
+ * (a) 項目の `status` が存在し `"completed"` でない（`"incomplete"` /
+ *     `"in_progress"` 等）——`status` の無い項目は既存フィクスチャ互換のため
+ *     completed 扱い。
+ * (b) 応答自体が incomplete（`responseIncomplete`。呼び出し元が
+ *     `response.status === "incomplete"` とストリーミングの終端イベント種別の
+ *     両方を確実に判定して渡す——`interpretResponse` 内でも `response.status`
+ *     を重ねて見る）。
+ * 未完了なら**引数を解釈する前に** true を返し、呼び出し元は
+ * `parseJsonWithoutLeakingPayload` を呼ばない（打ち切られた途中までの JSON を
+ * 誤って malformed-payload〔再試行可〕に分類しないため）。 */
+function isIncompleteFunctionCallItem(item: Record<string, unknown>, responseIncomplete: boolean): boolean {
+  const itemStatus = item.status;
+  const itemIncomplete = itemStatus !== undefined && itemStatus !== "completed";
+  return itemIncomplete || responseIncomplete;
+}
+
+/** `response`（`response.completed`／`response.incomplete` イベントの
+ * `response` フィールド、また非ストリーミング応答の JSON そのもの）→
+ * `BossLlmMessage`。出力の項目配列全体（reasoning を含む）を、同じ順・同じ値
+ * で `rawContent` に入れる（機能仕様「応答の対応」）。
+ *
+ * `terminalWasIncomplete`（ストリーミングの終端イベントが
+ * `response.incomplete` だったか）は非ストリーミング呼び出しでは常に
+ * `false` だが、`response.status === "incomplete"` は下で重ねて見るため
+ * 判定は落ちない（Issue #637: 未完了の function_call の検出）。 */
+function interpretResponse(response: Record<string, unknown>, terminalWasIncomplete = false): BossLlmMessage {
   const output = (response.output as unknown[] | undefined) ?? [];
+  const responseIncomplete = terminalWasIncomplete || response.status === "incomplete";
   const content: BossContentBlock[] = [];
   const itemTypes: string[] = [];
   for (const rawItem of output) {
@@ -359,6 +396,13 @@ function interpretResponse(response: Record<string, unknown>): BossLlmMessage {
         content.push({ type: "text", text });
       }
     } else if (item.type === "function_call") {
+      // Issue #637: 引数を解釈する前に未完了判定を行う——打ち切られた
+      // function_call の arguments は途中までの JSON であることが多く、
+      // 先に parseJsonWithoutLeakingPayload を呼ぶと malformed-payload
+      // （再試行可）に誤分類されてしまう。
+      if (isIncompleteFunctionCallItem(item, responseIncomplete)) {
+        throw new OpenAiResponsesStreamError("truncated-function-call");
+      }
       const rawArguments = (item.arguments as string) ?? "{}";
       content.push({
         type: "tool_use",
@@ -378,6 +422,10 @@ async function parseStreamingResponse(
 ): Promise<BossLlmMessage> {
   let sawCompleted = false;
   let completedResponse: Record<string, unknown> | undefined;
+  // Issue #637: 終端イベントが response.incomplete だったかを覚えておき、
+  // interpretResponse へ渡す（未完了の function_call の検出条件の一部——
+  // response.status だけでなく、この終端イベント種別も確実に判定する）。
+  let terminalWasIncomplete = false;
 
   for await (const rawEvent of iterateSseDataPayloads(body)) {
     const event = rawEvent as Record<string, unknown>;
@@ -395,11 +443,14 @@ async function parseStreamingResponse(
       // 判定されて同一の打ち切られた要求が課金されたまま再送される
       // （機能仕様「応答の対応」: `status: "incomplete"` はメタ情報だけを
       // ログに出す——正常な終端として扱う。非ストリーミングの
-      // `interpretResponse` は既にこれを例外にしていない）。
+      // `interpretResponse` は既にこれを例外にしていない。ただし Issue #637:
+      // 出力に未完了の function_call があれば別途 truncated-function-call
+      // として失敗させる——`interpretResponse` 参照）。
       case "response.completed":
       case "response.incomplete":
         sawCompleted = true;
         completedResponse = event.response as Record<string, unknown>;
+        terminalWasIncomplete = event.type === "response.incomplete";
         break;
       case "response.failed":
       case "error":
@@ -416,7 +467,7 @@ async function parseStreamingResponse(
   if (!sawCompleted || !completedResponse) {
     throw new OpenAiResponsesStreamError("incomplete-stream");
   }
-  return interpretResponse(completedResponse);
+  return interpretResponse(completedResponse, terminalWasIncomplete);
 }
 
 function parseNonStreamingResponse(text: string): BossLlmMessage {
@@ -424,7 +475,9 @@ function parseNonStreamingResponse(text: string): BossLlmMessage {
   // PR #633 の Codex の指摘（P2）: 2xx でも応答が失敗を示すなら、成功扱いで
   // 空の内容に正規化せず、ストリーミングの `response.failed` と同じ失敗の
   // クラス（＝同じ分類・再試行可）で投げる。`status: "incomplete"` は
-  // ストリーミングの `response.incomplete` と揃えて正常な応答として解釈する。
+  // ストリーミングの `response.incomplete` と揃えて正常な応答として解釈する
+  // （ただし未完了の function_call を含めば truncated-function-call で失敗
+  // する——Issue #637・`interpretResponse` 参照）。
   if (response.status === "failed" || (response.error !== undefined && response.error !== null)) {
     throw new OpenAiResponsesStreamError("failed-response");
   }
@@ -463,7 +516,11 @@ async function createOpenAiMessage(
  *   があれば待ち時間も返す）。ただし 429 かつ `errorCode ===
  *   "insufficient_quota"` は再試行不可（残高・クォータ切れは再試行で直らない
  *   ——機能仕様「エラーの分類」）。他の 4xx は再試行不可。
- * - それ以外（{@link OpenAiResponsesStreamError} を含む）は
+ * - {@link OpenAiResponsesStreamError} の理由が `"truncated-function-call"`
+ *   （max_output_tokens 等で打ち切られた未完了の function_call）は無条件に
+ *   再試行不可（Issue #637 クリティカル設計決定: 同じ要求の再送は同じ上限で
+ *   再び打ち切られるだけで直らない）。
+ * - それ以外（他の理由の {@link OpenAiResponsesStreamError} を含む）は
  *   `byok-anthropic-backend.ts` の `classifyByokAnthropicError` と同じ既定
  *   （正体不明の失敗は再試行可）。
  */
@@ -480,6 +537,9 @@ export function classifyByokOpenAiError(error: unknown, now: Date = new Date()):
     }
     const retryable = error.status === 408 || error.status === 429 || error.status >= 500;
     return { retryable, retryAfterMs: parseRetryAfterMs(error.retryAfter, now) };
+  }
+  if (error instanceof OpenAiResponsesStreamError && error.reason === "truncated-function-call") {
+    return { retryable: false };
   }
   return { retryable: true };
 }

@@ -536,6 +536,279 @@ describe("OpenAI の応答の解釈", () => {
   });
 });
 
+// Issue #637: max_output_tokens で打ち切られた function_call は、引数が途中までの
+// JSON であることが多く、無条件に解釈すると malformed-payload（再試行可）に
+// 誤分類され、同じ打ち切られた要求が課金されたまま再送される。未完了の
+// function_call は、引数を解釈する前に検出し、再試行不可の失敗として扱う
+// （Issue #637 の設計決定: 再試行不可として扱う）。「未完了」の定義は次の2条件の OR:
+// (a) 項目の status が存在し "completed" でない
+// (b) 応答が incomplete（ストリーミングの終端イベントが response.incomplete・
+//     非ストリーミングの response.status が "incomplete"）
+describe("未完了の function_call（Issue #637）", () => {
+  it("項目の status が incomplete だと、応答全体が response.completed でも失敗し、分類は再試行不可である（引数は解釈可能な JSON でも失敗する）", async () => {
+    const events = [
+      {
+        type: "response.completed",
+        response: {
+          status: "completed",
+          output: [
+            { type: "function_call", status: "incomplete", call_id: "call_1", name: "do_it", arguments: '{"title":"ok"}' },
+          ],
+        },
+      },
+    ];
+    const { transport } = singleResponseTransport(okResponse(textBody(buildSseText(events))));
+    const { impl, client } = registerAndGetImpl(transport);
+    let caught: unknown;
+    try {
+      await impl.streamRound(client, baseRequest(), {}, new AbortController().signal);
+    } catch (err) {
+      caught = err;
+    }
+    expect(caught).toBeInstanceOf(OpenAiResponsesStreamError);
+    expect(classifyByokOpenAiError(caught).retryable).toBe(false);
+  });
+
+  it("項目の status が in_progress だと、応答全体が response.completed でも失敗し、分類は再試行不可である", async () => {
+    const events = [
+      {
+        type: "response.completed",
+        response: {
+          status: "completed",
+          output: [
+            { type: "function_call", status: "in_progress", call_id: "call_1", name: "do_it", arguments: '{"title":"ok"}' },
+          ],
+        },
+      },
+    ];
+    const { transport } = singleResponseTransport(okResponse(textBody(buildSseText(events))));
+    const { impl, client } = registerAndGetImpl(transport);
+    let caught: unknown;
+    try {
+      await impl.streamRound(client, baseRequest(), {}, new AbortController().signal);
+    } catch (err) {
+      caught = err;
+    }
+    expect(caught).toBeInstanceOf(OpenAiResponsesStreamError);
+    expect(classifyByokOpenAiError(caught).retryable).toBe(false);
+  });
+
+  it("項目の status が completed でも、終端イベントが response.incomplete だと失敗し、分類は再試行不可である（応答が incomplete という条件単独で失敗する）", async () => {
+    const events = [
+      {
+        type: "response.incomplete",
+        response: {
+          status: "incomplete",
+          output: [
+            { type: "function_call", status: "completed", call_id: "call_1", name: "do_it", arguments: '{"title":"ok"}' },
+          ],
+        },
+      },
+    ];
+    const { transport } = singleResponseTransport(okResponse(textBody(buildSseText(events))));
+    const { impl, client } = registerAndGetImpl(transport);
+    let caught: unknown;
+    try {
+      await impl.streamRound(client, baseRequest(), {}, new AbortController().signal);
+    } catch (err) {
+      caught = err;
+    }
+    expect(caught).toBeInstanceOf(OpenAiResponsesStreamError);
+    expect(classifyByokOpenAiError(caught).retryable).toBe(false);
+  });
+
+  // self-review（code-reviewer/design-reviewer 双方が独立に指摘・CONFIRMED）:
+  // 上のテストは response.status も "incomplete" にしていたため、
+  // parseStreamingResponse が終端イベント種別（response.incomplete）を
+  // interpretResponse へ伝える配線（terminalWasIncomplete）が無くても
+  // response.status の判定だけで通ってしまい、その配線を外す変異が緑のまま
+  // 生き残っていた。ここでは response.status を "completed"（不整合な応答）
+  // にして、終端イベント種別が response.incomplete だったという事実**だけ**
+  // で未完了と判定されることを確かめる。
+  it("応答の response.status が completed でも、終端イベントの種別が response.incomplete だったこと自体で失敗する（終端イベント種別の配線を単独で確かめる）", async () => {
+    const events = [
+      {
+        type: "response.incomplete",
+        response: {
+          status: "completed",
+          output: [
+            { type: "function_call", status: "completed", call_id: "call_1", name: "do_it", arguments: '{"title":"ok"}' },
+          ],
+        },
+      },
+    ];
+    const { transport } = singleResponseTransport(okResponse(textBody(buildSseText(events))));
+    const { impl, client } = registerAndGetImpl(transport);
+    let caught: unknown;
+    try {
+      await impl.streamRound(client, baseRequest(), {}, new AbortController().signal);
+    } catch (err) {
+      caught = err;
+    }
+    expect(caught).toBeInstanceOf(OpenAiResponsesStreamError);
+    expect(classifyByokOpenAiError(caught).retryable).toBe(false);
+  });
+
+  it("非ストリーミングで response.status が incomplete だと、項目の status が completed でも失敗し、分類は再試行不可である", async () => {
+    const responseBody = JSON.stringify({
+      status: "incomplete",
+      incomplete_details: { reason: "max_output_tokens" },
+      output: [
+        { type: "function_call", status: "completed", call_id: "call_1", name: "do_it", arguments: '{"title":"ok"}' },
+      ],
+    });
+    const { transport } = singleResponseTransport(okResponse(textBody(responseBody)));
+    const { impl, client } = registerAndGetImpl(transport);
+    let caught: unknown;
+    try {
+      await impl.createRound(client, baseRequest(), new AbortController().signal);
+    } catch (err) {
+      caught = err;
+    }
+    expect(caught).toBeInstanceOf(OpenAiResponsesStreamError);
+    expect(classifyByokOpenAiError(caught).retryable).toBe(false);
+  });
+
+  it("回帰防止: 項目の status が明示的に completed で、応答全体も completed の function_call は、従来どおり tool_use に正規化される", async () => {
+    const events = [
+      {
+        type: "response.completed",
+        response: {
+          status: "completed",
+          output: [
+            { type: "function_call", status: "completed", call_id: "call_1", name: "do_it", arguments: '{"a":1}' },
+          ],
+        },
+      },
+    ];
+    const { transport } = singleResponseTransport(okResponse(textBody(buildSseText(events))));
+    const { impl, client } = registerAndGetImpl(transport);
+    const message = await impl.streamRound(client, baseRequest(), {}, new AbortController().signal);
+    expect(message.content).toEqual([{ type: "tool_use", id: "call_1", name: "do_it", input: { a: 1 } }]);
+  });
+
+  it("投げる失敗の message に、途中までの arguments の断片が含まれない", async () => {
+    const leakMarker = "LEAK_MARKER_truncated_args";
+    const events = [
+      {
+        type: "response.completed",
+        response: {
+          status: "completed",
+          output: [
+            {
+              type: "function_call",
+              status: "incomplete",
+              call_id: "call_1",
+              name: "do_it",
+              arguments: `{"title":"${leakMarker}`,
+            },
+          ],
+        },
+      },
+    ];
+    const { transport } = singleResponseTransport(okResponse(textBody(buildSseText(events))));
+    const { impl, client } = registerAndGetImpl(transport);
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      let caught: unknown;
+      try {
+        await impl.streamRound(client, baseRequest(), {}, new AbortController().signal);
+      } catch (err) {
+        caught = err;
+      }
+      expect((caught as Error).message).not.toContain(leakMarker);
+      for (const call of [...warnSpy.mock.calls, ...errorSpy.mock.calls]) {
+        expect(JSON.stringify(call)).not.toContain(leakMarker);
+      }
+    } finally {
+      warnSpy.mockRestore();
+      errorSpy.mockRestore();
+    }
+  });
+
+  it("ストリーミング（streamBossMessage 経由）: 打ち切られた function_call を含む response.incomplete を受けると、転送のポートは1回しか呼ばれず、失敗し、executeTool は呼ばれない", async () => {
+    vi.useFakeTimers();
+    try {
+      const events = [
+        {
+          type: "response.incomplete",
+          response: {
+            status: "incomplete",
+            incomplete_details: { reason: "max_output_tokens" },
+            output: [
+              {
+                type: "function_call",
+                status: "incomplete",
+                call_id: "call_1",
+                name: "create_task",
+                arguments: '{"title":"途中',
+              },
+            ],
+          },
+        },
+      ];
+      const { transport, calls } = makeTransport(() => okResponse(textBody(buildSseText(events))));
+      registerByokOpenAiBackend(transport);
+      const client = createClaudeClient({}, "byok-openai");
+      const executeTool = vi.fn().mockResolvedValue({ content: "ok", isError: false });
+
+      const promise = streamBossMessage(
+        client,
+        { model: "gpt-6-sol", messages: [{ role: "user", content: "go" }] },
+        { executeTool },
+      );
+      const expectation = expect(promise).rejects.toThrow(OpenAiResponsesStreamError);
+      await vi.advanceTimersByTimeAsync(1_000 + 2_000 + 1);
+      await expectation;
+
+      expect(calls).toHaveLength(1);
+      expect(executeTool).not.toHaveBeenCalled();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("非ストリーミング（requestVerdict 経由）: 打ち切られた function_call を含む status:incomplete の応答を受けると、転送のポートは1回しか呼ばれず、失敗する", async () => {
+    const responseBody = JSON.stringify({
+      status: "incomplete",
+      incomplete_details: { reason: "max_output_tokens" },
+      output: [
+        {
+          type: "function_call",
+          status: "incomplete",
+          call_id: "call_1",
+          name: "submit_evening_summary",
+          arguments: '{"report_summary":"途中',
+        },
+      ],
+    });
+    const { transport, calls } = singleResponseTransport(okResponse(textBody(responseBody)));
+    registerByokOpenAiBackend(transport);
+    const client = createClaudeClient({}, "byok-openai");
+
+    let caught: unknown;
+    try {
+      await requestVerdict(
+        client,
+        {
+          model: "gpt-6-sol",
+          messages: [{ role: "user", content: "summarize" }],
+          tools: [{ name: "submit_evening_summary", description: "d", input_schema: { type: "object" } }],
+          toolChoice: { type: "tool", name: "submit_evening_summary" },
+        },
+        "submit_evening_summary",
+        (input) => ({ valid: true, data: input }),
+      );
+    } catch (err) {
+      caught = err;
+    }
+
+    expect(calls).toHaveLength(1);
+    expect(caught).toBeInstanceOf(OpenAiResponsesStreamError);
+  });
+});
+
 describe("ツールのループ（1ターンの中の送り返し）", () => {
   it("2ラウンド目の input には1ラウンド目の出力の項目（reasoning を含む）が同じ値・同じ順で含まれ、その後ろに function_call_output が続く", async () => {
     const round1Output = [
@@ -740,6 +1013,19 @@ describe("エラーの分類", () => {
 
   it("ポートが「接続失敗」で失敗すると、分類は再試行可である", () => {
     const decision = classifyByokOpenAiError(new SecureTransportError("connection"));
+    expect(decision.retryable).toBe(true);
+  });
+
+  // Issue #637: max_output_tokens で打ち切られた function_call は、同じ要求を
+  // 再送しても同じ上限で再び打ち切られるだけなので、再試行不可として扱う
+  // （Issue #637 の設計決定: 再試行不可として扱う）。
+  it("打ち切られた function_call（truncated-function-call）は、分類が再試行不可である", () => {
+    const decision = classifyByokOpenAiError(new OpenAiResponsesStreamError("truncated-function-call"));
+    expect(decision.retryable).toBe(false);
+  });
+
+  it("壊れた JSON（malformed-payload）は、従来どおり分類が再試行可のままである", () => {
+    const decision = classifyByokOpenAiError(new OpenAiResponsesStreamError("malformed-payload"));
     expect(decision.retryable).toBe(true);
   });
 
