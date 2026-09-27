@@ -262,7 +262,7 @@ async function runTopLevelTransaction<T>(driver: DbDriver, fn: (tx: DbTx) => Pro
  * （機能仕様 docs/features/async-db-layer.md クリティカル設計決定1）。
  *
  * ドライバに依存しない（コア側）。開発者用の版は better-sqlite3 実装
- * （`better-sqlite3-driver.ts`）を、製品版は plugin-sql 実装（S2）を渡す。
+ * （`connection.ts`）を、製品版は plugin-sql 実装（S2）を渡す。
  */
 export function createSerializedDb(driver: DbDriver): DbPort {
   const mutex = createMutex();

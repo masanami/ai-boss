@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import Database from "better-sqlite3";
 import { openDatabase } from "./connection.js";
 import { runMigrations } from "./migrate.js";
-import { portFor } from "./transitional-bridge.js";
+import { portFor } from "./test-support/port-for.js";
 
 function tableNames(db: Database.Database): string[] {
   const rows = db

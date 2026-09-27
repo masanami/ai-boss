@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type Database from "better-sqlite3";
 import { openDatabase } from "../db/connection.js";
 import { runMigrations } from "../db/migrate.js";
-import { portFor } from "../db/transitional-bridge.js";
+import { portFor } from "../db/test-support/port-for.js";
 import { Hono } from "hono";
 import type { DbPort } from "../db/db-port.js";
 import { createHookedTestDb } from "../db/test-support/create-test-db.js";
@@ -100,7 +100,7 @@ describe("settings routes", () => {
 
   describe("GET /api/settings", () => {
     it("returns default effective values when nothing is set", async () => {
-      const app = createApp(db);
+      const app = createApp(portFor(db));
 
       const res = await app.request("/api/settings");
 
@@ -133,7 +133,7 @@ describe("settings routes", () => {
         "boss_strictness",
         "99",
       );
-      const app = createApp(db);
+      const app = createApp(portFor(db));
 
       const res = await app.request("/api/settings");
 
@@ -159,7 +159,7 @@ describe("settings routes", () => {
         "dashboard_comment_text",
         "今日も淡々とやれ",
       );
-      const app = createApp(db);
+      const app = createApp(portFor(db));
 
       const res = await app.request("/api/settings");
 
@@ -177,7 +177,7 @@ describe("settings routes", () => {
 
   describe("PUT /api/settings", () => {
     it("updates only the provided key, leaving the rest at defaults", async () => {
-      const app = createApp(db);
+      const app = createApp(portFor(db));
 
       const putRes = await app.request("/api/settings", {
         method: "PUT",
@@ -193,7 +193,7 @@ describe("settings routes", () => {
     });
 
     it("updates multiple keys at once", async () => {
-      const app = createApp(db);
+      const app = createApp(portFor(db));
 
       await app.request("/api/settings", {
         method: "PUT",
@@ -213,7 +213,7 @@ describe("settings routes", () => {
     });
 
     it("is reflected by resolveBossSettings and loadDetectionSettings directly", async () => {
-      const app = createApp(db);
+      const app = createApp(portFor(db));
 
       await app.request("/api/settings", {
         method: "PUT",
@@ -232,7 +232,7 @@ describe("settings routes", () => {
     });
 
     it("resets boss_custom_instructions to null when set to an empty string", async () => {
-      const app = createApp(db);
+      const app = createApp(portFor(db));
 
       await app.request("/api/settings", {
         method: "PUT",
@@ -256,7 +256,7 @@ describe("settings routes", () => {
     });
 
     it("accepts boss_custom_instructions: null (round-tripping GET's response back into PUT)", async () => {
-      const app = createApp(db);
+      const app = createApp(portFor(db));
 
       // A settings screen commonly re-sends the exact object it got from
       // GET; GET returns null for an unset boss_custom_instructions, so PUT
@@ -278,7 +278,7 @@ describe("settings routes", () => {
     });
 
     it("returns 400 and saves nothing when a value is invalid (all-or-nothing)", async () => {
-      const app = createApp(db);
+      const app = createApp(portFor(db));
 
       const res = await app.request("/api/settings", {
         method: "PUT",
@@ -299,7 +299,7 @@ describe("settings routes", () => {
     });
 
     it("returns 400 for an unrecognized key", async () => {
-      const app = createApp(db);
+      const app = createApp(portFor(db));
 
       const res = await app.request("/api/settings", {
         method: "PUT",
@@ -313,7 +313,7 @@ describe("settings routes", () => {
     });
 
     it("returns 400 when the request body is not valid JSON", async () => {
-      const app = createApp(db);
+      const app = createApp(portFor(db));
 
       const res = await app.request("/api/settings", {
         method: "PUT",
@@ -327,7 +327,7 @@ describe("settings routes", () => {
     });
 
     it("returns 400 for an invalid time format", async () => {
-      const app = createApp(db);
+      const app = createApp(portFor(db));
 
       const res = await app.request("/api/settings", {
         method: "PUT",
@@ -339,7 +339,7 @@ describe("settings routes", () => {
     });
 
     it("returns 400 for a negative minutes value", async () => {
-      const app = createApp(db);
+      const app = createApp(portFor(db));
 
       const res = await app.request("/api/settings", {
         method: "PUT",
@@ -359,7 +359,7 @@ describe("settings routes", () => {
         it.each(["", "   "])(
           "returns 400 with the Japanese error and code (setting_required) when boss_name is %j",
           async (value) => {
-            const app = createApp(db);
+            const app = createApp(portFor(db));
 
             const res = await app.request("/api/settings", {
               method: "PUT",
@@ -379,7 +379,7 @@ describe("settings routes", () => {
         it.each(["", "   "])(
           "returns 400 with the Japanese error and code (setting_required) when model is %j",
           async (value) => {
-            const app = createApp(db);
+            const app = createApp(portFor(db));
 
             const res = await app.request("/api/settings", {
               method: "PUT",
@@ -397,7 +397,7 @@ describe("settings routes", () => {
         );
 
         it("saves nothing (non-regression) when boss_name is rejected as empty", async () => {
-          const app = createApp(db);
+          const app = createApp(portFor(db));
 
           const res = await app.request("/api/settings", {
             method: "PUT",
@@ -426,7 +426,7 @@ describe("settings routes", () => {
         ] as const)(
           "returns 400 with the Japanese error and code (invalid_time) when %s is %j",
           async (key, value) => {
-            const app = createApp(db);
+            const app = createApp(portFor(db));
 
             const res = await app.request("/api/settings", {
               method: "PUT",
@@ -444,7 +444,7 @@ describe("settings routes", () => {
         );
 
         it("saves nothing (non-regression) when work_start's format is rejected", async () => {
-          const app = createApp(db);
+          const app = createApp(portFor(db));
 
           const res = await app.request("/api/settings", {
             method: "PUT",
@@ -468,7 +468,7 @@ describe("settings routes", () => {
         )(
           "returns 400 with the Japanese error and code (invalid_positive_integer) when %s is %s",
           async (key, value) => {
-            const app = createApp(db);
+            const app = createApp(portFor(db));
 
             const res = await app.request("/api/settings", {
               method: "PUT",
@@ -490,7 +490,7 @@ describe("settings routes", () => {
         it.each(MINUTE_KEYS)(
           "returns 400 with the unchanged Japanese error for %s beyond the safe integer range (1e21)",
           async (key) => {
-            const app = createApp(db);
+            const app = createApp(portFor(db));
 
             const res = await app.request("/api/settings", {
               method: "PUT",
@@ -508,7 +508,7 @@ describe("settings routes", () => {
         );
 
         it("saves nothing (non-regression) when detection_unstarted_fallback_minutes is rejected as 0", async () => {
-          const app = createApp(db);
+          const app = createApp(portFor(db));
 
           const res = await app.request("/api/settings", {
             method: "PUT",
@@ -533,7 +533,7 @@ describe("settings routes", () => {
       // 制限する）、API を直接叩いたときの契約として英語のままである
       // ことを固定する（decision 5: 対象外が変わらないことも回帰対象）。
       it("returns the unmodified English error with no code for an out-of-scope 400 (boss_tone_preset)", async () => {
-        const app = createApp(db);
+        const app = createApp(portFor(db));
 
         const res = await app.request("/api/settings", {
           method: "PUT",
@@ -559,7 +559,7 @@ describe("settings routes", () => {
     // always-400 nor an always-200 handler could pass.
     describe("boss_strictness boundary", () => {
       it(`returns 400 for ${MIN_STRICTNESS - 1} (one below the minimum)`, async () => {
-        const app = createApp(db);
+        const app = createApp(portFor(db));
 
         const res = await app.request("/api/settings", {
           method: "PUT",
@@ -571,7 +571,7 @@ describe("settings routes", () => {
       });
 
       it(`returns 200 and saves ${MIN_STRICTNESS} (the minimum)`, async () => {
-        const app = createApp(db);
+        const app = createApp(portFor(db));
 
         const res = await app.request("/api/settings", {
           method: "PUT",
@@ -585,7 +585,7 @@ describe("settings routes", () => {
       });
 
       it(`returns 200 and saves ${MAX_STRICTNESS} (the maximum)`, async () => {
-        const app = createApp(db);
+        const app = createApp(portFor(db));
 
         const res = await app.request("/api/settings", {
           method: "PUT",
@@ -599,7 +599,7 @@ describe("settings routes", () => {
       });
 
       it(`returns 400 for ${MAX_STRICTNESS + 1} (one above the maximum)`, async () => {
-        const app = createApp(db);
+        const app = createApp(portFor(db));
 
         const res = await app.request("/api/settings", {
           method: "PUT",
@@ -614,7 +614,7 @@ describe("settings routes", () => {
     // エビデンス強制設定（#386）。AC-7〜AC-11。
     describe("evidence_enforcement_enabled", () => {
       it("GET returns false by default when the key is unset (AC-7)", async () => {
-        const app = createApp(db);
+        const app = createApp(portFor(db));
 
         const res = await app.request("/api/settings");
 
@@ -623,7 +623,7 @@ describe("settings routes", () => {
       });
 
       it('PUT true stores the string "true" in the settings table (AC-8)', async () => {
-        const app = createApp(db);
+        const app = createApp(portFor(db));
 
         const res = await app.request("/api/settings", {
           method: "PUT",
@@ -639,7 +639,7 @@ describe("settings routes", () => {
       });
 
       it("GET reflects true immediately after PUT true (AC-9)", async () => {
-        const app = createApp(db);
+        const app = createApp(portFor(db));
 
         await app.request("/api/settings", {
           method: "PUT",
@@ -655,7 +655,7 @@ describe("settings routes", () => {
       it.each([["true"], [1], [null]])(
         "PUT rejects a non-boolean value (%s) with 400 (AC-10)",
         async (value) => {
-          const app = createApp(db);
+          const app = createApp(portFor(db));
 
           const res = await app.request("/api/settings", {
             method: "PUT",
@@ -668,7 +668,7 @@ describe("settings routes", () => {
       );
 
       it("PUT saves no keys at all when evidence_enforcement_enabled is invalid, even if other keys in the same request are valid (AC-11)", async () => {
-        const app = createApp(db);
+        const app = createApp(portFor(db));
 
         const res = await app.request("/api/settings", {
           method: "PUT",
@@ -693,7 +693,7 @@ describe("settings routes", () => {
     // 注意。
     describe("morning_mentoring_required", () => {
       it("GET includes the key and returns true by default when unset (AC-31, AC-32)", async () => {
-        const app = createApp(db);
+        const app = createApp(portFor(db));
 
         const res = await app.request("/api/settings");
 
@@ -703,7 +703,7 @@ describe("settings routes", () => {
       });
 
       it('PUT false stores the string "false" in the settings table (AC-33, AC-36)', async () => {
-        const app = createApp(db);
+        const app = createApp(portFor(db));
 
         const res = await app.request("/api/settings", {
           method: "PUT",
@@ -721,7 +721,7 @@ describe("settings routes", () => {
       // AC-36 のもう一方の側。false 側だけを DB で確かめると、値を
       // 書き分けず常に "false" を書く実装でも通ってしまう。
       it('PUT true stores the string "true" in the settings table (AC-36)', async () => {
-        const app = createApp(db);
+        const app = createApp(portFor(db));
 
         // いったん false にしてから true へ戻す（未設定のままだと行が
         // 作られず、"true" が書かれたことを確かめられないため）。
@@ -745,7 +745,7 @@ describe("settings routes", () => {
       });
 
       it("GET reflects false immediately after PUT false", async () => {
-        const app = createApp(db);
+        const app = createApp(portFor(db));
 
         await app.request("/api/settings", {
           method: "PUT",
@@ -759,7 +759,7 @@ describe("settings routes", () => {
       });
 
       it('PUT rejects the string "true" with 400 (AC-34)', async () => {
-        const app = createApp(db);
+        const app = createApp(portFor(db));
 
         const res = await app.request("/api/settings", {
           method: "PUT",
@@ -771,7 +771,7 @@ describe("settings routes", () => {
       });
 
       it("PUT rejects null with 400 (AC-35)", async () => {
-        const app = createApp(db);
+        const app = createApp(portFor(db));
 
         const res = await app.request("/api/settings", {
           method: "PUT",
@@ -787,7 +787,7 @@ describe("settings routes", () => {
           "morning_mentoring_required",
           "yes",
         );
-        const app = createApp(db);
+        const app = createApp(portFor(db));
 
         const res = await app.request("/api/settings");
 
@@ -809,7 +809,7 @@ describe("settings routes", () => {
       // （self-review 指摘）。既定値と異なる 08:30/17:30 を使い、かつ
       // settings テーブルの生の行を直接見て、書き込みそのものを確認する。
       it("returns 200 and saves both keys for a valid range (work_start=08:30, work_end=17:30) (AC-5)", async () => {
-        const app = createApp(db);
+        const app = createApp(portFor(db));
 
         const res = await app.request("/api/settings", {
           method: "PUT",
@@ -838,7 +838,7 @@ describe("settings routes", () => {
       ])(
         "returns 400 with the Japanese error and code (invalid_working_hours) for an invalid range (work_start=%s, work_end=%s) (AC-1, AC-2, decision 2: >=) (#517)",
         async (start, end) => {
-          const app = createApp(db);
+          const app = createApp(portFor(db));
 
           const res = await app.request("/api/settings", {
             method: "PUT",
@@ -856,7 +856,7 @@ describe("settings routes", () => {
       );
 
       it("writes neither work_start nor work_end to the settings table when the range is rejected (AC-6)", async () => {
-        const app = createApp(db);
+        const app = createApp(portFor(db));
 
         const res = await app.request("/api/settings", {
           method: "PUT",
@@ -881,7 +881,7 @@ describe("settings routes", () => {
       });
 
       it("rejects the whole patch (also leaving boss_name unsaved) when the working-hours correlation is invalid, even alongside other valid keys (all-or-nothing)", async () => {
-        const app = createApp(db);
+        const app = createApp(portFor(db));
 
         const res = await app.request("/api/settings", {
           method: "PUT",
@@ -909,7 +909,7 @@ describe("settings routes", () => {
     // ときは発火しないスコープをそれぞれ担保する。
     describe("work_start / work_end partial-update correlation (AC-3, AC-4)", () => {
       it("returns 400 with the Japanese error and code (invalid_working_hours) when work_start alone is pushed past the currently-effective (default) work_end (AC-3, exclusion side) (#517)", async () => {
-        const app = createApp(db);
+        const app = createApp(portFor(db));
 
         const res = await app.request("/api/settings", {
           method: "PUT",
@@ -931,7 +931,7 @@ describe("settings routes", () => {
       });
 
       it("returns 200 and saves work_start alone when it stays before the default work_end (AC-3, inclusion side)", async () => {
-        const app = createApp(db);
+        const app = createApp(portFor(db));
 
         const res = await app.request("/api/settings", {
           method: "PUT",
@@ -949,7 +949,7 @@ describe("settings routes", () => {
         // Issue #481 の完了条件に挙げられている具体例そのもの:
         // work_start 未設定の DB への { work_end: "02:00" } のみの更新は
         // 既定値 09:00 と突き合わされ拒否される。
-        const app = createApp(db);
+        const app = createApp(portFor(db));
 
         const res = await app.request("/api/settings", {
           method: "PUT",
@@ -971,7 +971,7 @@ describe("settings routes", () => {
       });
 
       it("returns 200 and saves work_end alone when it stays after the default work_start (AC-4, inclusion side)", async () => {
-        const app = createApp(db);
+        const app = createApp(portFor(db));
 
         const res = await app.request("/api/settings", {
           method: "PUT",
@@ -986,7 +986,7 @@ describe("settings routes", () => {
       });
 
       it("rejects the whole patch (also leaving boss_name unsaved) when a partial update fails the correlation check, even alongside other valid keys (all-or-nothing)", async () => {
-        const app = createApp(db);
+        const app = createApp(portFor(db));
 
         const res = await app.request("/api/settings", {
           method: "PUT",
@@ -1025,7 +1025,7 @@ describe("settings routes", () => {
           "work_end",
           "02:00",
         );
-        const app = createApp(db);
+        const app = createApp(portFor(db));
 
         const res = await app.request("/api/settings", {
           method: "PUT",
@@ -1060,7 +1060,7 @@ describe("settings routes", () => {
           "work_end",
           "25:99",
         );
-        const app = createApp(db);
+        const app = createApp(portFor(db));
 
         const res = await app.request("/api/settings", {
           method: "PUT",
@@ -1092,7 +1092,7 @@ describe("settings routes", () => {
           "work_end",
           "02:00",
         );
-        const app = createApp(db);
+        const app = createApp(portFor(db));
 
         const res = await app.request("/api/settings", {
           method: "PUT",
@@ -1108,7 +1108,7 @@ describe("settings routes", () => {
 
     describe.each(MINUTE_KEYS)("%s boundary", (key) => {
       it("returns 400 for 0", async () => {
-        const app = createApp(db);
+        const app = createApp(portFor(db));
 
         const res = await app.request("/api/settings", {
           method: "PUT",
@@ -1120,7 +1120,7 @@ describe("settings routes", () => {
       });
 
       it("returns 200 and saves 1", async () => {
-        const app = createApp(db);
+        const app = createApp(portFor(db));
 
         const res = await app.request("/api/settings", {
           method: "PUT",
@@ -1134,7 +1134,7 @@ describe("settings routes", () => {
       });
 
       it("returns 400 for a non-integer (1.5)", async () => {
-        const app = createApp(db);
+        const app = createApp(portFor(db));
 
         const res = await app.request("/api/settings", {
           method: "PUT",
@@ -1163,7 +1163,7 @@ describe("settings routes", () => {
           "detection_daily_notification_cap",
           "7",
         );
-        const app = createApp(db);
+        const app = createApp(portFor(db));
 
         const res = await app.request("/api/settings");
 
@@ -1172,7 +1172,7 @@ describe("settings routes", () => {
       });
 
       it("PUT accepts 3, saves it, and returns 3 for the key", async () => {
-        const app = createApp(db);
+        const app = createApp(portFor(db));
 
         const res = await app.request("/api/settings", {
           method: "PUT",
@@ -1190,7 +1190,7 @@ describe("settings routes", () => {
       // resolvePositiveIntSetting が往復できず既定値 5 へ倒れる。PUT 成功と
       // 実効値の食い違いを起こさないよう、安全な整数の範囲外は 400 で拒否する
       it("PUT returns 400 and saves nothing for an integer beyond the safe range (1e21) that the reader cannot round-trip", async () => {
-        const app = createApp(db);
+        const app = createApp(portFor(db));
 
         const res = await app.request("/api/settings", {
           method: "PUT",
@@ -1205,7 +1205,7 @@ describe("settings routes", () => {
       });
 
       it("PUT accepts Number.MAX_SAFE_INTEGER and GET returns the same value (round-trips through the reader)", async () => {
-        const app = createApp(db);
+        const app = createApp(portFor(db));
 
         const put = await app.request("/api/settings", {
           method: "PUT",
@@ -1221,7 +1221,7 @@ describe("settings routes", () => {
       it.each([0, -1, 2.5, "3"])(
         "PUT returns 400 with the Japanese error and code (invalid_positive_integer) and saves nothing when the value is %j",
         async (value) => {
-          const app = createApp(db);
+          const app = createApp(portFor(db));
 
           const res = await app.request("/api/settings", {
             method: "PUT",

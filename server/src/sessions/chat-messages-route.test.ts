@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type Database from "better-sqlite3";
 import { openDatabase } from "../db/connection.js";
 import { runMigrations } from "../db/migrate.js";
-import { portFor } from "../db/transitional-bridge.js";
+import { portFor } from "../db/test-support/port-for.js";
 import { insertTask, listTasks } from "../tasks/tasks-repository.js";
 import { insertDecision, listDecisions } from "../decisions/decisions-repository.js";
 import { MENTORING_TARGET_TASK_INSTRUCTION } from "../boss/persona-prompt.js";
@@ -119,7 +119,7 @@ describe("POST /api/sessions/:id/messages", () => {
   });
 
   async function createSession(): Promise<Session> {
-    const app = createApp(db, env);
+    const app = createApp(portFor(db), env);
     return readJson<Session>(
       await app.request("/api/sessions", {
         method: "POST",
@@ -134,7 +134,7 @@ describe("POST /api/sessions/:id/messages", () => {
   it.each(["9999", "not-a-number"])(
     "returns 404 with code session_not_found for a non-existent session id (%s)",
     async (rawId) => {
-      const app = createApp(db, env);
+      const app = createApp(portFor(db), env);
 
       const res = await app.request(`/api/sessions/${rawId}/messages`, {
         method: "POST",
@@ -154,7 +154,7 @@ describe("POST /api/sessions/:id/messages", () => {
 
   it("returns 400 when content is missing", async () => {
     const session = await createSession();
-    const app = createApp(db, env);
+    const app = createApp(portFor(db), env);
 
     const res = await app.request(`/api/sessions/${session.id}/messages`, {
       method: "POST",
@@ -171,7 +171,7 @@ describe("POST /api/sessions/:id/messages", () => {
   it("defaults to the claude-code backend (DEFAULT_LLM_BACKEND, Issue #118) when no llmBackend option is passed to createApp", async () => {
     const session = await createSession();
     streamBossMessageMock.mockResolvedValue(fakeTextMessage("了解した"));
-    const app = createApp(db, env);
+    const app = createApp(portFor(db), env);
 
     const res = await app.request(`/api/sessions/${session.id}/messages`, {
       method: "POST",
@@ -189,7 +189,7 @@ describe("POST /api/sessions/:id/messages", () => {
     const session = await createSession();
     streamBossMessageMock.mockResolvedValue(fakeTextMessage("了解した"));
     const apiEnv = { ...env, LLM_BACKEND: "api" };
-    const app = createApp(db, apiEnv);
+    const app = createApp(portFor(db), apiEnv);
 
     const res = await app.request(`/api/sessions/${session.id}/messages`, {
       method: "POST",
@@ -206,7 +206,7 @@ describe("POST /api/sessions/:id/messages", () => {
   it("passes the configured llmBackend (loadConfig 由来) through to createClaudeClient", async () => {
     const session = await createSession();
     streamBossMessageMock.mockResolvedValue(fakeTextMessage("了解した"));
-    const app = createApp(db, env, { llmBackend: "claude-code" });
+    const app = createApp(portFor(db), env, { llmBackend: "claude-code" });
 
     const res = await app.request(`/api/sessions/${session.id}/messages`, {
       method: "POST",
@@ -225,7 +225,7 @@ describe("POST /api/sessions/:id/messages", () => {
     createClaudeClientMock.mockImplementationOnce(() => {
       throw new MissingApiKeyError();
     });
-    const app = createApp(db, env);
+    const app = createApp(portFor(db), env);
 
     const res = await app.request(`/api/sessions/${session.id}/messages`, {
       method: "POST",
@@ -242,7 +242,7 @@ describe("POST /api/sessions/:id/messages", () => {
   it("persists the user message and records a chat_message activity event before streaming", async () => {
     const session = await createSession();
     streamBossMessageMock.mockResolvedValue(fakeTextMessage("了解した"));
-    const app = createApp(db, env);
+    const app = createApp(portFor(db), env);
 
     const res = await app.request(`/api/sessions/${session.id}/messages`, {
       method: "POST",
@@ -278,7 +278,7 @@ describe("POST /api/sessions/:id/messages", () => {
         return fakeTextMessage(rawFullText);
       },
     );
-    const app = createApp(db, env);
+    const app = createApp(portFor(db), env);
 
     const res = await app.request(`/api/sessions/${session.id}/messages`, {
       method: "POST",
@@ -347,7 +347,7 @@ describe("POST /api/sessions/:id/messages", () => {
           return fakeTextMessage(rawFullText);
         },
       );
-      const app = createApp(db, env);
+      const app = createApp(portFor(db), env);
 
       const res = await app.request(`/api/sessions/${session.id}/messages`, {
         method: "POST",
@@ -390,7 +390,7 @@ describe("POST /api/sessions/:id/messages", () => {
         return fakeTextMessage("<p></p><strong></strong>");
       },
     );
-    const app = createApp(db, env);
+    const app = createApp(portFor(db), env);
 
     const res = await app.request(`/api/sessions/${session.id}/messages`, {
       method: "POST",
@@ -423,7 +423,7 @@ describe("POST /api/sessions/:id/messages", () => {
         return fakeTextMessage("今日は資料作成からだ");
       },
     );
-    const app = createApp(db, env);
+    const app = createApp(portFor(db), env);
 
     const res = await app.request(`/api/sessions/${session.id}/messages`, {
       method: "POST",
@@ -472,7 +472,7 @@ describe("POST /api/sessions/:id/messages", () => {
       content: "夕会が始まった。今日の進捗を報告しろ。",
     });
     streamBossMessageMock.mockResolvedValue(fakeTextMessage("了解した"));
-    const app = createApp(db, env);
+    const app = createApp(portFor(db), env);
 
     const res = await app.request(`/api/sessions/${session.id}/messages`, {
       method: "POST",
@@ -505,7 +505,7 @@ describe("POST /api/sessions/:id/messages", () => {
     const RAW_USER_HTML = "<p>報告です</p><br>レビュー依頼は <strong>明日</strong> 出します";
 
     async function postMessage(sessionId: number, content: string): Promise<void> {
-      const app = createApp(db, env);
+      const app = createApp(portFor(db), env);
       const res = await app.request(`/api/sessions/${sessionId}/messages`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -649,7 +649,7 @@ describe("POST /api/sessions/:id/messages", () => {
       const adhocSession = await createSession();
       await insertMessage(portFor(db), { session_id: adhocSession.id, role: "user", content: "経費精算のことで相談したい" });
       await insertMessage(portFor(db), { session_id: adhocSession.id, role: "boss", content: RAW_BOSS_HTML });
-      const app = createApp(db, env);
+      const app = createApp(portFor(db), env);
       const meeting = await readJson<Session>(
         await app.request("/api/sessions", {
           method: "POST",
@@ -668,7 +668,7 @@ describe("POST /api/sessions/:id/messages", () => {
     });
 
     it("直近の決定と報告履歴に載る content は DB の値と一致する（正規化しない・「未決の論点」論点1）", async () => {
-      const app = createApp(db, env);
+      const app = createApp(portFor(db), env);
       const priorSession = await readJson<Session>(
         await app.request("/api/sessions", {
           method: "POST",
@@ -696,7 +696,7 @@ describe("POST /api/sessions/:id/messages", () => {
   it("builds the system prompt from persona settings/tasks and passes the two task tools", async () => {
     const session = await createSession();
     streamBossMessageMock.mockResolvedValue(fakeTextMessage("了解した"));
-    const app = createApp(db, env);
+    const app = createApp(portFor(db), env);
 
     await app.request("/api/tasks", {
       method: "POST",
@@ -739,7 +739,7 @@ describe("POST /api/sessions/:id/messages", () => {
   it("includes the task's evidence requirement and attached-evidence count in the system prompt (AC-21/AC-22)", async () => {
     const session = await createSession();
     streamBossMessageMock.mockResolvedValue(fakeTextMessage("了解した"));
-    const app = createApp(db, env);
+    const app = createApp(portFor(db), env);
 
     const createRes = await app.request("/api/tasks", {
       method: "POST",
@@ -770,7 +770,7 @@ describe("POST /api/sessions/:id/messages", () => {
   it("includes the current date/time section in the system prompt (#288)", async () => {
     const session = await createSession();
     streamBossMessageMock.mockResolvedValue(fakeTextMessage("了解した"));
-    const app = createApp(db, env);
+    const app = createApp(portFor(db), env);
 
     const res = await app.request(`/api/sessions/${session.id}/messages`, {
       method: "POST",
@@ -789,7 +789,7 @@ describe("POST /api/sessions/:id/messages", () => {
   it("Issue #117: enables adaptive thinking with effort 'low' on the streamBossMessage request", async () => {
     const session = await createSession();
     streamBossMessageMock.mockResolvedValue(fakeTextMessage("了解した"));
-    const app = createApp(db, env);
+    const app = createApp(portFor(db), env);
 
     const res = await app.request(`/api/sessions/${session.id}/messages`, {
       method: "POST",
@@ -810,7 +810,7 @@ describe("POST /api/sessions/:id/messages", () => {
   });
 
   it("passes the session's type as sessionType so the system prompt reflects the morning flow guidance", async () => {
-    const app = createApp(db, env);
+    const app = createApp(portFor(db), env);
     const session = await readJson<Session>(
       await app.request("/api/sessions", {
         method: "POST",
@@ -850,7 +850,7 @@ describe("POST /api/sessions/:id/messages", () => {
     async function createSessionOfType(
       type: "morning" | "evening" | "adhoc",
     ): Promise<Session> {
-      const app = createApp(db, env);
+      const app = createApp(portFor(db), env);
       return readJson<Session>(
         await app.request("/api/sessions", {
           method: "POST",
@@ -863,7 +863,7 @@ describe("POST /api/sessions/:id/messages", () => {
     it("朝会・強制オン（既定）のとき、mentoring を指定しなくてもシステムプロンプトにメンタリングの指示が含まれる（AC-1）", async () => {
       const session = await createSessionOfType("morning");
       streamBossMessageMock.mockResolvedValue(fakeTextMessage("了解した"));
-      const app = createApp(db, env);
+      const app = createApp(portFor(db), env);
 
       const res = await app.request(`/api/sessions/${session.id}/messages`, {
         method: "POST",
@@ -883,7 +883,7 @@ describe("POST /api/sessions/:id/messages", () => {
     });
 
     it("朝会・強制オフに設定したとき、mentoring を指定しなければシステムプロンプトにメンタリングの指示が含まれない（AC-2）", async () => {
-      const settingsApp = createApp(db, env);
+      const settingsApp = createApp(portFor(db), env);
       await settingsApp.request("/api/settings", {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
@@ -891,7 +891,7 @@ describe("POST /api/sessions/:id/messages", () => {
       });
       const session = await createSessionOfType("morning");
       streamBossMessageMock.mockResolvedValue(fakeTextMessage("了解した"));
-      const app = createApp(db, env);
+      const app = createApp(portFor(db), env);
 
       const res = await app.request(`/api/sessions/${session.id}/messages`, {
         method: "POST",
@@ -913,7 +913,7 @@ describe("POST /api/sessions/:id/messages", () => {
     it("adhoc セッションで mentoring: true を送ると、システムプロンプトにメンタリングの指示が含まれる（AC-26）", async () => {
       const session = await createSessionOfType("adhoc");
       streamBossMessageMock.mockResolvedValue(fakeTextMessage("了解した"));
-      const app = createApp(db, env);
+      const app = createApp(portFor(db), env);
 
       const res = await app.request(`/api/sessions/${session.id}/messages`, {
         method: "POST",
@@ -935,7 +935,7 @@ describe("POST /api/sessions/:id/messages", () => {
     it("adhoc セッションで mentoring を省略すると、システムプロンプトにメンタリングの指示が含まれない（AC-27）", async () => {
       const session = await createSessionOfType("adhoc");
       streamBossMessageMock.mockResolvedValue(fakeTextMessage("了解した"));
-      const app = createApp(db, env);
+      const app = createApp(portFor(db), env);
 
       const res = await app.request(`/api/sessions/${session.id}/messages`, {
         method: "POST",
@@ -956,7 +956,7 @@ describe("POST /api/sessions/:id/messages", () => {
 
     it("mentoring に boolean 以外を渡すと 400 が返り、streamBossMessage は呼ばれない（AC-28）", async () => {
       const session = await createSessionOfType("adhoc");
-      const app = createApp(db, env);
+      const app = createApp(portFor(db), env);
 
       const res = await app.request(`/api/sessions/${session.id}/messages`, {
         method: "POST",
@@ -971,7 +971,7 @@ describe("POST /api/sessions/:id/messages", () => {
     });
 
     it("朝会・強制オフのセッションでも mentoring: true を明示すればメンタリングの指示が含まれる（OR 合成）", async () => {
-      const settingsApp = createApp(db, env);
+      const settingsApp = createApp(portFor(db), env);
       await settingsApp.request("/api/settings", {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
@@ -979,7 +979,7 @@ describe("POST /api/sessions/:id/messages", () => {
       });
       const session = await createSessionOfType("morning");
       streamBossMessageMock.mockResolvedValue(fakeTextMessage("了解した"));
-      const app = createApp(db, env);
+      const app = createApp(portFor(db), env);
 
       const res = await app.request(`/api/sessions/${session.id}/messages`, {
         method: "POST",
@@ -1001,7 +1001,7 @@ describe("POST /api/sessions/:id/messages", () => {
     it("adhoc セッションで mentoring: true を送っても 400/404 にならない（判断1・6: サーバーはセッション種別で拒否しない）", async () => {
       const session = await createSessionOfType("adhoc");
       streamBossMessageMock.mockResolvedValue(fakeTextMessage("了解した"));
-      const app = createApp(db, env);
+      const app = createApp(portFor(db), env);
 
       const res = await app.request(`/api/sessions/${session.id}/messages`, {
         method: "POST",
@@ -1033,7 +1033,7 @@ describe("POST /api/sessions/:id/messages", () => {
       "returns 400 and does not persist the user message when mentoringTaskId is %s, even with mentoring: true (AC-12/AC-15)",
       async (_label, value) => {
         const session = await createSession();
-        const app = createApp(db, env);
+        const app = createApp(portFor(db), env);
 
         const res = await app.request(`/api/sessions/${session.id}/messages`, {
           method: "POST",
@@ -1065,7 +1065,7 @@ describe("POST /api/sessions/:id/messages", () => {
         estimated_minutes: null,
       });
       const session = await createSession();
-      const app = createApp(db, env);
+      const app = createApp(portFor(db), env);
 
       const res = await app.request(`/api/sessions/${session.id}/messages`, {
         method: "POST",
@@ -1087,7 +1087,7 @@ describe("POST /api/sessions/:id/messages", () => {
     // ため、ボディ全体を `code` と文言まで照合する。
     it("returns 404 with code mentoring_task_not_found and does not persist the user message when mentoringTaskId refers to a nonexistent task (AC-14/AC-15)", async () => {
       const session = await createSession();
-      const app = createApp(db, env);
+      const app = createApp(portFor(db), env);
 
       const res = await app.request(`/api/sessions/${session.id}/messages`, {
         method: "POST",
@@ -1122,7 +1122,7 @@ describe("POST /api/sessions/:id/messages", () => {
       });
       const session = await createSession();
       streamBossMessageMock.mockResolvedValue(fakeTextMessage("了解した"));
-      const app = createApp(db, env);
+      const app = createApp(portFor(db), env);
 
       const res = await app.request(`/api/sessions/${session.id}/messages`, {
         method: "POST",
@@ -1162,7 +1162,7 @@ describe("POST /api/sessions/:id/messages", () => {
       });
       const session = await createSession();
       streamBossMessageMock.mockResolvedValue(fakeTextMessage("了解した"));
-      const app = createApp(db, env);
+      const app = createApp(portFor(db), env);
 
       const res = await app.request(`/api/sessions/${session.id}/messages`, {
         method: "POST",
@@ -1204,7 +1204,7 @@ describe("POST /api/sessions/:id/messages", () => {
           return fakeTextMessage("そう決めた");
         },
       );
-      const app = createApp(db, env);
+      const app = createApp(portFor(db), env);
 
       const res = await app.request(`/api/sessions/${session.id}/messages`, {
         method: "POST",
@@ -1279,7 +1279,7 @@ describe("POST /api/sessions/:id/messages", () => {
         );
       }
       streamBossMessageMock.mockResolvedValue(fakeTextMessage("了解した"));
-      const app = createApp(db, env);
+      const app = createApp(portFor(db), env);
 
       const res = await app.request(`/api/sessions/${session.id}/messages`, {
         method: "POST",
@@ -1317,7 +1317,7 @@ describe("POST /api/sessions/:id/messages", () => {
       // とおり「直近の決定」への出現は非回帰の対象・重複は受容する契約）。
       insertRawDecisionForTask(session.id, task.id, "対象タスクの記録", localIso(2026, 7, 5, 9));
       streamBossMessageMock.mockResolvedValue(fakeTextMessage("了解した"));
-      const app = createApp(db, env);
+      const app = createApp(portFor(db), env);
 
       const res = await app.request(`/api/sessions/${session.id}/messages`, {
         method: "POST",
@@ -1345,7 +1345,7 @@ describe("POST /api/sessions/:id/messages", () => {
       const session = await createSession();
       insertRawDecisionForTask(session.id, task.id, "対象タスクの記録", localIso(2026, 7, 5, 9));
       streamBossMessageMock.mockResolvedValue(fakeTextMessage("了解した"));
-      const app = createApp(db, env);
+      const app = createApp(portFor(db), env);
 
       const res = await app.request(`/api/sessions/${session.id}/messages`, {
         method: "POST",
@@ -1361,7 +1361,7 @@ describe("POST /api/sessions/:id/messages", () => {
   });
 
   it("AC-2: includes a saved session summary in the system prompt so the boss can refer to recent reports without re-explanation", async () => {
-    const app = createApp(db, env);
+    const app = createApp(portFor(db), env);
     const priorSession = await readJson<Session>(
       await app.request("/api/sessions", {
         method: "POST",
@@ -1421,7 +1421,7 @@ describe("POST /api/sessions/:id/messages", () => {
     async function createMeetingSession(
       type: "morning" | "evening",
     ): Promise<Session> {
-      const app = createApp(db, env);
+      const app = createApp(portFor(db), env);
       return readJson<Session>(
         await app.request("/api/sessions", {
           method: "POST",
@@ -1432,7 +1432,7 @@ describe("POST /api/sessions/:id/messages", () => {
     }
 
     async function postMessage(sessionId: number): Promise<void> {
-      const app = createApp(db, env);
+      const app = createApp(portFor(db), env);
       streamBossMessageMock.mockResolvedValue(fakeTextMessage("了解した"));
       const res = await app.request(`/api/sessions/${sessionId}/messages`, {
         method: "POST",
@@ -1506,7 +1506,7 @@ describe("POST /api/sessions/:id/messages", () => {
         return fakeTextMessage("タスクを作成した");
       },
     );
-    const app = createApp(db, env);
+    const app = createApp(portFor(db), env);
 
     const res = await app.request(`/api/sessions/${session.id}/messages`, {
       method: "POST",
@@ -1561,7 +1561,7 @@ describe("POST /api/sessions/:id/messages", () => {
         return fakeTextMessage("資料作成から始めよう");
       },
     );
-    const app = createApp(db, env);
+    const app = createApp(portFor(db), env);
 
     const res = await app.request(`/api/sessions/${session.id}/messages`, {
       method: "POST",
@@ -1610,7 +1610,7 @@ describe("POST /api/sessions/:id/messages", () => {
   // distinguishable.
   it("AC-3 (GAP-12): records exactly one activity_events row per tool-driven update when a turn calls two or more tools, with no duplicates or drops", async () => {
     const session = await createSession();
-    const app = createApp(db, env);
+    const app = createApp(portFor(db), env);
 
     const taskA = await readJson<{ id: number }>(
       await app.request("/api/tasks", {
@@ -1701,7 +1701,7 @@ describe("POST /api/sessions/:id/messages", () => {
         return fakeTextMessage("そう決めた");
       },
     );
-    const app = createApp(db, env);
+    const app = createApp(portFor(db), env);
 
     const res = await app.request(`/api/sessions/${session.id}/messages`, {
       method: "POST",
@@ -1752,7 +1752,7 @@ describe("POST /api/sessions/:id/messages", () => {
         return fakeTextMessage("わかった");
       },
     );
-    const app = createApp(db, env);
+    const app = createApp(portFor(db), env);
 
     const res = await app.request(`/api/sessions/${session.id}/messages`, {
       method: "POST",
@@ -1785,7 +1785,7 @@ describe("POST /api/sessions/:id/messages", () => {
         return fakeTextMessage("わかった");
       },
     );
-    const app = createApp(db, env);
+    const app = createApp(portFor(db), env);
 
     const res = await app.request(`/api/sessions/${session.id}/messages`, {
       method: "POST",
@@ -1819,7 +1819,7 @@ describe("POST /api/sessions/:id/messages", () => {
         return fakeTextMessage("");
       },
     );
-    const app = createApp(db, env);
+    const app = createApp(portFor(db), env);
 
     const res = await app.request(`/api/sessions/${session.id}/messages`, {
       method: "POST",
@@ -1846,7 +1846,7 @@ describe("POST /api/sessions/:id/messages", () => {
   it("persists a generic fallback text when the response has neither text nor tool use", async () => {
     const session = await createSession();
     streamBossMessageMock.mockResolvedValue(fakeTextMessage(""));
-    const app = createApp(db, env);
+    const app = createApp(portFor(db), env);
 
     const res = await app.request(`/api/sessions/${session.id}/messages`, {
       method: "POST",
@@ -1868,7 +1868,7 @@ describe("POST /api/sessions/:id/messages", () => {
         throw new Error("connection reset with request id xyz789");
       },
     );
-    const app = createApp(db, env);
+    const app = createApp(portFor(db), env);
 
     const res = await app.request(`/api/sessions/${session.id}/messages`, {
       method: "POST",
@@ -1900,7 +1900,7 @@ describe("POST /api/sessions/:id/messages", () => {
         throw new Error("connection reset");
       },
     );
-    const app = createApp(db, env);
+    const app = createApp(portFor(db), env);
 
     await app.request(`/api/sessions/${session.id}/messages`, {
       method: "POST",
@@ -1922,7 +1922,7 @@ describe("POST /api/sessions/:id/messages", () => {
         return fakeTextMessage("最後まで書いた応答");
       },
     );
-    const app = createApp(db, env);
+    const app = createApp(portFor(db), env);
 
     await app.request(`/api/sessions/${session.id}/messages`, {
       method: "POST",
@@ -1950,7 +1950,7 @@ describe("POST /api/sessions/:id/messages", () => {
         return fakeTextMessage("応答");
       },
     );
-    const app = createApp(db, env);
+    const app = createApp(portFor(db), env);
 
     await app.request(`/api/sessions/${session.id}/messages`, {
       method: "POST",
@@ -1974,7 +1974,7 @@ describe("POST /api/sessions/:id/messages", () => {
         return fakeTextMessage("全部書けた");
       },
     );
-    const app = createApp(db, env);
+    const app = createApp(portFor(db), env);
 
     await app.request(`/api/sessions/${session.id}/messages`, {
       method: "POST",
@@ -1995,7 +1995,7 @@ describe("POST /api/sessions/:id/messages", () => {
     streamBossMessageMock.mockRejectedValue(
       new Error("connection reset by peer with request id abc123"),
     );
-    const app = createApp(db, env);
+    const app = createApp(portFor(db), env);
 
     const res = await app.request(`/api/sessions/${session.id}/messages`, {
       method: "POST",

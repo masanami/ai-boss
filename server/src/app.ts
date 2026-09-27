@@ -1,7 +1,7 @@
 import { Hono } from "hono";
 import { serveStatic } from "@hono/node-server/serve-static";
 import { join } from "node:path";
-import type Database from "better-sqlite3";
+import type { DbPort } from "./db/db-port.js";
 import { createCoreApp } from "./core-app.js";
 import { createNodeFsEvidenceStore } from "./tasks/evidence-storage.js";
 import { registerDevLlmBackends } from "./llm/dev-llm-backends.js";
@@ -68,7 +68,7 @@ export interface CreateAppOptions {
  * browser-bundled core (`core-entry.ts`) — see `core-app.ts`'s doc comment.
  */
 export function createApp(
-  db: Database.Database,
+  db: DbPort,
   env: NodeJS.ProcessEnv = process.env,
   options: CreateAppOptions = {},
 ): Hono {

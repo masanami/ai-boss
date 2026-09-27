@@ -5,7 +5,7 @@ import { join, sep } from "node:path";
 import type Database from "better-sqlite3";
 import { openDatabase } from "../db/connection.js";
 import { runMigrations } from "../db/migrate.js";
-import { portFor } from "../db/transitional-bridge.js";
+import { portFor } from "../db/test-support/port-for.js";
 import { insertTask } from "./tasks-repository.js";
 import { insertTaskEvidence, findTaskEvidenceById } from "./task-evidences-repository.js";
 import { deleteEvidence, saveFileEvidence, saveLinkEvidence } from "./evidence-storage.js";

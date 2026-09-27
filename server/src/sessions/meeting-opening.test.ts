@@ -3,7 +3,7 @@ import type Database from "better-sqlite3";
 import type Anthropic from "@anthropic-ai/sdk";
 import { openDatabase } from "../db/connection.js";
 import { runMigrations } from "../db/migrate.js";
-import { portFor } from "../db/transitional-bridge.js";
+import { portFor } from "../db/test-support/port-for.js";
 import { insertTask } from "../tasks/tasks-repository.js";
 
 const { createClaudeClientMock, createBossMessageMock } = vi.hoisted(() => ({

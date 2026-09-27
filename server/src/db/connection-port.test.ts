@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import Database from "better-sqlite3";
-import { createBetterSqlite3Driver, createBetterSqlite3Port } from "./better-sqlite3-driver.js";
+import { createBetterSqlite3Driver, createBetterSqlite3Port } from "./connection.js";
 
 function openTestDb() {
   const raw = new Database(":memory:");

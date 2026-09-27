@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type Database from "better-sqlite3";
 import { openDatabase } from "../db/connection.js";
 import { runMigrations } from "../db/migrate.js";
-import { portFor } from "../db/transitional-bridge.js";
+import { portFor } from "../db/test-support/port-for.js";
 import { createApp } from "../app.js";
 import { setSettingValue } from "../settings/settings-repository.js";
 import type { Task } from "./task.js";
@@ -36,7 +36,7 @@ describe("tasks routes", () => {
 
   describe("GET /api/tasks", () => {
     it("returns an empty array when no tasks exist", async () => {
-      const app = createApp(db);
+      const app = createApp(portFor(db));
 
       const res = await app.request("/api/tasks");
 
@@ -45,7 +45,7 @@ describe("tasks routes", () => {
     });
 
     it("returns all tasks ordered by created_at ascending", async () => {
-      const app = createApp(db);
+      const app = createApp(portFor(db));
 
       await app.request("/api/tasks", {
         method: "POST",
@@ -68,7 +68,7 @@ describe("tasks routes", () => {
 
   describe("POST /api/tasks", () => {
     it("creates a task with only a title, filling in defaults", async () => {
-      const app = createApp(db);
+      const app = createApp(portFor(db));
 
       const res = await app.request("/api/tasks", {
         method: "POST",
@@ -95,7 +95,7 @@ describe("tasks routes", () => {
     });
 
     it("creates a task with all optional fields set", async () => {
-      const app = createApp(db);
+      const app = createApp(portFor(db));
 
       const res = await app.request("/api/tasks", {
         method: "POST",
@@ -127,7 +127,7 @@ describe("tasks routes", () => {
     });
 
     it("returns 400 with a machine-readable error when title is missing", async () => {
-      const app = createApp(db);
+      const app = createApp(portFor(db));
 
       const res = await app.request("/api/tasks", {
         method: "POST",
@@ -141,7 +141,7 @@ describe("tasks routes", () => {
     });
 
     it("returns 400 when title is an empty string", async () => {
-      const app = createApp(db);
+      const app = createApp(portFor(db));
 
       const res = await app.request("/api/tasks", {
         method: "POST",
@@ -155,7 +155,7 @@ describe("tasks routes", () => {
     });
 
     it("returns 400 when status is invalid", async () => {
-      const app = createApp(db);
+      const app = createApp(portFor(db));
 
       const res = await app.request("/api/tasks", {
         method: "POST",
@@ -169,7 +169,7 @@ describe("tasks routes", () => {
     });
 
     it("returns 400 when priority is invalid", async () => {
-      const app = createApp(db);
+      const app = createApp(portFor(db));
 
       const res = await app.request("/api/tasks", {
         method: "POST",
@@ -183,7 +183,7 @@ describe("tasks routes", () => {
     });
 
     it("returns 400 when estimated_minutes is not a non-negative integer", async () => {
-      const app = createApp(db);
+      const app = createApp(portFor(db));
 
       for (const invalid of ["abc", -5, 1.5]) {
         const res = await app.request("/api/tasks", {
@@ -199,7 +199,7 @@ describe("tasks routes", () => {
     });
 
     it("returns 400 when description is not a string", async () => {
-      const app = createApp(db);
+      const app = createApp(portFor(db));
 
       const res = await app.request("/api/tasks", {
         method: "POST",
@@ -213,7 +213,7 @@ describe("tasks routes", () => {
     });
 
     it("returns 400 when boss_comment is not a string or null", async () => {
-      const app = createApp(db);
+      const app = createApp(portFor(db));
 
       for (const invalid of [123, true, [], {}]) {
         const res = await app.request("/api/tasks", {
@@ -229,7 +229,7 @@ describe("tasks routes", () => {
     });
 
     it("returns 400 when due_at is not a string or null", async () => {
-      const app = createApp(db);
+      const app = createApp(portFor(db));
 
       for (const invalid of [123, true, [], {}]) {
         const res = await app.request("/api/tasks", {
@@ -249,7 +249,7 @@ describe("tasks routes", () => {
     // `new Date(due_at).getTime()` を NaN にして期限超過を永久に検知せず、
     // `detection/priority.ts` の並び順にも NaN が混入する。
     it("returns 400 when due_at is a string that is not a valid ISO 8601 date or date-time", async () => {
-      const app = createApp(db);
+      const app = createApp(portFor(db));
 
       for (const invalid of [
         "not-a-date-at-all",
@@ -281,7 +281,7 @@ describe("tasks routes", () => {
     //
     // 「受理するなら解釈する／解釈しないなら受理側で弾く」に揃え、後者を採る。
     it("returns 400 when due_at cannot be interpreted as a local calendar day", async () => {
-      const app = createApp(db);
+      const app = createApp(portFor(db));
 
       for (const unsupported of [
         "0099-12-31",
@@ -302,7 +302,7 @@ describe("tasks routes", () => {
     // 上の裏返し。「解釈できない値は弾く」を入れたことで、**解釈できる値まで
     // 巻き込んで弾いていない**ことを確かめる（弾きすぎの検出）。
     it("still accepts due_at values that can be interpreted", async () => {
-      const app = createApp(db);
+      const app = createApp(portFor(db));
 
       for (const supported of ["2026-09-05", "0100-01-01", "1970-01-01"]) {
         const res = await app.request("/api/tasks", {
@@ -320,7 +320,7 @@ describe("tasks routes", () => {
     // AC-14: 時刻付きの旧形式は**拒否せず**受理し、その瞬時のローカル暦日へ
     // 正規化して保存する（ADR 0010 決定 3・4）。保存形式は "YYYY-MM-DD" の 1 つ。
     it("normalizes the due_at shapes the web date input and the boss tool produce to a local calendar day", async () => {
-      const app = createApp(db);
+      const app = createApp(portFor(db));
 
       for (const valid of [
         "2026-09-05",
@@ -351,7 +351,7 @@ describe("tasks routes", () => {
     });
 
     it("sets completed_at when a task is created directly with status done", async () => {
-      const app = createApp(db);
+      const app = createApp(portFor(db));
 
       const res = await app.request("/api/tasks", {
         method: "POST",
@@ -366,7 +366,7 @@ describe("tasks routes", () => {
     });
 
     it("returns 400 when the request body is not valid JSON", async () => {
-      const app = createApp(db);
+      const app = createApp(portFor(db));
 
       const res = await app.request("/api/tasks", {
         method: "POST",
@@ -382,7 +382,7 @@ describe("tasks routes", () => {
     // 機能仕様 docs/features/completion-evidence-enforcement.md 決定2・決定3
     describe("evidence_required（Issue #389）", () => {
       it("defaults evidence_required to false when omitted (AC-12)", async () => {
-        const app = createApp(db);
+        const app = createApp(portFor(db));
 
         const res = await app.request("/api/tasks", {
           method: "POST",
@@ -396,7 +396,7 @@ describe("tasks routes", () => {
       });
 
       it("accepts evidence_required: true (AC-13)", async () => {
-        const app = createApp(db);
+        const app = createApp(portFor(db));
 
         const res = await app.request("/api/tasks", {
           method: "POST",
@@ -410,7 +410,7 @@ describe("tasks routes", () => {
       });
 
       it("returns 400 when evidence_required is not a boolean (AC-14)", async () => {
-        const app = createApp(db);
+        const app = createApp(portFor(db));
 
         for (const invalid of [1, "true"]) {
           const res = await app.request("/api/tasks", {
@@ -427,7 +427,7 @@ describe("tasks routes", () => {
 
       // GET /api/tasks の各要素の evidence_required は boolean である（AC-18）
       it("evidence_required round-trips as boolean through GET /api/tasks (AC-18)", async () => {
-        const app = createApp(db);
+        const app = createApp(portFor(db));
         await app.request("/api/tasks", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
@@ -445,7 +445,7 @@ describe("tasks routes", () => {
       // 決定 2-h: POST /api/tasks が status: "done" を直接指定する「第5の経路」
       it("returns 409 with code evidence_required for a direct-done create when enforcement is on, evidence is required, and there is no evidence (AC-34)", async () => {
         await enableEnforcement(db);
-        const app = createApp(db);
+        const app = createApp(portFor(db));
 
         const res = await app.request("/api/tasks", {
           method: "POST",
@@ -464,7 +464,7 @@ describe("tasks routes", () => {
 
       it("does not create a task row when the direct-done create is rejected (AC-34)", async () => {
         await enableEnforcement(db);
-        const app = createApp(db);
+        const app = createApp(portFor(db));
 
         await app.request("/api/tasks", {
           method: "POST",
@@ -482,7 +482,7 @@ describe("tasks routes", () => {
 
       it("allows a direct-done create when enforcement is on but evidence_required is false", async () => {
         await enableEnforcement(db);
-        const app = createApp(db);
+        const app = createApp(portFor(db));
 
         const res = await app.request("/api/tasks", {
           method: "POST",
@@ -497,7 +497,7 @@ describe("tasks routes", () => {
     // 機能仕様 docs/features/task-start-commitment.md 決定1・2（#523）
     describe("committed_start_at（着手の約束・#523）", () => {
       it("normalizes an offset ISO datetime to UTC ISO on create", async () => {
-        const app = createApp(db);
+        const app = createApp(portFor(db));
 
         const res = await app.request("/api/tasks", {
           method: "POST",
@@ -514,7 +514,7 @@ describe("tasks routes", () => {
       });
 
       it("sets committed_at to created_at when committed_start_at is included (mutation: leaves committed_at null on create)", async () => {
-        const app = createApp(db);
+        const app = createApp(portFor(db));
 
         const res = await app.request("/api/tasks", {
           method: "POST",
@@ -532,7 +532,7 @@ describe("tasks routes", () => {
       });
 
       it("ignores the input committed_at on create (mutation: persists the input committed_at)", async () => {
-        const app = createApp(db);
+        const app = createApp(portFor(db));
 
         const res = await app.request("/api/tasks", {
           method: "POST",
@@ -549,7 +549,7 @@ describe("tasks routes", () => {
       });
 
       it("defaults committed_start_at to null when omitted", async () => {
-        const app = createApp(db);
+        const app = createApp(portFor(db));
 
         const res = await app.request("/api/tasks", {
           method: "POST",
@@ -564,7 +564,7 @@ describe("tasks routes", () => {
       });
 
       it("returns 400 when committed_start_at is not a valid offset ISO 8601 datetime", async () => {
-        const app = createApp(db);
+        const app = createApp(portFor(db));
 
         for (const invalid of [
           "20:00",
@@ -588,7 +588,7 @@ describe("tasks routes", () => {
 
       // 機能仕様 docs/features/task-start-commitment.md 決定3-2（Issue #527）
       it("returns 400 with code commitment_requires_todo when status is not todo and committed_start_at is set (mutation: skip the create-time rejection)", async () => {
-        const app = createApp(db);
+        const app = createApp(portFor(db));
 
         const res = await app.request("/api/tasks", {
           method: "POST",
@@ -606,7 +606,7 @@ describe("tasks routes", () => {
       });
 
       it("does not create a task row when rejected for commitment_requires_todo (mutation: create despite the rejection)", async () => {
-        const app = createApp(db);
+        const app = createApp(portFor(db));
 
         await app.request("/api/tasks", {
           method: "POST",
@@ -626,7 +626,7 @@ describe("tasks routes", () => {
 
   describe("PATCH /api/tasks/:id", () => {
     it("returns 404 for a non-existent id", async () => {
-      const app = createApp(db);
+      const app = createApp(portFor(db));
 
       const res = await app.request("/api/tasks/9999", {
         method: "PATCH",
@@ -640,7 +640,7 @@ describe("tasks routes", () => {
     });
 
     it("returns 404 for a non-numeric id", async () => {
-      const app = createApp(db);
+      const app = createApp(portFor(db));
 
       const res = await app.request("/api/tasks/not-a-number", {
         method: "PATCH",
@@ -654,7 +654,7 @@ describe("tasks routes", () => {
     // POST 側と同じ形式検証が PATCH 経路にも効くこと（両経路とも
     // `validateOptionalFieldTypes` を通るが、片方だけ結線される回帰を防ぐ）。
     it("returns 400 when due_at is patched to a string that is not a valid ISO 8601 date or date-time", async () => {
-      const app = createApp(db);
+      const app = createApp(portFor(db));
 
       const createRes = await app.request("/api/tasks", {
         method: "POST",
@@ -685,7 +685,7 @@ describe("tasks routes", () => {
     });
 
     it("partially updates only the specified fields, keeping the rest", async () => {
-      const app = createApp(db);
+      const app = createApp(portFor(db));
 
       const createRes = await app.request("/api/tasks", {
         method: "POST",
@@ -711,7 +711,7 @@ describe("tasks routes", () => {
     });
 
     it("updates updated_at when a task is patched", async () => {
-      const app = createApp(db);
+      const app = createApp(portFor(db));
       // created_at と updated_at が同一ミリ秒だと「値が進む」が成立せず
       // 環境依存でフレークするため、作成時刻と PATCH 時刻を明示的にずらす
       // (ローカル日付基準・TZ非依存。UTC文字列リテラルの直書きは禁止)
@@ -743,7 +743,7 @@ describe("tasks routes", () => {
     });
 
     it("returns 400 when status is invalid", async () => {
-      const app = createApp(db);
+      const app = createApp(portFor(db));
 
       const createRes = await app.request("/api/tasks", {
         method: "POST",
@@ -764,7 +764,7 @@ describe("tasks routes", () => {
     });
 
     it("returns 400 when priority is invalid", async () => {
-      const app = createApp(db);
+      const app = createApp(portFor(db));
 
       const createRes = await app.request("/api/tasks", {
         method: "POST",
@@ -785,7 +785,7 @@ describe("tasks routes", () => {
     });
 
     it("returns 400 when boss_comment is patched to a non-string, non-null value", async () => {
-      const app = createApp(db);
+      const app = createApp(portFor(db));
 
       const createRes = await app.request("/api/tasks", {
         method: "POST",
@@ -808,7 +808,7 @@ describe("tasks routes", () => {
     });
 
     it("updates boss_comment when patched with a valid string (guards against an always-400 implementation)", async () => {
-      const app = createApp(db);
+      const app = createApp(portFor(db));
 
       const createRes = await app.request("/api/tasks", {
         method: "POST",
@@ -829,7 +829,7 @@ describe("tasks routes", () => {
     });
 
     it("returns 400 when title is patched to an empty string", async () => {
-      const app = createApp(db);
+      const app = createApp(portFor(db));
 
       const createRes = await app.request("/api/tasks", {
         method: "POST",
@@ -850,7 +850,7 @@ describe("tasks routes", () => {
     });
 
     it("returns 400 when category is included in the patch", async () => {
-      const app = createApp(db);
+      const app = createApp(portFor(db));
 
       const createRes = await app.request("/api/tasks", {
         method: "POST",
@@ -871,7 +871,7 @@ describe("tasks routes", () => {
     });
 
     it("sets completed_at when status transitions to done", async () => {
-      const app = createApp(db);
+      const app = createApp(portFor(db));
 
       const createRes = await app.request("/api/tasks", {
         method: "POST",
@@ -894,7 +894,7 @@ describe("tasks routes", () => {
     });
 
     it("clears completed_at when status transitions away from done", async () => {
-      const app = createApp(db);
+      const app = createApp(portFor(db));
 
       const createRes = await app.request("/api/tasks", {
         method: "POST",
@@ -934,7 +934,7 @@ describe("tasks routes", () => {
 
       it("returns 409 with code evidence_required when enforcement is on, evidence is required, and there is no evidence (AC-23/AC-24)", async () => {
         await enableEnforcement(db);
-        const app = createApp(db);
+        const app = createApp(portFor(db));
         const created = await createTask(app, true);
 
         const res = await app.request(`/api/tasks/${created.id}`, {
@@ -950,7 +950,7 @@ describe("tasks routes", () => {
 
       it("leaves status and completed_at unchanged after a 409 (AC-25/AC-26)", async () => {
         await enableEnforcement(db);
-        const app = createApp(db);
+        const app = createApp(portFor(db));
         const created = await createTask(app, true);
 
         await app.request(`/api/tasks/${created.id}`, {
@@ -966,7 +966,7 @@ describe("tasks routes", () => {
       });
 
       it("allows completion when enforcement is off (AC-28)", async () => {
-        const app = createApp(db);
+        const app = createApp(portFor(db));
         const created = await createTask(app, true);
 
         const res = await app.request(`/api/tasks/${created.id}`, {
@@ -980,7 +980,7 @@ describe("tasks routes", () => {
 
       it("allows completion when evidence_required is false (AC-29)", async () => {
         await enableEnforcement(db);
-        const app = createApp(db);
+        const app = createApp(portFor(db));
         const created = await createTask(app, false);
 
         const res = await app.request(`/api/tasks/${created.id}`, {
@@ -996,7 +996,7 @@ describe("tasks routes", () => {
       // PATCH はゲートを通らない
       it("does not retroactively block a title-only patch on an already-done task (AC-35)", async () => {
         await enableEnforcement(db);
-        const app = createApp(db);
+        const app = createApp(portFor(db));
         const created = await createTask(app, true);
         // 一旦 enforcement を切って done にする（このテストの前提を作るため）
         await setSettingValue(portFor(db), "evidence_enforcement_enabled", "false");
@@ -1022,7 +1022,7 @@ describe("tasks routes", () => {
       // 決定 2-c（AC-36/AC-37）: 関門はパッチ適用後の値を見る
       it("allows { evidence_required: false, status: 'done' } in a single patch (AC-36)", async () => {
         await enableEnforcement(db);
-        const app = createApp(db);
+        const app = createApp(portFor(db));
         const created = await createTask(app, true);
 
         const res = await app.request(`/api/tasks/${created.id}`, {
@@ -1038,7 +1038,7 @@ describe("tasks routes", () => {
       });
 
       it("changing evidence_required: true -> false records a task_update note (AC-19)", async () => {
-        const app = createApp(db);
+        const app = createApp(portFor(db));
         const created = await createTask(app, true);
 
         await app.request(`/api/tasks/${created.id}`, {
@@ -1055,7 +1055,7 @@ describe("tasks routes", () => {
       });
 
       it("a patch that does not include evidence_required leaves the task_update note null (AC-20)", async () => {
-        const app = createApp(db);
+        const app = createApp(portFor(db));
         const created = await createTask(app, false);
 
         await app.request(`/api/tasks/${created.id}`, {
@@ -1072,7 +1072,7 @@ describe("tasks routes", () => {
       });
 
       it("PATCH evidence_required from true to false updates the value (AC-17)", async () => {
-        const app = createApp(db);
+        const app = createApp(portFor(db));
         const created = await createTask(app, true);
 
         const res = await app.request(`/api/tasks/${created.id}`, {
@@ -1109,7 +1109,7 @@ describe("tasks routes", () => {
       }
 
       it("normalizes an offset ISO datetime to UTC ISO on patch, reflected in both the response and GET (AC: 決定2)", async () => {
-        const app = createApp(db);
+        const app = createApp(portFor(db));
         const created = await createPlainTask(app);
 
         const res = await app.request(`/api/tasks/${created.id}`, {
@@ -1138,7 +1138,7 @@ describe("tasks routes", () => {
       });
 
       it("sets committed_at to updated_at when committed_start_at is set from null to a value (mutation: leaves committed_at null)", async () => {
-        const app = createApp(db);
+        const app = createApp(portFor(db));
         const created = await createPlainTask(app);
         expect(created.committed_at).toBeNull();
 
@@ -1155,7 +1155,7 @@ describe("tasks routes", () => {
       });
 
       it("updates committed_at when committed_start_at changes to a different value (mutation: only writes committed_at on the first set)", async () => {
-        const app = createApp(db);
+        const app = createApp(portFor(db));
         vi.useFakeTimers();
         vi.setSystemTime(new Date(2026, 8, 14, 10, 0));
         const created = await createPlainTask(app);
@@ -1183,7 +1183,7 @@ describe("tasks routes", () => {
       });
 
       it("does not update committed_at when committed_start_at is sent unchanged (mutation: writes committed_at on every send)", async () => {
-        const app = createApp(db);
+        const app = createApp(portFor(db));
         vi.useFakeTimers();
         vi.setSystemTime(new Date(2026, 8, 14, 10, 0));
         const created = await createPlainTask(app);
@@ -1210,7 +1210,7 @@ describe("tasks routes", () => {
       });
 
       it("ignores the input committed_at on patch (mutation: persists the input committed_at)", async () => {
-        const app = createApp(db);
+        const app = createApp(portFor(db));
         const created = await createPlainTask(app);
 
         const res = await app.request(`/api/tasks/${created.id}`, {
@@ -1228,7 +1228,7 @@ describe("tasks routes", () => {
       });
 
       it("clears committed_start_at when patched to null", async () => {
-        const app = createApp(db);
+        const app = createApp(portFor(db));
         const created = await createPlainTask(app);
         await app.request(`/api/tasks/${created.id}`, {
           method: "PATCH",
@@ -1248,7 +1248,7 @@ describe("tasks routes", () => {
       });
 
       it("clears committed_at when committed_start_at is cancelled to null (mutation: leaves committed_at behind)", async () => {
-        const app = createApp(db);
+        const app = createApp(portFor(db));
         const created = await createPlainTask(app);
         await app.request(`/api/tasks/${created.id}`, {
           method: "PATCH",
@@ -1268,7 +1268,7 @@ describe("tasks routes", () => {
       });
 
       it("returns 400 when committed_start_at is patched to an invalid offset ISO 8601 datetime", async () => {
-        const app = createApp(db);
+        const app = createApp(portFor(db));
         const created = await createPlainTask(app);
 
         for (const invalid of [
@@ -1290,7 +1290,7 @@ describe("tasks routes", () => {
       });
 
       it("writes nothing (including no task_update event) when a patch is rejected for an invalid committed_start_at, even with other fields present", async () => {
-        const app = createApp(db);
+        const app = createApp(portFor(db));
         const created = await createPlainTask(app);
 
         const res = await app.request(`/api/tasks/${created.id}`, {
@@ -1312,7 +1312,7 @@ describe("tasks routes", () => {
       });
 
       it("records the before/after in the task_update note when committed_start_at is newly set (unset -> set)", async () => {
-        const app = createApp(db);
+        const app = createApp(portFor(db));
         const created = await createPlainTask(app);
 
         await app.request(`/api/tasks/${created.id}`, {
@@ -1328,7 +1328,7 @@ describe("tasks routes", () => {
       });
 
       it("records the before/after in the task_update note when committed_start_at changes to a different value", async () => {
-        const app = createApp(db);
+        const app = createApp(portFor(db));
         const created = await createPlainTask(app);
         await app.request(`/api/tasks/${created.id}`, {
           method: "PATCH",
@@ -1349,7 +1349,7 @@ describe("tasks routes", () => {
       });
 
       it("records the before/after in the task_update note when committed_start_at is cancelled to null", async () => {
-        const app = createApp(db);
+        const app = createApp(portFor(db));
         const created = await createPlainTask(app);
         await app.request(`/api/tasks/${created.id}`, {
           method: "PATCH",
@@ -1370,7 +1370,7 @@ describe("tasks routes", () => {
       });
 
       it("includes both evidence_required and committed_start_at changes in a single task_update note when both change in one patch (mutation: drops one side)", async () => {
-        const app = createApp(db);
+        const app = createApp(portFor(db));
         const res = await app.request("/api/tasks", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
@@ -1395,7 +1395,7 @@ describe("tasks routes", () => {
       });
 
       it("leaves the task_update note null when committed_start_at is sent but unchanged", async () => {
-        const app = createApp(db);
+        const app = createApp(portFor(db));
         const created = await createPlainTask(app);
         await app.request(`/api/tasks/${created.id}`, {
           method: "PATCH",
@@ -1445,7 +1445,7 @@ describe("tasks routes", () => {
         it.each(["in_progress", "paused", "done", "dropped"])(
           "returns 400 with code commitment_requires_todo when status is omitted and the task is %s (mutation: skip the rejection / limit it to in_progress)",
           async (status) => {
-            const app = createApp(db);
+            const app = createApp(portFor(db));
             const created = await createTaskWithStatus(app, status);
 
             const res = await app.request(`/api/tasks/${created.id}`, {
@@ -1461,7 +1461,7 @@ describe("tasks routes", () => {
         );
 
         it("returns 400 when status is set to a non-todo value together with committed_start_at, even from a todo source (mutation: judge by the pre-update status)", async () => {
-          const app = createApp(db);
+          const app = createApp(portFor(db));
           const created = await createTaskWithStatus(app, "todo");
 
           const res = await app.request(`/api/tasks/${created.id}`, {
@@ -1479,7 +1479,7 @@ describe("tasks routes", () => {
         });
 
         it("does not update the task or record a task_update event when rejected, even with other fields present (mutation: write before checking)", async () => {
-          const app = createApp(db);
+          const app = createApp(portFor(db));
           const created = await createTaskWithStatus(app, "in_progress");
 
           const res = await app.request(`/api/tasks/${created.id}`, {
@@ -1504,7 +1504,7 @@ describe("tasks routes", () => {
         // 受入基準「上の 2 つの拒否では…書き込まれない」の 2 つ目（status に todo
         // 以外を同時に送る拒否。遷移元 todo）。
         it("does not update the task or record a task_update event when rejected for status set to a non-todo value together with committed_start_at, even with other fields present (mutation: write before checking)", async () => {
-          const app = createApp(db);
+          const app = createApp(portFor(db));
           const created = await createTaskWithStatus(app, "todo");
 
           const res = await app.request(`/api/tasks/${created.id}`, {
@@ -1530,7 +1530,7 @@ describe("tasks routes", () => {
         });
 
         it("accepts status: 'todo' together with committed_start_at on a non-todo task (mutation: judge by the pre-update status)", async () => {
-          const app = createApp(db);
+          const app = createApp(portFor(db));
           const created = await createTaskWithStatus(app, "in_progress");
 
           const res = await app.request(`/api/tasks/${created.id}`, {
@@ -1548,7 +1548,7 @@ describe("tasks routes", () => {
         });
 
         it("does not reject committed_start_at: null on a non-todo task (mutation: reject regardless of value presence)", async () => {
-          const app = createApp(db);
+          const app = createApp(portFor(db));
           const created = await createTaskWithStatus(app, "in_progress");
 
           const res = await app.request(`/api/tasks/${created.id}`, {
@@ -1565,7 +1565,7 @@ describe("tasks routes", () => {
         it.each(["in_progress", "paused", "done", "dropped"])(
           "clears committed_start_at and committed_at, reflected in the response and GET, when a todo task with a commitment changes to %s",
           async (status) => {
-            const app = createApp(db);
+            const app = createApp(portFor(db));
             const created = await createTaskWithStatus(app, "todo");
             await app.request(`/api/tasks/${created.id}`, {
               method: "PATCH",
@@ -1592,7 +1592,7 @@ describe("tasks routes", () => {
         );
 
         it("records a note describing the retirement with the before/after values (mutation: write no note on retirement)", async () => {
-          const app = createApp(db);
+          const app = createApp(portFor(db));
           const created = await createTaskWithStatus(app, "todo");
           await app.request(`/api/tasks/${created.id}`, {
             method: "PATCH",
@@ -1614,7 +1614,7 @@ describe("tasks routes", () => {
         });
 
         it("does not retire when the status does not change (mutation: retire on any patch touching a commitment-bearing task)", async () => {
-          const app = createApp(db);
+          const app = createApp(portFor(db));
           const created = await createTaskWithStatus(app, "todo");
           await app.request(`/api/tasks/${created.id}`, {
             method: "PATCH",
@@ -1634,7 +1634,7 @@ describe("tasks routes", () => {
 
         it("does not retire when the evidence gate rejects the same update (mutation: retire before the gate check)", async () => {
           await enableEnforcement(db);
-          const app = createApp(db);
+          const app = createApp(portFor(db));
           const res = await app.request("/api/tasks", {
             method: "POST",
             headers: { "Content-Type": "application/json" },

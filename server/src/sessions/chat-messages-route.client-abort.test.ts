@@ -4,7 +4,7 @@ import type { AddressInfo } from "node:net";
 import { serve } from "@hono/node-server";
 import { openDatabase } from "../db/connection.js";
 import { runMigrations } from "../db/migrate.js";
-import { portFor } from "../db/transitional-bridge.js";
+import { portFor } from "../db/test-support/port-for.js";
 import type { Session } from "./session.js";
 import type { Message } from "./message.js";
 
@@ -64,7 +64,7 @@ describe("POST /api/sessions/:id/messages — client disconnect over a real HTTP
     createClaudeClientMock.mockReturnValue({});
     createBossMessageMock.mockResolvedValue({ content: [] });
 
-    const app = createApp(db, env);
+    const app = createApp(portFor(db), env);
     server = await new Promise((resolve) => {
       // port 0 = エフェメラルポート（並列実行と衝突しない）。
       const started = serve({ fetch: app.fetch, port: 0 }, () => resolve(started));

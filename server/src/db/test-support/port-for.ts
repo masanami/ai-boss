@@ -1,29 +1,24 @@
 import type Database from "better-sqlite3";
-import type { Db, DbPort, DbTx } from "./db-port.js";
-import { createBetterSqlite3Port } from "./better-sqlite3-driver.js";
+import type { Db, DbPort, DbTx } from "../db-port.js";
+import { createBetterSqlite3Port } from "../connection.js";
 
 /**
- * 移行期のみの橋渡し（**最終チケットで削除する**。機能仕様
- * docs/features/async-db-layer.md「移行期の共通規約」）。
+ * テスト専用の補助（#597 の移行期の橋渡し `transitional-bridge.ts` を、合成
+ * ルートのポート化〔#607〕の後にテスト補助として残したもの。製品コードからは
+ * import しない — AC-1 の import 走査テストが固定する）。
  *
- * `portFor(raw)` は同じ生の接続には常に同じ直列化済みポート（＝同じロック）
- * を返す。`rawOf(db)` はポート／`tx`（入れ子を含む）から生の接続を取り出す。
+ * `portFor(raw)` は、テストが `openDatabase(":memory:")` で開いた生の接続に
+ * 対し、常に同じ直列化済みポート（＝同じロック）を返す。テストはこのポートを
+ * `createApp` やリポジトリへ渡し、検証のための直接の読み書きには生の接続を
+ * 使ってよい（機能仕様の仮定 A1）。`rawOf(db)` はポート／`tx`（入れ子を含む）
+ * から生の接続を取り出す。`trackPort(port, raw)` はフック付きのテスト用ポート
+ * を `raw` のポートとして登録する（`create-test-db.ts` の `createHookedTestDb`）。
  *
- * `rawOf(tx)` は、未移行の同期コードをトランザクション中に呼ぶ移行期の用途
- * で使う——同じ接続上ですでに `BEGIN`（または `SAVEPOINT`）済みなので、その
- * 同期コードが `rawOf(tx)` に対して行う書き込みはそのトランザクションに
- * 含まれる。
- *
- * **`rawOf(tx)` は、その `tx` の `fn` の中で・同期的に使うときに限ること。**
- * `rawOf` 自身は `tx` が既に終了しているか（`transaction(fn)` が解決済みか）
- * を確認しない（self-review・code-reviewer/design-reviewer 双方が独立に
- * 指摘。`serialized-db.ts` の各操作が持つ「終了後の `tx` の使用は例外」の
- * チェックを `rawOf` は経由しないため）。`fn` の外で `rawOf(tx)` の戻り値を
- * 保持して後から書き込むと、直列化層のロックの外（オートコミット、または
- * 無関係な後続の操作の最中）に書き込みが実行される。同様に、`rawOf(port)`
- * で取り出した生の接続へ、トランザクションの外から並行に書き込まない
- * こと——そのトランザクションが実行中なら、機能仕様の実測どおり黙って
- * そのトランザクションに混ざり、ロールバックで一緒に消える。
+ * **生の接続へ、ポートのトランザクションの外から並行に書き込まないこと** ——
+ * そのトランザクションが await の途中なら、黙ってそのトランザクションに
+ * 混ざり、ロールバックで一緒に消える（機能仕様の実測）。`rawOf(tx)` は、その
+ * `tx` の `fn` の中で・同期的に使うときに限る（終了済みの `tx` かどうかは
+ * 確認しない）。
  */
 
 const portCache = new WeakMap<Database.Database, DbPort>();
@@ -85,12 +80,10 @@ export function rawOf(db: DbPort | DbTx): Database.Database {
 }
 
 /**
- * Test-support hook for the transition period (#605): registers an already
- * built serialized port (e.g. one on a hooked test driver —
- * `test-support/create-test-db.ts`'s `createHookedTestDb`) as *the* port for
+ * Registers an already built serialized port (e.g. one on a hooked test
+ * driver — `create-test-db.ts`'s `createHookedTestDb`) as *the* port for
  * `raw`, so that `rawOf` works on it and `portFor(raw)` returns this same
- * port (same lock, same hooks) instead of building a second one. Removed with
- * the rest of this module (#607).
+ * port (same lock, same hooks) instead of building a second one (#605).
  */
 export function trackPort(port: DbPort, raw: Database.Database): DbPort {
   const tracked = registerRawTracking(port, raw) as DbPort;

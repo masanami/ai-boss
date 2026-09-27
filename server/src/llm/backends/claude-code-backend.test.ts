@@ -5,7 +5,7 @@ import { BOSS_TOOLS, executeBossTool } from "../../boss/boss-tools.js";
 import { SUBMIT_EVENING_SUMMARY_TOOL } from "../../reports/evening-summary-tool.js";
 import { openDatabase } from "../../db/connection.js";
 import { runMigrations } from "../../db/migrate.js";
-import { portFor } from "../../db/transitional-bridge.js";
+import { portFor } from "../../db/test-support/port-for.js";
 import { insertTask } from "../../tasks/tasks-repository.js";
 import { insertSession } from "../../sessions/sessions-repository.js";
 

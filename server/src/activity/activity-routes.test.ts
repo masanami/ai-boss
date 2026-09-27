@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type Database from "better-sqlite3";
 import { openDatabase } from "../db/connection.js";
 import { runMigrations } from "../db/migrate.js";
-import { portFor } from "../db/transitional-bridge.js";
+import { portFor } from "../db/test-support/port-for.js";
 import { createApp } from "../app.js";
 import { insertTask } from "../tasks/tasks-repository.js";
 import type { ActivityEvent } from "./activity-event.js";
@@ -29,7 +29,7 @@ describe("activity routes", () => {
     });
 
     it("returns an empty array when there are no events today", async () => {
-      const app = createApp(db);
+      const app = createApp(portFor(db));
 
       const res = await app.request("/api/activity/today");
 
@@ -49,7 +49,7 @@ describe("activity routes", () => {
         "INSERT INTO activity_events (type, note, created_at) VALUES (?, ?, ?)",
       ).run("checkin", rawNote, new Date(2026, 6, 5, 10, 0, 0, 0).toISOString());
 
-      const app = createApp(db);
+      const app = createApp(portFor(db));
       const res = await app.request("/api/activity/today");
 
       expect(res.status).toBe(200);
@@ -74,7 +74,7 @@ describe("activity routes", () => {
       // today, later — included
       insertAt(new Date(2026, 6, 5, 10, 0, 0, 0), "break_start");
 
-      const app = createApp(db);
+      const app = createApp(portFor(db));
       const res = await app.request("/api/activity/today");
 
       expect(res.status).toBe(200);
@@ -97,7 +97,7 @@ describe("activity routes", () => {
       // tomorrow, exactly at midnight — excluded (exclusive upper bound)
       insertAt(new Date(2026, 6, 6, 0, 0, 0, 0), "break_start");
 
-      const app = createApp(db);
+      const app = createApp(portFor(db));
       const res = await app.request("/api/activity/today");
 
       expect(res.status).toBe(200);
@@ -108,7 +108,7 @@ describe("activity routes", () => {
 
   describe("task_update auto-recording", () => {
     it("records a task_update event when PATCH /api/tasks/:id succeeds", async () => {
-      const app = createApp(db);
+      const app = createApp(portFor(db));
       const task = await insertTask(portFor(db), {
         title: "資料作成",
         description: null,
@@ -135,7 +135,7 @@ describe("activity routes", () => {
     });
 
     it("does not record a task_update event when PATCH /api/tasks/:id fails (404)", async () => {
-      const app = createApp(db);
+      const app = createApp(portFor(db));
 
       const res = await app.request("/api/tasks/9999", {
         method: "PATCH",
@@ -151,7 +151,7 @@ describe("activity routes", () => {
     });
 
     it("does not record a task_update event when the PATCH body has no fields (no real change requested)", async () => {
-      const app = createApp(db);
+      const app = createApp(portFor(db));
       const task = await insertTask(portFor(db), {
         title: "資料作成",
         description: null,
