@@ -10,6 +10,7 @@ import {
   flush,
   jsonResponse,
   messageJson,
+  sseEvent,
   sseResponse,
   sseTranscript,
 } from "./test-support/relay-harness.js";
@@ -83,7 +84,8 @@ describe("usage の読み取りと原価単位", () => {
         ),
     });
     await drain(await h.send(appRequestBody()));
-    expect(h.store.dump().records[0].units).toBeCloseTo(0.0035, 12);
+    // 0.0035 の整数表現（× 10^10）。
+    expect(h.store.dump().records[0].units).toBe(35_000_000);
   });
 });
 
@@ -186,7 +188,7 @@ describe("記録しない・予約額で確定する", () => {
     expect(records).toEqual([expect.objectContaining({ units: expectedReservedUnits(JSON.stringify(body), 1000) })]);
   });
 
-  it("ストリーミングで終端の usage の前に上流との接続が切れると、予約額を記録し、アプリへのストリームはステータスを変えずに終わる", async () => {
+  it("ストリーミングで終端の usage の前に上流との接続が切れると、予約額を記録し、アプリへのストリームはステータスを変えずに異常終了する", async () => {
     let upstreamBody!: ReturnType<typeof createControlledBody>;
     const h = createHarness({
       upstream: () => {
@@ -201,7 +203,8 @@ describe("記録しない・予約額で確定する", () => {
     const text = response.text();
     await flush();
     upstreamBody.fail();
-    await text;
+    // 正常な終わりに見せない（PR #638 の代替レビューの指摘 6）。
+    await expect(text).rejects.toThrow();
     await flush();
     const { records, reservations } = h.store.dump();
     expect(reservations).toEqual([]);
@@ -337,5 +340,143 @@ describe("精算の実行", () => {
     gate.resolve();
     await text;
     expect(h.store.dump().records).toEqual([expect.objectContaining({ inputTokens: 5, outputTokens: 7 })]);
+  });
+});
+
+describe("PR #638 のレビュー対応", () => {
+  describe("予約の時刻（Codex P1）", () => {
+    /** 本文の送信が終わる直前に時計を進める（境界の前に開き、後に送り終える要求）。 */
+    function sendWithClockAdvance(h: ReturnType<typeof createHarness>, bodyText: string, advanceTo: Date) {
+      const encoded = new TextEncoder().encode(bodyText);
+      const stream = new ReadableStream<Uint8Array>({
+        pull(controller) {
+          h.clock.current = advanceTo;
+          controller.enqueue(encoded);
+          controller.close();
+        },
+      });
+      return h.app.request(
+        new Request("http://relay.test/v1/messages", {
+          method: "POST",
+          headers: { authorization: "Bearer app-token-AAAA-1111", "content-type": "application/json" },
+          body: stream,
+          duplex: "half",
+        } as RequestInit),
+      );
+    }
+
+    it("UTC の日・月の境界の前に開き、境界の後に本文を送り終えた要求は、新しい期間に記録され、期限も予約の時刻から求める", async () => {
+      const h = createHarness({ now: new Date("2026-09-30T23:59:59Z"), config: { reservationTtlMs: 60_000 } });
+      const pending = deferred<Response>();
+      h.setUpstream(() => pending.promise);
+      const responsePromise = sendWithClockAdvance(h, JSON.stringify(appRequestBody()), new Date("2026-10-01T00:00:00Z"));
+      await flush();
+      const [reservation] = h.store.dump().reservations;
+      expect(reservation).toMatchObject({ dayKey: "2026-10-01", monthKey: "2026-10" });
+      expect(reservation.expiresAt.toISOString()).toBe("2026-10-01T00:01:00.000Z");
+      pending.resolve(jsonResponse(messageJson({ input_tokens: 1, output_tokens: 1 })));
+      await drain(await responsePromise);
+      expect(h.store.dump().records[0]).toMatchObject({ dayKey: "2026-10-01", monthKey: "2026-10" });
+    });
+
+    it("新しい日の上限に達したアカウントは、境界の前に開いた要求でも旧期間の枠で消費できない（429）", async () => {
+      const bodyText = JSON.stringify(appRequestBody());
+      const reserved = expectedReservedUnits(bodyText, 1000);
+      const h = createHarness({
+        now: new Date("2026-10-01T00:00:05Z"),
+        config: { dailyLimit: reserved / 10_000_000_000 },
+        upstream: () => jsonResponse({}),
+      });
+      // 新しい日の枠を使い切る。
+      await drain(await h.send(bodyText));
+      h.clock.current = new Date("2026-09-30T23:59:59Z");
+      const response = await sendWithClockAdvance(h, bodyText, new Date("2026-10-01T00:00:10Z"));
+      expect(response.status).toBe(429);
+      expect(h.calls).toHaveLength(1);
+    });
+  });
+
+  describe("壊れた usage（Codex P2）", () => {
+    it.each([
+      ["負の数", -5],
+      ["文字列", "200"],
+      ["null", null],
+      ["小数", 1.5],
+    ])("最後の message_delta の output_tokens が%sなら、message_start の値を残さず予約額で確定する", async (_label, value) => {
+      const events = [
+        sseEvent({ type: "message_start", message: { usage: { input_tokens: 1000, output_tokens: 1 } } }),
+        sseEvent({ type: "message_delta", delta: {}, usage: { output_tokens: value } }),
+        sseEvent({ type: "message_stop" }),
+      ];
+      const h = createHarness({ upstream: () => sseResponse(events.join("")) });
+      const body = streamingBody();
+      await drain(await h.send(body));
+      expect(h.store.dump().records).toEqual([
+        expect.objectContaining({ units: expectedReservedUnits(JSON.stringify(body), 1000), ...ZERO_TOKENS }),
+      ]);
+    });
+
+    it("message_delta の usage 自体がオブジェクトでなければ予約額で確定する", async () => {
+      const events = [
+        sseEvent({ type: "message_start", message: { usage: { input_tokens: 1000, output_tokens: 1 } } }),
+        sseEvent({ type: "message_delta", delta: {}, usage: "broken" }),
+        sseEvent({ type: "message_stop" }),
+      ];
+      const h = createHarness({ upstream: () => sseResponse(events.join("")) });
+      await drain(await h.send(streamingBody()));
+      expect(h.store.dump().records[0]).toMatchObject(ZERO_TOKENS);
+    });
+
+    it("非ストリーミングでキャッシュの項目が壊れていれば（0 として数えず）予約額で確定する", async () => {
+      const h = createHarness({
+        upstream: () => jsonResponse(messageJson({ input_tokens: 10, output_tokens: 5, cache_creation_input_tokens: -1 })),
+      });
+      const body = appRequestBody();
+      await drain(await h.send(body));
+      expect(h.store.dump().records[0]).toMatchObject({ units: expectedReservedUnits(JSON.stringify(body), 1000), ...ZERO_TOKENS });
+    });
+
+    it("キャッシュの項目の null・usage の無い message_delta は壊れた値とみなさない", async () => {
+      const events = [
+        sseEvent({ type: "message_start", message: { usage: { input_tokens: 1000, output_tokens: 1, cache_read_input_tokens: null } } }),
+        sseEvent({ type: "message_delta", delta: {} }),
+        sseEvent({ type: "message_delta", delta: {}, usage: { output_tokens: 200, cache_creation_input_tokens: null } }),
+        sseEvent({ type: "message_stop" }),
+      ];
+      const h = createHarness({ upstream: () => sseResponse(events.join("")) });
+      await drain(await h.send(streamingBody()));
+      expect(h.store.dump().records[0]).toMatchObject({ inputTokens: 1000, outputTokens: 200, cacheReadInputTokens: 0 });
+    });
+  });
+
+  describe("上流のリダイレクト（指摘 3）", () => {
+    it.each([301, 302, 307, 308])("上流が %s を返すと、location を通さず 502 にし、予約を解放して記録しない", async (status) => {
+      const h = createHarness({
+        upstream: () => new Response(null, { status, headers: { location: "https://elsewhere.test/steal" } }),
+      });
+      const response = await h.send(appRequestBody());
+      expect(response.status).toBe(502);
+      expect(response.headers.has("location")).toBe(false);
+      expect(await response.text()).not.toContain("elsewhere.test");
+      expect(h.store.dump()).toEqual({ records: [], reservations: [] });
+    });
+  });
+
+  describe("予約の後の想定外の例外（指摘 4）", () => {
+    it("上流を呼んだ後に例外が起きると（本文が読めない）、予約額で確定して予約を残さず、500 を返す", async () => {
+      const h = createHarness({
+        upstream: () => {
+          const response = sseResponse("event: ping\ndata: {}\n\n");
+          response.body!.getReader(); // 本文をロックして、中継の getReader を失敗させる
+          return response;
+        },
+      });
+      const body = streamingBody();
+      const response = await h.send(body);
+      expect(response.status).toBe(500);
+      const { records, reservations } = h.store.dump();
+      expect(reservations).toEqual([]);
+      expect(records).toEqual([expect.objectContaining({ units: expectedReservedUnits(JSON.stringify(body), 1000), ...ZERO_TOKENS })]);
+    });
   });
 });

@@ -141,7 +141,21 @@ describe("設定の検証", () => {
   });
 
   it("事業者のキーが空なら例外を投げる", () => {
-    expect(build({}, "")).toThrow();
+    expect(build({}, "")).toThrow(RelayConfigError);
+  });
+
+  it.each([
+    ["改行", "sk-operator\nX-Injected: 1"],
+    ["Latin-1 の外の文字", "sk-operator-鍵"],
+  ])("事業者のキーがヘッダに使えない文字（%s）を含むなら、組み立ての時点で例外を投げる", (_label, key) => {
+    expect(build({}, key)).toThrow(RelayConfigError);
+  });
+
+  it.each([
+    ["10^-4 刻みでない重み", { models: [{ ...HAIKU_9_9, id: "claude-haiku-4-5", weights: { input: 0.00001, output: 5, cacheRead: 0.1, cacheWrite: 1.25 } }] }],
+    ["整数表現で数えきれない上限", { dailyLimit: 1e9 }],
+  ])("%s の設定では例外を投げる", (_label, overrides) => {
+    expect(build(overrides)).toThrow(RelayConfigError);
   });
 });
 

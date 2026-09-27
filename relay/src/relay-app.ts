@@ -1,5 +1,5 @@
 import { Hono } from "hono";
-import { validateRelayConfig, type RelayConfig, type RelayModel } from "./config.js";
+import { RelayConfigError, validateRelayConfig, type RelayConfig, type RelayModel } from "./config.js";
 import { relayErrorResponse, type RelayErrorType } from "./error-response.js";
 import { rewriteForModel } from "./model-rewrite.js";
 import {
@@ -16,9 +16,10 @@ import {
   createSseUsageMeter,
   maxCostUnits,
   periodKeys,
+  scaledUnits,
   type TokenUsage,
 } from "./usage-metering.js";
-import type { SettleOutcome, UsageStore } from "./usage-store.js";
+import type { ReserveRequest, SettleOutcome, UsageStore } from "./usage-store.js";
 
 /**
  * LLM 中継サーバーのコア（機能仕様 docs/features/llm-relay-server.md）。
@@ -61,10 +62,22 @@ export interface RelayDeps {
 export function createRelayApp(deps: RelayDeps): Hono {
   const model = validateRelayConfig(deps.config);
   if (typeof deps.operatorKey !== "string" || deps.operatorKey.length === 0) {
-    throw new Error("operatorKey must be a non-empty string");
+    throw new RelayConfigError("operatorKey must be a non-empty string");
   }
+  try {
+    // ヘッダに使えない文字（改行・Latin-1 の外の文字等）を含むキーは、要求の
+    // たびに（予約の後で）例外になるため、組み立ての時点で弾く。
+    new Headers({ "x-api-key": deps.operatorKey });
+  } catch {
+    throw new RelayConfigError("operatorKey is not a valid header value");
+  }
+  const limits: ReserveRequest["limits"] = {
+    daily: scaledUnits(deps.config.dailyLimit),
+    monthly: scaledUnits(deps.config.monthlyLimit),
+    maxConcurrent: deps.config.maxConcurrentRequests,
+  };
   const app = new Hono();
-  app.post("/v1/messages", (c) => handleMessages(deps, model, c.req.raw));
+  app.post("/v1/messages", (c) => handleMessages(deps, model, limits, c.req.raw));
   app.onError(() => {
     // 例外の中身（message・stack）は出さない。種類だけを記録する。
     safeLog(deps.logger, { event: "internal_error", status: 500, errorType: "api_error" });
@@ -141,7 +154,12 @@ function isNullBodyStatus(status: number): boolean {
   return status === 204 || status === 205 || status === 304;
 }
 
-async function handleMessages(deps: RelayDeps, model: RelayModel, request: Request): Promise<Response> {
+async function handleMessages(
+  deps: RelayDeps,
+  model: RelayModel,
+  limits: ReserveRequest["limits"],
+  request: Request,
+): Promise<Response> {
   const { config, logger } = deps;
   const startedAt = deps.now();
 
@@ -184,7 +202,11 @@ async function handleMessages(deps: RelayDeps, model: RelayModel, request: Reque
   // (5) 送信前の予約。入力の見積もりは元の本文のバイト数（仮定 A10）と、
   // 組み立て直した本文のバイト数の大きいほう（数値の表記の展開等で、送る本文
   // のほうが大きくなっても見積もりが下回らないようにする）。
-  const { dayKey, monthKey } = periodKeys(startedAt);
+  // 期間キーと期限は予約の直前の時刻から求める（要求の受け付けの時刻を使うと、
+  // UTC の日・月の境界の前に要求を開き、境界の後に本文を送り終えることで、
+  // 旧期間の枠で新期間を消費できてしまう。PR #638 の Codex の指摘）。
+  const reservedAt = deps.now();
+  const { dayKey, monthKey } = periodKeys(reservedAt);
   const reservedUnits = maxCostUnits(
     Math.max(body.bytes.byteLength, forwardedBytes),
     validation.request.max_tokens,
@@ -196,8 +218,8 @@ async function handleMessages(deps: RelayDeps, model: RelayModel, request: Reque
     dayKey,
     monthKey,
     units: reservedUnits,
-    limits: { daily: config.dailyLimit, monthly: config.monthlyLimit, maxConcurrent: config.maxConcurrentRequests },
-    expiresAt: new Date(startedAt.getTime() + config.reservationTtlMs),
+    limits,
+    expiresAt: new Date(reservedAt.getTime() + config.reservationTtlMs),
   });
   if (!reservation.ok) {
     return reservation.reason === "concurrency"
@@ -206,6 +228,7 @@ async function handleMessages(deps: RelayDeps, model: RelayModel, request: Reque
   }
 
   // (6)(7) 上流への転送と精算
+  const reservationId = reservation.reservationId;
   const upstreamAbort = new AbortController();
   const abortUpstream = () => upstreamAbort.abort();
   request.signal.addEventListener("abort", abortUpstream);
@@ -218,7 +241,7 @@ async function handleMessages(deps: RelayDeps, model: RelayModel, request: Reque
     settlement ??= (async () => {
       request.signal.removeEventListener("abort", abortUpstream);
       try {
-        await deps.usageStore.settle(reservation.reservationId, outcome);
+        await deps.usageStore.settle(reservationId, outcome);
       } catch {
         // 孤立した予約は期限で予約額に確定する（回収と再試行は S3）。
         safeLog(logger, { event: "settle_failed", accountId, errorType: "settle_failed" });
@@ -248,79 +271,106 @@ async function handleMessages(deps: RelayDeps, model: RelayModel, request: Reque
   const settleWithUsage = (status: number, usage: TokenUsage | null): Promise<void> =>
     settle(status, usage ? { type: "actual", units: costUnits(usage, model.weights), ...usage } : { type: "reserved" });
 
-  if (request.signal.aborted) {
-    // 上流へ送る前にアプリが中止した（課金されない）。
-    await settle(502, { type: "release" });
-    return relayErrorResponse(502, "api_error");
-  }
-
-  const upstreamRequest = new Request(config.upstreamUrl, {
-    method: "POST",
-    headers: {
-      "content-type": "application/json",
-      "x-api-key": deps.operatorKey,
-      "anthropic-version": ANTHROPIC_VERSION,
-    },
-    body: forwardedBody,
-  });
-
-  let upstream: Response;
+  // 予約の後に想定外の例外が起きても予約を残さない。上流を呼ぶ前なら解放し、
+  // 呼んだ後なら予約額で確定してから投げ直す（精算済みなら何もしない）。
+  let upstreamCalled = false;
   try {
-    upstream = await deps.upstreamFetch(upstreamRequest, upstreamAbort.signal);
-  } catch (error) {
-    // 送る前の失敗だけが確定的に課金されない。それ以外（区分の無い例外・
-    // 応答ヘッダの前のアプリの中止を含む）は予約額で確定する（安全側）。
-    const sentBeforeFailure = !(error instanceof UpstreamFailure && error.phase === "before-send");
-    await settle(502, sentBeforeFailure ? { type: "reserved" } : { type: "release" });
-    return relayErrorResponse(502, "api_error");
-  }
+    if (request.signal.aborted) {
+      // 上流へ送る前にアプリが中止した（課金されない）。
+      await settle(502, { type: "release" });
+      return relayErrorResponse(502, "api_error");
+    }
 
-  const headers = passedResponseHeaders(upstream.headers);
-  const status = upstream.status;
-  if (status < 200 || status >= 300) {
-    // 上流が応答を返した 2xx 以外は確定的に課金されない。本文は加工せずに返す。
-    await settle(status, { type: "release" });
-    return new Response(isNullBodyStatus(status) ? null : upstream.body, { status, headers });
-  }
+    const upstreamRequest = new Request(config.upstreamUrl, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "x-api-key": deps.operatorKey,
+        "anthropic-version": ANTHROPIC_VERSION,
+      },
+      body: forwardedBody,
+    });
 
-  const isEventStream = (upstream.headers.get("content-type") ?? "").includes("text/event-stream");
-  const meter = isEventStream ? createSseUsageMeter() : createJsonUsageMeter();
-  if (!upstream.body || isNullBodyStatus(status)) {
-    await settleWithUsage(status, null);
-    return new Response(null, { status, headers });
-  }
+    let upstream: Response;
+    upstreamCalled = true;
+    try {
+      upstream = await deps.upstreamFetch(upstreamRequest, upstreamAbort.signal);
+    } catch (error) {
+      // 送る前の失敗だけが確定的に課金されない。それ以外（区分の無い例外・
+      // 応答ヘッダの前のアプリの中止を含む）は予約額で確定する（安全側）。
+      const sentBeforeFailure = !(error instanceof UpstreamFailure && error.phase === "before-send");
+      await settle(502, sentBeforeFailure ? { type: "reserved" } : { type: "release" });
+      return relayErrorResponse(502, "api_error");
+    }
 
-  const reader = upstream.body.getReader();
-  let cancelled = false;
-  const relayed = new ReadableStream<Uint8Array>({
-    start(controller) {
-      // 上流を、アプリの読み取りを待たずに最後まで読む（精算を上流の終わりに
-      // 合わせ、読み取りの遅いアプリが精算を遅らせないようにする）。断片は
-      // 受けたそばからアプリへ流す。アプリが読むより速く届いた断片は、この
-      // ストリームの内部の待ち行列に残る（1 要求あたり `maxTokensCap` の出力で
-      // 抑えられる）。
-      void (async () => {
-        try {
-          for (;;) {
-            const { done, value } = await reader.read();
-            if (done) break;
-            meter.push(value);
-            if (!cancelled) controller.enqueue(value);
+    const status = upstream.status;
+    if (upstream.type === "opaqueredirect" || (status >= 300 && status < 400)) {
+      // 上流へのリダイレクトには従わない（`createFetchUpstream` は
+      // `redirect: "manual"`）。上流の URL が変わったことを示すだけで要求は
+      // 処理されていないため、予約を解放し、`location` を通さず上流の失敗にする。
+      upstream.body?.cancel().catch(() => undefined);
+      await settle(502, { type: "release" });
+      return relayErrorResponse(502, "api_error");
+    }
+
+    const headers = passedResponseHeaders(upstream.headers);
+    if (status < 200 || status >= 300) {
+      // 上流が応答を返した 2xx 以外は確定的に課金されない。本文は加工せずに返す。
+      await settle(status, { type: "release" });
+      return new Response(isNullBodyStatus(status) ? null : upstream.body, { status, headers });
+    }
+
+    const isEventStream = (upstream.headers.get("content-type") ?? "").includes("text/event-stream");
+    const meter = isEventStream ? createSseUsageMeter() : createJsonUsageMeter();
+    if (!upstream.body || isNullBodyStatus(status)) {
+      await settleWithUsage(status, null);
+      return new Response(null, { status, headers });
+    }
+
+    const reader = upstream.body.getReader();
+    let cancelled = false;
+    const relayed = new ReadableStream<Uint8Array>({
+      start(controller) {
+        // 上流を、アプリの読み取りを待たずに最後まで読む（精算を上流の終わりに
+        // 合わせ、読み取りの遅いアプリが精算を遅らせないようにする）。断片は
+        // 受けたそばからアプリへ流す。アプリが読むより速く届いた断片は、この
+        // ストリームの内部の待ち行列に残る（1 要求あたり `maxTokensCap` の出力で
+        // 抑えられる）。
+        void (async () => {
+          let upstreamFailed = false;
+          try {
+            for (;;) {
+              const { done, value } = await reader.read();
+              if (done) break;
+              meter.push(value);
+              if (!cancelled) controller.enqueue(value);
+            }
+          } catch {
+            // 上流との接続が切れた・アプリが中止した。終端の `usage` を受け取って
+            // いなければ、下の精算は予約額で確定する。
+            upstreamFailed = true;
           }
-        } catch {
-          // 上流との接続が切れた・アプリが中止した。終端の `usage` を受け取って
-          // いなければ、下の精算は予約額で確定する。ステータスは変えずに終える。
-        }
-        await settleWithUsage(status, meter.result());
-        if (!cancelled) controller.close();
-      })();
-    },
-    cancel() {
-      cancelled = true;
-      upstreamAbort.abort();
-      reader.cancel().catch(() => undefined);
-      return settleWithUsage(status, meter.result());
-    },
-  });
-  return new Response(relayed, { status, headers });
+          await settleWithUsage(status, meter.result());
+          if (cancelled) return;
+          if (upstreamFailed) {
+            // ステータスは変えずに、本文を異常終了させる（正常な終わりに
+            // 見せない）。文言は固定。
+            controller.error(new Error("upstream response ended before completion"));
+          } else {
+            controller.close();
+          }
+        })();
+      },
+      cancel() {
+        cancelled = true;
+        upstreamAbort.abort();
+        reader.cancel().catch(() => undefined);
+        return settleWithUsage(status, meter.result());
+      },
+    });
+    return new Response(relayed, { status, headers });
+  } catch (error) {
+    await settle(500, upstreamCalled ? { type: "reserved" } : { type: "release" });
+    throw error;
+  }
 }

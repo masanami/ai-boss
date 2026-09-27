@@ -20,7 +20,7 @@ function reserveRequest(overrides: Partial<ReserveRequest> = {}): ReserveRequest
 
 const ACTUAL: SettleOutcome = {
   type: "actual",
-  units: 0.25,
+  units: 25,
   inputTokens: 100,
   outputTokens: 20,
   cacheReadInputTokens: 3,
@@ -49,7 +49,7 @@ describe("予約", () => {
     const limits = { daily: 2, monthly: 1000, maxConcurrent: 10 };
     expect((await store.reserve(reserveRequest({ units: 1, limits }))).ok).toBe(true);
     expect((await store.reserve(reserveRequest({ units: 1, limits }))).ok).toBe(true);
-    expect(await store.reserve(reserveRequest({ units: 0.5, limits }))).toEqual({ ok: false, reason: "daily" });
+    expect(await store.reserve(reserveRequest({ units: 1, limits }))).toEqual({ ok: false, reason: "daily" });
   });
 
   it("未精算の予約が maxConcurrent 件あると concurrency で失敗し、1 件精算すると成功する", async () => {
@@ -104,7 +104,7 @@ describe("精算", () => {
         accountId: "account-a",
         dayKey: "2026-09-15",
         monthKey: "2026-09",
-        units: 0.25,
+        units: 25,
         inputTokens: 100,
         outputTokens: 20,
         cacheReadInputTokens: 3,
@@ -154,7 +154,7 @@ describe("精算", () => {
       await store.settle(id, ACTUAL);
       await store.settle(id, ACTUAL);
       expect(store.dump().records).toHaveLength(1);
-      expect((await store.get("account-a", "2026-09-15", "2026-09")).dayUnits).toBe(0.25);
+      expect((await store.get("account-a", "2026-09-15", "2026-09")).dayUnits).toBe(25);
     });
 
     it("精算済みの予約 ID に別の結果で精算しても、最初の結果が残る", async () => {
@@ -177,7 +177,7 @@ describe("精算", () => {
         const { records, reservations } = store.dump();
         expect(reservations).toEqual([]);
         expect(records).toHaveLength(1);
-        expect(records[0].units).toBe(order[0].type === "actual" ? 0.25 : 7);
+        expect(records[0].units).toBe(order[0].type === "actual" ? 25 : 7);
       }
     });
 

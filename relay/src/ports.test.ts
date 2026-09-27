@@ -13,7 +13,7 @@ describe("createFetchUpstream", () => {
     await createFetchUpstream(fakeFetch)(request, controller.signal);
     expect(received).toHaveLength(1);
     expect(received[0].input).toBe(request);
-    expect(received[0].init?.redirect).toBe("error");
+    expect(received[0].init?.redirect).toBe("manual");
     expect(received[0].init?.signal).toBe(controller.signal);
   });
 });

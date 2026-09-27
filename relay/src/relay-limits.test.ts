@@ -9,6 +9,7 @@ import {
   flush,
   jsonResponse,
   messageJson,
+  asConfigUnits,
   type Deferred,
 } from "./test-support/relay-harness.js";
 
@@ -78,14 +79,14 @@ describe("金額の上限", () => {
     ["monthlyLimit", "monthly"],
   ] as const)("確定額＋予約額＋この要求の予約額が %s を超えると 429、ちょうどなら転送される", async (limitName, limit) => {
     // 1 件目で確定額を RESERVED（実額を予約額と同じにする）にし、2 件目で判定する。
-    const exact = createHarness({ config: { [limitName]: RESERVED * 2 }, upstream: () => jsonResponse({}) });
+    const exact = createHarness({ config: { [limitName]: asConfigUnits(RESERVED * 2) }, upstream: () => jsonResponse({}) });
     expect((await exact.send(BODY_TEXT)).status).toBe(200);
     await flush();
     expect((await exact.usage()).dayUnits).toBe(RESERVED);
     expect((await exact.send(BODY_TEXT)).status).toBe(200);
     expect(exact.calls).toHaveLength(2);
 
-    const over = createHarness({ config: { [limitName]: RESERVED * 2 - 1e-9 }, upstream: () => jsonResponse({}) });
+    const over = createHarness({ config: { [limitName]: asConfigUnits(RESERVED * 2 - 1) }, upstream: () => jsonResponse({}) });
     expect((await over.send(BODY_TEXT)).status).toBe(200);
     await flush();
     const response = await over.send(BODY_TEXT);
@@ -99,7 +100,7 @@ describe("金額の上限", () => {
 
   it("未精算の予約額も合計に入る（保留中の 1 件と合わせて超えると 429）", async () => {
     const upstream = holdingUpstream();
-    const h = createHarness({ config: { dailyLimit: RESERVED * 2 - 1e-9 }, upstream: upstream.handler });
+    const h = createHarness({ config: { dailyLimit: asConfigUnits(RESERVED * 2 - 1) }, upstream: upstream.handler });
     void h.send(BODY_TEXT);
     await flush();
     const response = await h.send(BODY_TEXT);
@@ -108,7 +109,7 @@ describe("金額の上限", () => {
   });
 
   it("日と月の両方の上限を超える要求の error.limit は monthly", async () => {
-    const h = createHarness({ config: { dailyLimit: RESERVED / 2, monthlyLimit: RESERVED / 2 } });
+    const h = createHarness({ config: { dailyLimit: asConfigUnits(RESERVED / 2), monthlyLimit: asConfigUnits(RESERVED / 2) } });
     const response = await h.send(BODY_TEXT);
     expect(response.status).toBe(429);
     expect(await limitError(response)).toMatchObject({ type: "usage_limit_exceeded", limit: "monthly" });
@@ -116,7 +117,7 @@ describe("金額の上限", () => {
   });
 
   it("金額の上限で拒否した要求は予約も記録も残さない", async () => {
-    const h = createHarness({ config: { dailyLimit: RESERVED / 2 } });
+    const h = createHarness({ config: { dailyLimit: asConfigUnits(RESERVED / 2) } });
     await h.send(BODY_TEXT);
     expect(h.store.dump()).toEqual({ records: [], reservations: [] });
   });
@@ -124,7 +125,7 @@ describe("金額の上限", () => {
   it("前日に 1 日の上限に達したアカウントの要求は、UTC の 0 時以降は転送される", async () => {
     const h = createHarness({
       now: new Date("2026-09-30T23:59:58Z"),
-      config: { dailyLimit: RESERVED },
+      config: { dailyLimit: asConfigUnits(RESERVED) },
       upstream: () => jsonResponse({}),
     });
     expect((await h.send(BODY_TEXT)).status).toBe(200);
@@ -138,7 +139,7 @@ describe("金額の上限", () => {
 
   it("dailyLimit が予約額の 2 倍以上 3 倍未満で 3 件を同時に送ると、転送は 2 件・429 は 1 件", async () => {
     const upstream = holdingUpstream();
-    const h = createHarness({ config: { dailyLimit: RESERVED * 2.5, maxConcurrentRequests: 3 }, upstream: upstream.handler });
+    const h = createHarness({ config: { dailyLimit: asConfigUnits(RESERVED * 2.5), maxConcurrentRequests: 3 }, upstream: upstream.handler });
     const responses = [h.send(BODY_TEXT), h.send(BODY_TEXT), h.send(BODY_TEXT)];
     await flush();
     expect(h.calls).toHaveLength(2);
@@ -156,7 +157,7 @@ describe("金額の上限", () => {
 
   it("予約が通った要求は、実額が予約額を上回っても最後まで返り、実額で記録する", async () => {
     const h = createHarness({
-      config: { dailyLimit: RESERVED },
+      config: { dailyLimit: asConfigUnits(RESERVED) },
       upstream: () => jsonResponse(messageJson({ input_tokens: 1_000_000, output_tokens: 1_000_000 }, "full answer")),
     });
     const response = await h.send(BODY_TEXT);
@@ -164,8 +165,47 @@ describe("金額の上限", () => {
     expect(await response.text()).toContain("full answer");
     await flush();
     const [record] = h.store.dump().records;
-    expect(record.units).toBe(6);
+    expect(record.units).toBe(6 * 10_000_000_000);
     expect(record.units).toBeGreaterThan(RESERVED);
+  });
+});
+
+describe("整数での上限の判定（PR #638 の代替レビューの指摘 5）", () => {
+  // 重みをすべて 1 にし、1 件の予約額・実額がちょうど 0.1（2 進数で正確に表せない値）になる要求を作る。
+  const ONE_WEIGHTS = { input: 1, output: 1, cacheRead: 1, cacheWrite: 1 };
+  const ONE_MODEL = { id: "claude-haiku-4-5", weights: ONE_WEIGHTS, adaptiveThinkingReplacement: { type: "disabled" as const }, supportsEffort: false };
+
+  /** 予約額がちょうど `tokens` トークン分（重み 1 なので tokens ÷ 10^6 原価単位）になる要求の本文。 */
+  function requestReserving(tokens: number): string {
+    // ceil(B) + M ＝ tokens。B が M の桁数に依存するため、収束するまで合わせる。
+    let maxTokens = tokens;
+    for (let i = 0; i < 3; i++) {
+      maxTokens = tokens - new TextEncoder().encode(JSON.stringify(appRequestBody({ max_tokens: maxTokens }))).byteLength;
+    }
+    const text = JSON.stringify(appRequestBody({ max_tokens: maxTokens }));
+    expect(new TextEncoder().encode(text).byteLength + maxTokens).toBe(tokens);
+    return text;
+  }
+
+  /** 実額 0.1 を 1 回確定した後に、予約額 0.2 の要求を送ったときのステータス。 */
+  async function tenthThenTwoTenths(dailyLimit: number): Promise<number> {
+    const h = createHarness({
+      config: { models: [ONE_MODEL], dailyLimit },
+      // 実額 0.1（入力 100,000 トークン × 重み 1）で精算する。
+      upstream: () => jsonResponse(messageJson({ input_tokens: 100_000, output_tokens: 0 })),
+    });
+    expect((await h.send(requestReserving(100_000))).status).toBe(200);
+    await flush();
+    return (await h.send(requestReserving(200_000))).status;
+  }
+
+  it("確定額 0.1 ＋ 予約額 0.2 は上限 0.3 ちょうどなら転送される（浮動小数では 0.1 + 0.2 > 0.3）", async () => {
+    expect(0.1 + 0.2).toBeGreaterThan(0.3);
+    expect(await tenthThenTwoTenths(0.3)).toBe(200);
+  });
+
+  it("上限が 0.3 より 1 整数単位（10^-10）小さければ 429", async () => {
+    expect(await tenthThenTwoTenths(0.3 - 1e-10)).toBe(429);
   });
 });
 
@@ -202,7 +242,7 @@ describe("同時要求数の上限", () => {
 
   it("同時要求数と金額の両方の上限で失敗する要求は usage_limit_exceeded", async () => {
     const upstream = holdingUpstream();
-    const h = createHarness({ config: { maxConcurrentRequests: 1, dailyLimit: RESERVED * 1.5 }, upstream: upstream.handler });
+    const h = createHarness({ config: { maxConcurrentRequests: 1, dailyLimit: asConfigUnits(RESERVED * 1.5) }, upstream: upstream.handler });
     void h.send(BODY_TEXT);
     await flush();
     const response = await h.send(BODY_TEXT);
@@ -212,7 +252,7 @@ describe("同時要求数の上限", () => {
 
   it("別のアカウントの未精算の予約は、金額と同時要求数の判定に影響しない", async () => {
     const upstream = holdingUpstream();
-    const h = createHarness({ config: { maxConcurrentRequests: 1, dailyLimit: RESERVED }, upstream: upstream.handler });
+    const h = createHarness({ config: { maxConcurrentRequests: 1, dailyLimit: asConfigUnits(RESERVED) }, upstream: upstream.handler });
     void h.send(BODY_TEXT);
     await flush();
     const other = h.send(BODY_TEXT, { token: TOKEN_B });

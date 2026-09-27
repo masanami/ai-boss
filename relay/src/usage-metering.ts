@@ -14,21 +14,43 @@ export interface TokenUsage {
   cacheCreationInputTokens: number;
 }
 
-const TOKENS_PER_MILLION = 1_000_000;
+/**
+ * 利用量のポートが扱う原価単位の**整数表現**: 原価単位 × 10^10 を 1 とする。
+ * 浮動小数で足すと「合計がちょうど上限に等しいなら成功」の契約が崩れる
+ * （0.1 + 0.1 + 0.1 > 0.3）ため、予約・精算・上限の判定はすべてこの整数で行う。
+ */
+export const COST_UNIT_SCALE = 10_000_000_000;
 
-/** 原価単位 ＝ Σ（トークン数 × 重み）÷ 1,000,000。 */
+/**
+ * 重み（1M トークンあたり）の整数表現の倍率。重みは 10^-4 刻みで持つ
+ * （設定の検証が刻みに合わない重みを拒否する）。トークン数 × 整数の重みが、
+ * そのまま {@link COST_UNIT_SCALE} の整数表現の原価単位になる
+ * （Σ トークン数 × 重み ÷ 10^6 × 10^10 ＝ Σ トークン数 × 重み × 10^4）。
+ */
+export const WEIGHT_SCALE = 10_000;
+
+/** 重みを整数表現にする。 */
+export function scaledWeight(weight: number): number {
+  return Math.round(weight * WEIGHT_SCALE);
+}
+
+/** 設定の原価単位（上限値）を整数表現にする。 */
+export function scaledUnits(units: number): number {
+  return Math.round(units * COST_UNIT_SCALE);
+}
+
+/** 原価単位（整数表現）＝ Σ（トークン数 × 重み）÷ 1,000,000 × 10^10。 */
 export function costUnits(usage: TokenUsage, weights: CostWeights): number {
   return (
-    (usage.inputTokens * weights.input +
-      usage.outputTokens * weights.output +
-      usage.cacheReadInputTokens * weights.cacheRead +
-      usage.cacheCreationInputTokens * weights.cacheWrite) /
-    TOKENS_PER_MILLION
+    usage.inputTokens * scaledWeight(weights.input) +
+    usage.outputTokens * scaledWeight(weights.output) +
+    usage.cacheReadInputTokens * scaledWeight(weights.cacheRead) +
+    usage.cacheCreationInputTokens * scaledWeight(weights.cacheWrite)
   );
 }
 
 /**
- * 送信前に予約する最大原価。入力側の重みは入力・キャッシュ読み出し・
+ * 送信前に予約する最大原価（整数表現）。入力側の重みは入力・キャッシュ読み出し・
  * キャッシュ書き込みのうち最大のもの（入力がキャッシュに書き込まれて
  * 課金されても予約を下回らないため）。
  */
@@ -39,8 +61,8 @@ export function maxCostUnits(
   weights: CostWeights,
 ): number {
   const estimatedInputTokens = Math.ceil(bodyBytes * inputTokensPerByte);
-  const inputWeight = Math.max(weights.input, weights.cacheRead, weights.cacheWrite);
-  return (estimatedInputTokens * inputWeight + maxTokens * weights.output) / TOKENS_PER_MILLION;
+  const inputWeight = Math.max(scaledWeight(weights.input), scaledWeight(weights.cacheRead), scaledWeight(weights.cacheWrite));
+  return estimatedInputTokens * inputWeight + maxTokens * scaledWeight(weights.output);
 }
 
 /** UTC の暦日（`YYYY-MM-DD`）と暦月（`YYYY-MM`）の期間キー（仮定 A5）。 */
@@ -55,30 +77,41 @@ export function periodKeys(at: Date): { dayKey: string; monthKey: string } {
 
 type PartialUsage = Partial<TokenUsage>;
 
+/** `[上流の項目名, 内部の名前, 必須か]`。必須の項目は `null` も壊れた値とみなす。 */
 const USAGE_FIELDS = [
-  ["input_tokens", "inputTokens"],
-  ["output_tokens", "outputTokens"],
-  ["cache_read_input_tokens", "cacheReadInputTokens"],
-  ["cache_creation_input_tokens", "cacheCreationInputTokens"],
+  ["input_tokens", "inputTokens", true],
+  ["output_tokens", "outputTokens", true],
+  ["cache_read_input_tokens", "cacheReadInputTokens", false],
+  ["cache_creation_input_tokens", "cacheCreationInputTokens", false],
 ] as const;
 
 function isTokenCount(value: unknown): value is number {
   return typeof value === "number" && Number.isSafeInteger(value) && value >= 0;
 }
 
-/** 上流の `usage` のうち、正しい形のトークン数の項目だけを拾う。 */
-function readUsageFields(raw: unknown): PartialUsage {
-  const picked: PartialUsage = {};
-  if (typeof raw !== "object" || raw === null) {
-    return picked;
+/**
+ * 上流の `usage` からトークン数の項目を拾う。項目があるのに値が壊れている
+ * （負の数・小数・文字列、必須の項目の `null`）ときは `malformed` にする——
+ * 壊れた項目を黙って落とすと、前のイベントの値が残ったまま確定してしまう
+ * （PR #638 の Codex の指摘）。キャッシュの項目の `null` は「無い」として扱う。
+ */
+function readUsageFields(raw: unknown): { fields: PartialUsage; malformed: boolean } {
+  const fields: PartialUsage = {};
+  if (typeof raw !== "object" || raw === null || Array.isArray(raw)) {
+    return { fields, malformed: true };
   }
   const record = raw as Record<string, unknown>;
-  for (const [wire, name] of USAGE_FIELDS) {
-    if (isTokenCount(record[wire])) {
-      picked[name] = record[wire];
+  for (const [wire, name, required] of USAGE_FIELDS) {
+    if (!(wire in record) || (!required && record[wire] === null)) {
+      continue;
     }
+    const value = record[wire];
+    if (!isTokenCount(value)) {
+      return { fields, malformed: true };
+    }
+    fields[name] = value;
   }
-  return picked;
+  return { fields, malformed: false };
 }
 
 /**
@@ -116,6 +149,7 @@ export function createSseUsageMeter(): UsageMeter {
   let pending = "";
   let dataLines: string[] = [];
   let usage: PartialUsage = {};
+  let malformed = false;
   let sawMessageStop = false;
 
   function dispatch(): void {
@@ -137,9 +171,13 @@ export function createSseUsageMeter(): UsageMeter {
     const record = event as Record<string, unknown>;
     if (record.type === "message_start") {
       const message = record.message as Record<string, unknown> | undefined;
-      usage = readUsageFields(message?.usage);
-    } else if (record.type === "message_delta") {
-      usage = { ...usage, ...readUsageFields(record.usage) };
+      const read = readUsageFields(message?.usage);
+      usage = read.fields;
+      malformed ||= read.malformed;
+    } else if (record.type === "message_delta" && record.usage !== undefined) {
+      const read = readUsageFields(record.usage);
+      usage = { ...usage, ...read.fields };
+      malformed ||= read.malformed;
     } else if (record.type === "message_stop") {
       sawMessageStop = true;
     }
@@ -173,7 +211,8 @@ export function createSseUsageMeter(): UsageMeter {
       consume(decoder.decode(chunk, { stream: true }));
     },
     result() {
-      return sawMessageStop ? completeUsage(usage) : null;
+      // 壊れた usage が 1 度でも届いたら、実額には使わない（予約額で確定する）。
+      return sawMessageStop && !malformed ? completeUsage(usage) : null;
     },
   };
 }
@@ -197,7 +236,8 @@ export function createJsonUsageMeter(): UsageMeter {
       if (typeof body !== "object" || body === null) {
         return null;
       }
-      return completeUsage(readUsageFields((body as Record<string, unknown>).usage));
+      const read = readUsageFields((body as Record<string, unknown>).usage);
+      return read.malformed ? null : completeUsage(read.fields);
     },
   };
 }

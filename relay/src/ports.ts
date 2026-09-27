@@ -35,13 +35,16 @@ export type UpstreamFetch = (request: Request, signal: AbortSignal) => Promise<R
 
 /**
  * Web 標準の `fetch` から上流のポートを作る。**リダイレクトに従わない**
- * （`redirect: "error"`）: 従うと、`fetch` はオリジンをまたいでも独自の
+ * （`redirect: "manual"`）: 従うと、`fetch` はオリジンをまたいでも独自の
  * ヘッダ（`x-api-key`）を付けたまま転送先へ送るため、事業者のキーが上流の
- * URL 以外へ漏れうる。例外の区分（`before-send` の判定）は実行基盤の
- * `fetch` に合わせて S3 で作る（それまでは区分の無い例外＝`after-send`）。
+ * URL 以外へ漏れうる。`"error"` ではなく `"manual"` にするのは、どの実行基盤
+ * でも受け付けられる値にするため（3xx・`opaqueredirect` の応答は中継が上流の
+ * 失敗として扱い、予約を解放する。`relay-app.ts`）。例外の区分（`before-send`
+ * の判定）は実行基盤の `fetch` に合わせて S3 で作る（それまでは区分の無い
+ * 例外＝`after-send`）。
  */
 export function createFetchUpstream(fetchImpl: typeof fetch): UpstreamFetch {
-  return (request, signal) => fetchImpl(request, { signal, redirect: "error" });
+  return (request, signal) => fetchImpl(request, { signal, redirect: "manual" });
 }
 
 /**

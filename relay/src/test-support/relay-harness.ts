@@ -3,6 +3,7 @@ import type { RelayConfig, RelayModel } from "../config.js";
 import { createStaticTokenAuthenticator, type RelayLogRecord, type UpstreamFetch } from "../ports.js";
 import { PLAN_DEFAULT_MODEL } from "../request-validation.js";
 import { createMemoryUsageStore, type MemoryUsageStore } from "../usage-store.js";
+import { COST_UNIT_SCALE } from "../usage-metering.js";
 
 /**
  * 中継のテストの共通の組み立て（機能仕様「受入基準（S1）」の「既定のテスト
@@ -32,6 +33,8 @@ export const HAIKU_9_9: RelayModel = { ...HAIKU_4_5, id: "claude-haiku-9-9" };
 export const TEST_ADAPTIVE: RelayModel = { id: "claude-test-adaptive", weights: HAIKU_WEIGHTS, supportsEffort: true };
 
 const LARGE = 1_000_000_000;
+/** 原価単位の上限の既定（整数表現が正確に数えられる範囲の十分大きな値）。 */
+const LARGE_LIMIT = 100_000;
 
 export function defaultTestConfig(overrides: Partial<RelayConfig> = {}): RelayConfig {
   return {
@@ -41,8 +44,8 @@ export function defaultTestConfig(overrides: Partial<RelayConfig> = {}): RelayCo
     maxTokensCap: LARGE,
     maxRequestBytes: LARGE,
     inputTokensPerByte: 1,
-    dailyLimit: LARGE,
-    monthlyLimit: LARGE,
+    dailyLimit: LARGE_LIMIT,
+    monthlyLimit: LARGE_LIMIT,
     maxConcurrentRequests: LARGE,
     reservationTtlMs: 600_000,
     ...overrides,
@@ -265,7 +268,15 @@ export function byteLength(text: string): number {
   return new TextEncoder().encode(text).byteLength;
 }
 
-/** 既定のテスト設定での予約額 `(ceil(B × 1) × 1.25 + M × 5) ÷ 1,000,000`。 */
+/**
+ * 既定のテスト設定での予約額 `(ceil(B × 1) × 1.25 + M × 5) ÷ 1,000,000` の
+ * 整数表現（× 10^10。利用量のポートが扱う単位）。
+ */
 export function expectedReservedUnits(bodyText: string, maxTokens: number): number {
-  return (Math.ceil(byteLength(bodyText) * 1) * 1.25 + maxTokens * 5) / 1_000_000;
+  return Math.ceil(byteLength(bodyText) * 1) * 12_500 + maxTokens * 50_000;
+}
+
+/** 整数表現の原価単位を、設定（`dailyLimit` 等）に書く原価単位へ戻す。 */
+export function asConfigUnits(scaled: number): number {
+  return scaled / COST_UNIT_SCALE;
 }

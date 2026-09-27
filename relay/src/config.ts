@@ -1,3 +1,5 @@
+import { WEIGHT_SCALE, scaledUnits } from "./usage-metering.js";
+
 /**
  * 中継の設定の型と検証（機能仕様 docs/features/llm-relay-server.md
  * クリティカル設計決定 3・4、「機能全体の設計」の「設定の検証」）。
@@ -5,7 +7,7 @@
  * 本番の値（既定モデル・重み・上限値）は S3 で入れる。S1 はテストが値を渡す。
  */
 
-/** 原価単位の重み（いずれも 1M トークンあたり）。 */
+/** 原価単位の重み（いずれも 1M トークンあたり。10^-4 刻み）。 */
 export interface CostWeights {
   input: number;
   output: number;
@@ -71,10 +73,16 @@ function isPositiveInteger(value: unknown): value is number {
   return typeof value === "number" && Number.isSafeInteger(value) && value > 0;
 }
 
+/** 重みは 10^-4 刻み（`usage-metering.ts` の `WEIGHT_SCALE`。原価単位を整数で数えるため）。 */
+function isOnWeightGrid(weight: number): boolean {
+  const scaled = weight * WEIGHT_SCALE;
+  return Number.isSafeInteger(Math.round(scaled)) && Math.abs(scaled - Math.round(scaled)) < 1e-6;
+}
+
 function assertWeights(model: RelayModel): void {
   const { weights } = model;
   for (const name of ["input", "output", "cacheRead", "cacheWrite"] as const) {
-    if (!isNonNegativeFinite(weights?.[name])) {
+    if (!isNonNegativeFinite(weights?.[name]) || !isOnWeightGrid(weights[name])) {
       throw new RelayConfigError(`model "${model.id}" has an invalid ${name} weight`);
     }
   }
@@ -135,8 +143,9 @@ export function validateRelayConfig(config: RelayConfig): RelayModel {
     }
   }
   for (const name of ["dailyLimit", "monthlyLimit"] as const) {
-    if (!isNonNegativeFinite(config[name])) {
-      throw new RelayConfigError(`${name} must be a non-negative number`);
+    // 整数表現（原価単位 × 10^10）が正確に数えられる範囲に限る。
+    if (!isNonNegativeFinite(config[name]) || !Number.isSafeInteger(scaledUnits(config[name]))) {
+      throw new RelayConfigError(`${name} must be a non-negative number within the countable range`);
     }
   }
   return defaultModel;
