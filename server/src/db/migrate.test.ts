@@ -465,7 +465,14 @@ describe("runMigrations", () => {
     v3Db.pragma("user_version = 3");
     seedOrphanActivityEventForV4Failure(v3Db);
 
-    await expect(runMigrations(portFor(v3Db))).rejects.toThrow(/version 4/);
+    // 失敗箇所を「再構築の後の foreign_key_check」に固定する（再構築の途中で
+    // 落ちるようになると、下の 'paused' の検査が恒真になるため）。
+    await expect(runMigrations(portFor(v3Db))).rejects.toMatchObject({
+      message: expect.stringMatching(/version 4/),
+      cause: expect.objectContaining({
+        message: expect.stringMatching(/foreign key violations found in "activity_events"/),
+      }),
+    });
 
     expect(v3Db.pragma("user_version", { simple: true })).toBe(3);
     // The rebuild itself was rolled back too: `tasks` still has its pre-v4
@@ -487,7 +494,12 @@ describe("runMigrations", () => {
     v3Db.pragma("user_version = 3");
     seedOrphanActivityEventForV4Failure(v3Db);
 
-    await expect(runMigrations(portFor(v3Db))).rejects.toThrow();
+    // 失敗箇所を foreign_keys = OFF の後（再構築の後の foreign_key_check）に固定する。
+    await expect(runMigrations(portFor(v3Db))).rejects.toMatchObject({
+      cause: expect.objectContaining({
+        message: expect.stringMatching(/foreign key violations found in "activity_events"/),
+      }),
+    });
 
     expect(v3Db.pragma("foreign_keys", { simple: true })).toBe(1);
 
