@@ -215,7 +215,7 @@ describe("POST /api/sessions/:id/messages with replaceFromMessageId (Issue #376)
     const firstRes = await sendMessage(session.id, "最初の発言");
     await firstRes.text();
     const target = messagesOf(db, session.id).find((m) => m.role === "user")!;
-    endSession(db, session.id);
+    await endSession(portFor(db), session.id);
     const before = messagesOf(db, session.id);
 
     const res = await sendMessage(session.id, "書き直した内容", target.id);
@@ -235,7 +235,7 @@ describe("POST /api/sessions/:id/messages with replaceFromMessageId (Issue #376)
     const firstRes = await sendMessage(session.id, "最初の発言");
     await firstRes.text();
     const target = messagesOf(db, session.id).find((m) => m.role === "user")!;
-    endSession(db, session.id);
+    await endSession(portFor(db), session.id);
     streamBossMessageMock.mockClear();
 
     await sendMessage(session.id, "書き直した内容", target.id);
@@ -251,7 +251,7 @@ describe("POST /api/sessions/:id/messages with replaceFromMessageId (Issue #376)
     const session = await createSession("evening");
     const firstRes = await sendMessage(session.id, "最初の発言");
     await firstRes.text();
-    endSession(db, session.id);
+    await endSession(portFor(db), session.id);
 
     const res = await sendMessage(session.id, "通常の追加発言");
 

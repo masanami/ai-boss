@@ -16,6 +16,7 @@ import { extractEveningSummary } from "./extract-evening-summary.js";
 import { renderDailyReport } from "./render-daily-report.js";
 import { upsertDailyReport } from "./daily-reports-repository.js";
 import type { DailyReport } from "./daily-report.js";
+import { portFor } from "../db/transitional-bridge.js";
 
 export type GenerateDailyReportResult =
   | { ok: true; report: DailyReport }
@@ -59,11 +60,11 @@ export interface GenerateDailyReportOptions {
  * ラッパー。クエリ本体はセッション層に1箇所だけ持つ — `hasTodaysEveningSession`
  * と同じクエリの重複を避ける）。
  */
-function findTodaysEveningSession(
+async function findTodaysEveningSession(
   db: Database.Database,
   now: Date,
-): Session | undefined {
-  return findEveningSessionByDateKey(db, toDateKey(now));
+): Promise<Session | undefined> {
+  return findEveningSessionByDateKey(portFor(db), toDateKey(now));
 }
 
 /**
@@ -72,19 +73,19 @@ function findTodaysEveningSession(
  * `undefined`）。未指定なら `now` ベースの検索（{@link
  * findTodaysEveningSession}）にフォールバックする。
  */
-function resolveTargetEveningSession(
+async function resolveTargetEveningSession(
   db: Database.Database,
   now: Date,
   eveningSessionId: number | undefined,
-): Session | undefined {
+): Promise<Session | undefined> {
   if (eveningSessionId !== undefined) {
-    const session = findSessionById(db, eveningSessionId);
+    const session = await findSessionById(portFor(db), eveningSessionId);
     if (!session || session.type !== "evening") {
       return undefined;
     }
     return session;
   }
-  return findTodaysEveningSession(db, now);
+  return await findTodaysEveningSession(db, now);
 }
 
 /**
@@ -97,17 +98,17 @@ function resolveTargetEveningSession(
  * — 呼び出し元がこのチェックを一度だけ通れば、以降 LLM が失敗しても
  * フォールバック日報を保存できる設計になっている。
  */
-function checkPrerequisite(
+async function checkPrerequisite(
   db: Database.Database,
   now: Date,
   eveningSessionId: number | undefined,
-): { ok: true; session: Session } | { ok: false; code: "evening_session_required" } {
-  const session = resolveTargetEveningSession(db, now, eveningSessionId);
+): Promise<{ ok: true; session: Session } | { ok: false; code: "evening_session_required" }> {
+  const session = await resolveTargetEveningSession(db, now, eveningSessionId);
   if (!session || session.ended_at === null) {
     return { ok: false, code: "evening_session_required" };
   }
 
-  const userMessageCount = listMessagesBySessionId(db, session.id).filter(
+  const userMessageCount = (await listMessagesBySessionId(portFor(db), session.id)).filter(
     (message) => message.role === "user",
   ).length;
   if (userMessageCount === 0) {
@@ -143,14 +144,14 @@ export async function generateDailyReport(
   now: Date,
   options: GenerateDailyReportOptions = {},
 ): Promise<GenerateDailyReportResult> {
-  const prerequisite = checkPrerequisite(db, now, options.eveningSessionId);
+  const prerequisite = await checkPrerequisite(db, now, options.eveningSessionId);
   if (!prerequisite.ok) {
     return prerequisite;
   }
   const { session } = prerequisite;
 
   const collected = collectDailyReportData(db, session);
-  const eveningMessages = listMessagesBySessionId(db, session.id);
+  const eveningMessages = await listMessagesBySessionId(portFor(db), session.id);
 
   // 収集した当日の active 決定一覧は、日報の「決定事項」セクション（Issue
   // #144 で廃止）へは渡さず、抽出ステップのコンテキストへ渡す（「決定の

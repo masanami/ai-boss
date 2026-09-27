@@ -99,7 +99,7 @@ async function buildTickInput(deps: TickDeps, now: Date): Promise<DetectionInput
     activityEvents: await listEventsSince(portFor(deps.db), EPOCH_ISO),
     notifications: toNotificationHistory(listNotificationsSince(deps.db, EPOCH_ISO)),
     settings,
-    todaysSessionTypes: listTodaysSessionTypes(deps.db, now),
+    todaysSessionTypes: await listTodaysSessionTypes(portFor(deps.db), now),
   };
 }
 

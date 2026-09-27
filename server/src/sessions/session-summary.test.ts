@@ -50,13 +50,13 @@ describe("generateSessionSummary", () => {
   });
 
   it("generates a summary from the session's conversation history", async () => {
-    const session = insertSession(db, { type: "morning" });
-    insertMessage(db, {
+    const session = await insertSession(portFor(db), { type: "morning" });
+    await insertMessage(portFor(db), {
       session_id: session.id,
       role: "user",
       content: "資料作成を今日中に終わらせます",
     });
-    insertMessage(db, {
+    await insertMessage(portFor(db), {
       session_id: session.id,
       role: "boss",
       content: "資料作成を最優先にしろ",
@@ -65,7 +65,7 @@ describe("generateSessionSummary", () => {
       fakeTextMessage("資料作成を最優先にすることを決定した。"),
     );
 
-    const summary = await generateSessionSummary(db, env, "api", session.id);
+    const summary = await await generateSessionSummary(portFor(db), env, "api", session.id);
 
     expect(summary).toBe("資料作成を最優先にすることを決定した。");
     expect(createBossMessageMock).toHaveBeenCalledTimes(1);
@@ -74,20 +74,20 @@ describe("generateSessionSummary", () => {
   // Issue #117 (D4): same rationale as boss-comment.ts/notification-body.ts
   // — small maxTokens must not compete with thinking.
   it("sends thinking: { type: 'disabled' } (Issue #117)", async () => {
-    const session = insertSession(db, { type: "morning" });
-    insertMessage(db, { session_id: session.id, role: "user", content: "報告します" });
+    const session = await insertSession(portFor(db), { type: "morning" });
+    await insertMessage(portFor(db), { session_id: session.id, role: "user", content: "報告します" });
     createBossMessageMock.mockResolvedValue(fakeTextMessage("要約"));
 
-    await generateSessionSummary(db, env, "api", session.id);
+    await await generateSessionSummary(portFor(db), env, "api", session.id);
 
     const request = createBossMessageMock.mock.calls[0][1] as { thinking: unknown };
     expect(request.thinking).toEqual({ type: "disabled" });
   });
 
   it("does not call the LLM and returns null when the session has no messages", async () => {
-    const session = insertSession(db, { type: "morning" });
+    const session = await insertSession(portFor(db), { type: "morning" });
 
-    const summary = await generateSessionSummary(db, env, "api", session.id);
+    const summary = await await generateSessionSummary(portFor(db), env, "api", session.id);
 
     expect(summary).toBeNull();
     expect(createClaudeClientMock).not.toHaveBeenCalled();
@@ -95,46 +95,46 @@ describe("generateSessionSummary", () => {
   });
 
   it("returns null (never throws) when the API key is missing", async () => {
-    const session = insertSession(db, { type: "morning" });
-    insertMessage(db, { session_id: session.id, role: "user", content: "報告します" });
+    const session = await insertSession(portFor(db), { type: "morning" });
+    await insertMessage(portFor(db), { session_id: session.id, role: "user", content: "報告します" });
     createClaudeClientMock.mockImplementationOnce(() => {
       throw new MissingApiKeyError();
     });
 
-    const summary = await generateSessionSummary(db, {}, "api", session.id);
+    const summary = await await generateSessionSummary(portFor(db), {}, "api", session.id);
 
     expect(summary).toBeNull();
     expect(createBossMessageMock).not.toHaveBeenCalled();
   });
 
   it("returns null (never throws) when the Claude call fails", async () => {
-    const session = insertSession(db, { type: "evening" });
-    insertMessage(db, { session_id: session.id, role: "user", content: "報告します" });
+    const session = await insertSession(portFor(db), { type: "evening" });
+    await insertMessage(portFor(db), { session_id: session.id, role: "user", content: "報告します" });
     createBossMessageMock.mockRejectedValue(new Error("connection reset with request id xyz"));
 
-    const summary = await generateSessionSummary(db, env, "api", session.id);
+    const summary = await await generateSessionSummary(portFor(db), env, "api", session.id);
 
     expect(summary).toBeNull();
   });
 
   it("returns null when the generated text is empty", async () => {
-    const session = insertSession(db, { type: "evening" });
-    insertMessage(db, { session_id: session.id, role: "user", content: "報告します" });
+    const session = await insertSession(portFor(db), { type: "evening" });
+    await insertMessage(portFor(db), { session_id: session.id, role: "user", content: "報告します" });
     createBossMessageMock.mockResolvedValue(fakeTextMessage(""));
 
-    const summary = await generateSessionSummary(db, env, "api", session.id);
+    const summary = await await generateSessionSummary(portFor(db), env, "api", session.id);
 
     expect(summary).toBeNull();
   });
 
   it("logs only the error's class name, never its message, on failure", async () => {
-    const session = insertSession(db, { type: "evening" });
-    insertMessage(db, { session_id: session.id, role: "user", content: "報告します" });
+    const session = await insertSession(portFor(db), { type: "evening" });
+    await insertMessage(portFor(db), { session_id: session.id, role: "user", content: "報告します" });
     createBossMessageMock.mockRejectedValue(
       new Error("connection reset with secret request id xyz789"),
     );
 
-    await generateSessionSummary(db, env, "api", session.id);
+    await await generateSessionSummary(portFor(db), env, "api", session.id);
 
     expect(errorSpy).toHaveBeenCalled();
     const loggedArgs = errorSpy.mock.calls.flat().map(String);

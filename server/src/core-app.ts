@@ -122,10 +122,10 @@ export function createCoreApp(
   });
 
   api.route("/tasks", createTasksRouter(portFor(db), options.evidenceStore));
-  api.route("/sessions", createSessionsRouter(db, env, llmBackend));
+  api.route("/sessions", createSessionsRouter(portFor(db), env, llmBackend));
   api.route("/checkins", createCheckinsRouter(portFor(db)));
   api.route("/activity", createActivityRouter(portFor(db)));
-  api.route("/decisions", createDecisionsRouter(db));
+  api.route("/decisions", createDecisionsRouter(portFor(db)));
   api.route("/dashboard", createDashboardRouter(db, env));
   api.route("/reports", createReportsRouter(db, env));
   api.route("/work-logs", createWorkLogsRouter(db));

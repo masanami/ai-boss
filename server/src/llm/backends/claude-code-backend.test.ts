@@ -253,7 +253,7 @@ describe("TOOL_ZOD_SHAPES.update_task committed_start_at (決定6)", () => {
     const db = openDatabase(":memory:");
     try {
       await runMigrations(portFor(db));
-      const sessionId = insertSession(db, { type: "adhoc" }).id;
+      const sessionId = (await insertSession(portFor(db), { type: "adhoc" })).id;
       const task = await insertTask(portFor(db), {
         title: "資料作成",
         description: null,
@@ -264,7 +264,7 @@ describe("TOOL_ZOD_SHAPES.update_task committed_start_at (決定6)", () => {
         boss_comment: null,
         estimated_minutes: null,
       });
-      const setup = await executeBossTool(db, sessionId, "update_task", {
+      const setup = await executeBossTool(portFor(db), sessionId, "update_task", {
         id: task.id,
         committed_start_at: "2026-09-14T20:00:00+09:00",
       });
@@ -281,7 +281,7 @@ describe("TOOL_ZOD_SHAPES.update_task committed_start_at (決定6)", () => {
         return;
       }
 
-      const result = await executeBossTool(db, sessionId, "update_task", parsed.data);
+      const result = await executeBossTool(portFor(db), sessionId, "update_task", parsed.data);
 
       expect(result.isError).toBe(false);
       const updated = JSON.parse(result.content);

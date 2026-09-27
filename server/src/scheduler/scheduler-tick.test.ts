@@ -100,9 +100,9 @@ function ok(): Promise<{ stdout: string; stderr: string }> {
  * `new Date().toISOString()`) stay consistent with each other as the test
  * advances time, instead of drifting against a real wall clock.
  */
-function markTodaysMeetingsDone(db: Database.Database): void {
+async function markTodaysMeetingsDone(db: Database.Database): Promise<void> {
   for (const type of ["morning", "evening"] as SessionType[]) {
-    insertSession(db, { type });
+    await insertSession(portFor(db), { type });
   }
 }
 
@@ -213,7 +213,7 @@ const RULE_GATE_SCENARIOS: RuleGateScenario[] = [
         boss_comment: null,
         estimated_minutes: 30,
       });
-      markTodaysMeetingsDone(db);
+      await markTodaysMeetingsDone(db);
       // Past the (scaled) unstarted threshold for a 30-minute task (30 min).
       vi.setSystemTime(addMinutes(baseTime, 31));
       return `unstarted:${task.id}`;
@@ -243,7 +243,7 @@ const RULE_GATE_SCENARIOS: RuleGateScenario[] = [
         boss_comment: null,
         estimated_minutes: null,
       });
-      markTodaysMeetingsDone(db);
+      await markTodaysMeetingsDone(db);
       // Recent activity on the *other* (non-top-priority) task, inside the
       // avoidance window (30 min default).
       vi.setSystemTime(addMinutes(baseTime, AVOIDANCE_OTHER_TASK_UPDATE_OFFSET_MINUTES));
@@ -259,7 +259,7 @@ const RULE_GATE_SCENARIOS: RuleGateScenario[] = [
     setup: async (db, baseTime) => {
       vi.setSystemTime(baseTime);
       await recordActivityEvent(portFor(db), { type: "break_start", expected_minutes: 15 });
-      markTodaysMeetingsDone(db);
+      await markTodaysMeetingsDone(db);
       // Past the declared 15-minute break.
       vi.setSystemTime(addMinutes(baseTime, 31));
       return "break_overrun";
@@ -270,7 +270,7 @@ const RULE_GATE_SCENARIOS: RuleGateScenario[] = [
     setup: async (db, baseTime) => {
       vi.setSystemTime(baseTime);
       await recordActivityEvent(portFor(db), { type: "checkin" });
-      markTodaysMeetingsDone(db);
+      await markTodaysMeetingsDone(db);
       // Past the silence fallback threshold (45 min default; no in-progress
       // task with estimated_minutes exists, so the fallback applies).
       vi.setSystemTime(addMinutes(baseTime, 46));
@@ -302,7 +302,7 @@ const RULE_GATE_SCENARIOS: RuleGateScenario[] = [
         boss_comment: null,
         estimated_minutes: null,
       });
-      markTodaysMeetingsDone(db);
+      await markTodaysMeetingsDone(db);
       // 締切は前日の暦日なので、その翌暦日 00:00（= baseTime の当日 00:00）を
       // 過ぎた時点で超過が成立している。したがって baseTime 以降のどの tick でも
       // findOverdueTasks を通る。他シナリオと違いこのオフセットは閾値に紐づかず、
@@ -467,7 +467,7 @@ describe("createTicker().tick", () => {
       boss_comment: null,
       estimated_minutes: 30,
     });
-    markTodaysMeetingsDone(db);
+    await markTodaysMeetingsDone(db);
 
     // Past the (scaled) unstarted threshold for a 30-minute task.
     vi.setSystemTime(new Date("2026-07-05T09:31:00.000"));
@@ -509,7 +509,7 @@ describe("createTicker().tick", () => {
       estimated_minutes: null,
       committed_start_at: committedStartAt,
     });
-    markTodaysMeetingsDone(db);
+    await markTodaysMeetingsDone(db);
 
     vi.setSystemTime(new Date(committedStartAt));
 
@@ -545,7 +545,7 @@ describe("createTicker().tick", () => {
       estimated_minutes: null,
       committed_start_at: committedStartAt,
     });
-    markTodaysMeetingsDone(db);
+    await markTodaysMeetingsDone(db);
 
     // task_start チェックイン相当（todo -> in_progress）で約束が退役する。
     await updateTask(portFor(db), task.id, { status: "in_progress" });
@@ -581,7 +581,7 @@ describe("createTicker().tick", () => {
       estimated_minutes: null,
       committed_start_at: committedStartAt,
     });
-    markTodaysMeetingsDone(db);
+    await markTodaysMeetingsDone(db);
 
     vi.setSystemTime(new Date(2026, 6, 5, 14, 30));
 
@@ -605,7 +605,7 @@ describe("createTicker().tick", () => {
       boss_comment: null,
       estimated_minutes: 30,
     });
-    markTodaysMeetingsDone(db);
+    await markTodaysMeetingsDone(db);
 
     const execFile = vi.fn().mockImplementation(ok);
     const ticker = createTicker({ db, env, execFile });
@@ -634,7 +634,7 @@ describe("createTicker().tick", () => {
       boss_comment: null,
       estimated_minutes: 30,
     });
-    markTodaysMeetingsDone(db);
+    await markTodaysMeetingsDone(db);
 
     const execFile = vi.fn().mockImplementation(ok);
     const ticker = createTicker({ db, env, execFile });
@@ -665,7 +665,7 @@ describe("createTicker().tick", () => {
       boss_comment: null,
       estimated_minutes: 30,
     });
-    markTodaysMeetingsDone(db);
+    await markTodaysMeetingsDone(db);
     vi.setSystemTime(new Date("2026-07-05T09:31:00.000"));
 
     const execFile = vi.fn().mockRejectedValue(new Error("boom"));
@@ -699,7 +699,7 @@ describe("createTicker().tick", () => {
       boss_comment: null,
       estimated_minutes: 30,
     });
-    markTodaysMeetingsDone(db);
+    await markTodaysMeetingsDone(db);
     vi.setSystemTime(new Date("2026-07-05T09:31:00.000"));
 
     // Observed from inside the send itself: the row the duplicate-suppression
@@ -735,7 +735,7 @@ describe("createTicker().tick", () => {
       boss_comment: null,
       estimated_minutes: 30,
     });
-    markTodaysMeetingsDone(db);
+    await markTodaysMeetingsDone(db);
     vi.setSystemTime(new Date("2026-07-05T09:31:00.000"));
 
     insertNotificationMock.mockImplementation(() => {
@@ -921,7 +921,7 @@ describe("createTicker().tick", () => {
       boss_comment: null,
       estimated_minutes: 30,
     });
-    markTodaysMeetingsDone(db);
+    await markTodaysMeetingsDone(db);
     vi.setSystemTime(new Date("2026-07-05T09:31:00.000"));
 
     let resolveExecFile: (() => void) | undefined;
@@ -980,7 +980,7 @@ describe("createTicker().tick", () => {
       });
       await recordActivityEvent(portFor(db), { type: "task_start", task_id: task.id });
     }
-    markTodaysMeetingsDone(db);
+    await markTodaysMeetingsDone(db);
     vi.setSystemTime(mockedNow);
 
     // 1 件目の firing だけ DB 記録（insertNotification）を失敗させ、2 件目は
@@ -1018,7 +1018,7 @@ describe("createTicker().tick", () => {
       boss_comment: null,
       estimated_minutes: 30,
     });
-    markTodaysMeetingsDone(db);
+    await markTodaysMeetingsDone(db);
     vi.setSystemTime(new Date("2026-07-05T09:31:00.000"));
 
     // `generateNotificationBody` itself throws (distinct from its own
@@ -1238,7 +1238,7 @@ describe("createTicker().tick", () => {
           // passed by the tick time below).
           const otherSessionType: SessionType =
             sessionType === "morning" ? "evening" : "morning";
-          insertSession(db, { type: otherSessionType });
+          await insertSession(portFor(db), { type: otherSessionType });
 
           vi.setSystemTime(new Date("2026-07-05T19:50:00.000"));
           await recordActivityEvent(portFor(db), {
@@ -1279,7 +1279,7 @@ describe("createTicker().tick", () => {
 
     it("does not fire the evening meeting at 20:59 when today's evening override postpones it to 21:00 (AC-15)", async () => {
       vi.setSystemTime(BASE_TIME);
-      insertSession(db, { type: "morning" });
+      await insertSession(portFor(db), { type: "morning" });
       upsertOverride(db, TODAY_KEY, "evening", "21:00");
 
       vi.setSystemTime(new Date(2026, 6, 5, 20, 59, 0));
@@ -1292,7 +1292,7 @@ describe("createTicker().tick", () => {
 
     it("fires the evening meeting at 21:00 when today's evening override postpones it to 21:00 (AC-16)", async () => {
       vi.setSystemTime(BASE_TIME);
-      insertSession(db, { type: "morning" });
+      await insertSession(portFor(db), { type: "morning" });
       upsertOverride(db, TODAY_KEY, "evening", "21:00");
 
       vi.setSystemTime(new Date(2026, 6, 5, 21, 0, 0));
@@ -1310,7 +1310,7 @@ describe("createTicker().tick", () => {
 
     it("fires the morning meeting at 07:00 when today's morning override moves it earlier to 07:00 (AC-17)", async () => {
       vi.setSystemTime(BASE_TIME);
-      insertSession(db, { type: "evening" });
+      await insertSession(portFor(db), { type: "evening" });
       upsertOverride(db, TODAY_KEY, "morning", "07:00");
 
       vi.setSystemTime(new Date(2026, 6, 5, 7, 0, 0));
@@ -1328,7 +1328,7 @@ describe("createTicker().tick", () => {
 
     it("fires at the standing setting's time when the only override row on file is dated yesterday (AC-18)", async () => {
       vi.setSystemTime(BASE_TIME);
-      insertSession(db, { type: "morning" });
+      await insertSession(portFor(db), { type: "morning" });
       const yesterdayKey = toDateKey(
         new Date(BASE_TIME.getFullYear(), BASE_TIME.getMonth(), BASE_TIME.getDate() - 1),
       );
@@ -1351,7 +1351,7 @@ describe("createTicker().tick", () => {
 
     it("keeps the morning meeting firing at the standing setting's time when only today's evening meeting has an override (AC-19)", async () => {
       vi.setSystemTime(BASE_TIME);
-      insertSession(db, { type: "evening" });
+      await insertSession(portFor(db), { type: "evening" });
       upsertOverride(db, TODAY_KEY, "evening", "21:00");
 
       // Standing default morning time (09:00), unaffected by the evening-only
@@ -1375,7 +1375,7 @@ describe("createTicker().tick", () => {
     // しまう（今回の実装が壊れたときにこのテストで検出できるようにする）。
     it("restarts at escalation_level 1 for the first firing after postponing the evening meeting past its already-fired standing time (AC-20)", async () => {
       vi.setSystemTime(BASE_TIME);
-      insertSession(db, { type: "morning" });
+      await insertSession(portFor(db), { type: "morning" });
 
       // Standing time (18:00) fires first, recorded at L1.
       vi.setSystemTime(new Date(2026, 6, 5, 18, 0, 0));
@@ -1417,7 +1417,7 @@ describe("createTicker().tick", () => {
       try {
         vi.setSystemTime(BASE_TIME);
         await recordActivityEvent(portFor(db), { type: "checkin" });
-        insertSession(db, { type: "morning" });
+        await insertSession(portFor(db), { type: "morning" });
         upsertOverride(db, TODAY_KEY, "evening", "21:00");
 
         vi.setSystemTime(new Date(2026, 6, 5, 17, 59, 0));
@@ -1435,7 +1435,7 @@ describe("createTicker().tick", () => {
         await runMigrations(portFor(outsideDb));
         vi.setSystemTime(BASE_TIME);
         await recordActivityEvent(portFor(outsideDb), { type: "checkin" });
-        insertSession(outsideDb, { type: "morning" });
+        await insertSession(portFor(outsideDb), { type: "morning" });
         upsertOverride(outsideDb, TODAY_KEY, "evening", "21:00");
 
         // Past the standing work_end (18:00) but still before the postponed
@@ -1742,7 +1742,7 @@ describe("daily notification cap via tick on a file-backed DB (#562)", () => {
       boss_comment: null,
       estimated_minutes: 30,
     });
-    markTodaysMeetingsDone(db);
+    await markTodaysMeetingsDone(db);
     const execFile = vi.fn().mockImplementation(ok);
     const ticker = createTicker({ db, env, execFile });
 

@@ -1,4 +1,4 @@
-import type Database from "better-sqlite3";
+import type { Db } from "../db/db-port.js";
 import type { RecentDecision, TaskRelatedRecord } from "../boss/persona-prompt.js";
 import type { Decision, DecisionKind, DecisionListItem } from "./decision.js";
 
@@ -25,13 +25,11 @@ export interface NewDecisionRecord {
   kind?: DecisionKind;
 }
 
-export function findDecisionById(
-  db: Database.Database,
+export async function findDecisionById(
+  db: Db,
   id: number,
-): Decision | undefined {
-  return db.prepare("SELECT * FROM decisions WHERE id = ?").get(id) as
-    | Decision
-    | undefined;
+): Promise<Decision | undefined> {
+  return db.get<Decision>("SELECT * FROM decisions WHERE id = ?", [id]);
 }
 
 /**
@@ -42,27 +40,26 @@ export function findDecisionById(
  * passes `kind: 'mentoring'` explicitly. Returns the persisted row (all
  * columns, as read back from the database).
  */
-export function insertDecision(
-  db: Database.Database,
+export async function insertDecision(
+  db: Db,
   record: NewDecisionRecord,
-): Decision {
+): Promise<Decision> {
   const now = new Date().toISOString();
 
-  const result = db
-    .prepare(
-      `INSERT INTO decisions (session_id, task_id, content, rationale, kind, status, created_at)
+  const result = await db.run(
+    `INSERT INTO decisions (session_id, task_id, content, rationale, kind, status, created_at)
        VALUES (?, ?, ?, ?, ?, 'active', ?)`,
-    )
-    .run(
+    [
       record.session_id,
       record.task_id ?? null,
       record.content,
       record.rationale ?? null,
       record.kind ?? "decision",
       now,
-    );
+    ],
+  );
 
-  const decision = findDecisionById(db, Number(result.lastInsertRowid));
+  const decision = await findDecisionById(db, result.lastInsertRowid);
   if (!decision) {
     throw new Error("failed to read back the inserted decision");
   }
@@ -84,15 +81,13 @@ export function insertDecision(
  * Rows are returned flat, in `created_at` order — grouping into task
  * sections is the renderer's job (#358 判断5・ADR 0006 決定1).
  */
-export function listDecisions(db: Database.Database): DecisionListItem[] {
-  return db
-    .prepare(
-      `SELECT decisions.*, tasks.title AS task_title
+export async function listDecisions(db: Db): Promise<DecisionListItem[]> {
+  return db.all<DecisionListItem>(
+    `SELECT decisions.*, tasks.title AS task_title
        FROM decisions
        LEFT JOIN tasks ON tasks.id = decisions.task_id
        ORDER BY decisions.created_at DESC, decisions.id DESC`,
-    )
-    .all() as DecisionListItem[];
+  );
 }
 
 /**
@@ -106,15 +101,14 @@ export function listDecisions(db: Database.Database): DecisionListItem[] {
  * filter after the `LIMIT` would let mentoring rows eat into the limited
  * window and shrink the number of actual decisions returned.
  */
-export function listRecentDecisions(
-  db: Database.Database,
+export async function listRecentDecisions(
+  db: Db,
   limit: number,
-): RecentDecision[] {
-  const rows = db
-    .prepare(
-      "SELECT content, created_at FROM decisions WHERE kind = 'decision' ORDER BY created_at DESC LIMIT ?",
-    )
-    .all(limit) as DecisionRow[];
+): Promise<RecentDecision[]> {
+  const rows = await db.all<DecisionRow>(
+    "SELECT content, created_at FROM decisions WHERE kind = 'decision' ORDER BY created_at DESC LIMIT ?",
+    [limit],
+  );
 
   return rows.map((row) => ({
     content: row.content,
@@ -128,16 +122,15 @@ export function listRecentDecisions(
  * `kind` で絞らない（決定とメンタリングの両方を返す）。`listRecentDecisions`
  * には一切触れないため #408 AC-42 の契約は構造的に保たれる。
  */
-export function listDecisionsByTaskId(
-  db: Database.Database,
+export async function listDecisionsByTaskId(
+  db: Db,
   taskId: number,
   limit: number,
-): TaskRelatedRecord[] {
-  const rows = db
-    .prepare(
-      "SELECT content, rationale, kind, created_at FROM decisions WHERE task_id = ? ORDER BY created_at DESC, id DESC LIMIT ?",
-    )
-    .all(taskId, limit) as TaskRelatedRecordRow[];
+): Promise<TaskRelatedRecord[]> {
+  const rows = await db.all<TaskRelatedRecordRow>(
+    "SELECT content, rationale, kind, created_at FROM decisions WHERE task_id = ? ORDER BY created_at DESC, id DESC LIMIT ?",
+    [taskId, limit],
+  );
 
   return rows.map((row) => ({
     content: row.content,
@@ -154,14 +147,13 @@ export function listDecisionsByTaskId(
  * from its caller (#276 判断3). Scoped to `session_id` so a mentoring
  * conclusion recorded in another session never counts toward this one.
  */
-export function countMentoringDecisionsBySessionId(
-  db: Database.Database,
+export async function countMentoringDecisionsBySessionId(
+  db: Db,
   sessionId: number,
-): number {
-  const row = db
-    .prepare(
-      "SELECT COUNT(*) AS count FROM decisions WHERE session_id = ? AND kind = 'mentoring'",
-    )
-    .get(sessionId) as { count: number };
-  return row.count;
+): Promise<number> {
+  const row = await db.get<{ count: number }>(
+    "SELECT COUNT(*) AS count FROM decisions WHERE session_id = ? AND kind = 'mentoring'",
+    [sessionId],
+  );
+  return row?.count ?? 0;
 }

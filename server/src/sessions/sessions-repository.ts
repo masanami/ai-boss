@@ -1,4 +1,4 @@
-import type Database from "better-sqlite3";
+import type { Db } from "../db/db-port.js";
 import { toDateKey } from "../detection/time-utils.js";
 import type { RecentSessionSummary } from "../boss/persona-prompt.js";
 import type { Session, SessionType } from "./session.js";
@@ -7,13 +7,11 @@ export interface NewSessionRecord {
   type: SessionType;
 }
 
-export function findSessionById(
-  db: Database.Database,
+export async function findSessionById(
+  db: Db,
   id: number,
-): Session | undefined {
-  return db.prepare("SELECT * FROM sessions WHERE id = ?").get(id) as
-    | Session
-    | undefined;
+): Promise<Session | undefined> {
+  return db.get<Session>("SELECT * FROM sessions WHERE id = ?", [id]);
 }
 
 /**
@@ -25,20 +23,19 @@ export function findSessionById(
  * are not summarized (no natural "end" trigger in the UI, see that ticket's
  * PR for the full rationale). Returns the persisted row.
  */
-export function insertSession(
-  db: Database.Database,
+export async function insertSession(
+  db: Db,
   record: NewSessionRecord,
-): Session {
+): Promise<Session> {
   const now = new Date().toISOString();
 
-  const result = db
-    .prepare(
-      `INSERT INTO sessions (type, started_at, ended_at, summary)
+  const result = await db.run(
+    `INSERT INTO sessions (type, started_at, ended_at, summary)
        VALUES (?, ?, NULL, NULL)`,
-    )
-    .run(record.type, now);
+    [record.type, now],
+  );
 
-  const session = findSessionById(db, Number(result.lastInsertRowid));
+  const session = await findSessionById(db, result.lastInsertRowid);
   if (!session) {
     throw new Error("failed to read back the inserted session");
   }
@@ -54,11 +51,11 @@ export function insertSession(
  * the original timestamp). Returns undefined when the session does not
  * exist.
  */
-export function endSession(
-  db: Database.Database,
+export async function endSession(
+  db: Db,
   id: number,
-): Session | undefined {
-  const session = findSessionById(db, id);
+): Promise<Session | undefined> {
+  const session = await findSessionById(db, id);
   if (!session) {
     return undefined;
   }
@@ -67,9 +64,9 @@ export function endSession(
   }
 
   const now = new Date().toISOString();
-  db.prepare("UPDATE sessions SET ended_at = ? WHERE id = ?").run(now, id);
+  await db.run("UPDATE sessions SET ended_at = ? WHERE id = ?", [now, id]);
 
-  return findSessionById(db, id);
+  return await findSessionById(db, id);
 }
 
 export type CreateSessionResult =
@@ -93,11 +90,11 @@ export type CreateSessionResult =
  * `reports-routes.ts`'s `POST /generate` `date`-parameter resolution (manual
  * regeneration for a specific day, Issue #297).
  */
-export function findEveningSessionByDateKey(
-  db: Database.Database,
+export async function findEveningSessionByDateKey(
+  db: Db,
   dateKey: string,
-): Session | undefined {
-  return listSessions(db, { type: "evening" }).find(
+): Promise<Session | undefined> {
+  return (await listSessions(db, { type: "evening" })).find(
     (session) => toDateKey(new Date(session.started_at)) === dateKey,
   );
 }
@@ -110,38 +107,36 @@ export function findEveningSessionByDateKey(
  * (docs/adr/0008-evening-dialogue-prerequisite.md 決定 4), not "one evening
  * session while one is open".
  */
-function hasTodaysEveningSession(db: Database.Database, today: string): boolean {
-  return findEveningSessionByDateKey(db, today) !== undefined;
+async function hasTodaysEveningSession(db: Db, today: string): Promise<boolean> {
+  return await findEveningSessionByDateKey(db, today) !== undefined;
 }
 
 /**
  * Creates a new session, atomically enforcing "at most one evening session
  * per local calendar day" (docs/adr/0008-evening-dialogue-prerequisite.md
  * 決定 4). The existence check and the INSERT run inside a single
- * `db.transaction`, so a concurrent request cannot interleave between the
- * check and the write on this single-process/single-writer SQLite
- * connection. Morning and adhoc sessions are never limited and always
+ * `db.transaction` (T5・#605), so a concurrent request cannot interleave
+ * between the check and the write: the port's serialization lock holds every
+ * other flow's DB operation until the transaction ends (AC-10). Morning and adhoc sessions are never limited and always
  * succeed. This is the entry point `POST /api/sessions` should call; the
  * plain `insertSession` above stays unrestricted for other call sites
  * (schedulers, tests, other repositories) that need to seed sessions without
  * the daily-limit check.
  */
-export function createSession(
-  db: Database.Database,
+export async function createSession(
+  db: Db,
   record: NewSessionRecord,
-): CreateSessionResult {
-  const attempt = db.transaction((): CreateSessionResult => {
+): Promise<CreateSessionResult> {
+  return db.transaction(async (tx): Promise<CreateSessionResult> => {
     if (record.type === "evening") {
       const today = toDateKey(new Date());
-      if (hasTodaysEveningSession(db, today)) {
+      if (await hasTodaysEveningSession(tx, today)) {
         return { ok: false, code: "evening_session_already_exists" };
       }
     }
 
-    return { ok: true, session: insertSession(db, record) };
+    return { ok: true, session: await insertSession(tx, record) };
   });
-
-  return attempt();
 }
 
 export interface ListSessionsFilter {
@@ -153,21 +148,18 @@ export interface ListSessionsFilter {
  * as a tie-breaker so the most recently created session sorts first when
  * timestamps collide. Optionally filtered by `type`.
  */
-export function listSessions(
-  db: Database.Database,
+export async function listSessions(
+  db: Db,
   filter?: ListSessionsFilter,
-): Session[] {
+): Promise<Session[]> {
   if (filter?.type) {
-    return db
-      .prepare(
-        "SELECT * FROM sessions WHERE type = ? ORDER BY started_at DESC, id DESC",
-      )
-      .all(filter.type) as Session[];
+    return db.all<Session>(
+      "SELECT * FROM sessions WHERE type = ? ORDER BY started_at DESC, id DESC",
+      [filter.type],
+    );
   }
 
-  return db
-    .prepare("SELECT * FROM sessions ORDER BY started_at DESC, id DESC")
-    .all() as Session[];
+  return db.all<Session>("SELECT * FROM sessions ORDER BY started_at DESC, id DESC");
 }
 
 /**
@@ -182,23 +174,24 @@ export function listSessions(
  * that race is not an error — the row already holds a valid summary, so the
  * caller simply gets the stored one back.
  */
-export function updateSessionSummary(
-  db: Database.Database,
+export async function updateSessionSummary(
+  db: Db,
   id: number,
   summary: string,
-): Session | undefined {
-  const session = findSessionById(db, id);
+): Promise<Session | undefined> {
+  const session = await findSessionById(db, id);
   if (!session) {
     return undefined;
   }
 
-  db.prepare(
+  await db.run(
     "UPDATE sessions SET summary = ? WHERE id = ? AND summary IS NULL",
-  ).run(summary, id);
+    [summary, id],
+  );
 
   // Re-read regardless of whether this call won the race: on a loss the row
   // holds the summary stored by the winner, which is what callers must use.
-  return findSessionById(db, id);
+  return await findSessionById(db, id);
 }
 
 interface SessionSummaryRow {
@@ -215,19 +208,18 @@ interface SessionSummaryRow {
  * `PersonaPromptContext.recentSessionSummaries`, mirroring how
  * `decisions-repository.ts`'s `listRecentDecisions` maps to `RecentDecision`.
  */
-export function listRecentSessionSummaries(
-  db: Database.Database,
+export async function listRecentSessionSummaries(
+  db: Db,
   limit: number,
-): RecentSessionSummary[] {
-  const rows = db
-    .prepare(
-      `SELECT type, summary, COALESCE(ended_at, started_at) AS reported_at
+): Promise<RecentSessionSummary[]> {
+  const rows = await db.all<SessionSummaryRow>(
+    `SELECT type, summary, COALESCE(ended_at, started_at) AS reported_at
        FROM sessions
        WHERE summary IS NOT NULL AND summary != ''
        ORDER BY COALESCE(ended_at, started_at) DESC, id DESC
        LIMIT ?`,
-    )
-    .all(limit) as SessionSummaryRow[];
+    [limit],
+  );
 
   return rows.map((row) => ({
     type: row.type,

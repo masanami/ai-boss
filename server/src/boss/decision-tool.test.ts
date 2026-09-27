@@ -22,7 +22,7 @@ describe("executeRecordDecisionTool", () => {
   beforeEach(async () => {
     db = openDatabase(":memory:");
     await runMigrations(portFor(db));
-    sessionId = insertSession(db, { type: "adhoc" }).id;
+    sessionId = (await insertSession(portFor(db), { type: "adhoc" })).id;
   });
 
   afterEach(async () => {
@@ -30,7 +30,7 @@ describe("executeRecordDecisionTool", () => {
   });
 
   it("records a decision for the current session and returns it as the tool result content", async () => {
-    const result = await executeRecordDecisionTool(db, sessionId, {
+    const result = await executeRecordDecisionTool(portFor(db), sessionId, {
       content: "資料作成を最優先にする",
     });
 
@@ -42,12 +42,12 @@ describe("executeRecordDecisionTool", () => {
       status: "active",
     });
 
-    const decisions = listDecisions(db);
+    const decisions = (await listDecisions(portFor(db)));
     expect(decisions).toHaveLength(1);
   });
 
   it("records a decision with kind 'decision' by default (#358/#397)", async () => {
-    const result = await executeRecordDecisionTool(db, sessionId, {
+    const result = await executeRecordDecisionTool(portFor(db), sessionId, {
       content: "資料作成を最優先にする",
     });
 
@@ -56,15 +56,15 @@ describe("executeRecordDecisionTool", () => {
   });
 
   it("returns an error result when content is missing", async () => {
-    const result = await executeRecordDecisionTool(db, sessionId, {});
+    const result = await executeRecordDecisionTool(portFor(db), sessionId, {});
 
     expect(result.isError).toBe(true);
     expect(result.content).toContain("content");
-    expect(listDecisions(db)).toHaveLength(0);
+    expect((await listDecisions(portFor(db)))).toHaveLength(0);
   });
 
   it("persists rationale when provided", async () => {
-    const result = await executeRecordDecisionTool(db, sessionId, {
+    const result = await executeRecordDecisionTool(portFor(db), sessionId, {
       content: "締切を延ばす",
       rationale: "他タスクが優先のため",
     });
@@ -85,7 +85,7 @@ describe("executeRecordDecisionTool", () => {
       estimated_minutes: null,
     });
 
-    const result = await executeRecordDecisionTool(db, sessionId, {
+    const result = await executeRecordDecisionTool(portFor(db), sessionId, {
       content: "締切を延ばす",
       task_id: task.id,
     });
@@ -96,7 +96,7 @@ describe("executeRecordDecisionTool", () => {
   });
 
   it("treats an explicit null task_id the same as omitted", async () => {
-    const result = await executeRecordDecisionTool(db, sessionId, {
+    const result = await executeRecordDecisionTool(portFor(db), sessionId, {
       content: "締切を延ばす",
       task_id: null,
     });
@@ -107,13 +107,13 @@ describe("executeRecordDecisionTool", () => {
   });
 
   it("returns an error result and does not persist when task_id does not refer to an existing task", async () => {
-    const result = await executeRecordDecisionTool(db, sessionId, {
+    const result = await executeRecordDecisionTool(portFor(db), sessionId, {
       content: "締切を延ばす",
       task_id: 9999,
     });
 
     expect(result.isError).toBe(true);
     expect(result.content).toContain("9999");
-    expect(listDecisions(db)).toHaveLength(0);
+    expect((await listDecisions(portFor(db)))).toHaveLength(0);
   });
 });

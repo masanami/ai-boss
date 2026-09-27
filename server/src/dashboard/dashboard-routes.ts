@@ -22,7 +22,7 @@ export function createDashboardRouter(
 
   dashboard.get("/", async (c) => {
     const now = new Date();
-    const todaysSessionTypes = listTodaysSessionTypes(db, now);
+    const todaysSessionTypes = await listTodaysSessionTypes(portFor(db), now);
 
     const response: DashboardResponse = {
       progress: calculateProgress(await listTasks(portFor(db)), now),

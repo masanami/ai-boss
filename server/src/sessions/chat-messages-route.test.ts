@@ -466,7 +466,7 @@ describe("POST /api/sessions/:id/messages", () => {
   // toClaudeMessages's own doc comment in chat-messages-route.ts.
   it("AC-8: drops a leading boss message (e.g. the meeting-opening line) so the request sent to streamBossMessage starts with role user", async () => {
     const session = await createSession();
-    insertMessage(db, {
+    await insertMessage(portFor(db), {
       session_id: session.id,
       role: "boss",
       content: "夕会が始まった。今日の進捗を報告しろ。",
@@ -529,8 +529,8 @@ describe("POST /api/sessions/:id/messages", () => {
 
     it("HTML タグを含む boss の行は stripHtmlTags 適用後の文字列で assistant へ写る", async () => {
       const session = await createSession();
-      insertMessage(db, { session_id: session.id, role: "user", content: "何から始めればいい？" });
-      insertMessage(db, { session_id: session.id, role: "boss", content: RAW_BOSS_HTML });
+      await insertMessage(portFor(db), { session_id: session.id, role: "user", content: "何から始めればいい？" });
+      await insertMessage(portFor(db), { session_id: session.id, role: "boss", content: RAW_BOSS_HTML });
       streamBossMessageMock.mockResolvedValue(fakeTextMessage("了解した"));
 
       await postMessage(session.id, "わかりました");
@@ -547,8 +547,8 @@ describe("POST /api/sessions/:id/messages", () => {
 
     it("HTML タグを含む user の行は 1 文字も変えずに user へ写る", async () => {
       const session = await createSession();
-      insertMessage(db, { session_id: session.id, role: "user", content: RAW_USER_HTML });
-      insertMessage(db, { session_id: session.id, role: "boss", content: "了解した" });
+      await insertMessage(portFor(db), { session_id: session.id, role: "user", content: RAW_USER_HTML });
+      await insertMessage(portFor(db), { session_id: session.id, role: "boss", content: "了解した" });
       streamBossMessageMock.mockResolvedValue(fakeTextMessage("了解した"));
 
       // 履歴の行と、このターンで投稿される行の両方を観測する。
@@ -567,8 +567,8 @@ describe("POST /api/sessions/:id/messages", () => {
       // いずれも `stripHtmlTags` が触らないと決めている形（トリムも畳み込みもしない）。
       const untouched = "  `<タスク名>` の形式で報告しろ。<A> と <B> を比べ、a < b > c も見ろ。\n\n\n以上だ  ";
       const session = await createSession();
-      insertMessage(db, { session_id: session.id, role: "user", content: "報告の形式は？" });
-      insertMessage(db, { session_id: session.id, role: "boss", content: untouched });
+      await insertMessage(portFor(db), { session_id: session.id, role: "user", content: "報告の形式は？" });
+      await insertMessage(portFor(db), { session_id: session.id, role: "boss", content: untouched });
       streamBossMessageMock.mockResolvedValue(fakeTextMessage("了解した"));
 
       await postMessage(session.id, "わかりました");
@@ -582,10 +582,10 @@ describe("POST /api/sessions/:id/messages", () => {
 
     it("先頭の assistant 行は HTML タグを含んでいてもすべて落とし、以降の boss の行だけ正規化する", async () => {
       const session = await createSession();
-      insertMessage(db, { session_id: session.id, role: "boss", content: "<p>朝会が始まった</p>" });
-      insertMessage(db, { session_id: session.id, role: "boss", content: "<p>報告しろ</p>" });
-      insertMessage(db, { session_id: session.id, role: "user", content: "資料作成を進めています" });
-      insertMessage(db, { session_id: session.id, role: "boss", content: RAW_BOSS_HTML });
+      await insertMessage(portFor(db), { session_id: session.id, role: "boss", content: "<p>朝会が始まった</p>" });
+      await insertMessage(portFor(db), { session_id: session.id, role: "boss", content: "<p>報告しろ</p>" });
+      await insertMessage(portFor(db), { session_id: session.id, role: "user", content: "資料作成を進めています" });
+      await insertMessage(portFor(db), { session_id: session.id, role: "boss", content: RAW_BOSS_HTML });
       streamBossMessageMock.mockResolvedValue(fakeTextMessage("了解した"));
 
       await postMessage(session.id, "わかりました");
@@ -609,8 +609,8 @@ describe("POST /api/sessions/:id/messages", () => {
       { name: "ブロック境界タグのみ（正規化後は改行のみ）", raw: "<p></p><br>" },
     ])("正規化すると可視テキストが残らない boss の行は履歴から落とす: $name", async ({ raw }) => {
       const session = await createSession();
-      insertMessage(db, { session_id: session.id, role: "user", content: "何から始めればいい？" });
-      insertMessage(db, { session_id: session.id, role: "boss", content: raw, interrupted: true });
+      await insertMessage(portFor(db), { session_id: session.id, role: "user", content: "何から始めればいい？" });
+      await insertMessage(portFor(db), { session_id: session.id, role: "boss", content: raw, interrupted: true });
       streamBossMessageMock.mockResolvedValue(fakeTextMessage("了解した"));
 
       await postMessage(session.id, "もう一度お願いします");
@@ -625,8 +625,8 @@ describe("POST /api/sessions/:id/messages", () => {
 
     it("チャット応答の前後で messages.content は LLM の生出力のまま（履歴の正規化は保存値へ書き戻さない）", async () => {
       const session = await createSession();
-      insertMessage(db, { session_id: session.id, role: "user", content: "何から始めればいい？" });
-      insertMessage(db, { session_id: session.id, role: "boss", content: RAW_BOSS_HTML });
+      await insertMessage(portFor(db), { session_id: session.id, role: "user", content: "何から始めればいい？" });
+      await insertMessage(portFor(db), { session_id: session.id, role: "boss", content: RAW_BOSS_HTML });
       const rawReply = "<p>次は<strong>レビュー依頼</strong>だ</p>";
       streamBossMessageMock.mockImplementation(
         async (_client, _request, callbacks: StreamBossMessageCallbacks) => {
@@ -647,8 +647,8 @@ describe("POST /api/sessions/:id/messages", () => {
 
     it("当日の随時チャットの参考情報ブロックに載る content は DB の値と一致する（S2 では正規化しない）", async () => {
       const adhocSession = await createSession();
-      insertMessage(db, { session_id: adhocSession.id, role: "user", content: "経費精算のことで相談したい" });
-      insertMessage(db, { session_id: adhocSession.id, role: "boss", content: RAW_BOSS_HTML });
+      await insertMessage(portFor(db), { session_id: adhocSession.id, role: "user", content: "経費精算のことで相談したい" });
+      await insertMessage(portFor(db), { session_id: adhocSession.id, role: "boss", content: RAW_BOSS_HTML });
       const app = createApp(db, env);
       const meeting = await readJson<Session>(
         await app.request("/api/sessions", {
@@ -678,8 +678,8 @@ describe("POST /api/sessions/:id/messages", () => {
       );
       const rawDecision = "<p>資料作成を<strong>最優先</strong>にする</p>";
       const rawSummary = "<p>資料作成を 13 時までに終わらせると<em>決定</em>した。</p>";
-      insertDecision(db, { session_id: priorSession.id, content: rawDecision });
-      updateSessionSummary(db, priorSession.id, rawSummary);
+      await insertDecision(portFor(db), { session_id: priorSession.id, content: rawDecision });
+      await updateSessionSummary(portFor(db), priorSession.id, rawSummary);
       const session = await createSession();
       streamBossMessageMock.mockResolvedValue(fakeTextMessage("了解した"));
 
@@ -1218,7 +1218,7 @@ describe("POST /api/sessions/:id/messages", () => {
       await res.text();
 
       expect(res.status).toBe(200);
-      const decisions = listDecisions(db);
+      const decisions = (await listDecisions(portFor(db)));
       expect(decisions).toHaveLength(1);
       expect(decisions[0]).toMatchObject({
         kind: "mentoring",
@@ -1369,8 +1369,8 @@ describe("POST /api/sessions/:id/messages", () => {
         body: JSON.stringify({ type: "morning" }),
       }),
     );
-    updateSessionSummary(
-      db,
+    await updateSessionSummary(
+      portFor(db),
       priorSession.id,
       "資料作成を最優先にし、13時までに終わらせることを決定した。",
     );
@@ -1406,12 +1406,12 @@ describe("POST /api/sessions/:id/messages", () => {
      */
     async function seedTodaysAdhocChat(): Promise<void> {
       const adhocSession = await createSession();
-      insertMessage(db, {
+      await insertMessage(portFor(db), {
         session_id: adhocSession.id,
         role: "user",
         content: "経費精算のことで相談したい",
       });
-      insertMessage(db, {
+      await insertMessage(portFor(db), {
         session_id: adhocSession.id,
         role: "boss",
         content: "経費精算は今日中に出せ。後回しにするな。",
@@ -1712,7 +1712,7 @@ describe("POST /api/sessions/:id/messages", () => {
     const events = parseSseEvents(await res.text());
     expect(streamBossMessageMock).toHaveBeenCalledTimes(1);
 
-    const decisions = listDecisions(db);
+    const decisions = (await listDecisions(portFor(db)));
     expect(decisions).toHaveLength(1);
     expect(decisions[0]).toMatchObject({
       session_id: session.id,
@@ -1765,7 +1765,7 @@ describe("POST /api/sessions/:id/messages", () => {
     const toolPayload = JSON.parse(toolEvent!.data) as { isError: boolean };
     expect(toolPayload.isError).toBe(true);
     expect(streamBossMessageMock).toHaveBeenCalledTimes(1);
-    expect(listDecisions(db)).toHaveLength(0);
+    expect((await listDecisions(portFor(db)))).toHaveLength(0);
   });
 
   it("marks the tool result as an error and still finalizes when the tool call is invalid", async () => {

@@ -343,7 +343,7 @@ describe("sessions routes", () => {
       createBossMessageMock.mockResolvedValue(fakeTextMessage("今日はA案件から片付けろ。"));
 
       const session = await readJson<Session>(await postSession(app, "morning"));
-      insertMessage(db, {
+      await insertMessage(portFor(db), {
         session_id: session.id,
         role: "user",
         content: "了解、A案件からやる",
@@ -456,12 +456,12 @@ describe("sessions routes", () => {
           body: JSON.stringify({ type: "adhoc" }),
         }),
       );
-      const first = insertMessage(db, {
+      const first = await insertMessage(portFor(db), {
         session_id: session.id,
         role: "user",
         content: "最初の発言",
       });
-      const second = insertMessage(db, {
+      const second = await insertMessage(portFor(db), {
         session_id: session.id,
         role: "boss",
         content: "ボスの応答",
@@ -486,7 +486,7 @@ describe("sessions routes", () => {
           body: JSON.stringify({ type: "adhoc" }),
         }),
       );
-      insertMessage(db, {
+      await insertMessage(portFor(db), {
         session_id: session.id,
         role: "boss",
         content: "<p>資料作成を優先しろ</p><strong>今日中に</strong>。",
@@ -510,7 +510,7 @@ describe("sessions routes", () => {
         }),
       );
       const rawUserContent = "<p>資料作成を優先しろ</p>という指示を受けた";
-      insertMessage(db, {
+      await insertMessage(portFor(db), {
         session_id: session.id,
         role: "user",
         content: rawUserContent,
@@ -629,12 +629,12 @@ describe("sessions routes", () => {
           body: JSON.stringify({ type: "morning" }),
         }),
       );
-      insertMessage(db, {
+      await insertMessage(portFor(db), {
         session_id: session.id,
         role: "user",
         content: "資料作成を今日中に終わらせます",
       });
-      insertMessage(db, {
+      await insertMessage(portFor(db), {
         session_id: session.id,
         role: "boss",
         content: "資料作成を最優先にしろ",
@@ -670,7 +670,7 @@ describe("sessions routes", () => {
           body: JSON.stringify({ type: "evening" }),
         }),
       );
-      insertMessage(db, { session_id: session.id, role: "user", content: "進捗報告です" });
+      await insertMessage(portFor(db), { session_id: session.id, role: "user", content: "進捗報告です" });
       createBossMessageMock.mockRejectedValue(new Error("connection reset with request id xyz"));
 
       const res = await app.request(`/api/sessions/${session.id}/end`, {
@@ -693,7 +693,7 @@ describe("sessions routes", () => {
           body: JSON.stringify({ type: "adhoc" }),
         }),
       );
-      insertMessage(db, { session_id: session.id, role: "user", content: "ちょっと相談です" });
+      await insertMessage(portFor(db), { session_id: session.id, role: "user", content: "ちょっと相談です" });
 
       const res = await app.request(`/api/sessions/${session.id}/end`, {
         method: "POST",
@@ -716,7 +716,7 @@ describe("sessions routes", () => {
           body: JSON.stringify({ type: "morning" }),
         }),
       );
-      insertMessage(db, { session_id: session.id, role: "user", content: "報告します" });
+      await insertMessage(portFor(db), { session_id: session.id, role: "user", content: "報告します" });
       // #276: このテストの主題は要約の非再生成であり、メンタリング完了とは
       // 無関係 — 朝会終了ゲートに巻き込まれないよう強制設定をオフにする。
       await setSettingValue(portFor(db), "morning_mentoring_required", "false");
@@ -754,8 +754,8 @@ describe("sessions routes", () => {
         return readJson<Session>(await postSession(app, "morning"));
       }
 
-      function recordMentoringConclusion(db: Database.Database, sessionId: number): void {
-        insertDecision(db, {
+      async function recordMentoringConclusion(db: Database.Database, sessionId: number): Promise<void> {
+        await insertDecision(portFor(db), {
           session_id: sessionId,
           content: "このまま進める",
           rationale: "優先度の付け方を確認した",
@@ -780,7 +780,7 @@ describe("sessions routes", () => {
       it("AC-18: blocks ending a morning session with a mentoring record but zero user messages", async () => {
         const app = createApp(db);
         const session = await postMorningSession(app);
-        recordMentoringConclusion(db, session.id);
+        await recordMentoringConclusion(db, session.id);
 
         const res = await app.request(`/api/sessions/${session.id}/end`, {
           method: "POST",
@@ -795,8 +795,8 @@ describe("sessions routes", () => {
         const env = { ANTHROPIC_API_KEY: "sk-ant-test-key" };
         const app = createApp(db, env);
         const session = await postMorningSession(app);
-        insertMessage(db, { session_id: session.id, role: "user", content: "今日の進め方です" });
-        recordMentoringConclusion(db, session.id);
+        await insertMessage(portFor(db), { session_id: session.id, role: "user", content: "今日の進め方です" });
+        await recordMentoringConclusion(db, session.id);
 
         const res = await app.request(`/api/sessions/${session.id}/end`, {
           method: "POST",

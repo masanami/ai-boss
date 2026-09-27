@@ -24,8 +24,8 @@ describe("daily-reports-repository", () => {
   });
 
   describe("upsertDailyReport", () => {
-    it("inserts a new row when no report exists for the date", () => {
-      const session = insertSession(db, { type: "evening" });
+    it("inserts a new row when no report exists for the date", async () => {
+      const session = await insertSession(portFor(db), { type: "evening" });
 
       const report = upsertDailyReport(db, {
         date: "2026-08-14",
@@ -43,14 +43,14 @@ describe("daily-reports-repository", () => {
       expect(typeof report.updated_at).toBe("string");
     });
 
-    it("overwrites the same date on re-generation (upsert), keeping created_at but updating updated_at and content", () => {
+    it("overwrites the same date on re-generation (upsert), keeping created_at but updating updated_at and content", async () => {
       // 実時間待機（setTimeout）ではなく fake timers で時刻を進める
       // （CodeRabbit 指摘: 実待機はテストを遅く・不安定にする）。時刻は
       // ローカル日付コンストラクタ由来（CLAUDE.md「テスト方針」）。
       vi.useFakeTimers();
       vi.setSystemTime(new Date(2026, 7, 14, 19, 0, 0));
 
-      const session = insertSession(db, { type: "evening" });
+      const session = await insertSession(portFor(db), { type: "evening" });
 
       const first = upsertDailyReport(db, {
         date: "2026-08-14",
@@ -61,7 +61,7 @@ describe("daily-reports-repository", () => {
       // created_at と updated_at の差を検出できるよう、値を1秒進めてから再生成する
       vi.setSystemTime(new Date(2026, 7, 14, 19, 0, 1));
 
-      const secondSession = insertSession(db, { type: "evening" });
+      const secondSession = await insertSession(portFor(db), { type: "evening" });
       const second = upsertDailyReport(db, {
         date: "2026-08-14",
         content: "# 日報（再生成後）",
@@ -75,8 +75,8 @@ describe("daily-reports-repository", () => {
       expect(second.updated_at).not.toBe(first.updated_at);
     });
 
-    it("does not create a duplicate row for the same date (UNIQUE upsert)", () => {
-      const session = insertSession(db, { type: "evening" });
+    it("does not create a duplicate row for the same date (UNIQUE upsert)", async () => {
+      const session = await insertSession(portFor(db), { type: "evening" });
 
       upsertDailyReport(db, {
         date: "2026-08-14",
@@ -101,8 +101,8 @@ describe("daily-reports-repository", () => {
       expect(findDailyReportByDate(db, "2026-08-14")).toBeUndefined();
     });
 
-    it("returns the full report row (including content) when it exists", () => {
-      const session = insertSession(db, { type: "evening" });
+    it("returns the full report row (including content) when it exists", async () => {
+      const session = await insertSession(portFor(db), { type: "evening" });
       upsertDailyReport(db, {
         date: "2026-08-14",
         content: "# 日報 2026-08-14（金）",
@@ -124,8 +124,8 @@ describe("daily-reports-repository", () => {
       expect(listDailyReports(db)).toEqual([]);
     });
 
-    it("returns only date/created_at/updated_at (no content), ordered by date descending", () => {
-      const session = insertSession(db, { type: "evening" });
+    it("returns only date/created_at/updated_at (no content), ordered by date descending", async () => {
+      const session = await insertSession(portFor(db), { type: "evening" });
       upsertDailyReport(db, {
         date: "2026-08-12",
         content: "# 古い日報",
@@ -145,8 +145,8 @@ describe("daily-reports-repository", () => {
       expect(list[0]).toHaveProperty("updated_at");
     });
 
-    it("does not list the same date twice after a re-generation (upsert)", () => {
-      const session = insertSession(db, { type: "evening" });
+    it("does not list the same date twice after a re-generation (upsert)", async () => {
+      const session = await insertSession(portFor(db), { type: "evening" });
       upsertDailyReport(db, {
         date: "2026-08-14",
         content: "# 1回目",

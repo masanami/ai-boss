@@ -74,20 +74,20 @@ describe("listRecentDecisions", () => {
     await runMigrations(portFor(db));
   });
 
-  afterEach(() => {
+  afterEach(async () => {
     db.close();
   });
 
-  it("returns an empty array when there are no decisions", () => {
-    expect(listRecentDecisions(db, 5)).toEqual([]);
+  it("returns an empty array when there are no decisions", async () => {
+    expect(await listRecentDecisions(portFor(db), 5)).toEqual([]);
   });
 
-  it("maps content and created_at to decidedAt, ordered most-recent first", () => {
-    const session = insertSession(db, { type: "adhoc" });
+  it("maps content and created_at to decidedAt, ordered most-recent first", async () => {
+    const session = await insertSession(portFor(db), { type: "adhoc" });
     insertRawDecision(db, session.id, "古い決定", "2026-07-01T00:00:00.000Z");
     insertRawDecision(db, session.id, "新しい決定", "2026-07-05T00:00:00.000Z");
 
-    const result = listRecentDecisions(db, 5);
+    const result = await listRecentDecisions(portFor(db), 5);
 
     expect(result).toEqual([
       { content: "新しい決定", decidedAt: "2026-07-05T00:00:00.000Z" },
@@ -95,13 +95,13 @@ describe("listRecentDecisions", () => {
     ]);
   });
 
-  it("caps the result at the given limit, keeping the most recent ones", () => {
-    const session = insertSession(db, { type: "adhoc" });
+  it("caps the result at the given limit, keeping the most recent ones", async () => {
+    const session = await insertSession(portFor(db), { type: "adhoc" });
     for (let i = 0; i < 7; i++) {
       insertRawDecision(db, session.id, `決定${i}`, `2026-07-0${(i % 9) + 1}T00:00:00.000Z`);
     }
 
-    const result = listRecentDecisions(db, 5);
+    const result = await listRecentDecisions(portFor(db), 5);
 
     expect(result.map((decision) => decision.content)).toEqual([
       "決定6",
@@ -112,8 +112,8 @@ describe("listRecentDecisions", () => {
     ]);
   });
 
-  it("excludes kind='mentoring' rows, keeping only kind='decision' ones (#408 AC-42 — chat context must not surface mentoring as a decision)", () => {
-    const session = insertSession(db, { type: "adhoc" });
+  it("excludes kind='mentoring' rows, keeping only kind='decision' ones (#408 AC-42 — chat context must not surface mentoring as a decision)", async () => {
+    const session = await insertSession(portFor(db), { type: "adhoc" });
     insertRawDecision(
       db,
       session.id,
@@ -131,7 +131,7 @@ describe("listRecentDecisions", () => {
       "decision",
     );
 
-    const result = listRecentDecisions(db, 5);
+    const result = await listRecentDecisions(portFor(db), 5);
 
     expect(result.map((decision) => decision.content)).toEqual(["通常の決定"]);
   });
@@ -145,14 +145,14 @@ describe("insertDecision", () => {
     await runMigrations(portFor(db));
   });
 
-  afterEach(() => {
+  afterEach(async () => {
     db.close();
   });
 
-  it("inserts a decision with status 'active' and a server-managed created_at, defaulting task_id/rationale to null", () => {
-    const session = insertSession(db, { type: "adhoc" });
+  it("inserts a decision with status 'active' and a server-managed created_at, defaulting task_id/rationale to null", async () => {
+    const session = await insertSession(portFor(db), { type: "adhoc" });
 
-    const decision = insertDecision(db, {
+    const decision = await insertDecision(portFor(db), {
       session_id: session.id,
       content: "資料作成を最優先にする",
     });
@@ -169,7 +169,7 @@ describe("insertDecision", () => {
   });
 
   it("persists task_id and rationale when provided", async () => {
-    const session = insertSession(db, { type: "adhoc" });
+    const session = await insertSession(portFor(db), { type: "adhoc" });
     const task = await insertTask(portFor(db), {
       title: "資料作成",
       description: null,
@@ -181,7 +181,7 @@ describe("insertDecision", () => {
       estimated_minutes: null,
     });
 
-    const decision = insertDecision(db, {
+    const decision = await insertDecision(portFor(db), {
       session_id: session.id,
       task_id: task.id,
       content: "締切を延ばす",
@@ -195,10 +195,10 @@ describe("insertDecision", () => {
     });
   });
 
-  it("defaults kind to 'decision' (#358/#397 — 'mentoring' rows are written by #276, not here)", () => {
-    const session = insertSession(db, { type: "adhoc" });
+  it("defaults kind to 'decision' (#358/#397 — 'mentoring' rows are written by #276, not here)", async () => {
+    const session = await insertSession(portFor(db), { type: "adhoc" });
 
-    const decision = insertDecision(db, {
+    const decision = await insertDecision(portFor(db), {
       session_id: session.id,
       content: "資料作成を最優先にする",
     });
@@ -206,10 +206,10 @@ describe("insertDecision", () => {
     expect(decision.kind).toBe("decision");
   });
 
-  it("persists kind = 'mentoring' when explicitly passed (#276)", () => {
-    const session = insertSession(db, { type: "adhoc" });
+  it("persists kind = 'mentoring' when explicitly passed (#276)", async () => {
+    const session = await insertSession(portFor(db), { type: "adhoc" });
 
-    const decision = insertDecision(db, {
+    const decision = await insertDecision(portFor(db), {
       session_id: session.id,
       content: "進め方の点検結果",
       kind: "mentoring",
@@ -218,10 +218,10 @@ describe("insertDecision", () => {
     expect(decision.kind).toBe("mentoring");
   });
 
-  it("persists the decision so it can be read back from the database", () => {
-    const session = insertSession(db, { type: "adhoc" });
+  it("persists the decision so it can be read back from the database", async () => {
+    const session = await insertSession(portFor(db), { type: "adhoc" });
 
-    const decision = insertDecision(db, {
+    const decision = await insertDecision(portFor(db), {
       session_id: session.id,
       content: "資料作成を最優先にする",
     });
@@ -239,22 +239,22 @@ describe("findDecisionById", () => {
     await runMigrations(portFor(db));
   });
 
-  afterEach(() => {
+  afterEach(async () => {
     db.close();
   });
 
-  it("returns undefined when no decision with the given id exists", () => {
-    expect(findDecisionById(db, 9999)).toBeUndefined();
+  it("returns undefined when no decision with the given id exists", async () => {
+    expect(await findDecisionById(portFor(db), 9999)).toBeUndefined();
   });
 
-  it("returns the decision when it exists", () => {
-    const session = insertSession(db, { type: "adhoc" });
-    const inserted = insertDecision(db, {
+  it("returns the decision when it exists", async () => {
+    const session = await insertSession(portFor(db), { type: "adhoc" });
+    const inserted = await insertDecision(portFor(db), {
       session_id: session.id,
       content: "資料作成を最優先にする",
     });
 
-    const found = findDecisionById(db, inserted.id);
+    const found = await findDecisionById(portFor(db), inserted.id);
 
     expect(found).toEqual(inserted);
   });
@@ -268,20 +268,20 @@ describe("listDecisions", () => {
     await runMigrations(portFor(db));
   });
 
-  afterEach(() => {
+  afterEach(async () => {
     db.close();
   });
 
-  it("returns an empty array when there are no decisions", () => {
-    expect(listDecisions(db)).toEqual([]);
+  it("returns an empty array when there are no decisions", async () => {
+    expect((await listDecisions(portFor(db)))).toEqual([]);
   });
 
-  it("returns all decisions ordered by created_at descending", () => {
-    const session = insertSession(db, { type: "adhoc" });
+  it("returns all decisions ordered by created_at descending", async () => {
+    const session = await insertSession(portFor(db), { type: "adhoc" });
     insertRawDecision(db, session.id, "古い決定", "2026-07-01T00:00:00.000Z");
     insertRawDecision(db, session.id, "新しい決定", "2026-07-05T00:00:00.000Z");
 
-    const result = listDecisions(db);
+    const result = (await listDecisions(portFor(db)));
 
     expect(result.map((decision) => decision.content)).toEqual([
       "新しい決定",
@@ -289,13 +289,13 @@ describe("listDecisions", () => {
     ]);
   });
 
-  it("falls back to id descending when created_at ties", () => {
-    const session = insertSession(db, { type: "adhoc" });
+  it("falls back to id descending when created_at ties", async () => {
+    const session = await insertSession(portFor(db), { type: "adhoc" });
     const sameInstant = localIso(2026, 7, 5, 9);
     insertRawDecision(db, session.id, "先に入れた決定", sameInstant);
     insertRawDecision(db, session.id, "後に入れた決定", sameInstant);
 
-    const result = listDecisions(db);
+    const result = (await listDecisions(portFor(db)));
 
     // 同値のときは id 降順 = 後から入れたものが先（既存契約の維持）
     expect(result.map((decision) => decision.content)).toEqual([
@@ -305,7 +305,7 @@ describe("listDecisions", () => {
   });
 
   it("resolves the related task's title as task_title", async () => {
-    const session = insertSession(db, { type: "adhoc" });
+    const session = await insertSession(portFor(db), { type: "adhoc" });
     const task = await insertTask(portFor(db), newTask("見積もり資料の作成"));
     insertRawDecision(
       db,
@@ -315,14 +315,14 @@ describe("listDecisions", () => {
       task.id,
     );
 
-    const [decision] = listDecisions(db);
+    const [decision] = (await listDecisions(portFor(db)));
 
     expect(decision.task_id).toBe(task.id);
     expect(decision.task_title).toBe("見積もり資料の作成");
   });
 
-  it("returns task_title = null for a decision with no task", () => {
-    const session = insertSession(db, { type: "adhoc" });
+  it("returns task_title = null for a decision with no task", async () => {
+    const session = await insertSession(portFor(db), { type: "adhoc" });
     insertRawDecision(
       db,
       session.id,
@@ -330,23 +330,23 @@ describe("listDecisions", () => {
       localIso(2026, 7, 5, 18),
     );
 
-    const [decision] = listDecisions(db);
+    const [decision] = (await listDecisions(portFor(db)));
 
     expect(decision.task_id).toBeNull();
     expect(decision.task_title).toBeNull();
   });
 
-  it("carries kind so the screen can tell decisions from mentoring", () => {
-    const session = insertSession(db, { type: "adhoc" });
+  it("carries kind so the screen can tell decisions from mentoring", async () => {
+    const session = await insertSession(portFor(db), { type: "adhoc" });
     insertRawDecision(db, session.id, "決定", localIso(2026, 7, 5, 9));
 
-    const [decision] = listDecisions(db);
+    const [decision] = (await listDecisions(portFor(db)));
 
     expect(decision.kind).toBe("decision");
   });
 
-  it("includes kind='mentoring' rows alongside kind='decision' rows (#408 AC-45 — the decision log is the reference screen and must not filter by kind)", () => {
-    const session = insertSession(db, { type: "adhoc" });
+  it("includes kind='mentoring' rows alongside kind='decision' rows (#408 AC-45 — the decision log is the reference screen and must not filter by kind)", async () => {
+    const session = await insertSession(portFor(db), { type: "adhoc" });
     insertRawDecision(
       db,
       session.id,
@@ -364,7 +364,7 @@ describe("listDecisions", () => {
       "decision",
     );
 
-    const result = listDecisions(db);
+    const result = (await listDecisions(portFor(db)));
 
     expect(result.map((decision) => decision.content)).toEqual([
       "通常の決定",
@@ -385,18 +385,18 @@ describe("countMentoringDecisionsBySessionId", () => {
     await runMigrations(portFor(db));
   });
 
-  afterEach(() => {
+  afterEach(async () => {
     db.close();
   });
 
-  it("returns 0 when the session has no decisions at all", () => {
-    const session = insertSession(db, { type: "morning" });
+  it("returns 0 when the session has no decisions at all", async () => {
+    const session = await insertSession(portFor(db), { type: "morning" });
 
-    expect(countMentoringDecisionsBySessionId(db, session.id)).toBe(0);
+    expect(await countMentoringDecisionsBySessionId(portFor(db), session.id)).toBe(0);
   });
 
-  it("counts only kind='mentoring' rows, excluding kind='decision' rows in the same session", () => {
-    const session = insertSession(db, { type: "morning" });
+  it("counts only kind='mentoring' rows, excluding kind='decision' rows in the same session", async () => {
+    const session = await insertSession(portFor(db), { type: "morning" });
     insertRawDecision(db, session.id, "通常の決定", localIso(2026, 7, 5, 9), null, "decision");
     insertRawDecision(
       db,
@@ -407,12 +407,12 @@ describe("countMentoringDecisionsBySessionId", () => {
       "mentoring",
     );
 
-    expect(countMentoringDecisionsBySessionId(db, session.id)).toBe(1);
+    expect(await countMentoringDecisionsBySessionId(portFor(db), session.id)).toBe(1);
   });
 
-  it("excludes kind='mentoring' rows that belong to a different session", () => {
-    const target = insertSession(db, { type: "morning" });
-    const other = insertSession(db, { type: "morning" });
+  it("excludes kind='mentoring' rows that belong to a different session", async () => {
+    const target = await insertSession(portFor(db), { type: "morning" });
+    const other = await insertSession(portFor(db), { type: "morning" });
     insertRawDecision(
       db,
       other.id,
@@ -422,15 +422,15 @@ describe("countMentoringDecisionsBySessionId", () => {
       "mentoring",
     );
 
-    expect(countMentoringDecisionsBySessionId(db, target.id)).toBe(0);
+    expect(await countMentoringDecisionsBySessionId(portFor(db), target.id)).toBe(0);
   });
 
-  it("counts multiple mentoring rows in the same session", () => {
-    const session = insertSession(db, { type: "morning" });
+  it("counts multiple mentoring rows in the same session", async () => {
+    const session = await insertSession(portFor(db), { type: "morning" });
     insertRawDecision(db, session.id, "結論1", localIso(2026, 7, 5, 9), null, "mentoring");
     insertRawDecision(db, session.id, "結論2", localIso(2026, 7, 5, 10), null, "mentoring");
 
-    expect(countMentoringDecisionsBySessionId(db, session.id)).toBe(2);
+    expect(await countMentoringDecisionsBySessionId(portFor(db), session.id)).toBe(2);
   });
 });
 
@@ -452,24 +452,24 @@ describe("listDecisionsByTaskId", () => {
   it("returns an empty array when the task has no decisions", async () => {
     const task = await insertTask(portFor(db), newTask("資料作成"));
 
-    expect(listDecisionsByTaskId(db, task.id, 5)).toEqual([]);
+    expect(await listDecisionsByTaskId(portFor(db), task.id, 5)).toEqual([]);
   });
 
   it("returns only rows for the given task_id, excluding other tasks' rows and task_id IS NULL rows", async () => {
-    const session = insertSession(db, { type: "adhoc" });
+    const session = await insertSession(portFor(db), { type: "adhoc" });
     const target = await insertTask(portFor(db), newTask("対象タスク"));
     const other = await insertTask(portFor(db), newTask("別タスク"));
     insertRawDecision(db, session.id, "対象の決定", localIso(2026, 7, 5, 9), target.id);
     insertRawDecision(db, session.id, "別タスクの決定", localIso(2026, 7, 5, 10), other.id);
     insertRawDecision(db, session.id, "タスク紐づけ無しの決定", localIso(2026, 7, 5, 11), null);
 
-    const result = listDecisionsByTaskId(db, target.id, 5);
+    const result = await listDecisionsByTaskId(portFor(db), target.id, 5);
 
     expect(result.map((r) => r.content)).toEqual(["対象の決定"]);
   });
 
   it("returns both kind='decision' and kind='mentoring' rows for the task", async () => {
-    const session = insertSession(db, { type: "adhoc" });
+    const session = await insertSession(portFor(db), { type: "adhoc" });
     const task = await insertTask(portFor(db), newTask("対象タスク"));
     insertRawDecision(db, session.id, "通常の決定", localIso(2026, 7, 5, 9), task.id, "decision");
     insertRawDecision(
@@ -481,13 +481,13 @@ describe("listDecisionsByTaskId", () => {
       "mentoring",
     );
 
-    const result = listDecisionsByTaskId(db, task.id, 5);
+    const result = await listDecisionsByTaskId(portFor(db), task.id, 5);
 
     expect(result.map((r) => r.kind).sort()).toEqual(["decision", "mentoring"]);
   });
 
   it("orders newest first (created_at descending, id descending on ties)", async () => {
-    const session = insertSession(db, { type: "adhoc" });
+    const session = await insertSession(portFor(db), { type: "adhoc" });
     const task = await insertTask(portFor(db), newTask("対象タスク"));
     insertRawDecision(db, session.id, "古い", localIso(2026, 7, 1, 9));
     insertRawDecision(db, session.id, "新しい", localIso(2026, 7, 5, 9));
@@ -497,19 +497,19 @@ describe("listDecisionsByTaskId", () => {
     insertRawDecision(db, session.id, "後に入れた", sameInstant, task.id);
     insertRawDecision(db, session.id, "最も古い", localIso(2026, 7, 1, 8), task.id);
 
-    const result = listDecisionsByTaskId(db, task.id, 10);
+    const result = await listDecisionsByTaskId(portFor(db), task.id, 10);
 
     expect(result.map((r) => r.content)).toEqual(["後に入れた", "先に入れた", "最も古い"]);
   });
 
   it("caps the result at the given limit, keeping the newest ones (older rows dropped)", async () => {
-    const session = insertSession(db, { type: "adhoc" });
+    const session = await insertSession(portFor(db), { type: "adhoc" });
     const task = await insertTask(portFor(db), newTask("対象タスク"));
     for (let i = 0; i < 7; i++) {
       insertRawDecision(db, session.id, `記録${i}`, localIso(2026, 7, i + 1, 9), task.id);
     }
 
-    const result = listDecisionsByTaskId(db, task.id, 5);
+    const result = await listDecisionsByTaskId(portFor(db), task.id, 5);
 
     expect(result.map((r) => r.content)).toEqual([
       "記録6",
@@ -521,7 +521,7 @@ describe("listDecisionsByTaskId", () => {
   });
 
   it("maps content/rationale/kind/created_at to the TaskRelatedRecord shape (recordedAt)", async () => {
-    const session = insertSession(db, { type: "adhoc" });
+    const session = await insertSession(portFor(db), { type: "adhoc" });
     const task = await insertTask(portFor(db), newTask("対象タスク"));
     insertRawDecision(
       db,
@@ -533,7 +533,7 @@ describe("listDecisionsByTaskId", () => {
       "他タスクが優先のため",
     );
 
-    const result = listDecisionsByTaskId(db, task.id, 5);
+    const result = await listDecisionsByTaskId(portFor(db), task.id, 5);
 
     expect(result).toEqual([
       {
