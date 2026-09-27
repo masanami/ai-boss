@@ -3,6 +3,7 @@ import type Database from "better-sqlite3";
 import type Anthropic from "@anthropic-ai/sdk";
 import { openDatabase } from "../db/connection.js";
 import { runMigrations } from "../db/migrate.js";
+import { portFor } from "../db/test-support/port-for.js";
 import { insertTask } from "../tasks/tasks-repository.js";
 import { insertSession } from "../sessions/sessions-repository.js";
 import { insertNotification } from "../notifications/notifications-repository.js";
@@ -39,9 +40,9 @@ describe("GET /api/dashboard", () => {
   let db: Database.Database;
   const env = { ANTHROPIC_API_KEY: "sk-ant-test-key" };
 
-  beforeEach(() => {
+  beforeEach(async () => {
     db = openDatabase(":memory:");
-    runMigrations(db);
+    await runMigrations(portFor(db));
     createClaudeClientMock.mockReset();
     createBossMessageMock.mockReset();
     createClaudeClientMock.mockReturnValue({});
@@ -56,7 +57,7 @@ describe("GET /api/dashboard", () => {
 
   it("returns 200 with the full dashboard shape", async () => {
     vi.setSystemTime(new Date(2026, 6, 6, 10, 0));
-    const app = createApp(db, env);
+    const app = createApp(portFor(db), env);
 
     const res = await app.request("/api/dashboard");
 
@@ -74,7 +75,7 @@ describe("GET /api/dashboard", () => {
 
   it("reflects task progress, session flags, and the max escalation level", async () => {
     vi.setSystemTime(new Date(2026, 6, 6, 20, 0));
-    insertTask(db, {
+    await insertTask(portFor(db), {
       title: "資料作成",
       description: null,
       category: "work",
@@ -84,7 +85,7 @@ describe("GET /api/dashboard", () => {
       boss_comment: null,
       estimated_minutes: null,
     });
-    insertTask(db, {
+    await insertTask(portFor(db), {
       title: "メール返信",
       description: null,
       category: "work",
@@ -94,9 +95,9 @@ describe("GET /api/dashboard", () => {
       boss_comment: null,
       estimated_minutes: null,
     });
-    insertSession(db, { type: "morning" });
-    insertNotification(db, { type: "avoidance", escalation_level: 2, body: "戻れ" });
-    const app = createApp(db, env);
+    await insertSession(portFor(db), { type: "morning" });
+    await insertNotification(portFor(db), { type: "avoidance", escalation_level: 2, body: "戻れ" });
+    const app = createApp(portFor(db), env);
 
     const res = await app.request("/api/dashboard");
 
@@ -113,7 +114,7 @@ describe("GET /api/dashboard", () => {
     createClaudeClientMock.mockImplementationOnce(() => {
       throw new MissingApiKeyError();
     });
-    const app = createApp(db, {});
+    const app = createApp(portFor(db), {});
 
     const res = await app.request("/api/dashboard");
 
@@ -126,7 +127,7 @@ describe("GET /api/dashboard", () => {
 
   it("does not call the Claude API on a second same-day request", async () => {
     vi.setSystemTime(new Date(2026, 6, 6, 10, 0));
-    const app = createApp(db, env);
+    const app = createApp(portFor(db), env);
 
     await app.request("/api/dashboard");
     vi.setSystemTime(new Date(2026, 6, 6, 18, 0));

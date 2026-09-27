@@ -1,14 +1,21 @@
 import { Hono } from "hono";
 import type { Context } from "hono";
-import type Database from "better-sqlite3";
+import type { Db } from "../db/db-port.js";
 import { readJsonBody } from "../lib/read-json-body.js";
+import type { TaskEvidence } from "./task-evidence.js";
 import { findTaskById } from "./tasks-repository.js";
 import {
   countTaskEvidences,
   findTaskEvidenceById,
   listTaskEvidences,
 } from "./task-evidences-repository.js";
-import { deleteEvidence, saveFileEvidence, saveLinkEvidence, type EvidenceStore } from "./evidence-store.js";
+import {
+  deleteEvidenceRow,
+  removeEvidenceFile,
+  saveFileEvidenceIfAllowed,
+  saveLinkEvidence,
+  type EvidenceStore,
+} from "./evidence-store.js";
 import {
   isAllowedEvidenceExtension,
   isAllowedEvidenceUrlScheme,
@@ -50,8 +57,8 @@ function respondEvidenceStoreNotConfigured(c: Context): Response {
   return c.json({ error: "evidence store is not configured" }, 500);
 }
 
-/** `evidence-store.ts` の `deleteEvidence` に渡すだけのフォールバック
- * `EvidenceStore`。呼ばれたら例外を投げる — kind === "link" の削除経路では
+/** 証跡の削除で `evidence-store.ts` の `removeEvidenceFile` に渡すだけの
+ * フォールバック `EvidenceStore`。呼ばれたら例外を投げる — kind === "link" の削除経路では
  * `store.remove` が一切呼ばれない契約（`evidence-store.ts` 参照）なので、
  * 呼ばれること自体が契約違反であることを検出できるようにしている。 */
 const UNAVAILABLE_EVIDENCE_STORE: EvidenceStore = {
@@ -66,6 +73,13 @@ const UNAVAILABLE_EVIDENCE_STORE: EvidenceStore = {
   },
 };
 
+type DeleteEvidenceOutcome =
+  | { ok: true; evidence: TaskEvidence }
+  | {
+      ok: false;
+      reason: "task_not_found" | "evidence_not_found" | "task_already_done" | "store_not_configured";
+    };
+
 /**
  * 決定 1-c-ii: 画像 (`image/*`) と PDF のみ `inline`、それ以外は `attachment`。
  */
@@ -73,7 +87,26 @@ function isInlineMimeType(mimeType: string): boolean {
   return mimeType.startsWith("image/") || mimeType === "application/pdf";
 }
 
-async function handleAddLinkEvidence(c: Context, db: Database.Database, taskId: number) {
+/**
+ * 証跡の追加の可否を、挿入と同じトランザクション（`tx`）の中で判定し直す
+ * （#604・決定 2 の全数監査）。ルートの入口の判定（本文を読む前に 409 を返す
+ * 早期の拒否）だけだと、本文の読み出しやファイルの書き込みの await の間に
+ * 並行の追加が入り、上限（10 件）を超えうる。タスクは削除されない（`dropped`
+ * へ遷移するだけ）ため、存在の確認は入口のものを引き継ぎ、ここでは件数だけ
+ * を確かめる。
+ */
+async function canAddEvidence(tx: Db, taskId: number): Promise<boolean> {
+  return isEvidenceCountUnderLimit(await countTaskEvidences(tx, taskId));
+}
+
+function respondEvidenceLimitExceeded(c: Context): Response {
+  return c.json(
+    { error: "task already has the maximum of 10 evidences", code: "evidence_limit_exceeded" },
+    409,
+  );
+}
+
+async function handleAddLinkEvidence(c: Context, db: Db, taskId: number) {
   const body = await readJsonBody(c);
   const url =
     body && typeof body === "object" && "url" in body ? (body as { url: unknown }).url : undefined;
@@ -88,13 +121,18 @@ async function handleAddLinkEvidence(c: Context, db: Database.Database, taskId: 
     );
   }
 
-  const evidence = saveLinkEvidence(db, { taskId, url });
+  const evidence = await db.transaction(async (tx) =>
+    (await canAddEvidence(tx, taskId)) ? saveLinkEvidence(tx, { taskId, url }) : undefined,
+  );
+  if (!evidence) {
+    return respondEvidenceLimitExceeded(c);
+  }
   return c.json(evidence, 201);
 }
 
 async function handleAddFileEvidence(
   c: Context,
-  db: Database.Database,
+  db: Db,
   evidenceStore: EvidenceStore | undefined,
   taskId: number,
 ) {
@@ -126,11 +164,15 @@ async function handleAddFileEvidence(
     );
   }
 
-  const evidence = saveFileEvidence(db, evidenceStore, {
-    taskId,
-    originalFilename: file.name,
-    data,
-  });
+  const evidence = await saveFileEvidenceIfAllowed(
+    db,
+    evidenceStore,
+    { taskId, originalFilename: file.name, data },
+    (tx) => canAddEvidence(tx, taskId),
+  );
+  if (!evidence) {
+    return respondEvidenceLimitExceeded(c);
+  }
   return c.json(evidence, 201);
 }
 
@@ -140,30 +182,27 @@ async function handleAddFileEvidence(
  * path params across `.route()` boundaries, so `c.req.param("id")` resolves
  * to the parent `:id` segment inside this router's own handlers.
  */
-export function createTaskEvidencesRouter(db: Database.Database, evidenceStore?: EvidenceStore): Hono {
+export function createTaskEvidencesRouter(db: Db, evidenceStore?: EvidenceStore): Hono {
   const evidences = new Hono();
 
-  evidences.get("/", (c) => {
+  evidences.get("/", async (c) => {
     const taskId = Number(c.req.param("id"));
-    const task = findTaskById(db, taskId);
+    const task = await findTaskById(db, taskId);
     if (!task) {
       return respondTaskNotFound(c, taskId);
     }
-    return c.json(listTaskEvidences(db, taskId));
+    return c.json(await listTaskEvidences(db, taskId));
   });
 
   evidences.post("/", async (c) => {
     const taskId = Number(c.req.param("id"));
-    const task = findTaskById(db, taskId);
+    const task = await findTaskById(db, taskId);
     if (!task) {
       return respondTaskNotFound(c, taskId);
     }
 
-    if (!isEvidenceCountUnderLimit(countTaskEvidences(db, taskId))) {
-      return c.json(
-        { error: "task already has the maximum of 10 evidences", code: "evidence_limit_exceeded" },
-        409,
-      );
+    if (!(await canAddEvidence(db, taskId))) {
+      return respondEvidenceLimitExceeded(c);
     }
 
     const contentType = c.req.header("content-type") ?? "";
@@ -173,16 +212,16 @@ export function createTaskEvidencesRouter(db: Database.Database, evidenceStore?:
     return handleAddLinkEvidence(c, db, taskId);
   });
 
-  evidences.get("/:evidenceId/content", (c) => {
+  evidences.get("/:evidenceId/content", async (c) => {
     const taskId = Number(c.req.param("id"));
     const evidenceId = Number(c.req.param("evidenceId"));
 
-    const task = findTaskById(db, taskId);
+    const task = await findTaskById(db, taskId);
     if (!task) {
       return respondTaskNotFound(c, taskId);
     }
 
-    const evidence = findTaskEvidenceById(db, evidenceId);
+    const evidence = await findTaskEvidenceById(db, evidenceId);
     if (!evidence || evidence.task_id !== taskId || evidence.kind !== "file") {
       return respondEvidenceNotFound(c, evidenceId);
     }
@@ -208,37 +247,61 @@ export function createTaskEvidencesRouter(db: Database.Database, evidenceStore?:
     });
   });
 
-  evidences.delete("/:evidenceId", (c) => {
+  evidences.delete("/:evidenceId", async (c) => {
     const taskId = Number(c.req.param("id"));
     const evidenceId = Number(c.req.param("evidenceId"));
 
-    const task = findTaskById(db, taskId);
-    if (!task) {
-      return respondTaskNotFound(c, taskId);
+    // E1（#604・機能仕様 docs/features/async-db-layer.md 決定 2）: 削除の可否の
+    // 判定（タスクが done でないこと・証跡がそのタスクのものであること）と
+    // 行の削除を 1 つのトランザクションで確定させる。判定を外で読むと、並行
+    // する done への更新（T2）が「証跡あり」と判定して done を確定した後に
+    // この削除が最後の証跡を消し、証跡必須なのに証跡 0 件の done が残りうる
+    // （AC-22）。ファイルの実体の削除はトランザクションの確定後に行う。
+    const outcome = await db.transaction(async (tx): Promise<DeleteEvidenceOutcome> => {
+      const task = await findTaskById(tx, taskId);
+      if (!task) {
+        return { ok: false, reason: "task_not_found" };
+      }
+
+      const evidence = await findTaskEvidenceById(tx, evidenceId);
+      if (!evidence || evidence.task_id !== taskId) {
+        return { ok: false, reason: "evidence_not_found" };
+      }
+
+      // 決定5: done のタスクからの削除は拒否する。ステータスを done から戻せば
+      // 削除できる（可逆性は保たれる）。
+      if (task.status === "done") {
+        return { ok: false, reason: "task_already_done" };
+      }
+
+      // `removeEvidenceFile` は kind === "link" の行では `store.remove` を一切
+      // 呼ばないため、evidenceStore 未設定でも link の削除自体は妨げない —
+      // file の削除だけ evidenceStore を要求する。
+      if (evidence.kind === "file" && !evidenceStore) {
+        return { ok: false, reason: "store_not_configured" };
+      }
+
+      const deleted = await deleteEvidenceRow(tx, evidenceId);
+      return deleted ? { ok: true, evidence: deleted } : { ok: false, reason: "evidence_not_found" };
+    });
+
+    if (!outcome.ok) {
+      switch (outcome.reason) {
+        case "task_not_found":
+          return respondTaskNotFound(c, taskId);
+        case "evidence_not_found":
+          return respondEvidenceNotFound(c, evidenceId);
+        case "task_already_done":
+          return c.json(
+            { error: "cannot delete evidence from a task that is already done", code: "task_already_done" },
+            409,
+          );
+        case "store_not_configured":
+          return respondEvidenceStoreNotConfigured(c);
+      }
     }
 
-    const evidence = findTaskEvidenceById(db, evidenceId);
-    if (!evidence || evidence.task_id !== taskId) {
-      return respondEvidenceNotFound(c, evidenceId);
-    }
-
-    // 決定5: done のタスクからの削除は拒否する。ステータスを done から戻せば
-    // 削除できる（可逆性は保たれる）。
-    if (task.status === "done") {
-      return c.json(
-        { error: "cannot delete evidence from a task that is already done", code: "task_already_done" },
-        409,
-      );
-    }
-
-    // `evidence-store.ts` の `deleteEvidence` は kind === "link" の行では
-    // `store.remove` を一切呼ばないため、evidenceStore 未設定でも link の
-    // 削除自体は妨げない — file の削除だけ evidenceStore を要求する。
-    if (evidence.kind === "file" && !evidenceStore) {
-      return respondEvidenceStoreNotConfigured(c);
-    }
-
-    deleteEvidence(db, evidenceStore ?? UNAVAILABLE_EVIDENCE_STORE, evidenceId);
+    removeEvidenceFile(evidenceStore ?? UNAVAILABLE_EVIDENCE_STORE, outcome.evidence);
     return c.body(null, 204);
   });
 

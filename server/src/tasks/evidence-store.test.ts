@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type Database from "better-sqlite3";
 import { openDatabase } from "../db/connection.js";
 import { runMigrations } from "../db/migrate.js";
+import { portFor } from "../db/test-support/port-for.js";
 import { insertTask } from "./tasks-repository.js";
 import { findTaskEvidenceById } from "./task-evidences-repository.js";
 import { deleteEvidence, saveFileEvidence, saveLinkEvidence, type EvidenceStore } from "./evidence-store.js";
@@ -15,8 +16,8 @@ import { deleteEvidence, saveFileEvidence, saveLinkEvidence, type EvidenceStore 
  * ポート自体の契約（`store.write`/`store.read`/`store.remove` の呼ばれ方と
  * DB 行との整合）を、実ファイルシステムに触れずに固定する。
  */
-function createTask(db: Database.Database): number {
-  const task = insertTask(db, {
+async function createTask(db: Database.Database): Promise<number> {
+  const task = await insertTask(portFor(db), {
     title: "テストタスク",
     description: null,
     category: "work",
@@ -48,22 +49,22 @@ function createMemoryEvidenceStore(): EvidenceStore & { files: Map<string, Uint8
 describe("evidence-store (core)", () => {
   let db: Database.Database;
 
-  beforeEach(() => {
+  beforeEach(async () => {
     db = openDatabase(":memory:");
-    runMigrations(db);
+    await runMigrations(portFor(db));
   });
 
-  afterEach(() => {
+  afterEach(async () => {
     db.close();
   });
 
   describe("saveFileEvidence", () => {
-    it("writes the bytes through the store and inserts a task_evidences row referencing the same stored_filename", () => {
+    it("writes the bytes through the store and inserts a task_evidences row referencing the same stored_filename", async () => {
       const store = createMemoryEvidenceStore();
-      const taskId = createTask(db);
+      const taskId = await createTask(db);
       const data = new Uint8Array([1, 2, 3]);
 
-      const evidence = saveFileEvidence(db, store, {
+      const evidence = await saveFileEvidence(portFor(db), store, {
         taskId,
         originalFilename: "note.txt",
         data,
@@ -73,11 +74,11 @@ describe("evidence-store (core)", () => {
       expect(store.files.get(evidence.stored_filename as string)).toEqual(data);
     });
 
-    it("generates a stored_filename different from the original filename", () => {
+    it("generates a stored_filename different from the original filename", async () => {
       const store = createMemoryEvidenceStore();
-      const taskId = createTask(db);
+      const taskId = await createTask(db);
 
-      const evidence = saveFileEvidence(db, store, {
+      const evidence = await saveFileEvidence(portFor(db), store, {
         taskId,
         originalFilename: "note.txt",
         data: new Uint8Array([1]),
@@ -86,11 +87,11 @@ describe("evidence-store (core)", () => {
       expect(evidence.stored_filename).not.toBe("note.txt");
     });
 
-    it("preserves the extension (lowercased) in the stored_filename", () => {
+    it("preserves the extension (lowercased) in the stored_filename", async () => {
       const store = createMemoryEvidenceStore();
-      const taskId = createTask(db);
+      const taskId = await createTask(db);
 
-      const evidence = saveFileEvidence(db, store, {
+      const evidence = await saveFileEvidence(portFor(db), store, {
         taskId,
         originalFilename: "SCREENSHOT.PNG",
         data: new Uint8Array([1]),
@@ -99,27 +100,27 @@ describe("evidence-store (core)", () => {
       expect(evidence.stored_filename).toMatch(/\.png$/);
     });
 
-    it("throws without writing to the store when the extension is not allowed", () => {
+    it("throws without writing to the store when the extension is not allowed", async () => {
       const store = createMemoryEvidenceStore();
-      const taskId = createTask(db);
+      const taskId = await createTask(db);
 
-      expect(() =>
-        saveFileEvidence(db, store, {
+      await expect(
+        saveFileEvidence(portFor(db), store, {
           taskId,
           originalFilename: "malware.exe",
           data: new Uint8Array([1]),
         }),
-      ).toThrow();
+      ).rejects.toThrow();
       expect(store.files.size).toBe(0);
     });
   });
 
   describe("saveLinkEvidence", () => {
-    it("inserts a link row without touching the store", () => {
+    it("inserts a link row without touching the store", async () => {
       const store = createMemoryEvidenceStore();
-      const taskId = createTask(db);
+      const taskId = await createTask(db);
 
-      const evidence = saveLinkEvidence(db, { taskId, url: "https://example.com/doc" });
+      const evidence = await saveLinkEvidence(portFor(db), { taskId, url: "https://example.com/doc" });
 
       expect(evidence.kind).toBe("link");
       expect(evidence.url).toBe("https://example.com/doc");
@@ -128,29 +129,29 @@ describe("evidence-store (core)", () => {
   });
 
   describe("deleteEvidence", () => {
-    it("removes both the DB row and the store entry for a file evidence", () => {
+    it("removes both the DB row and the store entry for a file evidence", async () => {
       const store = createMemoryEvidenceStore();
-      const taskId = createTask(db);
-      const evidence = saveFileEvidence(db, store, {
+      const taskId = await createTask(db);
+      const evidence = await saveFileEvidence(portFor(db), store, {
         taskId,
         originalFilename: "note.txt",
         data: new Uint8Array([1]),
       });
 
-      const deleted = deleteEvidence(db, store, evidence.id);
+      const deleted = await deleteEvidence(portFor(db), store, evidence.id);
 
       expect(deleted).toBe(true);
-      expect(findTaskEvidenceById(db, evidence.id)).toBeUndefined();
+      expect(await findTaskEvidenceById(portFor(db), evidence.id)).toBeUndefined();
       expect(store.files.has(evidence.stored_filename as string)).toBe(false);
     });
 
-    it("returns false and does not throw for a non-existent evidence id", () => {
+    it("returns false and does not throw for a non-existent evidence id", async () => {
       const store = createMemoryEvidenceStore();
 
-      expect(deleteEvidence(db, store, 9999)).toBe(false);
+      expect(await deleteEvidence(portFor(db), store, 9999)).toBe(false);
     });
 
-    it("does not call store.remove for a link evidence (no file to remove)", () => {
+    it("does not call store.remove for a link evidence (no file to remove)", async () => {
       // self-review（code-reviewer, CONFIRMED）: 以前は deleted===true と DB
       // 行の消失だけを見ており、`remove` が実際に呼ばれたかどうかを一切
       // 検証していなかった（`Map#delete` は存在しないキーに対して no-op な
@@ -162,13 +163,13 @@ describe("evidence-store (core)", () => {
       // `UNAVAILABLE_EVIDENCE_STORE` を渡している）。
       const store = createMemoryEvidenceStore();
       const removeSpy = vi.spyOn(store, "remove");
-      const taskId = createTask(db);
-      const evidence = saveLinkEvidence(db, { taskId, url: "https://example.com" });
+      const taskId = await createTask(db);
+      const evidence = await saveLinkEvidence(portFor(db), { taskId, url: "https://example.com" });
 
-      const deleted = deleteEvidence(db, store, evidence.id);
+      const deleted = await deleteEvidence(portFor(db), store, evidence.id);
 
       expect(deleted).toBe(true);
-      expect(findTaskEvidenceById(db, evidence.id)).toBeUndefined();
+      expect(await findTaskEvidenceById(portFor(db), evidence.id)).toBeUndefined();
       expect(removeSpy).not.toHaveBeenCalled();
     });
   });

@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type Database from "better-sqlite3";
 import { openDatabase } from "../db/connection.js";
 import { runMigrations } from "../db/migrate.js";
+import { portFor } from "../db/test-support/port-for.js";
 import { createApp } from "../app.js";
 import { insertTask } from "../tasks/tasks-repository.js";
 import type { NewTaskRecord } from "../tasks/tasks-repository.js";
@@ -31,8 +32,8 @@ interface ErrorBody {
 }
 
 /** Reduces the 8-field `insertTask` boilerplate repeated across the tests below. */
-function insertWorkTask(db: Database.Database, overrides: Partial<NewTaskRecord> = {}): Task {
-  return insertTask(db, {
+async function insertWorkTask(db: Database.Database, overrides: Partial<NewTaskRecord> = {}): Promise<Task> {
+  return await insertTask(portFor(db), {
     title: "資料作成",
     description: null,
     category: "work",
@@ -67,9 +68,9 @@ async function readJson<T>(res: Response): Promise<T> {
 describe("POST /api/checkins", () => {
   let db: Database.Database;
 
-  beforeEach(() => {
+  beforeEach(async () => {
     db = openDatabase(":memory:");
-    runMigrations(db);
+    await runMigrations(portFor(db));
   });
 
   afterEach(() => {
@@ -77,7 +78,7 @@ describe("POST /api/checkins", () => {
   });
 
   it("records a checkin with only a type and returns 201 with the created event", async () => {
-    const app = createApp(db);
+    const app = createApp(portFor(db));
 
     const res = await app.request("/api/checkins", {
       method: "POST",
@@ -103,7 +104,7 @@ describe("POST /api/checkins", () => {
   });
 
   it("records break_end with only a type", async () => {
-    const app = createApp(db);
+    const app = createApp(portFor(db));
 
     const res = await app.request("/api/checkins", {
       method: "POST",
@@ -117,8 +118,8 @@ describe("POST /api/checkins", () => {
   });
 
   it("records task_start with a valid task_id", async () => {
-    const app = createApp(db);
-    const task = insertWorkTask(db);
+    const app = createApp(portFor(db));
+    const task = await insertWorkTask(db);
 
     const res = await app.request("/api/checkins", {
       method: "POST",
@@ -132,7 +133,7 @@ describe("POST /api/checkins", () => {
   });
 
   it("records break_start with a note and expected_minutes", async () => {
-    const app = createApp(db);
+    const app = createApp(portFor(db));
 
     const res = await app.request("/api/checkins", {
       method: "POST",
@@ -154,7 +155,7 @@ describe("POST /api/checkins", () => {
   });
 
   it("returns 400 when type is missing", async () => {
-    const app = createApp(db);
+    const app = createApp(portFor(db));
 
     const res = await app.request("/api/checkins", {
       method: "POST",
@@ -168,7 +169,7 @@ describe("POST /api/checkins", () => {
   });
 
   it("returns 400 when type is not an allowed checkin type", async () => {
-    const app = createApp(db);
+    const app = createApp(portFor(db));
 
     const res = await app.request("/api/checkins", {
       method: "POST",
@@ -182,7 +183,7 @@ describe("POST /api/checkins", () => {
   });
 
   it("returns 400 when task_start is missing task_id", async () => {
-    const app = createApp(db);
+    const app = createApp(portFor(db));
 
     const res = await app.request("/api/checkins", {
       method: "POST",
@@ -196,7 +197,7 @@ describe("POST /api/checkins", () => {
   });
 
   it("returns 404 when task_start references a non-existent task", async () => {
-    const app = createApp(db);
+    const app = createApp(portFor(db));
 
     const res = await app.request("/api/checkins", {
       method: "POST",
@@ -210,7 +211,7 @@ describe("POST /api/checkins", () => {
   });
 
   it("returns 400 when expected_minutes is not a positive integer", async () => {
-    const app = createApp(db);
+    const app = createApp(portFor(db));
 
     const res = await app.request("/api/checkins", {
       method: "POST",
@@ -224,7 +225,7 @@ describe("POST /api/checkins", () => {
   });
 
   it("returns 400 when the request body is not valid JSON", async () => {
-    const app = createApp(db);
+    const app = createApp(portFor(db));
 
     const res = await app.request("/api/checkins", {
       method: "POST",
@@ -238,7 +239,7 @@ describe("POST /api/checkins", () => {
   });
 
   it("returns 404 (not a 500) when a non-task_start checkin references a non-existent task_id", async () => {
-    const app = createApp(db);
+    const app = createApp(portFor(db));
 
     const res = await app.request("/api/checkins", {
       method: "POST",
@@ -259,8 +260,8 @@ describe("POST /api/checkins", () => {
     // the pass-through `updateTask` implementation set once by the
     // `vi.mock` factory above.
     it("transitions a todo task to in_progress and keeps completed_at null", async () => {
-      const app = createApp(db);
-      const task = insertWorkTask(db, { status: "todo" });
+      const app = createApp(portFor(db));
+      const task = await insertWorkTask(db, { status: "todo" });
 
       const res = await app.request("/api/checkins", {
         method: "POST",
@@ -288,8 +289,8 @@ describe("POST /api/checkins", () => {
     });
 
     it("leaves status unchanged and records no extra task_update event for an in_progress task", async () => {
-      const app = createApp(db);
-      const task = insertWorkTask(db, { status: "in_progress" });
+      const app = createApp(portFor(db));
+      const task = await insertWorkTask(db, { status: "in_progress" });
 
       const res = await app.request("/api/checkins", {
         method: "POST",
@@ -312,8 +313,8 @@ describe("POST /api/checkins", () => {
     });
 
     it("does not revert a done task's status or completed_at", async () => {
-      const app = createApp(db);
-      const task = insertWorkTask(db, { status: "done" });
+      const app = createApp(portFor(db));
+      const task = await insertWorkTask(db, { status: "done" });
       const before = db
         .prepare("SELECT completed_at FROM tasks WHERE id = ?")
         .get(task.id) as { completed_at: string | null };
@@ -334,8 +335,8 @@ describe("POST /api/checkins", () => {
     });
 
     it("does not revert a dropped task's status", async () => {
-      const app = createApp(db);
-      const task = insertWorkTask(db, { status: "dropped" });
+      const app = createApp(portFor(db));
+      const task = await insertWorkTask(db, { status: "dropped" });
 
       const res = await app.request("/api/checkins", {
         method: "POST",
@@ -352,8 +353,8 @@ describe("POST /api/checkins", () => {
     });
 
     it("does not change task status for non-task_start checkin types", async () => {
-      const app = createApp(db);
-      const task = insertWorkTask(db, { status: "todo" });
+      const app = createApp(portFor(db));
+      const task = await insertWorkTask(db, { status: "todo" });
 
       const res = await app.request("/api/checkins", {
         method: "POST",
@@ -370,8 +371,8 @@ describe("POST /api/checkins", () => {
     });
 
     it("transitioning a task to in_progress excludes it from unstarted detection", async () => {
-      const app = createApp(db);
-      const task = insertWorkTask(db, { status: "todo", estimated_minutes: 30 });
+      const app = createApp(portFor(db));
+      const task = await insertWorkTask(db, { status: "todo", estimated_minutes: 30 });
 
       const res = await app.request("/api/checkins", {
         method: "POST",
@@ -407,8 +408,8 @@ describe("POST /api/checkins", () => {
     // 退役は全経路が共有する updateTask 層に置くため、チェックイン経路
     // （task_start）でも効く（変異: 退役を PATCH のルートハンドラにだけ置く）
     it("clears committed_start_at and committed_at when task_start transitions a committed todo task to in_progress", async () => {
-      const app = createApp(db);
-      const task = insertWorkTask(db, {
+      const app = createApp(portFor(db));
+      const task = await insertWorkTask(db, {
         status: "todo",
         committed_start_at: "2026-09-14T11:00:00.000Z",
       });
@@ -428,8 +429,8 @@ describe("POST /api/checkins", () => {
     });
 
     it("rolls back the task_start event when the status update fails, leaving no partial write", async () => {
-      const app = createApp(db);
-      const task = insertWorkTask(db, { status: "todo" });
+      const app = createApp(portFor(db));
+      const task = await insertWorkTask(db, { status: "todo" });
       updateTaskMock.mockImplementationOnce(() => {
         throw new Error("boom");
       });
@@ -459,8 +460,8 @@ describe("POST /api/checkins", () => {
     });
 
     it("transitions a paused task to in_progress (AC-5)", async () => {
-      const app = createApp(db);
-      const task = insertWorkTask(db, { status: "paused" });
+      const app = createApp(portFor(db));
+      const task = await insertWorkTask(db, { status: "paused" });
 
       const res = await app.request("/api/checkins", {
         method: "POST",
@@ -488,9 +489,9 @@ describe("POST /api/checkins", () => {
     // (checkins-routes.ts はその戻り値を使わないため) この経路の挙動は
     // 変わらないことをここで確認する。
     it("does not return 409 even when evidence enforcement is on and the task requires evidence (AC-38)", async () => {
-      const app = createApp(db);
-      setSettingValue(db, "evidence_enforcement_enabled", "true");
-      const task = insertWorkTask(db, { status: "todo", evidence_required: true });
+      const app = createApp(portFor(db));
+      await setSettingValue(portFor(db), "evidence_enforcement_enabled", "true");
+      const task = await insertWorkTask(db, { status: "todo", evidence_required: true });
 
       const res = await app.request("/api/checkins", {
         method: "POST",
@@ -508,8 +509,8 @@ describe("POST /api/checkins", () => {
 
   describe("task_pause status transition", () => {
     it("transitions an in_progress task to paused and records a task_pause event", async () => {
-      const app = createApp(db);
-      const task = insertWorkTask(db, { status: "in_progress" });
+      const app = createApp(portFor(db));
+      const task = await insertWorkTask(db, { status: "in_progress" });
 
       const res = await app.request("/api/checkins", {
         method: "POST",
@@ -536,8 +537,8 @@ describe("POST /api/checkins", () => {
     });
 
     it("does not record a break_start event as a side effect of task_pause (AC-6)", async () => {
-      const app = createApp(db);
-      const task = insertWorkTask(db, { status: "in_progress" });
+      const app = createApp(portFor(db));
+      const task = await insertWorkTask(db, { status: "in_progress" });
 
       const res = await app.request("/api/checkins", {
         method: "POST",
@@ -558,8 +559,8 @@ describe("POST /api/checkins", () => {
     // Written as individual `it(...)` calls (rather than `it.each`) so each
     // status gets its own literal test name in the reporter output.
     async function expectTaskPauseLeavesStatusUnchanged(status: TaskStatus) {
-      const app = createApp(db);
-      const task = insertWorkTask(db, { status });
+      const app = createApp(portFor(db));
+      const task = await insertWorkTask(db, { status });
 
       const res = await app.request("/api/checkins", {
         method: "POST",
@@ -598,7 +599,7 @@ describe("POST /api/checkins", () => {
     });
 
     it("returns 400 when task_pause is missing task_id", async () => {
-      const app = createApp(db);
+      const app = createApp(portFor(db));
 
       const res = await app.request("/api/checkins", {
         method: "POST",
@@ -612,7 +613,7 @@ describe("POST /api/checkins", () => {
     });
 
     it("returns 404 when task_pause references a non-existent task", async () => {
-      const app = createApp(db);
+      const app = createApp(portFor(db));
 
       const res = await app.request("/api/checkins", {
         method: "POST",
@@ -626,8 +627,8 @@ describe("POST /api/checkins", () => {
     });
 
     it("rolls back the task_pause event when the status update fails, leaving no partial write", async () => {
-      const app = createApp(db);
-      const task = insertWorkTask(db, { status: "in_progress" });
+      const app = createApp(portFor(db));
+      const task = await insertWorkTask(db, { status: "in_progress" });
       updateTaskMock.mockImplementationOnce(() => {
         throw new Error("boom");
       });
@@ -679,7 +680,7 @@ describe("POST /api/checkins", () => {
     });
 
     it("stores and returns the normalized created_at for a past occurred_at (AC-1)", async () => {
-      const app = createApp(db);
+      const app = createApp(portFor(db));
 
       const res = await app.request("/api/checkins", {
         method: "POST",
@@ -698,7 +699,7 @@ describe("POST /api/checkins", () => {
     });
 
     it("normalizes an offset-bearing occurred_at to Z form (AC-1)", async () => {
-      const app = createApp(db);
+      const app = createApp(portFor(db));
 
       const res = await app.request("/api/checkins", {
         method: "POST",
@@ -715,7 +716,7 @@ describe("POST /api/checkins", () => {
     });
 
     it("records with the server's current time when occurred_at is omitted (AC-2)", async () => {
-      const app = createApp(db);
+      const app = createApp(portFor(db));
 
       const res = await app.request("/api/checkins", {
         method: "POST",
@@ -729,7 +730,7 @@ describe("POST /api/checkins", () => {
     });
 
     it("records with the server's current time when occurred_at is explicitly null (AC-2)", async () => {
-      const app = createApp(db);
+      const app = createApp(portFor(db));
 
       const res = await app.request("/api/checkins", {
         method: "POST",
@@ -743,7 +744,7 @@ describe("POST /api/checkins", () => {
     });
 
     it("returns 400 when occurred_at is not a valid ISO 8601 date-time (AC-3)", async () => {
-      const app = createApp(db);
+      const app = createApp(portFor(db));
 
       const res = await app.request("/api/checkins", {
         method: "POST",
@@ -757,7 +758,7 @@ describe("POST /api/checkins", () => {
     });
 
     it("returns 400 when occurred_at is after the current time (AC-4)", async () => {
-      const app = createApp(db);
+      const app = createApp(portFor(db));
       const future = new Date(NOW.getTime() + 1).toISOString();
 
       const res = await app.request("/api/checkins", {
@@ -772,7 +773,7 @@ describe("POST /api/checkins", () => {
     });
 
     it("accepts occurred_at exactly equal to the current time (AC-4 boundary)", async () => {
-      const app = createApp(db);
+      const app = createApp(portFor(db));
 
       const res = await app.request("/api/checkins", {
         method: "POST",
@@ -784,7 +785,7 @@ describe("POST /api/checkins", () => {
     });
 
     it("returns 400 when occurred_at is before the start of today (AC-5)", async () => {
-      const app = createApp(db);
+      const app = createApp(portFor(db));
 
       const res = await app.request("/api/checkins", {
         method: "POST",
@@ -801,7 +802,7 @@ describe("POST /api/checkins", () => {
     });
 
     it("accepts occurred_at exactly at the start of today (AC-5 boundary)", async () => {
-      const app = createApp(db);
+      const app = createApp(portFor(db));
 
       const res = await app.request("/api/checkins", {
         method: "POST",
@@ -816,7 +817,7 @@ describe("POST /api/checkins", () => {
 
     describe("break_end ordering (判断5)", () => {
       it("returns 400 when there is no break_start before occurred_at (AC-6)", async () => {
-        const app = createApp(db);
+        const app = createApp(portFor(db));
 
         const res = await app.request("/api/checkins", {
           method: "POST",
@@ -833,7 +834,7 @@ describe("POST /api/checkins", () => {
       });
 
       it("returns 400 when the prior break_start already has a break_end before occurred_at (AC-7)", async () => {
-        const app = createApp(db);
+        const app = createApp(portFor(db));
         insertEvent(db, "break_start", new Date(2026, 6, 5, 9, 0, 0, 0).toISOString());
         insertEvent(db, "break_end", new Date(2026, 6, 5, 9, 30, 0, 0).toISOString());
 
@@ -852,7 +853,7 @@ describe("POST /api/checkins", () => {
       });
 
       it("returns 400 when a break_end already exists at exactly occurred_at (AC-7, duplicate retry)", async () => {
-        const app = createApp(db);
+        const app = createApp(portFor(db));
         const breakEndAt = new Date(2026, 6, 5, 9, 30, 0, 0).toISOString();
         insertEvent(db, "break_start", new Date(2026, 6, 5, 9, 0, 0, 0).toISOString());
         insertEvent(db, "break_end", breakEndAt);
@@ -871,7 +872,7 @@ describe("POST /api/checkins", () => {
       });
 
       it("records a 201 when the prior break_start has no break_end before occurred_at yet, even if a later break is already recorded (AC-8)", async () => {
-        const app = createApp(db);
+        const app = createApp(portFor(db));
         insertEvent(db, "break_start", new Date(2026, 6, 5, 9, 0, 0, 0).toISOString());
         // A later, already-completed break recorded after occurred_at — must
         // not affect the check (see checkBreakEndOrder's AC-8 comment: the
@@ -895,7 +896,7 @@ describe("POST /api/checkins", () => {
       });
 
       it("returns 400 when occurred_at is exactly equal to the most recent break_start (AC-33)", async () => {
-        const app = createApp(db);
+        const app = createApp(portFor(db));
         const breakStartAt = new Date(2026, 6, 5, 9, 0, 0, 0).toISOString();
         insertEvent(db, "break_start", breakStartAt);
 
@@ -913,8 +914,8 @@ describe("POST /api/checkins", () => {
 
     describe("task_start/task_pause transition eligibility (判断4)", () => {
       it("records the event but leaves status unchanged when occurred_at equals the latest task_start exactly (AC-10, 判断4 strict comparison)", async () => {
-        const app = createApp(db);
-        const task = insertWorkTask(db, { status: "in_progress" });
+        const app = createApp(portFor(db));
+        const task = await insertWorkTask(db, { status: "in_progress" });
         const startedAt = new Date(2026, 6, 5, 9, 0, 0, 0).toISOString();
         insertEvent(db, "task_start", startedAt, task.id);
 
@@ -936,8 +937,8 @@ describe("POST /api/checkins", () => {
       });
 
       it("records the event but leaves status unchanged when occurred_at equals the latest task_pause exactly (AC-12, 判断4 strict comparison)", async () => {
-        const app = createApp(db);
-        const task = insertWorkTask(db, { status: "paused" });
+        const app = createApp(portFor(db));
+        const task = await insertWorkTask(db, { status: "paused" });
         const pausedAt = new Date(2026, 6, 5, 9, 0, 0, 0).toISOString();
         insertEvent(db, "task_pause", pausedAt, task.id);
 
@@ -959,8 +960,8 @@ describe("POST /api/checkins", () => {
       });
 
       it("transitions in_progress to paused when occurred_at is newer than the latest task_start/task_pause (AC-9)", async () => {
-        const app = createApp(db);
-        const task = insertWorkTask(db, { status: "in_progress" });
+        const app = createApp(portFor(db));
+        const task = await insertWorkTask(db, { status: "in_progress" });
         insertEvent(db, "task_start", new Date(2026, 6, 5, 9, 0, 0, 0).toISOString(), task.id);
 
         const res = await app.request("/api/checkins", {
@@ -981,8 +982,8 @@ describe("POST /api/checkins", () => {
       });
 
       it("records the event but leaves status unchanged when occurred_at is older than the latest task_start/task_pause (AC-10)", async () => {
-        const app = createApp(db);
-        const task = insertWorkTask(db, { status: "in_progress" });
+        const app = createApp(portFor(db));
+        const task = await insertWorkTask(db, { status: "in_progress" });
         insertEvent(db, "task_start", new Date(2026, 6, 5, 9, 0, 0, 0).toISOString(), task.id);
 
         const res = await app.request("/api/checkins", {
@@ -1008,8 +1009,8 @@ describe("POST /api/checkins", () => {
       });
 
       it("transitions paused to in_progress when occurred_at is newer than the latest task_start/task_pause (AC-11)", async () => {
-        const app = createApp(db);
-        const task = insertWorkTask(db, { status: "paused" });
+        const app = createApp(portFor(db));
+        const task = await insertWorkTask(db, { status: "paused" });
         insertEvent(db, "task_pause", new Date(2026, 6, 5, 9, 0, 0, 0).toISOString(), task.id);
 
         const res = await app.request("/api/checkins", {
@@ -1030,8 +1031,8 @@ describe("POST /api/checkins", () => {
       });
 
       it("records the event but leaves status unchanged when occurred_at is older than the latest task_start/task_pause (AC-12)", async () => {
-        const app = createApp(db);
-        const task = insertWorkTask(db, { status: "paused" });
+        const app = createApp(portFor(db));
+        const task = await insertWorkTask(db, { status: "paused" });
         insertEvent(db, "task_pause", new Date(2026, 6, 5, 9, 0, 0, 0).toISOString(), task.id);
 
         const res = await app.request("/api/checkins", {
@@ -1057,8 +1058,8 @@ describe("POST /api/checkins", () => {
       });
 
       it("transitions when occurred_at is given but the task has no prior task_start/task_pause event", async () => {
-        const app = createApp(db);
-        const task = insertWorkTask(db, { status: "todo" });
+        const app = createApp(portFor(db));
+        const task = await insertWorkTask(db, { status: "todo" });
 
         const res = await app.request("/api/checkins", {
           method: "POST",

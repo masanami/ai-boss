@@ -1,4 +1,4 @@
-import type Database from "better-sqlite3";
+import type { Db } from "../db/db-port.js";
 import { recordActivityEvent } from "../activity/activity-events-repository.js";
 import { resolveEvidenceSettings } from "../settings/evidence-settings.js";
 import { countTaskEvidences } from "./task-evidences-repository.js";
@@ -25,10 +25,8 @@ function mapTaskRow(row: TaskRow): Task {
  * tie-breaker so ordering stays deterministic when `created_at` collides
  * (e.g. tasks created within the same second).
  */
-export function listTasks(db: Database.Database): Task[] {
-  const rows = db
-    .prepare("SELECT * FROM tasks ORDER BY created_at ASC, id ASC")
-    .all() as TaskRow[];
+export async function listTasks(db: Db): Promise<Task[]> {
+  const rows = await db.all<TaskRow>("SELECT * FROM tasks ORDER BY created_at ASC, id ASC");
   return rows.map(mapTaskRow);
 }
 
@@ -58,13 +56,11 @@ export interface NewTaskRecord {
   committed_start_at?: string | null;
 }
 
-export function findTaskById(
-  db: Database.Database,
+export async function findTaskById(
+  db: Db,
   id: number,
-): Task | undefined {
-  const row = db.prepare("SELECT * FROM tasks WHERE id = ?").get(id) as
-    | TaskRow
-    | undefined;
+): Promise<Task | undefined> {
+  const row = await db.get<TaskRow>("SELECT * FROM tasks WHERE id = ?", [id]);
   return row ? mapTaskRow(row) : undefined;
 }
 
@@ -78,10 +74,10 @@ export function findTaskById(
  * schema has no `status` field either) checks {@link isEvidenceGateBlocking}
  * before calling this function.
  */
-export function insertTask(
-  db: Database.Database,
+export async function insertTask(
+  db: Db,
   record: NewTaskRecord,
-): Task {
+): Promise<Task> {
   const now = new Date().toISOString();
   const completedAt = record.status === "done" ? now : null;
   // 決定1: committed_start_at が非 null なら committed_at はこの insert の
@@ -90,15 +86,13 @@ export function insertTask(
   const committedStartAt = record.committed_start_at ?? null;
   const committedAt = committedStartAt !== null ? now : null;
 
-  const result = db
-    .prepare(
-      `INSERT INTO tasks (
-        title, description, category, priority, due_at, status,
-        boss_comment, estimated_minutes, created_at, updated_at, completed_at,
-        evidence_required, committed_start_at, committed_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-    )
-    .run(
+  const result = await db.run(
+    `INSERT INTO tasks (
+      title, description, category, priority, due_at, status,
+      boss_comment, estimated_minutes, created_at, updated_at, completed_at,
+      evidence_required, committed_start_at, committed_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    [
       record.title,
       record.description,
       record.category,
@@ -113,9 +107,10 @@ export function insertTask(
       record.evidence_required ? 1 : 0,
       committedStartAt,
       committedAt,
-    );
+    ],
+  );
 
-  const task = findTaskById(db, Number(result.lastInsertRowid));
+  const task = await findTaskById(db, result.lastInsertRowid);
   if (!task) {
     throw new Error("failed to read back the inserted task");
   }
@@ -157,19 +152,19 @@ export interface TaskPatch {
  * 1つの述語を2箇所から呼ぶ"): `tasks-routes.ts`'s `POST /api/tasks` handler,
  * and `updateTask` below.
  */
-export function isEvidenceGateBlocking(
-  db: Database.Database,
+export async function isEvidenceGateBlocking(
+  db: Db,
   input: { taskId: number | null; evidenceRequired: boolean },
-): boolean {
+): Promise<boolean> {
   if (!input.evidenceRequired) {
     return false;
   }
-  const { enforcementEnabled } = resolveEvidenceSettings(db);
+  const { enforcementEnabled } = await resolveEvidenceSettings(db);
   if (!enforcementEnabled) {
     return false;
   }
   const evidenceCount =
-    input.taskId === null ? 0 : countTaskEvidences(db, input.taskId);
+    input.taskId === null ? 0 : await countTaskEvidences(db, input.taskId);
   return evidenceCount === 0;
 }
 
@@ -272,7 +267,7 @@ function combineChangeNotes(...fragments: (string | null)[]): string | null {
  * `{ ok: false, reason: "evidence_required" }` **before** anything is
  * written（決定 2-d: 拒否は「何も書かない」。`status`/`updated_at`/
  * `completed_at` は一切変わらず、`task_update` イベントも記録されない）。
- * This is evaluated before the `db.transaction` below even opens.
+ * This is evaluated inside the same transaction as the write (see below).
  *
  * When the update is not rejected and `patch` requests at least one field, a
  * `task_update` activity event is recorded automatically as part of the same
@@ -284,13 +279,32 @@ function combineChangeNotes(...fragments: (string | null)[]): string | null {
  * 追加しない）; otherwise `note` stays `null`. This function is the one
  * layer both `PATCH /api/tasks/:id` and the boss's `update_task` tool use
  * pass through, so recording it here covers both call sites.
+ *
+ * **T2（#604・機能仕様 docs/features/async-db-layer.md 決定 2）**: the whole
+ * read → decide → write runs inside one `db.transaction(...)` — the existing
+ * row read, the evidence-gate count, the UPDATE, the `task_update` event and
+ * the read-back. Reading the row outside would let two concurrent updates of
+ * different fields each merge their patch into the same stale row and the
+ * later write drop the earlier change (AC-18); reading the evidence count
+ * outside would let a concurrent evidence delete (E1) slip in between the
+ * gate and the write (AC-22). Pass the caller's `tx` as `db` when calling
+ * this from inside another transaction (checkins, T3): the nested
+ * `transaction` then becomes a SAVEPOINT on the same lock.
  */
-export function updateTask(
-  db: Database.Database,
+export async function updateTask(
+  db: Db,
   id: number,
   patch: TaskPatch,
-): UpdateTaskResult {
-  const existing = findTaskById(db, id);
+): Promise<UpdateTaskResult> {
+  return db.transaction((tx) => updateTaskInTransaction(tx, id, patch));
+}
+
+async function updateTaskInTransaction(
+  db: Db,
+  id: number,
+  patch: TaskPatch,
+): Promise<UpdateTaskResult> {
+  const existing = await findTaskById(db, id);
   if (!existing) {
     return { ok: false, reason: "not_found" };
   }
@@ -314,10 +328,10 @@ export function updateTask(
     patch.status === "done" && existing.status !== "done";
   if (
     isTransitionToDone &&
-    isEvidenceGateBlocking(db, {
+    (await isEvidenceGateBlocking(db, {
       taskId: id,
       evidenceRequired: next.evidence_required,
-    })
+    }))
   ) {
     return { ok: false, reason: "evidence_required" };
   }
@@ -374,14 +388,13 @@ export function updateTask(
     committedStartAtChangeNote,
   );
 
-  const applyUpdate = db.transaction(() => {
-    db.prepare(
-      `UPDATE tasks SET
-        title = ?, description = ?, priority = ?, due_at = ?, status = ?,
-        boss_comment = ?, estimated_minutes = ?, updated_at = ?, completed_at = ?,
-        evidence_required = ?, committed_start_at = ?, committed_at = ?
-      WHERE id = ?`,
-    ).run(
+  await db.run(
+    `UPDATE tasks SET
+      title = ?, description = ?, priority = ?, due_at = ?, status = ?,
+      boss_comment = ?, estimated_minutes = ?, updated_at = ?, completed_at = ?,
+      evidence_required = ?, committed_start_at = ?, committed_at = ?
+    WHERE id = ?`,
+    [
       next.title,
       next.description,
       next.priority,
@@ -395,19 +408,18 @@ export function updateTask(
       next.committed_start_at,
       committedAt,
       id,
-    );
+    ],
+  );
 
-    if (isRealChange) {
-      recordActivityEvent(db, {
-        type: "task_update",
-        task_id: id,
-        note,
-      });
-    }
-  });
-  applyUpdate();
+  if (isRealChange) {
+    await recordActivityEvent(db, {
+      type: "task_update",
+      task_id: id,
+      note,
+    });
+  }
 
-  const task = findTaskById(db, id);
+  const task = await findTaskById(db, id);
   if (!task) {
     throw new Error("failed to read back the updated task");
   }

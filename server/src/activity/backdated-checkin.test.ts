@@ -3,6 +3,7 @@ import type { Hono } from "hono";
 import type Database from "better-sqlite3";
 import { openDatabase } from "../db/connection.js";
 import { runMigrations } from "../db/migrate.js";
+import { portFor } from "../db/test-support/port-for.js";
 import { createApp } from "../app.js";
 import { insertTask } from "../tasks/tasks-repository.js";
 import type { Task } from "../tasks/task.js";
@@ -77,9 +78,9 @@ function postCheckin(app: Hono, body: Record<string, unknown>) {
 describe("backdated checkins: effect on notifications / escalation / break detection (#352)", () => {
   let db: Database.Database;
 
-  beforeEach(() => {
+  beforeEach(async () => {
     db = openDatabase(":memory:");
-    runMigrations(db);
+    await runMigrations(portFor(db));
     vi.useFakeTimers();
     vi.setSystemTime(NOW);
   });
@@ -93,7 +94,7 @@ describe("backdated checkins: effect on notifications / escalation / break detec
     it("leaves an existing notification row unchanged after a backdated checkin is recorded", async () => {
       const sentAt = new Date(2026, 6, 5, 9, 0, 0, 0);
       vi.setSystemTime(sentAt);
-      const inserted = insertNotification(db, {
+      const inserted = await insertNotification(portFor(db), {
         type: "unstarted_reminder",
         rule_key: "unstarted:1",
         escalation_level: 2,
@@ -101,14 +102,14 @@ describe("backdated checkins: effect on notifications / escalation / break detec
       });
       vi.setSystemTime(NOW);
 
-      const app = createApp(db);
+      const app = createApp(portFor(db));
       const res = await postCheckin(app, {
         type: "checkin",
         occurred_at: new Date(2026, 6, 5, 10, 0, 0, 0).toISOString(),
       });
       expect(res.status).toBe(201);
 
-      const rows = listNotificationsSince(db, new Date(0).toISOString());
+      const rows = await listNotificationsSince(portFor(db), new Date(0).toISOString());
       expect(rows).toHaveLength(1);
       expect(rows[0]).toEqual(inserted);
     });
@@ -118,7 +119,7 @@ describe("backdated checkins: effect on notifications / escalation / break detec
     it("resets resolveEscalation to level 1 when the backdated signal is after the last notification's sent_at (AC-14)", async () => {
       const sentAt = new Date(2026, 6, 5, 9, 0, 0, 0);
       vi.setSystemTime(sentAt);
-      insertNotification(db, {
+      await insertNotification(portFor(db), {
         type: "unstarted_reminder",
         rule_key: "unstarted:1",
         escalation_level: 2,
@@ -126,7 +127,7 @@ describe("backdated checkins: effect on notifications / escalation / break detec
       });
       vi.setSystemTime(NOW);
 
-      const app = createApp(db);
+      const app = createApp(portFor(db));
       const res = await postCheckin(app, {
         type: "checkin",
         // After sentAt (09:00), before NOW (14:00): a genuine backdated
@@ -137,9 +138,9 @@ describe("backdated checkins: effect on notifications / escalation / break detec
       expect(res.status).toBe(201);
 
       const notifications = toNotificationHistory(
-        listNotificationsSince(db, new Date(0).toISOString()),
+        await listNotificationsSince(portFor(db), new Date(0).toISOString()),
       );
-      const activityEvents = listEventsSince(db, new Date(0).toISOString());
+      const activityEvents = await listEventsSince(portFor(db), new Date(0).toISOString());
       const result = resolveEscalation(
         "unstarted:1",
         NOW,
@@ -157,7 +158,7 @@ describe("backdated checkins: effect on notifications / escalation / break detec
     it("does not reset resolveEscalation when the backdated signal is before the last notification's sent_at (AC-15)", async () => {
       const sentAt = new Date(2026, 6, 5, 10, 0, 0, 0);
       vi.setSystemTime(sentAt);
-      insertNotification(db, {
+      await insertNotification(portFor(db), {
         type: "unstarted_reminder",
         rule_key: "unstarted:1",
         escalation_level: 1,
@@ -169,7 +170,7 @@ describe("backdated checkins: effect on notifications / escalation / break detec
       const shortlyAfterSentAt = new Date(2026, 6, 5, 10, 5, 0, 0);
       vi.setSystemTime(shortlyAfterSentAt);
 
-      const app = createApp(db);
+      const app = createApp(portFor(db));
       const res = await postCheckin(app, {
         type: "checkin",
         // Before sentAt (10:00): must NOT be treated as a reset signal.
@@ -178,9 +179,9 @@ describe("backdated checkins: effect on notifications / escalation / break detec
       expect(res.status).toBe(201);
 
       const notifications = toNotificationHistory(
-        listNotificationsSince(db, new Date(0).toISOString()),
+        await listNotificationsSince(portFor(db), new Date(0).toISOString()),
       );
-      const activityEvents = listEventsSince(db, new Date(0).toISOString());
+      const activityEvents = await listEventsSince(portFor(db), new Date(0).toISOString());
       const result = resolveEscalation(
         "unstarted:1",
         shortlyAfterSentAt,
@@ -217,7 +218,7 @@ describe("backdated checkins: effect on notifications / escalation / break detec
     });
 
     it("returns the same GET /api/reports/:date content before and after a backdated checkin", async () => {
-      const app = createApp(db, env);
+      const app = createApp(portFor(db), env);
 
       // Evening session -> generate today's report, mirroring
       // reports-routes.test.ts's own fixture.
@@ -271,8 +272,8 @@ describe("backdated checkins: effect on notifications / escalation / break detec
 
   describe("判断5 調査結果: break_end 無しの後追い break_start は継続中の休憩として扱われる (AC-17)", () => {
     it("getActiveBreak still returns the backdated break_start after a later task_start", async () => {
-      const app = createApp(db);
-      const task: Task = insertTask(db, {
+      const app = createApp(portFor(db));
+      const task: Task = await insertTask(portFor(db), {
         title: "資料作成",
         description: null,
         category: "work",
@@ -298,7 +299,7 @@ describe("backdated checkins: effect on notifications / escalation / break detec
       });
       expect(taskStartRes.status).toBe(201);
 
-      const activityEvents: ActivityEvent[] = listEventsSince(db, new Date(0).toISOString());
+      const activityEvents: ActivityEvent[] = await listEventsSince(portFor(db), new Date(0).toISOString());
       const activeBreak = getActiveBreak(activityEvents);
 
       expect(activeBreak).toBeDefined();

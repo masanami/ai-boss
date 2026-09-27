@@ -1,4 +1,4 @@
-import type Database from "better-sqlite3";
+import type { Db } from "../db/db-port.js";
 import { resolveBossSettings } from "../boss/boss-settings.js";
 import { buildPersonaPrompt } from "../boss/persona-prompt.js";
 import { resolveLlmBackend } from "../config.js";
@@ -118,7 +118,7 @@ function withTimeout<T>(promise: Promise<T>, timeoutMs: number): Promise<TimedRe
  * （関心の分離）。
  */
 export async function generateMeetingOpening(
-  db: Database.Database,
+  db: Db,
   env: NodeJS.ProcessEnv,
   now: Date,
   sessionType: MeetingSessionType,
@@ -127,8 +127,8 @@ export async function generateMeetingOpening(
   try {
     const backend = resolveLlmBackend(env);
     const client = createClaudeClient(env, backend);
-    const { model, persona } = resolveBossSettings(db);
-    const tasks = listTasks(db);
+    const { model, persona } = await resolveBossSettings(db);
+    const tasks = await listTasks(db);
     // purpose は指定しない（既定 "chat"）。sessionType を渡すことで
     // MORNING_FLOW_INSTRUCTION / EVENING_FLOW_INSTRUCTION が乗る
     // （persona-prompt.ts の resolveSessionFlowInstruction は purpose ===
@@ -137,7 +137,10 @@ export async function generateMeetingOpening(
       tasks,
       // 決定 3-a: 朝会/夕会の開始ひとこともボスチャットと同じ会話の一部
       // なので、実件数を渡す（notification 用途の呼び出し元とは異なる）。
-      taskEvidenceCounts: countTaskEvidencesByTaskIds(db, tasks.map((task) => task.id)),
+      taskEvidenceCounts: await countTaskEvidencesByTaskIds(
+        db,
+        tasks.map((task) => task.id),
+      ),
       recentDecisions: [],
       now,
       sessionType,

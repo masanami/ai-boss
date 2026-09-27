@@ -1,5 +1,5 @@
 import type Anthropic from "@anthropic-ai/sdk";
-import type Database from "better-sqlite3";
+import type { Db } from "../db/db-port.js";
 import { TASK_PRIORITIES, TASK_STATUSES } from "../tasks/task.js";
 import { insertTask, updateTask } from "../tasks/tasks-repository.js";
 import {
@@ -110,23 +110,23 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null;
 }
 
-function executeCreateTask(
-  db: Database.Database,
+async function executeCreateTask(
+  db: Db,
   input: unknown,
-): ToolExecutionResult {
+): Promise<ToolExecutionResult> {
   const result = validateCreateTaskInput(input);
   if (!result.valid) {
     return { content: result.error, isError: true };
   }
 
-  const task = insertTask(db, result.data);
+  const task = await insertTask(db, result.data);
   return { content: JSON.stringify(task), isError: false };
 }
 
-function executeUpdateTask(
-  db: Database.Database,
+async function executeUpdateTask(
+  db: Db,
   input: unknown,
-): ToolExecutionResult {
+): Promise<ToolExecutionResult> {
   if (!isRecord(input) || typeof input.id !== "number") {
     return {
       content: "id is required and must be a number",
@@ -139,7 +139,7 @@ function executeUpdateTask(
     return { content: result.error, isError: true };
   }
 
-  const updateResult = updateTask(db, input.id, result.data);
+  const updateResult = await updateTask(db, input.id, result.data);
   if (!updateResult.ok) {
     if (updateResult.reason === "not_found") {
       return { content: `task ${input.id} not found`, isError: true };
@@ -171,11 +171,11 @@ function executeUpdateTask(
  * tool-driven writes are held to the same constraints as `POST /api/tasks`
  * and `PATCH /api/tasks/:id`.
  */
-export function executeTaskTool(
-  db: Database.Database,
+export async function executeTaskTool(
+  db: Db,
   name: string,
   input: unknown,
-): ToolExecutionResult {
+): Promise<ToolExecutionResult> {
   if (name === "create_task") {
     return executeCreateTask(db, input);
   }

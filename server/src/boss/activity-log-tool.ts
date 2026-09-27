@@ -1,5 +1,5 @@
 import type Anthropic from "@anthropic-ai/sdk";
-import type Database from "better-sqlite3";
+import type { Db } from "../db/db-port.js";
 import { listEventsSince } from "../activity/activity-events-repository.js";
 import { startOfLocalDayIso, startOfNextLocalDayIso } from "../activity/local-day.js";
 import { findTaskById } from "../tasks/tasks-repository.js";
@@ -169,10 +169,10 @@ function parseIsoInput(
  * #236) and filters `task_id` in memory rather than adding a new repository
  * query.
  */
-export function executeGetActivityLogTool(
-  db: Database.Database,
+export async function executeGetActivityLogTool(
+  db: Db,
   input: unknown,
-): ToolExecutionResult {
+): Promise<ToolExecutionResult> {
   if (!isRecord(input)) {
     return { content: "input must be an object", isError: true };
   }
@@ -188,7 +188,7 @@ export function executeGetActivityLogTool(
     // truncated: false}` instead of an error, and the boss could not tell
     // "this task has no log entries" apart from "this task_id is wrong"
     // (self-review finding).
-    const found = findTaskById(db, input.task_id);
+    const found = await findTaskById(db, input.task_id);
     if (!found) {
       return { content: `task ${input.task_id} not found`, isError: true };
     }
@@ -227,7 +227,7 @@ export function executeGetActivityLogTool(
   // repository's TEXT comparison is exact. Its upper bound is exclusive —
   // one half-open semantics for both date-only and explicit datetimes
   // (ADR 0007 決定3; #236).
-  let events = listEventsSince(db, effectiveSince, untilIso);
+  let events = await listEventsSince(db, effectiveSince, untilIso);
 
   if (taskId !== undefined) {
     events = events.filter((event) => event.task_id === taskId);

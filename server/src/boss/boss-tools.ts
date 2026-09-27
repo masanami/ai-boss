@@ -1,5 +1,5 @@
 import type Anthropic from "@anthropic-ai/sdk";
-import type Database from "better-sqlite3";
+import type { Db } from "../db/db-port.js";
 import { TASK_TOOLS, executeTaskTool, type ToolExecutionResult } from "./task-tools.js";
 import { RECORD_DECISION_TOOL, executeRecordDecisionTool } from "./decision-tool.js";
 import { RECORD_MENTORING_TOOL, executeRecordMentoringTool } from "./mentoring-tool.js";
@@ -39,21 +39,21 @@ export const BOSS_TOOLS: Anthropic.Tool[] = [
  * by it, since this is a `record_mentoring`-specific fallback, not a
  * general decision-logging one.
  */
-export function executeBossTool(
-  db: Database.Database,
+export async function executeBossTool(
+  db: Db,
   sessionId: number,
   name: string,
   input: unknown,
   mentoringTaskId?: number,
-): ToolExecutionResult {
+): Promise<ToolExecutionResult> {
   if (name === "record_decision") {
-    return executeRecordDecisionTool(db, sessionId, input);
+    return await executeRecordDecisionTool(db, sessionId, input);
   }
   if (name === "record_mentoring") {
-    return executeRecordMentoringTool(db, sessionId, input, mentoringTaskId);
+    return await executeRecordMentoringTool(db, sessionId, input, mentoringTaskId);
   }
   if (name === "get_activity_log") {
-    return executeGetActivityLogTool(db, input);
+    return await executeGetActivityLogTool(db, input);
   }
-  return executeTaskTool(db, name, input);
+  return await executeTaskTool(db, name, input);
 }

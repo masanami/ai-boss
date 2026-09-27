@@ -3,6 +3,7 @@ import type Database from "better-sqlite3";
 import type Anthropic from "@anthropic-ai/sdk";
 import { openDatabase } from "../db/connection.js";
 import { runMigrations } from "../db/migrate.js";
+import { portFor } from "../db/test-support/port-for.js";
 import { insertMessage } from "./messages-repository.js";
 import { insertDecision } from "../decisions/decisions-repository.js";
 import { setSettingValue } from "../settings/settings-repository.js";
@@ -54,9 +55,9 @@ async function readJson<T>(res: Response): Promise<T> {
 describe("sessions routes", () => {
   let db: Database.Database;
 
-  beforeEach(() => {
+  beforeEach(async () => {
     db = openDatabase(":memory:");
-    runMigrations(db);
+    await runMigrations(portFor(db));
     createClaudeClientMock.mockReset();
     createBossMessageMock.mockReset();
     createClaudeClientMock.mockReturnValue({});
@@ -70,7 +71,7 @@ describe("sessions routes", () => {
     it.each(["morning", "evening", "adhoc"] as const)(
       "creates a session with type %s",
       async (type) => {
-        const app = createApp(db);
+        const app = createApp(portFor(db));
 
         const res = await app.request("/api/sessions", {
           method: "POST",
@@ -87,7 +88,7 @@ describe("sessions routes", () => {
     );
 
     it("returns 400 when type is missing", async () => {
-      const app = createApp(db);
+      const app = createApp(portFor(db));
 
       const res = await app.request("/api/sessions", {
         method: "POST",
@@ -101,7 +102,7 @@ describe("sessions routes", () => {
     });
 
     it("returns 400 when type is invalid", async () => {
-      const app = createApp(db);
+      const app = createApp(portFor(db));
 
       const res = await app.request("/api/sessions", {
         method: "POST",
@@ -115,7 +116,7 @@ describe("sessions routes", () => {
     });
 
     it("returns 400 when the request body is not valid JSON", async () => {
-      const app = createApp(db);
+      const app = createApp(portFor(db));
 
       const res = await app.request("/api/sessions", {
         method: "POST",
@@ -134,7 +135,7 @@ describe("sessions routes", () => {
       });
 
       it("returns 409 with code evening_session_already_exists when an evening session already exists today, without inserting a new row", async () => {
-        const app = createApp(db);
+        const app = createApp(portFor(db));
         vi.useFakeTimers();
         vi.setSystemTime(new Date(2026, 7, 14, 18, 0));
         const first = await postSession(app, "evening");
@@ -155,7 +156,7 @@ describe("sessions routes", () => {
       });
 
       it("allows today's evening session when only a previous day's evening session exists (date boundary)", async () => {
-        const app = createApp(db);
+        const app = createApp(portFor(db));
         vi.useFakeTimers();
         vi.setSystemTime(new Date(2026, 7, 13, 23, 50));
         const previousDay = await readJson<Session>(
@@ -178,7 +179,7 @@ describe("sessions routes", () => {
       });
 
       it("returns 409 when today's evening session is already ended", async () => {
-        const app = createApp(db);
+        const app = createApp(portFor(db));
         vi.useFakeTimers();
         vi.setSystemTime(new Date(2026, 7, 14, 18, 0));
         const first = await readJson<Session>(await postSession(app, "evening"));
@@ -193,7 +194,7 @@ describe("sessions routes", () => {
       });
 
       it("AC-2/GAP-11: only one succeeds when two evening session creations are issued concurrently via Promise.all, leaving exactly one row", async () => {
-        const app = createApp(db);
+        const app = createApp(portFor(db));
         vi.useFakeTimers();
         vi.setSystemTime(new Date(2026, 7, 14, 18, 0));
 
@@ -220,7 +221,7 @@ describe("sessions routes", () => {
       });
 
       it("does not limit morning or adhoc sessions created on the same day", async () => {
-        const app = createApp(db);
+        const app = createApp(portFor(db));
         vi.useFakeTimers();
         vi.setSystemTime(new Date(2026, 7, 14, 9, 0));
 
@@ -239,7 +240,7 @@ describe("sessions routes", () => {
 
   describe("POST /api/sessions — meeting opening (Issue #271, docs/features/meeting-start-announcement.md 判断1〜4)", () => {
     it("AC-1: creates an evening session and persists a generated boss opening message", async () => {
-      const app = createApp(db);
+      const app = createApp(portFor(db));
       createBossMessageMock.mockResolvedValue(fakeTextMessage("今日の進捗を聞かせろ。"));
 
       const res = await postSession(app, "evening");
@@ -257,7 +258,7 @@ describe("sessions routes", () => {
     });
 
     it("AC-2: creates a morning session and persists a generated boss opening message", async () => {
-      const app = createApp(db);
+      const app = createApp(portFor(db));
       createBossMessageMock.mockResolvedValue(fakeTextMessage("今日はA案件から片付けろ。"));
 
       const res = await postSession(app, "morning");
@@ -275,7 +276,7 @@ describe("sessions routes", () => {
     });
 
     it("AC-3: does not generate an opening message for an adhoc session", async () => {
-      const app = createApp(db);
+      const app = createApp(portFor(db));
 
       const res = await postSession(app, "adhoc");
       const session = await readJson<Session>(res);
@@ -289,7 +290,7 @@ describe("sessions routes", () => {
     });
 
     it("AC-4/AC-5: still returns 201 and persists the fixed fallback text when generation fails", async () => {
-      const app = createApp(db);
+      const app = createApp(portFor(db));
       createBossMessageMock.mockRejectedValue(new Error("connection reset with request id xyz"));
 
       const res = await postSession(app, "evening");
@@ -305,7 +306,7 @@ describe("sessions routes", () => {
     });
 
     it("AC-7: does not record a chat_message activity event when generating the opening message", async () => {
-      const app = createApp(db);
+      const app = createApp(portFor(db));
       createBossMessageMock.mockResolvedValue(fakeTextMessage("今日の進捗を聞かせろ。"));
 
       await postSession(app, "evening");
@@ -321,7 +322,7 @@ describe("sessions routes", () => {
     // ここで固定するのは、ユーザーに見える「同じ日の同じ会を再開しても
     // 開始ひとことが重複しない」というルート層の振る舞いのほう。
     it("AC-6: re-creating today's evening session is rejected and does not add a second opening message", async () => {
-      const app = createApp(db);
+      const app = createApp(portFor(db));
       vi.useFakeTimers();
       vi.setSystemTime(new Date(2026, 7, 14, 18, 0));
       createBossMessageMock.mockResolvedValue(fakeTextMessage("今日の進捗を聞かせろ。"));
@@ -338,11 +339,11 @@ describe("sessions routes", () => {
     });
 
     it("AC-6: a session that already has messages does not get a second opening message", async () => {
-      const app = createApp(db);
+      const app = createApp(portFor(db));
       createBossMessageMock.mockResolvedValue(fakeTextMessage("今日はA案件から片付けろ。"));
 
       const session = await readJson<Session>(await postSession(app, "morning"));
-      insertMessage(db, {
+      await insertMessage(portFor(db), {
         session_id: session.id,
         role: "user",
         content: "了解、A案件からやる",
@@ -362,7 +363,7 @@ describe("sessions routes", () => {
 
   describe("GET /api/sessions", () => {
     it("returns an empty array when no sessions exist", async () => {
-      const app = createApp(db);
+      const app = createApp(portFor(db));
 
       const res = await app.request("/api/sessions");
 
@@ -371,7 +372,7 @@ describe("sessions routes", () => {
     });
 
     it("returns sessions ordered by started_at descending (most recent first)", async () => {
-      const app = createApp(db);
+      const app = createApp(portFor(db));
 
       const first = await readJson<Session>(
         await app.request("/api/sessions", {
@@ -396,7 +397,7 @@ describe("sessions routes", () => {
     });
 
     it("filters sessions by ?type=", async () => {
-      const app = createApp(db);
+      const app = createApp(portFor(db));
 
       await app.request("/api/sessions", {
         method: "POST",
@@ -419,7 +420,7 @@ describe("sessions routes", () => {
     });
 
     it("returns 400 when ?type= is invalid", async () => {
-      const app = createApp(db);
+      const app = createApp(portFor(db));
 
       const res = await app.request("/api/sessions?type=lunch");
 
@@ -431,7 +432,7 @@ describe("sessions routes", () => {
 
   describe("GET /api/sessions/:id/messages", () => {
     it("returns an empty array when the session has no messages", async () => {
-      const app = createApp(db);
+      const app = createApp(portFor(db));
       const session = await readJson<Session>(
         await app.request("/api/sessions", {
           method: "POST",
@@ -447,7 +448,7 @@ describe("sessions routes", () => {
     });
 
     it("returns messages ordered by created_at ascending", async () => {
-      const app = createApp(db);
+      const app = createApp(portFor(db));
       const session = await readJson<Session>(
         await app.request("/api/sessions", {
           method: "POST",
@@ -455,12 +456,12 @@ describe("sessions routes", () => {
           body: JSON.stringify({ type: "adhoc" }),
         }),
       );
-      const first = insertMessage(db, {
+      const first = await insertMessage(portFor(db), {
         session_id: session.id,
         role: "user",
         content: "最初の発言",
       });
-      const second = insertMessage(db, {
+      const second = await insertMessage(portFor(db), {
         session_id: session.id,
         role: "boss",
         content: "ボスの応答",
@@ -477,7 +478,7 @@ describe("sessions routes", () => {
     // docs/features/boss-reply-plain-text-output.md クリティカル設計決定
     // 「適用面」— ボスの発言にのみ正規化を掛け、ユーザーの発言には掛けない。
     it("AC-11: normalizes content for role: boss messages", async () => {
-      const app = createApp(db);
+      const app = createApp(portFor(db));
       const session = await readJson<Session>(
         await app.request("/api/sessions", {
           method: "POST",
@@ -485,7 +486,7 @@ describe("sessions routes", () => {
           body: JSON.stringify({ type: "adhoc" }),
         }),
       );
-      insertMessage(db, {
+      await insertMessage(portFor(db), {
         session_id: session.id,
         role: "boss",
         content: "<p>資料作成を優先しろ</p><strong>今日中に</strong>。",
@@ -500,7 +501,7 @@ describe("sessions routes", () => {
 
     // AC-12: role: user の content は保存値のまま返る（正規化しない）。
     it("AC-12: does not normalize content for role: user messages, even if it looks like HTML", async () => {
-      const app = createApp(db);
+      const app = createApp(portFor(db));
       const session = await readJson<Session>(
         await app.request("/api/sessions", {
           method: "POST",
@@ -509,7 +510,7 @@ describe("sessions routes", () => {
         }),
       );
       const rawUserContent = "<p>資料作成を優先しろ</p>という指示を受けた";
-      insertMessage(db, {
+      await insertMessage(portFor(db), {
         session_id: session.id,
         role: "user",
         content: rawUserContent,
@@ -527,7 +528,7 @@ describe("sessions routes", () => {
     it.each(["9999", "not-a-number"])(
       "returns 404 with code session_not_found for a non-existent session id (%s)",
       async (rawId) => {
-        const app = createApp(db);
+        const app = createApp(portFor(db));
 
         const res = await app.request(`/api/sessions/${rawId}/messages`);
 
@@ -547,7 +548,7 @@ describe("sessions routes", () => {
     });
 
     it("records ended_at (ISO 8601) on the session and returns it", async () => {
-      const app = createApp(db);
+      const app = createApp(portFor(db));
       const session = await readJson<Session>(
         await app.request("/api/sessions", {
           method: "POST",
@@ -557,7 +558,7 @@ describe("sessions routes", () => {
       );
       // #276: このテストの主題は ended_at の記録であり、メンタリング完了とは
       // 無関係 — 朝会終了ゲートに巻き込まれないよう強制設定をオフにする。
-      setSettingValue(db, "morning_mentoring_required", "false");
+      await setSettingValue(portFor(db), "morning_mentoring_required", "false");
       vi.useFakeTimers();
       vi.setSystemTime(new Date("2026-07-06T09:30:00+09:00"));
 
@@ -578,7 +579,7 @@ describe("sessions routes", () => {
     it.each(["9999", "not-a-number"])(
       "returns 404 with code session_not_found for a non-existent session id (%s)",
       async (rawId) => {
-        const app = createApp(db);
+        const app = createApp(portFor(db));
 
         const res = await app.request(`/api/sessions/${rawId}/end`, {
           method: "POST",
@@ -594,7 +595,7 @@ describe("sessions routes", () => {
     );
 
     it("is idempotent: ending an already-ended session returns 200 with the original ended_at", async () => {
-      const app = createApp(db);
+      const app = createApp(portFor(db));
       const session = await readJson<Session>(
         await app.request("/api/sessions", {
           method: "POST",
@@ -620,7 +621,7 @@ describe("sessions routes", () => {
 
     it("AC-1: ending a morning session generates and persists a summary from its messages", async () => {
       const env = { ANTHROPIC_API_KEY: "sk-ant-test-key" };
-      const app = createApp(db, env);
+      const app = createApp(portFor(db), env);
       const session = await readJson<Session>(
         await app.request("/api/sessions", {
           method: "POST",
@@ -628,19 +629,19 @@ describe("sessions routes", () => {
           body: JSON.stringify({ type: "morning" }),
         }),
       );
-      insertMessage(db, {
+      await insertMessage(portFor(db), {
         session_id: session.id,
         role: "user",
         content: "資料作成を今日中に終わらせます",
       });
-      insertMessage(db, {
+      await insertMessage(portFor(db), {
         session_id: session.id,
         role: "boss",
         content: "資料作成を最優先にしろ",
       });
       // #276: このテストの主題は要約生成であり、メンタリング完了とは無関係
       // — 朝会終了ゲートに巻き込まれないよう強制設定をオフにする。
-      setSettingValue(db, "morning_mentoring_required", "false");
+      await setSettingValue(portFor(db), "morning_mentoring_required", "false");
       createBossMessageMock.mockResolvedValue(
         fakeTextMessage("資料作成を最優先にすることを決定した。"),
       );
@@ -661,7 +662,7 @@ describe("sessions routes", () => {
 
     it("AC-3: still returns 200 with ended_at set (and summary left null) when summary generation fails", async () => {
       const env = { ANTHROPIC_API_KEY: "sk-ant-test-key" };
-      const app = createApp(db, env);
+      const app = createApp(portFor(db), env);
       const session = await readJson<Session>(
         await app.request("/api/sessions", {
           method: "POST",
@@ -669,7 +670,7 @@ describe("sessions routes", () => {
           body: JSON.stringify({ type: "evening" }),
         }),
       );
-      insertMessage(db, { session_id: session.id, role: "user", content: "進捗報告です" });
+      await insertMessage(portFor(db), { session_id: session.id, role: "user", content: "進捗報告です" });
       createBossMessageMock.mockRejectedValue(new Error("connection reset with request id xyz"));
 
       const res = await app.request(`/api/sessions/${session.id}/end`, {
@@ -684,7 +685,7 @@ describe("sessions routes", () => {
 
     it("decision 3: does not attempt summary generation for adhoc sessions", async () => {
       const env = { ANTHROPIC_API_KEY: "sk-ant-test-key" };
-      const app = createApp(db, env);
+      const app = createApp(portFor(db), env);
       const session = await readJson<Session>(
         await app.request("/api/sessions", {
           method: "POST",
@@ -692,7 +693,7 @@ describe("sessions routes", () => {
           body: JSON.stringify({ type: "adhoc" }),
         }),
       );
-      insertMessage(db, { session_id: session.id, role: "user", content: "ちょっと相談です" });
+      await insertMessage(portFor(db), { session_id: session.id, role: "user", content: "ちょっと相談です" });
 
       const res = await app.request(`/api/sessions/${session.id}/end`, {
         method: "POST",
@@ -707,7 +708,7 @@ describe("sessions routes", () => {
 
     it("does not regenerate or overwrite the summary when re-ending an already-summarized session", async () => {
       const env = { ANTHROPIC_API_KEY: "sk-ant-test-key" };
-      const app = createApp(db, env);
+      const app = createApp(portFor(db), env);
       const session = await readJson<Session>(
         await app.request("/api/sessions", {
           method: "POST",
@@ -715,10 +716,10 @@ describe("sessions routes", () => {
           body: JSON.stringify({ type: "morning" }),
         }),
       );
-      insertMessage(db, { session_id: session.id, role: "user", content: "報告します" });
+      await insertMessage(portFor(db), { session_id: session.id, role: "user", content: "報告します" });
       // #276: このテストの主題は要約の非再生成であり、メンタリング完了とは
       // 無関係 — 朝会終了ゲートに巻き込まれないよう強制設定をオフにする。
-      setSettingValue(db, "morning_mentoring_required", "false");
+      await setSettingValue(portFor(db), "morning_mentoring_required", "false");
       // Issue #271: session creation above already invoked createBossMessage
       // once for the (unconfigured, fallback-triggering) meeting-opening
       // generation. Clear the call count here so this test's assertion below
@@ -753,8 +754,8 @@ describe("sessions routes", () => {
         return readJson<Session>(await postSession(app, "morning"));
       }
 
-      function recordMentoringConclusion(db: Database.Database, sessionId: number): void {
-        insertDecision(db, {
+      async function recordMentoringConclusion(db: Database.Database, sessionId: number): Promise<void> {
+        await insertDecision(portFor(db), {
           session_id: sessionId,
           content: "このまま進める",
           rationale: "優先度の付け方を確認した",
@@ -763,7 +764,7 @@ describe("sessions routes", () => {
       }
 
       it("AC-16/AC-17: blocks ending a morning session with no mentoring record (forced on by default) — 409 + code mentoring_required", async () => {
-        const app = createApp(db);
+        const app = createApp(portFor(db));
         const session = await postMorningSession(app);
 
         const res = await app.request(`/api/sessions/${session.id}/end`, {
@@ -777,9 +778,9 @@ describe("sessions routes", () => {
       });
 
       it("AC-18: blocks ending a morning session with a mentoring record but zero user messages", async () => {
-        const app = createApp(db);
+        const app = createApp(portFor(db));
         const session = await postMorningSession(app);
-        recordMentoringConclusion(db, session.id);
+        await recordMentoringConclusion(db, session.id);
 
         const res = await app.request(`/api/sessions/${session.id}/end`, {
           method: "POST",
@@ -792,10 +793,10 @@ describe("sessions routes", () => {
 
       it("AC-19: allows ending a morning session with a mentoring record and at least one user message", async () => {
         const env = { ANTHROPIC_API_KEY: "sk-ant-test-key" };
-        const app = createApp(db, env);
+        const app = createApp(portFor(db), env);
         const session = await postMorningSession(app);
-        insertMessage(db, { session_id: session.id, role: "user", content: "今日の進め方です" });
-        recordMentoringConclusion(db, session.id);
+        await insertMessage(portFor(db), { session_id: session.id, role: "user", content: "今日の進め方です" });
+        await recordMentoringConclusion(db, session.id);
 
         const res = await app.request(`/api/sessions/${session.id}/end`, {
           method: "POST",
@@ -807,8 +808,8 @@ describe("sessions routes", () => {
       });
 
       it("AC-20: allows ending a morning session with no mentoring record when the setting is forced off", async () => {
-        const app = createApp(db);
-        setSettingValue(db, "morning_mentoring_required", "false");
+        const app = createApp(portFor(db));
+        await setSettingValue(portFor(db), "morning_mentoring_required", "false");
         const session = await postMorningSession(app);
 
         const res = await app.request(`/api/sessions/${session.id}/end`, {
@@ -821,7 +822,7 @@ describe("sessions routes", () => {
       });
 
       it("AC-21: a blocked morning session's ended_at stays NULL", async () => {
-        const app = createApp(db);
+        const app = createApp(portFor(db));
         const session = await postMorningSession(app);
 
         const res = await app.request(`/api/sessions/${session.id}/end`, {
@@ -836,8 +837,8 @@ describe("sessions routes", () => {
       });
 
       it("AC-22: re-ending an already-ended morning session returns 200 regardless of mentoring record state", async () => {
-        const app = createApp(db);
-        setSettingValue(db, "morning_mentoring_required", "false");
+        const app = createApp(portFor(db));
+        await setSettingValue(portFor(db), "morning_mentoring_required", "false");
         const session = await postMorningSession(app);
         const first = await app.request(`/api/sessions/${session.id}/end`, {
           method: "POST",
@@ -846,7 +847,7 @@ describe("sessions routes", () => {
 
         // Flip the setting back on (default) with no mentoring record present
         // — if the gate were re-evaluated on re-end, this would 409.
-        setSettingValue(db, "morning_mentoring_required", "true");
+        await setSettingValue(portFor(db), "morning_mentoring_required", "true");
         const res = await app.request(`/api/sessions/${session.id}/end`, {
           method: "POST",
         });
@@ -856,7 +857,7 @@ describe("sessions routes", () => {
 
       it("AC-23: never blocks ending an evening session, regardless of mentoring record state", async () => {
         const env = { ANTHROPIC_API_KEY: "sk-ant-test-key" };
-        const app = createApp(db, env);
+        const app = createApp(portFor(db), env);
         const session = await readJson<Session>(await postSession(app, "evening"));
 
         const res = await app.request(`/api/sessions/${session.id}/end`, {
@@ -869,7 +870,7 @@ describe("sessions routes", () => {
       });
 
       it("never blocks ending an adhoc session, regardless of mentoring record state", async () => {
-        const app = createApp(db);
+        const app = createApp(portFor(db));
         const session = await readJson<Session>(await postSession(app, "adhoc"));
 
         const res = await app.request(`/api/sessions/${session.id}/end`, {

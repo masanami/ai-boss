@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type Database from "better-sqlite3";
 import { openDatabase } from "../db/connection.js";
 import { runMigrations } from "../db/migrate.js";
+import { portFor } from "../db/test-support/port-for.js";
 import { createApp } from "../app.js";
 import { setSettingValue } from "../settings/settings-repository.js";
 import { upsertOverride } from "./meeting-schedule-repository.js";
@@ -37,11 +38,11 @@ const YESTERDAY_KEY = "2026-09-19";
 describe("meeting-schedule routes", () => {
   let db: Database.Database;
 
-  beforeEach(() => {
+  beforeEach(async () => {
     vi.useFakeTimers();
     vi.setSystemTime(TODAY);
     db = openDatabase(":memory:");
-    runMigrations(db);
+    await runMigrations(portFor(db));
   });
 
   afterEach(() => {
@@ -51,7 +52,7 @@ describe("meeting-schedule routes", () => {
 
   describe("GET /api/meeting-schedule/:date", () => {
     it("returns the default time for a type with no override (AC-22)", async () => {
-      const app = createApp(db);
+      const app = createApp(portFor(db));
 
       const res = await app.request(`/api/meeting-schedule/${TODAY_KEY}`);
 
@@ -62,8 +63,8 @@ describe("meeting-schedule routes", () => {
     });
 
     it("returns the override time for a type with an override (AC-23)", async () => {
-      upsertOverride(db, TODAY_KEY, "evening", "21:00");
-      const app = createApp(db);
+      await upsertOverride(portFor(db), TODAY_KEY, "evening", "21:00");
+      const app = createApp(portFor(db));
 
       const res = await app.request(`/api/meeting-schedule/${TODAY_KEY}`);
 
@@ -72,8 +73,8 @@ describe("meeting-schedule routes", () => {
     });
 
     it("returns the constant setting time as defaultTime regardless of override presence (AC-24)", async () => {
-      upsertOverride(db, TODAY_KEY, "evening", "21:00");
-      const app = createApp(db);
+      await upsertOverride(portFor(db), TODAY_KEY, "evening", "21:00");
+      const app = createApp(portFor(db));
 
       const res = await app.request(`/api/meeting-schedule/${TODAY_KEY}`);
 
@@ -83,8 +84,8 @@ describe("meeting-schedule routes", () => {
     });
 
     it("returns overridden: true for a type whose effective time differs from the default (AC-25)", async () => {
-      upsertOverride(db, TODAY_KEY, "evening", "21:00");
-      const app = createApp(db);
+      await upsertOverride(portFor(db), TODAY_KEY, "evening", "21:00");
+      const app = createApp(portFor(db));
 
       const res = await app.request(`/api/meeting-schedule/${TODAY_KEY}`);
 
@@ -93,7 +94,7 @@ describe("meeting-schedule routes", () => {
     });
 
     it("returns overridden: false for a type with no override row (AC-26)", async () => {
-      const app = createApp(db);
+      const app = createApp(portFor(db));
 
       const res = await app.request(`/api/meeting-schedule/${TODAY_KEY}`);
 
@@ -106,7 +107,7 @@ describe("meeting-schedule routes", () => {
       // ——リポジトリを直接叩いて、行が「存在するのに実効時刻は既定と同じ」
       // 状態を人為的に作る。実装が「行がある ⇒ overridden: true」という
       // 誤った判定に退行していないかを検出する。
-      upsertOverride(db, TODAY_KEY, "evening", "18:00"); // 既定と同値
+      await upsertOverride(portFor(db), TODAY_KEY, "evening", "18:00"); // 既定と同値
       const rowCountBefore = (
         db
           .prepare(
@@ -115,7 +116,7 @@ describe("meeting-schedule routes", () => {
           .get(TODAY_KEY, "evening") as { count: number }
       ).count;
       expect(rowCountBefore).toBe(1);
-      const app = createApp(db);
+      const app = createApp(portFor(db));
 
       const res = await app.request(`/api/meeting-schedule/${TODAY_KEY}`);
 
@@ -128,8 +129,8 @@ describe("meeting-schedule routes", () => {
       const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
       // 恒常設定 18:00 の上限は 21:00。22:00 は PUT では拒否されるため、
       // リポジトリを直接叩いて「保存済みの上限超過値」を人為的に作る。
-      upsertOverride(db, TODAY_KEY, "evening", "22:00");
-      const app = createApp(db);
+      await upsertOverride(portFor(db), TODAY_KEY, "evening", "22:00");
+      const app = createApp(portFor(db));
 
       const res = await app.request(`/api/meeting-schedule/${TODAY_KEY}`);
 
@@ -140,7 +141,7 @@ describe("meeting-schedule routes", () => {
     });
 
     it("returns latestAllowedTime equal to latestAllowedMeetingTime(defaultTime) (AC-29)", async () => {
-      const app = createApp(db);
+      const app = createApp(portFor(db));
 
       const res = await app.request(`/api/meeting-schedule/${TODAY_KEY}`);
 
@@ -150,7 +151,7 @@ describe("meeting-schedule routes", () => {
     });
 
     it("returns 400 invalid_date for a malformed date (AC-41)", async () => {
-      const app = createApp(db);
+      const app = createApp(portFor(db));
 
       const res = await app.request("/api/meeting-schedule/not-a-date");
 
@@ -160,7 +161,7 @@ describe("meeting-schedule routes", () => {
     });
 
     it("returns 400 invalid_date for a non-existent calendar day", async () => {
-      const app = createApp(db);
+      const app = createApp(portFor(db));
 
       const res = await app.request("/api/meeting-schedule/2026-02-30");
 
@@ -170,7 +171,7 @@ describe("meeting-schedule routes", () => {
     });
 
     it("returns 400 not_today when :date is not today (AC-40)", async () => {
-      const app = createApp(db);
+      const app = createApp(portFor(db));
 
       const res = await app.request(`/api/meeting-schedule/${YESTERDAY_KEY}`);
 
@@ -180,8 +181,8 @@ describe("meeting-schedule routes", () => {
     });
 
     it("reflects an overridden constant setting (morning_meeting_time) as defaultTime", async () => {
-      setSettingValue(db, "morning_meeting_time", "08:30");
-      const app = createApp(db);
+      await setSettingValue(portFor(db), "morning_meeting_time", "08:30");
+      const app = createApp(portFor(db));
 
       const res = await app.request(`/api/meeting-schedule/${TODAY_KEY}`);
 
@@ -193,7 +194,7 @@ describe("meeting-schedule routes", () => {
 
   describe("PUT /api/meeting-schedule/:date", () => {
     it("returns the specified time as the effective time in the response (AC-30)", async () => {
-      const app = createApp(db);
+      const app = createApp(portFor(db));
 
       const res = await app.request(`/api/meeting-schedule/${TODAY_KEY}`, {
         method: "PUT",
@@ -207,7 +208,7 @@ describe("meeting-schedule routes", () => {
     });
 
     it("persists the specified time so a subsequent GET returns it (AC-31)", async () => {
-      const app = createApp(db);
+      const app = createApp(portFor(db));
       await app.request(`/api/meeting-schedule/${TODAY_KEY}`, {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
@@ -221,7 +222,7 @@ describe("meeting-schedule routes", () => {
     });
 
     it("does not persist an override row when the specified time equals the constant setting (AC-28)", async () => {
-      const app = createApp(db);
+      const app = createApp(portFor(db));
 
       await app.request(`/api/meeting-schedule/${TODAY_KEY}`, {
         method: "PUT",
@@ -238,7 +239,7 @@ describe("meeting-schedule routes", () => {
     });
 
     it("deletes an existing override row when a later PUT specifies the constant setting's time", async () => {
-      const app = createApp(db);
+      const app = createApp(portFor(db));
       await app.request(`/api/meeting-schedule/${TODAY_KEY}`, {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
@@ -260,7 +261,7 @@ describe("meeting-schedule routes", () => {
     });
 
     it("sets overridden: false in the response when null is specified (AC-32)", async () => {
-      const app = createApp(db);
+      const app = createApp(portFor(db));
       await app.request(`/api/meeting-schedule/${TODAY_KEY}`, {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
@@ -279,7 +280,7 @@ describe("meeting-schedule routes", () => {
     });
 
     it("leaves the time of a type not present in the body unchanged (AC-33)", async () => {
-      const app = createApp(db);
+      const app = createApp(portFor(db));
       await app.request(`/api/meeting-schedule/${TODAY_KEY}`, {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
@@ -298,7 +299,7 @@ describe("meeting-schedule routes", () => {
     });
 
     it("keeps the row count at 1 when PUT is sent twice for the same date and type (AC-34)", async () => {
-      const app = createApp(db);
+      const app = createApp(portFor(db));
       await app.request(`/api/meeting-schedule/${TODAY_KEY}`, {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
@@ -320,7 +321,7 @@ describe("meeting-schedule routes", () => {
     });
 
     it("returns 400 delay_limit_exceeded for a time past the limit (AC-35)", async () => {
-      const app = createApp(db);
+      const app = createApp(portFor(db));
 
       // 恒常設定 18:00 の上限は 21:00。22:00 は超過。
       const res = await app.request(`/api/meeting-schedule/${TODAY_KEY}`, {
@@ -335,7 +336,7 @@ describe("meeting-schedule routes", () => {
     });
 
     it("does not persist the other type when one type in the same request exceeds the limit (AC-36)", async () => {
-      const app = createApp(db);
+      const app = createApp(portFor(db));
 
       const res = await app.request(`/api/meeting-schedule/${TODAY_KEY}`, {
         method: "PUT",
@@ -351,7 +352,7 @@ describe("meeting-schedule routes", () => {
     });
 
     it("returns 400 invalid_time for a value that is not HH:mm nor null (AC-37)", async () => {
-      const app = createApp(db);
+      const app = createApp(portFor(db));
 
       const res = await app.request(`/api/meeting-schedule/${TODAY_KEY}`, {
         method: "PUT",
@@ -365,7 +366,7 @@ describe("meeting-schedule routes", () => {
     });
 
     it("returns 400 invalid_request for a body containing a key other than morning/evening (AC-38)", async () => {
-      const app = createApp(db);
+      const app = createApp(portFor(db));
 
       const res = await app.request(`/api/meeting-schedule/${TODAY_KEY}`, {
         method: "PUT",
@@ -379,7 +380,7 @@ describe("meeting-schedule routes", () => {
     });
 
     it("returns 400 invalid_request when the body is not a JSON object", async () => {
-      const app = createApp(db);
+      const app = createApp(portFor(db));
 
       const res = await app.request(`/api/meeting-schedule/${TODAY_KEY}`, {
         method: "PUT",
@@ -393,7 +394,7 @@ describe("meeting-schedule routes", () => {
     });
 
     it("returns 400 not_today when :date is not today (AC-39)", async () => {
-      const app = createApp(db);
+      const app = createApp(portFor(db));
 
       const res = await app.request(`/api/meeting-schedule/${YESTERDAY_KEY}`, {
         method: "PUT",
@@ -409,9 +410,9 @@ describe("meeting-schedule routes", () => {
 
   describe("既存契約の保全", () => {
     it("GET /api/settings still returns the constant setting even when today has an override (AC-52)", async () => {
-      upsertOverride(db, TODAY_KEY, "morning", "07:00");
-      upsertOverride(db, TODAY_KEY, "evening", "21:00");
-      const app = createApp(db);
+      await upsertOverride(portFor(db), TODAY_KEY, "morning", "07:00");
+      await upsertOverride(portFor(db), TODAY_KEY, "evening", "21:00");
+      const app = createApp(portFor(db));
 
       const res = await app.request("/api/settings");
 

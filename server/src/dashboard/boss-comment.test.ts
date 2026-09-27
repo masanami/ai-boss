@@ -3,6 +3,7 @@ import type Database from "better-sqlite3";
 import type Anthropic from "@anthropic-ai/sdk";
 import { openDatabase } from "../db/connection.js";
 import { runMigrations } from "../db/migrate.js";
+import { portFor } from "../db/test-support/port-for.js";
 import { NOTIFICATION_PLAIN_TEXT_INSTRUCTION } from "../boss/persona-prompt.js";
 import { insertTask, updateTask } from "../tasks/tasks-repository.js";
 import { getCachedBossComment } from "./boss-comment-cache.js";
@@ -42,7 +43,7 @@ describe("getOrGenerateBossComment", () => {
   // `boss-comment.claude-code.test.ts` が担保する）。
   const env = { ANTHROPIC_API_KEY: "sk-ant-test-key", LLM_BACKEND: "api" };
 
-  beforeEach(() => {
+  beforeEach(async () => {
     // insertTask は updated_at に実時刻を使う。フィンガープリントの入力に
     // なるため、CLAUDE.md のテスト方針（現在時刻はモックする）に従って固定
     // する。テスト内の now と同じローカル日付に揃え、TZ 非依存に組む。
@@ -50,7 +51,7 @@ describe("getOrGenerateBossComment", () => {
     vi.useFakeTimers({ shouldAdvanceTime: true });
     vi.setSystemTime(new Date(2026, 6, 6, 8, 0));
     db = openDatabase(":memory:");
-    runMigrations(db);
+    await runMigrations(portFor(db));
     createClaudeClientMock.mockReset();
     createBossMessageMock.mockReset();
     createClaudeClientMock.mockReturnValue({});
@@ -73,7 +74,7 @@ describe("getOrGenerateBossComment", () => {
       fakeTextMessage("<p>今日も決めた通りにやれ</p>"),
     );
 
-    const comment = await getOrGenerateBossComment(db, env, now);
+    const comment = await getOrGenerateBossComment(portFor(db), env, now);
 
     expect(comment).toBe("\n今日も決めた通りにやれ\n");
   });
@@ -85,8 +86,8 @@ describe("getOrGenerateBossComment", () => {
       fakeTextMessage("<p>今日も決めた通りにやれ</p>"),
     );
 
-    const firstComment = await getOrGenerateBossComment(db, env, first);
-    const secondComment = await getOrGenerateBossComment(db, env, second);
+    const firstComment = await getOrGenerateBossComment(portFor(db), env, first);
+    const secondComment = await getOrGenerateBossComment(portFor(db), env, second);
 
     expect(firstComment).toBe("\n今日も決めた通りにやれ\n");
     expect(secondComment).toBe("\n今日も決めた通りにやれ\n");
@@ -102,14 +103,14 @@ describe("getOrGenerateBossComment", () => {
     const { setCachedBossComment } = await import("./boss-comment-cache.js");
     const { toDateKey } = await import("../detection/time-utils.js");
     const { listTasks } = await import("../tasks/tasks-repository.js");
-    setCachedBossComment(
-      db,
+    await setCachedBossComment(
+      portFor(db),
       toDateKey(now),
-      computeTaskFingerprint(listTasks(db)),
+      computeTaskFingerprint((await listTasks(portFor(db)))),
       "<p>先に書かれた生のひとこと</p>",
     );
 
-    const comment = await getOrGenerateBossComment(db, env, now);
+    const comment = await getOrGenerateBossComment(portFor(db), env, now);
 
     expect(comment).toBe("\n先に書かれた生のひとこと\n");
     expect(createBossMessageMock).not.toHaveBeenCalled();
@@ -123,14 +124,14 @@ describe("getOrGenerateBossComment", () => {
     const { setCachedBossComment } = await import("./boss-comment-cache.js");
     const { toDateKey } = await import("../detection/time-utils.js");
     const { listTasks } = await import("../tasks/tasks-repository.js");
-    setCachedBossComment(
-      db,
+    await setCachedBossComment(
+      portFor(db),
       toDateKey(now),
-      computeTaskFingerprint(listTasks(db)),
+      computeTaskFingerprint((await listTasks(portFor(db)))),
       "<p></p>",
     );
 
-    const comment = await getOrGenerateBossComment(db, env, now);
+    const comment = await getOrGenerateBossComment(portFor(db), env, now);
 
     expect(comment).toBe("今日も決めたことを淡々とこなせ。");
     // キャッシュヒットのままであること（再生成で「直った」のではない）。
@@ -144,17 +145,17 @@ describe("getOrGenerateBossComment", () => {
     const now = new Date(2026, 6, 6, 8, 0);
     createBossMessageMock.mockResolvedValue(fakeTextMessage("<p></p>"));
 
-    const comment = await getOrGenerateBossComment(db, env, now);
+    const comment = await getOrGenerateBossComment(portFor(db), env, now);
 
     expect(comment).toBe("今日も決めたことを淡々とこなせ。");
-    expect(getCachedBossComment(db, "2026-07-06", computeTaskFingerprint([]))).toBeUndefined();
+    expect(await getCachedBossComment(portFor(db), "2026-07-06", computeTaskFingerprint([]))).toBeUndefined();
   });
 
   it("calls the Claude API and returns the generated text on first request", async () => {
     const now = new Date(2026, 6, 6, 8, 0);
     createBossMessageMock.mockResolvedValue(fakeTextMessage("今日も一日決めた通りにやれ"));
 
-    const comment = await getOrGenerateBossComment(db, env, now);
+    const comment = await getOrGenerateBossComment(portFor(db), env, now);
 
     expect(comment).toBe("今日も一日決めた通りにやれ");
     expect(createBossMessageMock).toHaveBeenCalledTimes(1);
@@ -169,7 +170,7 @@ describe("getOrGenerateBossComment", () => {
     const now = new Date(2026, 6, 6, 8, 0);
     createBossMessageMock.mockResolvedValue(fakeTextMessage("今日も一日決めた通りにやれ"));
 
-    await getOrGenerateBossComment(db, env, now);
+    await getOrGenerateBossComment(portFor(db), env, now);
 
     const request = createBossMessageMock.mock.calls[0][1];
     expect(request.system).not.toContain("現在日時:");
@@ -183,7 +184,7 @@ describe("getOrGenerateBossComment", () => {
     const now = new Date(2026, 6, 6, 8, 0);
     createBossMessageMock.mockResolvedValue(fakeTextMessage("今日も一日決めた通りにやれ"));
 
-    await getOrGenerateBossComment(db, env, now);
+    await getOrGenerateBossComment(portFor(db), env, now);
 
     const request = createBossMessageMock.mock.calls[0][1];
     expect(request.system).toContain(NOTIFICATION_PLAIN_TEXT_INSTRUCTION);
@@ -195,7 +196,7 @@ describe("getOrGenerateBossComment", () => {
     const now = new Date(2026, 6, 6, 8, 0);
     createBossMessageMock.mockResolvedValue(fakeTextMessage("今日も一日決めた通りにやれ"));
 
-    await getOrGenerateBossComment(db, env, now);
+    await getOrGenerateBossComment(portFor(db), env, now);
 
     const request = createBossMessageMock.mock.calls[0][1] as { thinking: unknown };
     expect(request.thinking).toEqual({ type: "disabled" });
@@ -205,9 +206,9 @@ describe("getOrGenerateBossComment", () => {
     const now = new Date(2026, 6, 6, 8, 0);
     createBossMessageMock.mockResolvedValue(fakeTextMessage("今日も一日決めた通りにやれ"));
 
-    await getOrGenerateBossComment(db, env, now);
+    await getOrGenerateBossComment(portFor(db), env, now);
 
-    expect(getCachedBossComment(db, "2026-07-06", computeTaskFingerprint([]))).toBe(
+    expect(await getCachedBossComment(portFor(db), "2026-07-06", computeTaskFingerprint([]))).toBe(
       "今日も一日決めた通りにやれ",
     );
   });
@@ -217,8 +218,8 @@ describe("getOrGenerateBossComment", () => {
     const second = new Date(2026, 6, 6, 20, 0);
     createBossMessageMock.mockResolvedValue(fakeTextMessage("今日も一日決めた通りにやれ"));
 
-    const firstComment = await getOrGenerateBossComment(db, env, first);
-    const secondComment = await getOrGenerateBossComment(db, env, second);
+    const firstComment = await getOrGenerateBossComment(portFor(db), env, first);
+    const secondComment = await getOrGenerateBossComment(portFor(db), env, second);
 
     expect(secondComment).toBe(firstComment);
     expect(createBossMessageMock).toHaveBeenCalledTimes(1);
@@ -231,8 +232,8 @@ describe("getOrGenerateBossComment", () => {
       .mockResolvedValueOnce(fakeTextMessage("今日のひとこと"))
       .mockResolvedValueOnce(fakeTextMessage("明日のひとこと"));
 
-    const todayComment = await getOrGenerateBossComment(db, env, today);
-    const tomorrowComment = await getOrGenerateBossComment(db, env, tomorrow);
+    const todayComment = await getOrGenerateBossComment(portFor(db), env, today);
+    const tomorrowComment = await getOrGenerateBossComment(portFor(db), env, tomorrow);
 
     expect(todayComment).toBe("今日のひとこと");
     expect(tomorrowComment).toBe("明日のひとこと");
@@ -245,7 +246,7 @@ describe("getOrGenerateBossComment", () => {
       throw new MissingApiKeyError();
     });
 
-    const comment = await getOrGenerateBossComment(db, {}, now);
+    const comment = await getOrGenerateBossComment(portFor(db), {}, now);
 
     expect(typeof comment).toBe("string");
     expect(comment.length).toBeGreaterThan(0);
@@ -256,7 +257,7 @@ describe("getOrGenerateBossComment", () => {
     const now = new Date(2026, 6, 6, 8, 0);
     createBossMessageMock.mockRejectedValue(new Error("connection reset"));
 
-    const comment = await getOrGenerateBossComment(db, env, now);
+    const comment = await getOrGenerateBossComment(portFor(db), env, now);
 
     expect(typeof comment).toBe("string");
     expect(comment.length).toBeGreaterThan(0);
@@ -269,8 +270,8 @@ describe("getOrGenerateBossComment", () => {
       .mockRejectedValueOnce(new Error("connection reset"))
       .mockResolvedValueOnce(fakeTextMessage("回復後のひとこと"));
 
-    await getOrGenerateBossComment(db, env, first);
-    const secondComment = await getOrGenerateBossComment(db, env, second);
+    await getOrGenerateBossComment(portFor(db), env, first);
+    const secondComment = await getOrGenerateBossComment(portFor(db), env, second);
 
     expect(secondComment).toBe("回復後のひとこと");
     expect(createBossMessageMock).toHaveBeenCalledTimes(2);
@@ -288,9 +289,9 @@ describe("getOrGenerateBossComment", () => {
       .mockResolvedValueOnce(fakeTextMessage("タスクが無いときのひとこと"))
       .mockResolvedValueOnce(fakeTextMessage("タスクがあるときのひとこと"));
 
-    const firstComment = await getOrGenerateBossComment(db, env, first);
+    const firstComment = await getOrGenerateBossComment(portFor(db), env, first);
 
-    insertTask(db, {
+    await insertTask(portFor(db), {
       title: "新しいタスク",
       description: null,
       category: "work",
@@ -301,7 +302,7 @@ describe("getOrGenerateBossComment", () => {
       estimated_minutes: null,
     });
 
-    const secondComment = await getOrGenerateBossComment(db, env, second);
+    const secondComment = await getOrGenerateBossComment(portFor(db), env, second);
 
     expect(firstComment).toBe("タスクが無いときのひとこと");
     expect(secondComment).toBe("タスクがあるときのひとこと");
@@ -314,7 +315,7 @@ describe("getOrGenerateBossComment", () => {
   // zero-tasks case, so this confirms the fingerprint itself doesn't churn
   // when nothing about the tasks changes.
   it("does not call the Claude API again when task state is unchanged, with existing tasks present", async () => {
-    insertTask(db, {
+    await insertTask(portFor(db), {
       title: "既存タスク",
       description: null,
       category: "work",
@@ -328,8 +329,8 @@ describe("getOrGenerateBossComment", () => {
     const second = new Date(2026, 6, 6, 20, 0);
     createBossMessageMock.mockResolvedValue(fakeTextMessage("今日も一日決めた通りにやれ"));
 
-    const firstComment = await getOrGenerateBossComment(db, env, first);
-    const secondComment = await getOrGenerateBossComment(db, env, second);
+    const firstComment = await getOrGenerateBossComment(portFor(db), env, first);
+    const secondComment = await getOrGenerateBossComment(portFor(db), env, second);
 
     expect(secondComment).toBe(firstComment);
     expect(createBossMessageMock).toHaveBeenCalledTimes(1);
@@ -352,7 +353,7 @@ describe("getOrGenerateBossComment", () => {
     // fake timer は shouldAdvanceTime: true（await が実タイマー待ちで
     // 止まらないようにするため）なので、書き込みの直前ごとに固定し直す。
     vi.setSystemTime(now);
-    const inserted = insertTask(db, {
+    const inserted = await insertTask(portFor(db), {
       title: "変更前のタイトル",
       description: null,
       category: "work",
@@ -363,10 +364,10 @@ describe("getOrGenerateBossComment", () => {
       estimated_minutes: null,
     });
 
-    const firstComment = await getOrGenerateBossComment(db, env, now);
+    const firstComment = await getOrGenerateBossComment(portFor(db), env, now);
 
     vi.setSystemTime(now);
-    const updated = updateTask(db, inserted.id, { title: "変更後のタイトル" });
+    const updated = await updateTask(portFor(db), inserted.id, { title: "変更後のタイトル" });
 
     // 狙った経路（updated_at が動かないまま内容だけが変わる）を実際に
     // 踏んでいることの表明。ここが同値でなければ AC-2 は何も検証していない。
@@ -377,7 +378,7 @@ describe("getOrGenerateBossComment", () => {
     expect(updated.task.updated_at).toBe(inserted.updated_at);
     expect(updated.task.title).not.toBe(inserted.title);
 
-    const secondComment = await getOrGenerateBossComment(db, env, now);
+    const secondComment = await getOrGenerateBossComment(portFor(db), env, now);
 
     expect(firstComment).toBe("変更前のひとこと");
     expect(secondComment).toBe("変更後のひとこと");
@@ -395,7 +396,7 @@ describe("getOrGenerateBossComment", () => {
     createBossMessageMock.mockResolvedValue(fakeTextMessage("今日も一日決めた通りにやれ"));
 
     vi.setSystemTime(first);
-    insertTask(db, {
+    await insertTask(portFor(db), {
       title: "全フィールドが埋まったタスク",
       description: "説明",
       category: "private",
@@ -408,8 +409,8 @@ describe("getOrGenerateBossComment", () => {
       committed_start_at: new Date(2026, 6, 6, 10, 0).toISOString(),
     });
 
-    const firstComment = await getOrGenerateBossComment(db, env, first);
-    const secondComment = await getOrGenerateBossComment(db, env, second);
+    const firstComment = await getOrGenerateBossComment(portFor(db), env, first);
+    const secondComment = await getOrGenerateBossComment(portFor(db), env, second);
 
     expect(secondComment).toBe(firstComment);
     expect(createBossMessageMock).toHaveBeenCalledTimes(1);

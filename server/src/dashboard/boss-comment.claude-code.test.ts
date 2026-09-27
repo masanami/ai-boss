@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import type Database from "better-sqlite3";
 import { openDatabase } from "../db/connection.js";
 import { runMigrations } from "../db/migrate.js";
+import { portFor } from "../db/test-support/port-for.js";
 import { getCachedBossComment } from "./boss-comment-cache.js";
 import { computeTaskFingerprint } from "./task-fingerprint.js";
 
@@ -64,9 +65,9 @@ describe("getOrGenerateBossComment (claude-code backend, end-to-end via the real
   let db: Database.Database;
   const env = { LLM_BACKEND: "claude-code" };
 
-  beforeEach(() => {
+  beforeEach(async () => {
     db = openDatabase(":memory:");
-    runMigrations(db);
+    await runMigrations(portFor(db));
     queryMock.mockReset();
   });
 
@@ -74,12 +75,12 @@ describe("getOrGenerateBossComment (claude-code backend, end-to-end via the real
     const now = new Date(2026, 6, 6, 8, 0);
     mockClaudeCodeReply("今日も一日決めた通りにやれ");
 
-    const comment = await getOrGenerateBossComment(db, env, now);
+    const comment = await getOrGenerateBossComment(portFor(db), env, now);
 
     expect(comment).toBe("今日も一日決めた通りにやれ");
     // This suite never creates tasks, so the fingerprint is the stable
     // "zero tasks" value (Issue #121).
-    expect(getCachedBossComment(db, "2026-07-06", computeTaskFingerprint([]))).toBe(
+    expect(await getCachedBossComment(portFor(db), "2026-07-06", computeTaskFingerprint([]))).toBe(
       "今日も一日決めた通りにやれ",
     );
   });
@@ -88,7 +89,7 @@ describe("getOrGenerateBossComment (claude-code backend, end-to-end via the real
     const now = new Date(2026, 6, 6, 8, 0);
     mockClaudeCodeReply("今日も一日決めた通りにやれ");
 
-    await getOrGenerateBossComment(db, env, now);
+    await getOrGenerateBossComment(portFor(db), env, now);
 
     const promptSent = (queryMock.mock.calls[0][0] as { prompt: string }).prompt;
     expect(promptSent).toContain(CLAUDE_CODE_SHORT_TEXT_INSTRUCTION);
@@ -99,10 +100,10 @@ describe("getOrGenerateBossComment (claude-code backend, end-to-end via the real
     const tooLong = "あ".repeat(81);
     mockClaudeCodeReply(tooLong);
 
-    const comment = await getOrGenerateBossComment(db, env, now);
+    const comment = await getOrGenerateBossComment(portFor(db), env, now);
 
     expect(comment).toBe("今日も決めたことを淡々とこなせ。");
-    expect(getCachedBossComment(db, "2026-07-06", computeTaskFingerprint([]))).toBeUndefined();
+    expect(await getCachedBossComment(portFor(db), "2026-07-06", computeTaskFingerprint([]))).toBeUndefined();
   });
 
   it("accepts a response exactly at the 全角80字 limit (boundary)", async () => {
@@ -110,7 +111,7 @@ describe("getOrGenerateBossComment (claude-code backend, end-to-end via the real
     const exactly80 = "あ".repeat(80);
     mockClaudeCodeReply(exactly80);
 
-    const comment = await getOrGenerateBossComment(db, env, now);
+    const comment = await getOrGenerateBossComment(portFor(db), env, now);
 
     expect(comment).toBe(exactly80);
   });
@@ -126,7 +127,7 @@ describe("getOrGenerateBossComment (claude-code backend, end-to-end via the real
         throw new Error("claude code executable not found");
       });
 
-      const commentPromise = getOrGenerateBossComment(db, env, now);
+      const commentPromise = getOrGenerateBossComment(portFor(db), env, now);
       await vi.advanceTimersByTimeAsync(1_000 + 2_000);
 
       expect(await commentPromise).toBe("今日も決めたことを淡々とこなせ。");

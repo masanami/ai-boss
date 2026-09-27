@@ -1,5 +1,5 @@
-import type Database from "better-sqlite3";
-import { getSettingValue } from "../settings/settings-repository.js";
+import type { Db } from "../db/db-port.js";
+import { readSettingsSnapshot, type SettingsSnapshot } from "../settings/settings-repository.js";
 import { isValidWorkingHoursRange } from "../settings/settings-validation.js";
 import {
   DEFAULT_DETECTION_SETTINGS,
@@ -8,8 +8,8 @@ import {
   type WorkingHours,
 } from "../detection/detection-types.js";
 
-function resolveTimeSetting(db: Database.Database, key: string, fallback: string): string {
-  const value = getSettingValue(db, key);
+function resolveTimeSetting(settings: SettingsSnapshot, key: string, fallback: string): string {
+  const value = settings.get(key);
   if (value === undefined) return fallback;
   if (TIME_PATTERN.test(value)) return value;
 
@@ -38,9 +38,9 @@ function resolveTimeSetting(db: Database.Database, key: string, fallback: string
  * 入力に対して fail-open（`true`）だが、ここに渡す値は既に
  * `resolveTimeSetting` を通しているため書式は保証されている。
  */
-function resolveWorkingHours(db: Database.Database, base: WorkingHours): WorkingHours {
-  const start = resolveTimeSetting(db, "work_start", base.start);
-  const end = resolveTimeSetting(db, "work_end", base.end);
+function resolveWorkingHours(settings: SettingsSnapshot, base: WorkingHours): WorkingHours {
+  const start = resolveTimeSetting(settings, "work_start", base.start);
+  const end = resolveTimeSetting(settings, "work_end", base.end);
 
   if (isValidWorkingHoursRange(start, end)) {
     return { start, end };
@@ -52,8 +52,8 @@ function resolveWorkingHours(db: Database.Database, base: WorkingHours): Working
   return { start: base.start, end: base.end };
 }
 
-function resolvePositiveIntSetting(db: Database.Database, key: string, fallback: number): number {
-  const value = getSettingValue(db, key);
+function resolvePositiveIntSetting(settings: SettingsSnapshot, key: string, fallback: number): number {
+  const value = settings.get(key);
   if (value === undefined) return fallback;
 
   const parsed = Number.parseInt(value, 10);
@@ -81,16 +81,16 @@ function resolvePositiveIntSetting(db: Database.Database, key: string, fallback:
  * speculative (YAGNI) — add settings keys if/when the settings screen
  * (Issue #8) needs to expose them.
  */
-export function loadDetectionSettings(db: Database.Database): DetectionSettings {
+export function resolveDetectionSettings(settings: SettingsSnapshot): DetectionSettings {
   const base = DEFAULT_DETECTION_SETTINGS;
 
   return {
     ...base,
-    workingHours: resolveWorkingHours(db, base.workingHours),
+    workingHours: resolveWorkingHours(settings, base.workingHours),
     unstarted: {
       ...base.unstarted,
       fallback: resolvePositiveIntSetting(
-        db,
+        settings,
         "detection_unstarted_fallback_minutes",
         base.unstarted.fallback,
       ),
@@ -98,39 +98,48 @@ export function loadDetectionSettings(db: Database.Database): DetectionSettings 
     silence: {
       ...base.silence,
       fallback: resolvePositiveIntSetting(
-        db,
+        settings,
         "detection_silence_fallback_minutes",
         base.silence.fallback,
       ),
     },
     breakFallbackMinutes: resolvePositiveIntSetting(
-      db,
+      settings,
       "detection_break_fallback_minutes",
       base.breakFallbackMinutes,
     ),
     escalation: {
       level1ToLevel2Minutes: resolvePositiveIntSetting(
-        db,
+        settings,
         "escalation_l2_after_minutes",
         base.escalation.level1ToLevel2Minutes,
       ),
       level2ToLevel3Minutes: resolvePositiveIntSetting(
-        db,
+        settings,
         "escalation_l3_after_minutes",
         base.escalation.level2ToLevel3Minutes,
       ),
       level3RepeatMinutes: resolvePositiveIntSetting(
-        db,
+        settings,
         "escalation_repeat_minutes",
         base.escalation.level3RepeatMinutes,
       ),
     },
-    morningMeetingTime: resolveTimeSetting(db, "morning_meeting_time", base.morningMeetingTime),
-    eveningMeetingTime: resolveTimeSetting(db, "evening_meeting_time", base.eveningMeetingTime),
+    morningMeetingTime: resolveTimeSetting(settings, "morning_meeting_time", base.morningMeetingTime),
+    eveningMeetingTime: resolveTimeSetting(settings, "evening_meeting_time", base.eveningMeetingTime),
     dailyNotificationCap: resolvePositiveIntSetting(
-      db,
+      settings,
       "detection_daily_notification_cap",
       base.dailyNotificationCap,
     ),
   };
+}
+
+/**
+ * Loads the detection settings from one {@link SettingsSnapshot}, so a
+ * scheduler tick or a meeting-schedule request never sees a mix of two
+ * concurrent `PUT /api/settings` saves (#603・Issue #597 のコメント P2).
+ */
+export async function loadDetectionSettings(db: Db): Promise<DetectionSettings> {
+  return resolveDetectionSettings(await readSettingsSnapshot(db));
 }

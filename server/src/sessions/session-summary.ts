@@ -1,4 +1,4 @@
-import type Database from "better-sqlite3";
+import type { Db } from "../db/db-port.js";
 import type { LlmBackend } from "../config.js";
 import { resolveBossSettings } from "../boss/boss-settings.js";
 import {
@@ -62,19 +62,19 @@ function extractText(message: BossLlmMessage): string {
  * 同じ規約）。
  */
 export async function generateSessionSummary(
-  db: Database.Database,
+  db: Db,
   env: NodeJS.ProcessEnv,
   llmBackend: LlmBackend,
   sessionId: number,
 ): Promise<string | null> {
   try {
-    const messages = listMessagesBySessionId(db, sessionId);
+    const messages = await listMessagesBySessionId(db, sessionId);
     if (messages.length === 0) {
       return null;
     }
 
     const client = createClaudeClient(env, llmBackend);
-    const { model } = resolveBossSettings(db);
+    const { model } = await resolveBossSettings(db);
 
     const message = await createBossMessage(client, {
       model,

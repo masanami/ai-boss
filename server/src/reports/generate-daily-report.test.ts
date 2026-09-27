@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type Database from "better-sqlite3";
 import { openDatabase } from "../db/connection.js";
 import { runMigrations } from "../db/migrate.js";
+import { portFor } from "../db/test-support/port-for.js";
 import type { SessionType } from "../sessions/session.js";
 import { FALLBACK_EVENING_SUMMARY_NOTE } from "./render-daily-report.js";
 import { EVENING_OPENING_FALLBACK } from "../sessions/meeting-opening.js";
@@ -86,9 +87,9 @@ const env = { ANTHROPIC_API_KEY: "sk-ant-test-key" };
 describe("generateDailyReport", () => {
   let db: Database.Database;
 
-  beforeEach(() => {
+  beforeEach(async () => {
     db = openDatabase(":memory:");
-    runMigrations(db);
+    await runMigrations(portFor(db));
     createClaudeClientMock.mockReset();
     requestVerdictMock.mockReset();
     createClaudeClientMock.mockReturnValue({ backend: "api", client: {} });
@@ -110,7 +111,7 @@ describe("generateDailyReport", () => {
     it("当日の夕会が存在しない場合、evening_session_required を返し daily_reports に行が作られない", async () => {
       const now = new Date(2026, 7, 14, 21, 0);
 
-      const result = await generateDailyReport(db, env, now);
+      const result = await generateDailyReport(portFor(db), env, now);
 
       expect(result).toEqual({ ok: false, code: "evening_session_required" });
       expect(reportRowCount()).toBe(0);
@@ -122,7 +123,7 @@ describe("generateDailyReport", () => {
       const sessionId = insertRawSession(db, "evening", iso(2026, 8, 14, 19, 0), null);
       insertRawMessage(db, sessionId, "user", "報告です", iso(2026, 8, 14, 19, 1));
 
-      const result = await generateDailyReport(db, env, now);
+      const result = await generateDailyReport(portFor(db), env, now);
 
       expect(result).toEqual({ ok: false, code: "evening_session_required" });
       expect(reportRowCount()).toBe(0);
@@ -138,7 +139,7 @@ describe("generateDailyReport", () => {
       );
       insertRawMessage(db, sessionId, "boss", "夕会を始めよう", iso(2026, 8, 14, 19, 1));
 
-      const result = await generateDailyReport(db, env, now);
+      const result = await generateDailyReport(portFor(db), env, now);
 
       expect(result).toEqual({ ok: false, code: "evening_session_required" });
       expect(reportRowCount()).toBe(0);
@@ -161,7 +162,7 @@ describe("generateDailyReport", () => {
       );
       insertRawMessage(db, sessionId, "boss", EVENING_OPENING_FALLBACK, iso(2026, 8, 14, 19, 0, 1));
 
-      const result = await generateDailyReport(db, env, now);
+      const result = await generateDailyReport(portFor(db), env, now);
 
       expect(result).toEqual({ ok: false, code: "evening_session_required" });
       expect(reportRowCount()).toBe(0);
@@ -189,7 +190,7 @@ describe("generateDailyReport", () => {
         }),
       );
 
-      const result = await generateDailyReport(db, env, now);
+      const result = await generateDailyReport(portFor(db), env, now);
 
       expect(result.ok).toBe(true);
       if (!result.ok) throw new Error("expected ok result");
@@ -220,7 +221,7 @@ describe("generateDailyReport", () => {
         }),
       );
 
-      const result = await generateDailyReport(db, env, now);
+      const result = await generateDailyReport(portFor(db), env, now);
 
       if (!result.ok) throw new Error("expected ok result");
       expect(result.report.content).toContain("- 翌日への持ち越し: なし");
@@ -244,7 +245,7 @@ describe("generateDailyReport", () => {
         }),
       );
 
-      const result = await generateDailyReport(db, env, now);
+      const result = await generateDailyReport(portFor(db), env, now);
 
       expect(result.ok).toBe(true);
       if (!result.ok) throw new Error("expected ok result");
@@ -272,7 +273,7 @@ describe("generateDailyReport", () => {
         }),
       );
 
-      await generateDailyReport(db, env, now);
+      await generateDailyReport(portFor(db), env, now);
 
       const [, request] = requestVerdictMock.mock.calls[0];
       const userMessage = request.messages[0].content as string;
@@ -296,7 +297,7 @@ describe("generateDailyReport", () => {
       insertRawMessage(db, sessionId, "user", "報告です", iso(2026, 8, 14, 19, 1));
       setupMock();
 
-      const result = await generateDailyReport(db, env, now);
+      const result = await generateDailyReport(portFor(db), env, now);
 
       expect(result.ok).toBe(true);
       if (!result.ok) throw new Error("expected ok result");
@@ -324,7 +325,7 @@ describe("generateDailyReport", () => {
       const neverSettles = new Promise(() => {});
       requestVerdictMock.mockReturnValue(neverSettles);
 
-      const resultPromise = generateDailyReport(db, env, now, { timeoutMs: 1000 });
+      const resultPromise = generateDailyReport(portFor(db), env, now, { timeoutMs: 1000 });
       await vi.advanceTimersByTimeAsync(1000);
       const result = await resultPromise;
 
@@ -349,11 +350,11 @@ describe("generateDailyReport", () => {
         calledWithValid({ reportSummary: "1回目", bossComment: "b", keyDecisions: "なし", carryOver: "なし" }),
       );
 
-      const first = await generateDailyReport(db, env, now);
+      const first = await generateDailyReport(portFor(db), env, now);
       requestVerdictMock.mockResolvedValue(
         calledWithValid({ reportSummary: "2回目", bossComment: "b", keyDecisions: "なし", carryOver: "なし" }),
       );
-      const second = await generateDailyReport(db, env, now);
+      const second = await generateDailyReport(portFor(db), env, now);
 
       expect(first.ok).toBe(true);
       expect(second.ok).toBe(true);
@@ -379,7 +380,7 @@ describe("generateDailyReport", () => {
         calledWithValid({ reportSummary: "a", bossComment: "b", keyDecisions: "なし", carryOver: "なし" }),
       );
 
-      const result = await generateDailyReport(db, env, now);
+      const result = await generateDailyReport(portFor(db), env, now);
 
       expect(result.ok).toBe(true);
       if (!result.ok) throw new Error("expected ok result");
@@ -410,7 +411,7 @@ describe("generateDailyReport", () => {
       // started_at から対象暦日を解決する。
       const nowAfterEnding = new Date(2026, 7, 15, 0, 31);
 
-      const result = await generateDailyReport(db, env, nowAfterEnding, {
+      const result = await generateDailyReport(portFor(db), env, nowAfterEnding, {
         eveningSessionId: sessionId,
       });
 
@@ -425,7 +426,7 @@ describe("generateDailyReport", () => {
     it("eveningSessionId が存在しないセッションを指す場合、evening_session_required を返し daily_reports に行が作られない", async () => {
       const now = new Date(2026, 7, 15, 0, 31);
 
-      const result = await generateDailyReport(db, env, now, { eveningSessionId: 9999 });
+      const result = await generateDailyReport(portFor(db), env, now, { eveningSessionId: 9999 });
 
       expect(result).toEqual({ ok: false, code: "evening_session_required" });
       expect(reportRowCount()).toBe(0);
@@ -441,7 +442,7 @@ describe("generateDailyReport", () => {
       );
       insertRawMessage(db, morningSessionId, "user", "朝会の報告", iso(2026, 8, 14, 8, 1));
 
-      const result = await generateDailyReport(db, env, now, {
+      const result = await generateDailyReport(portFor(db), env, now, {
         eveningSessionId: morningSessionId,
       });
 
@@ -454,7 +455,7 @@ describe("generateDailyReport", () => {
       const unendedSessionId = insertRawSession(db, "evening", iso(2026, 8, 14, 23, 50), null);
       insertRawMessage(db, unendedSessionId, "user", "報告です", iso(2026, 8, 14, 23, 51));
 
-      const result = await generateDailyReport(db, env, now, {
+      const result = await generateDailyReport(portFor(db), env, now, {
         eveningSessionId: unendedSessionId,
       });
 

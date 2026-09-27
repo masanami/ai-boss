@@ -2,48 +2,49 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type Database from "better-sqlite3";
 import { openDatabase } from "../db/connection.js";
 import { runMigrations } from "../db/migrate.js";
+import { portFor } from "../db/test-support/port-for.js";
 import { insertSession } from "../sessions/sessions-repository.js";
 import { listTodaysSessionTypes } from "./todays-sessions.js";
 
-function insertSessionAt(db: Database.Database, type: "morning" | "evening" | "adhoc", startedAt: string): void {
-  const session = insertSession(db, { type });
+async function insertSessionAt(db: Database.Database, type: "morning" | "evening" | "adhoc", startedAt: string): Promise<void> {
+  const session = await insertSession(portFor(db), { type });
   db.prepare("UPDATE sessions SET started_at = ? WHERE id = ?").run(startedAt, session.id);
 }
 
 describe("listTodaysSessionTypes", () => {
   let db: Database.Database;
 
-  beforeEach(() => {
+  beforeEach(async () => {
     db = openDatabase(":memory:");
-    runMigrations(db);
+    await runMigrations(portFor(db));
   });
 
   afterEach(() => {
     db.close();
   });
 
-  it("returns an empty array when no sessions have been started today", () => {
-    insertSessionAt(db, "morning", "2026-07-04T09:00:00");
+  it("returns an empty array when no sessions have been started today", async () => {
+    await insertSessionAt(db, "morning", "2026-07-04T09:00:00");
 
-    const result = listTodaysSessionTypes(db, new Date(2026, 6, 5, 12, 0, 0));
+    const result = await listTodaysSessionTypes(portFor(db), new Date(2026, 6, 5, 12, 0, 0));
 
     expect(result).toEqual([]);
   });
 
-  it("includes session types started today, excluding other days", () => {
-    insertSessionAt(db, "morning", "2026-07-05T09:00:00");
-    insertSessionAt(db, "evening", "2026-07-04T18:00:00");
+  it("includes session types started today, excluding other days", async () => {
+    await insertSessionAt(db, "morning", "2026-07-05T09:00:00");
+    await insertSessionAt(db, "evening", "2026-07-04T18:00:00");
 
-    const result = listTodaysSessionTypes(db, new Date(2026, 6, 5, 12, 0, 0));
+    const result = await listTodaysSessionTypes(portFor(db), new Date(2026, 6, 5, 12, 0, 0));
 
     expect(result).toEqual(["morning"]);
   });
 
-  it("de-duplicates repeated session types on the same day", () => {
-    insertSessionAt(db, "adhoc", "2026-07-05T09:00:00");
-    insertSessionAt(db, "adhoc", "2026-07-05T10:00:00");
+  it("de-duplicates repeated session types on the same day", async () => {
+    await insertSessionAt(db, "adhoc", "2026-07-05T09:00:00");
+    await insertSessionAt(db, "adhoc", "2026-07-05T10:00:00");
 
-    const result = listTodaysSessionTypes(db, new Date(2026, 6, 5, 12, 0, 0));
+    const result = await listTodaysSessionTypes(portFor(db), new Date(2026, 6, 5, 12, 0, 0));
 
     expect(result).toEqual(["adhoc"]);
   });
@@ -60,13 +61,13 @@ describe("listTodaysSessionTypes", () => {
   // America/New_York のみのため、Asia/Tokyo での実行は手動実測でのみ確認済み
   // （スクリプト化はしていない）。両方とも `TZ=<該当TZ> npm test` で実際に fail
   // することを実測確認済み。
-  it("classifies a session started near local midnight by the local calendar day, not the UTC day", () => {
+  it("classifies a session started near local midnight by the local calendar day, not the UTC day", async () => {
     // production の保存形式（sessions-repository.ts の `new Date().toISOString()`）
     // に合わせ、ローカル構成の Date から toISOString() で Z 付き UTC 文字列を作る。
-    insertSessionAt(db, "morning", new Date(2026, 6, 5, 0, 30, 0).toISOString());
-    insertSessionAt(db, "evening", new Date(2026, 6, 5, 23, 30, 0).toISOString());
+    await insertSessionAt(db, "morning", new Date(2026, 6, 5, 0, 30, 0).toISOString());
+    await insertSessionAt(db, "evening", new Date(2026, 6, 5, 23, 30, 0).toISOString());
 
-    const result = listTodaysSessionTypes(db, new Date(2026, 6, 5, 12, 0, 0));
+    const result = await listTodaysSessionTypes(portFor(db), new Date(2026, 6, 5, 12, 0, 0));
 
     expect(result.sort()).toEqual(["evening", "morning"]);
   });

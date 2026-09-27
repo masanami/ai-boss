@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type Database from "better-sqlite3";
 import { openDatabase } from "../db/connection.js";
 import { runMigrations } from "../db/migrate.js";
+import { portFor } from "../db/test-support/port-for.js";
 import { insertSession } from "../sessions/sessions-repository.js";
 import {
   findDailyReportByDate,
@@ -12,9 +13,9 @@ import {
 describe("daily-reports-repository", () => {
   let db: Database.Database;
 
-  beforeEach(() => {
+  beforeEach(async () => {
     db = openDatabase(":memory:");
-    runMigrations(db);
+    await runMigrations(portFor(db));
   });
 
   afterEach(() => {
@@ -23,10 +24,10 @@ describe("daily-reports-repository", () => {
   });
 
   describe("upsertDailyReport", () => {
-    it("inserts a new row when no report exists for the date", () => {
-      const session = insertSession(db, { type: "evening" });
+    it("inserts a new row when no report exists for the date", async () => {
+      const session = await insertSession(portFor(db), { type: "evening" });
 
-      const report = upsertDailyReport(db, {
+      const report = await upsertDailyReport(portFor(db), {
         date: "2026-08-14",
         content: "# 日報 2026-08-14（金）",
         evening_session_id: session.id,
@@ -42,16 +43,16 @@ describe("daily-reports-repository", () => {
       expect(typeof report.updated_at).toBe("string");
     });
 
-    it("overwrites the same date on re-generation (upsert), keeping created_at but updating updated_at and content", () => {
+    it("overwrites the same date on re-generation (upsert), keeping created_at but updating updated_at and content", async () => {
       // 実時間待機（setTimeout）ではなく fake timers で時刻を進める
       // （CodeRabbit 指摘: 実待機はテストを遅く・不安定にする）。時刻は
       // ローカル日付コンストラクタ由来（CLAUDE.md「テスト方針」）。
       vi.useFakeTimers();
       vi.setSystemTime(new Date(2026, 7, 14, 19, 0, 0));
 
-      const session = insertSession(db, { type: "evening" });
+      const session = await insertSession(portFor(db), { type: "evening" });
 
-      const first = upsertDailyReport(db, {
+      const first = await upsertDailyReport(portFor(db), {
         date: "2026-08-14",
         content: "# 日報（1回目）",
         evening_session_id: session.id,
@@ -60,8 +61,8 @@ describe("daily-reports-repository", () => {
       // created_at と updated_at の差を検出できるよう、値を1秒進めてから再生成する
       vi.setSystemTime(new Date(2026, 7, 14, 19, 0, 1));
 
-      const secondSession = insertSession(db, { type: "evening" });
-      const second = upsertDailyReport(db, {
+      const secondSession = await insertSession(portFor(db), { type: "evening" });
+      const second = await upsertDailyReport(portFor(db), {
         date: "2026-08-14",
         content: "# 日報（再生成後）",
         evening_session_id: secondSession.id,
@@ -74,15 +75,15 @@ describe("daily-reports-repository", () => {
       expect(second.updated_at).not.toBe(first.updated_at);
     });
 
-    it("does not create a duplicate row for the same date (UNIQUE upsert)", () => {
-      const session = insertSession(db, { type: "evening" });
+    it("does not create a duplicate row for the same date (UNIQUE upsert)", async () => {
+      const session = await insertSession(portFor(db), { type: "evening" });
 
-      upsertDailyReport(db, {
+      await upsertDailyReport(portFor(db), {
         date: "2026-08-14",
         content: "# 1回目",
         evening_session_id: session.id,
       });
-      upsertDailyReport(db, {
+      await upsertDailyReport(portFor(db), {
         date: "2026-08-14",
         content: "# 2回目",
         evening_session_id: session.id,
@@ -96,19 +97,19 @@ describe("daily-reports-repository", () => {
   });
 
   describe("findDailyReportByDate", () => {
-    it("returns undefined when no report exists for the date", () => {
-      expect(findDailyReportByDate(db, "2026-08-14")).toBeUndefined();
+    it("returns undefined when no report exists for the date", async () => {
+      expect(await findDailyReportByDate(portFor(db), "2026-08-14")).toBeUndefined();
     });
 
-    it("returns the full report row (including content) when it exists", () => {
-      const session = insertSession(db, { type: "evening" });
-      upsertDailyReport(db, {
+    it("returns the full report row (including content) when it exists", async () => {
+      const session = await insertSession(portFor(db), { type: "evening" });
+      await upsertDailyReport(portFor(db), {
         date: "2026-08-14",
         content: "# 日報 2026-08-14（金）",
         evening_session_id: session.id,
       });
 
-      const found = findDailyReportByDate(db, "2026-08-14");
+      const found = await findDailyReportByDate(portFor(db), "2026-08-14");
 
       expect(found).toMatchObject({
         date: "2026-08-14",
@@ -119,24 +120,24 @@ describe("daily-reports-repository", () => {
   });
 
   describe("listDailyReports", () => {
-    it("returns an empty array when there are no reports", () => {
-      expect(listDailyReports(db)).toEqual([]);
+    it("returns an empty array when there are no reports", async () => {
+      expect(await listDailyReports(portFor(db))).toEqual([]);
     });
 
-    it("returns only date/created_at/updated_at (no content), ordered by date descending", () => {
-      const session = insertSession(db, { type: "evening" });
-      upsertDailyReport(db, {
+    it("returns only date/created_at/updated_at (no content), ordered by date descending", async () => {
+      const session = await insertSession(portFor(db), { type: "evening" });
+      await upsertDailyReport(portFor(db), {
         date: "2026-08-12",
         content: "# 古い日報",
         evening_session_id: session.id,
       });
-      upsertDailyReport(db, {
+      await upsertDailyReport(portFor(db), {
         date: "2026-08-14",
         content: "# 新しい日報",
         evening_session_id: session.id,
       });
 
-      const list = listDailyReports(db);
+      const list = (await listDailyReports(portFor(db)));
 
       expect(list.map((r) => r.date)).toEqual(["2026-08-14", "2026-08-12"]);
       expect(list[0]).not.toHaveProperty("content");
@@ -144,20 +145,20 @@ describe("daily-reports-repository", () => {
       expect(list[0]).toHaveProperty("updated_at");
     });
 
-    it("does not list the same date twice after a re-generation (upsert)", () => {
-      const session = insertSession(db, { type: "evening" });
-      upsertDailyReport(db, {
+    it("does not list the same date twice after a re-generation (upsert)", async () => {
+      const session = await insertSession(portFor(db), { type: "evening" });
+      await upsertDailyReport(portFor(db), {
         date: "2026-08-14",
         content: "# 1回目",
         evening_session_id: session.id,
       });
-      upsertDailyReport(db, {
+      await upsertDailyReport(portFor(db), {
         date: "2026-08-14",
         content: "# 再生成後",
         evening_session_id: session.id,
       });
 
-      const list = listDailyReports(db);
+      const list = (await listDailyReports(portFor(db)));
 
       expect(list.filter((r) => r.date === "2026-08-14")).toHaveLength(1);
     });

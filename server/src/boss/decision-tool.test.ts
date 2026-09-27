@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type Database from "better-sqlite3";
 import { openDatabase } from "../db/connection.js";
 import { runMigrations } from "../db/migrate.js";
+import { portFor } from "../db/test-support/port-for.js";
 import { insertSession } from "../sessions/sessions-repository.js";
 import { insertTask } from "../tasks/tasks-repository.js";
 import { listDecisions } from "../decisions/decisions-repository.js";
@@ -18,18 +19,18 @@ describe("executeRecordDecisionTool", () => {
   let db: Database.Database;
   let sessionId: number;
 
-  beforeEach(() => {
+  beforeEach(async () => {
     db = openDatabase(":memory:");
-    runMigrations(db);
-    sessionId = insertSession(db, { type: "adhoc" }).id;
+    await runMigrations(portFor(db));
+    sessionId = (await insertSession(portFor(db), { type: "adhoc" })).id;
   });
 
-  afterEach(() => {
+  afterEach(async () => {
     db.close();
   });
 
-  it("records a decision for the current session and returns it as the tool result content", () => {
-    const result = executeRecordDecisionTool(db, sessionId, {
+  it("records a decision for the current session and returns it as the tool result content", async () => {
+    const result = await executeRecordDecisionTool(portFor(db), sessionId, {
       content: "資料作成を最優先にする",
     });
 
@@ -41,12 +42,12 @@ describe("executeRecordDecisionTool", () => {
       status: "active",
     });
 
-    const decisions = listDecisions(db);
+    const decisions = (await listDecisions(portFor(db)));
     expect(decisions).toHaveLength(1);
   });
 
-  it("records a decision with kind 'decision' by default (#358/#397)", () => {
-    const result = executeRecordDecisionTool(db, sessionId, {
+  it("records a decision with kind 'decision' by default (#358/#397)", async () => {
+    const result = await executeRecordDecisionTool(portFor(db), sessionId, {
       content: "資料作成を最優先にする",
     });
 
@@ -54,16 +55,16 @@ describe("executeRecordDecisionTool", () => {
     expect(recorded).toMatchObject({ kind: "decision" });
   });
 
-  it("returns an error result when content is missing", () => {
-    const result = executeRecordDecisionTool(db, sessionId, {});
+  it("returns an error result when content is missing", async () => {
+    const result = await executeRecordDecisionTool(portFor(db), sessionId, {});
 
     expect(result.isError).toBe(true);
     expect(result.content).toContain("content");
-    expect(listDecisions(db)).toHaveLength(0);
+    expect(await listDecisions(portFor(db))).toHaveLength(0);
   });
 
-  it("persists rationale when provided", () => {
-    const result = executeRecordDecisionTool(db, sessionId, {
+  it("persists rationale when provided", async () => {
+    const result = await executeRecordDecisionTool(portFor(db), sessionId, {
       content: "締切を延ばす",
       rationale: "他タスクが優先のため",
     });
@@ -72,8 +73,8 @@ describe("executeRecordDecisionTool", () => {
     expect(recorded).toMatchObject({ rationale: "他タスクが優先のため" });
   });
 
-  it("persists task_id when it refers to an existing task", () => {
-    const task = insertTask(db, {
+  it("persists task_id when it refers to an existing task", async () => {
+    const task = await insertTask(portFor(db), {
       title: "資料作成",
       description: null,
       category: "work",
@@ -84,7 +85,7 @@ describe("executeRecordDecisionTool", () => {
       estimated_minutes: null,
     });
 
-    const result = executeRecordDecisionTool(db, sessionId, {
+    const result = await executeRecordDecisionTool(portFor(db), sessionId, {
       content: "締切を延ばす",
       task_id: task.id,
     });
@@ -94,8 +95,8 @@ describe("executeRecordDecisionTool", () => {
     expect(recorded).toMatchObject({ task_id: task.id });
   });
 
-  it("treats an explicit null task_id the same as omitted", () => {
-    const result = executeRecordDecisionTool(db, sessionId, {
+  it("treats an explicit null task_id the same as omitted", async () => {
+    const result = await executeRecordDecisionTool(portFor(db), sessionId, {
       content: "締切を延ばす",
       task_id: null,
     });
@@ -105,14 +106,14 @@ describe("executeRecordDecisionTool", () => {
     expect(recorded).toMatchObject({ task_id: null });
   });
 
-  it("returns an error result and does not persist when task_id does not refer to an existing task", () => {
-    const result = executeRecordDecisionTool(db, sessionId, {
+  it("returns an error result and does not persist when task_id does not refer to an existing task", async () => {
+    const result = await executeRecordDecisionTool(portFor(db), sessionId, {
       content: "締切を延ばす",
       task_id: 9999,
     });
 
     expect(result.isError).toBe(true);
     expect(result.content).toContain("9999");
-    expect(listDecisions(db)).toHaveLength(0);
+    expect(await listDecisions(portFor(db))).toHaveLength(0);
   });
 });

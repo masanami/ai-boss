@@ -1,5 +1,5 @@
-import type Database from "better-sqlite3";
-import { getSettingValue } from "../settings/settings-repository.js";
+import type { Db } from "../db/db-port.js";
+import { readSettingsSnapshot, type SettingsSnapshot } from "../settings/settings-repository.js";
 import { DEFAULT_MODEL } from "../llm/claude-client.js";
 import {
   DEFAULT_PERSONA_SETTINGS,
@@ -49,16 +49,24 @@ function resolveStrictness(value: string | undefined): number {
  * expected to be managed by the settings screen (Issue #8); this ticket
  * (#27) only needs to read them for chat.
  */
-export function resolveBossSettings(db: Database.Database): BossSettings {
-  const model = getSettingValue(db, "model") ?? DEFAULT_MODEL;
+export function resolveBossSettingsFrom(settings: SettingsSnapshot): BossSettings {
+  const model = settings.get("model") ?? DEFAULT_MODEL;
 
   const persona: PersonaSettings = {
-    name: getSettingValue(db, "boss_name") ?? DEFAULT_PERSONA_SETTINGS.name,
-    tone: resolveTone(getSettingValue(db, "boss_tone_preset")),
-    strictness: resolveStrictness(getSettingValue(db, "boss_strictness")),
+    name: settings.get("boss_name") ?? DEFAULT_PERSONA_SETTINGS.name,
+    tone: resolveTone(settings.get("boss_tone_preset")),
+    strictness: resolveStrictness(settings.get("boss_strictness")),
     customInstructions:
-      getSettingValue(db, "boss_custom_instructions") ?? null,
+      settings.get("boss_custom_instructions") ?? null,
   };
 
   return { model, persona };
+}
+
+/**
+ * Reads the boss settings from one {@link SettingsSnapshot} (so the model and
+ * the persona fields are never a mix of two concurrent saves — #603).
+ */
+export async function resolveBossSettings(db: Db): Promise<BossSettings> {
+  return resolveBossSettingsFrom(await readSettingsSnapshot(db));
 }

@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type Database from "better-sqlite3";
 import { openDatabase } from "../db/connection.js";
 import { runMigrations } from "../db/migrate.js";
+import { portFor } from "../db/test-support/port-for.js";
 import { createApp } from "../app.js";
 import { setSettingValue } from "../settings/settings-repository.js";
 import type { Session } from "./session.js";
@@ -95,7 +96,7 @@ const env = { ANTHROPIC_API_KEY: "sk-ant-test-key" };
 describe("evening session end -> daily report generation hook", () => {
   let db: Database.Database;
 
-  beforeEach(() => {
+  beforeEach(async () => {
     // 現在時刻を固定する。`toFake: ["Date"]` に限定し setTimeout は fake 化
     // しない（このルートが `await` する日報生成の内部タイマー・LLM 呼び出し
     // 待ちまで止めてテストをハングさせないため。web/src/AppLayout.test.tsx
@@ -104,7 +105,7 @@ describe("evening session end -> daily report generation hook", () => {
     vi.setSystemTime(new Date(2026, 7, 14, 19, 0, 0));
 
     db = openDatabase(":memory:");
-    runMigrations(db);
+    await runMigrations(portFor(db));
     createClaudeClientMock.mockReset();
     requestVerdictMock.mockReset();
     createBossMessageMock.mockReset();
@@ -131,7 +132,7 @@ describe("evening session end -> daily report generation hook", () => {
   });
 
   it("saves the report when an evening session with a user message ends (test 5)", async () => {
-    const app = createApp(db, env);
+    const app = createApp(portFor(db), env);
     const session = await readJson<Session>(await postSession(app, "evening"));
     insertUserMessage(db, session.id, "報告です");
 
@@ -140,7 +141,7 @@ describe("evening session end -> daily report generation hook", () => {
     expect(res.status).toBe(200);
     expect(generateDailyReportMock).toHaveBeenCalledTimes(1);
     expect(generateDailyReportMock).toHaveBeenCalledWith(
-      db,
+      portFor(db),
       env,
       expect.any(Date),
       expect.objectContaining({ eveningSessionId: session.id, timeoutMs: 20_000 }),
@@ -156,7 +157,7 @@ describe("evening session end -> daily report generation hook", () => {
   // は要約保存（#96）と日報生成（#100）の 2 つを行う。片方が早期 return して
   // もう片方を飛ばす実装に戻ると、このテストだけが落ちる。
   it("saves the session summary AND generates the daily report when an evening session ends", async () => {
-    const app = createApp(db, env);
+    const app = createApp(portFor(db), env);
     const session = await readJson<Session>(await postSession(app, "evening"));
     insertUserMessage(db, session.id, "報告です");
 
@@ -185,8 +186,8 @@ describe("evening session end -> daily report generation hook", () => {
   // 強制設定を明示的にオン（既定と同じ）にしたうえで、メンタリング記録が
   // 1 件も無い夕会でも両方の副作用が走ることを確かめる。
   it("AC-24/AC-25: still saves the summary and generates the daily report for an evening session with no mentoring record, even with the morning gate forced on", async () => {
-    setSettingValue(db, "morning_mentoring_required", "true");
-    const app = createApp(db, env);
+    await setSettingValue(portFor(db), "morning_mentoring_required", "true");
+    const app = createApp(portFor(db), env);
     const session = await readJson<Session>(await postSession(app, "evening"));
     insertUserMessage(db, session.id, "報告です");
 
@@ -210,7 +211,7 @@ describe("evening session end -> daily report generation hook", () => {
   // 要約済み（summary あり）の未終了夕会を終了すると、要約は再生成されないが
   // ended_at は初回遷移なので日報は生成される。
   it("still generates the daily report when the summary is skipped because one already exists", async () => {
-    const app = createApp(db, env);
+    const app = createApp(portFor(db), env);
     const session = await readJson<Session>(await postSession(app, "evening"));
     insertUserMessage(db, session.id, "報告です");
     db.prepare("UPDATE sessions SET summary = ? WHERE id = ?").run("既存の要約", session.id);
@@ -224,7 +225,7 @@ describe("evening session end -> daily report generation hook", () => {
   });
 
   it("does not re-invoke generation when an already-ended evening session is ended again (test 6)", async () => {
-    const app = createApp(db, env);
+    const app = createApp(portFor(db), env);
     const session = await readJson<Session>(await postSession(app, "evening"));
     insertUserMessage(db, session.id, "報告です");
 
@@ -238,7 +239,7 @@ describe("evening session end -> daily report generation hook", () => {
   });
 
   it("returns 200 from the end API even when generation throws (test 7)", async () => {
-    const app = createApp(db, env);
+    const app = createApp(portFor(db), env);
     const session = await readJson<Session>(await postSession(app, "evening"));
     insertUserMessage(db, session.id, "報告です");
     generateDailyReportMock.mockRejectedValueOnce(new Error("boom"));
@@ -252,7 +253,7 @@ describe("evening session end -> daily report generation hook", () => {
   });
 
   it("does not save a report and still returns 200 when the evening session has zero user messages (test 8)", async () => {
-    const app = createApp(db, env);
+    const app = createApp(portFor(db), env);
     const session = await readJson<Session>(await postSession(app, "evening"));
 
     const res = await app.request(`/api/sessions/${session.id}/end`, { method: "POST" });
@@ -266,11 +267,11 @@ describe("evening session end -> daily report generation hook", () => {
   it.each(["morning", "adhoc"] as const)(
     "does not invoke generateDailyReport when a %s session ends (test 9)",
     async (type) => {
-      const app = createApp(db, env);
+      const app = createApp(portFor(db), env);
       // #276: 朝会終了ゲートに巻き込まれないよう強制設定をオフにする —
       // このテストの主題は日報生成フックが朝会/随時では発火しないことで
       // あり、メンタリング完了とは無関係。
-      setSettingValue(db, "morning_mentoring_required", "false");
+      await setSettingValue(portFor(db), "morning_mentoring_required", "false");
       const session = await readJson<Session>(await postSession(app, type));
 
       const res = await app.request(`/api/sessions/${session.id}/end`, { method: "POST" });

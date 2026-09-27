@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type Database from "better-sqlite3";
 import { openDatabase } from "../db/connection.js";
 import { runMigrations } from "../db/migrate.js";
+import { portFor } from "../db/test-support/port-for.js";
 import { insertSession } from "./sessions-repository.js";
 import {
   countUserMessagesBySessionId,
@@ -33,20 +34,20 @@ function setCreatedAt(db: Database.Database, messageId: number, at: Date): void 
 describe("messages repository", () => {
   let db: Database.Database;
 
-  beforeEach(() => {
+  beforeEach(async () => {
     db = openDatabase(":memory:");
-    runMigrations(db);
+    await runMigrations(portFor(db));
   });
 
-  afterEach(() => {
+  afterEach(async () => {
     db.close();
   });
 
   describe("insertMessage", () => {
-    it("inserts a message with a server-managed created_at", () => {
-      const session = insertSession(db, { type: "adhoc" });
+    it("inserts a message with a server-managed created_at", async () => {
+      const session = await insertSession(portFor(db), { type: "adhoc" });
 
-      const message = insertMessage(db, {
+      const message = await insertMessage(portFor(db), {
         session_id: session.id,
         role: "user",
         content: "今日は資料作成から始めます",
@@ -63,155 +64,155 @@ describe("messages repository", () => {
   });
 
   describe("listMessagesBySessionId", () => {
-    it("returns an empty array when the session has no messages", () => {
-      const session = insertSession(db, { type: "adhoc" });
+    it("returns an empty array when the session has no messages", async () => {
+      const session = await insertSession(portFor(db), { type: "adhoc" });
 
-      expect(listMessagesBySessionId(db, session.id)).toEqual([]);
+      expect(await listMessagesBySessionId(portFor(db), session.id)).toEqual([]);
     });
 
-    it("returns messages ordered by created_at ascending", () => {
-      const session = insertSession(db, { type: "adhoc" });
-      const first = insertMessage(db, {
+    it("returns messages ordered by created_at ascending", async () => {
+      const session = await insertSession(portFor(db), { type: "adhoc" });
+      const first = await insertMessage(portFor(db), {
         session_id: session.id,
         role: "user",
         content: "最初の発言",
       });
-      const second = insertMessage(db, {
+      const second = await insertMessage(portFor(db), {
         session_id: session.id,
         role: "boss",
         content: "ボスの応答",
       });
 
-      const result = listMessagesBySessionId(db, session.id);
+      const result = await listMessagesBySessionId(portFor(db), session.id);
 
       expect(result.map((m) => m.id)).toEqual([first.id, second.id]);
     });
 
-    it("does not return messages belonging to other sessions", () => {
-      const sessionA = insertSession(db, { type: "adhoc" });
-      const sessionB = insertSession(db, { type: "morning" });
-      insertMessage(db, {
+    it("does not return messages belonging to other sessions", async () => {
+      const sessionA = await insertSession(portFor(db), { type: "adhoc" });
+      const sessionB = await insertSession(portFor(db), { type: "morning" });
+      await insertMessage(portFor(db), {
         session_id: sessionA.id,
         role: "user",
         content: "Aへの発言",
       });
-      const messageB = insertMessage(db, {
+      const messageB = await insertMessage(portFor(db), {
         session_id: sessionB.id,
         role: "user",
         content: "Bへの発言",
       });
 
-      const result = listMessagesBySessionId(db, sessionB.id);
+      const result = await listMessagesBySessionId(portFor(db), sessionB.id);
 
       expect(result.map((m) => m.id)).toEqual([messageB.id]);
     });
   });
 
   describe("findMessageInSession", () => {
-    it("returns the message when it belongs to the given session", () => {
-      const session = insertSession(db, { type: "adhoc" });
-      const message = insertMessage(db, {
+    it("returns the message when it belongs to the given session", async () => {
+      const session = await insertSession(portFor(db), { type: "adhoc" });
+      const message = await insertMessage(portFor(db), {
         session_id: session.id,
         role: "user",
         content: "資料を確認します",
       });
 
-      expect(findMessageInSession(db, session.id, message.id)).toEqual(
+      expect(await findMessageInSession(portFor(db), session.id, message.id)).toEqual(
         message,
       );
     });
 
-    it("returns undefined when the id belongs to a different session (AC-7)", () => {
-      const sessionA = insertSession(db, { type: "adhoc" });
-      const sessionB = insertSession(db, { type: "morning" });
-      const messageInB = insertMessage(db, {
+    it("returns undefined when the id belongs to a different session (AC-7)", async () => {
+      const sessionA = await insertSession(portFor(db), { type: "adhoc" });
+      const sessionB = await insertSession(portFor(db), { type: "morning" });
+      const messageInB = await insertMessage(portFor(db), {
         session_id: sessionB.id,
         role: "user",
         content: "Bでの発言",
       });
 
-      expect(findMessageInSession(db, sessionA.id, messageInB.id)).toBeUndefined();
+      expect(await findMessageInSession(portFor(db), sessionA.id, messageInB.id)).toBeUndefined();
     });
 
-    it("returns undefined when the id does not exist at all", () => {
-      const session = insertSession(db, { type: "adhoc" });
+    it("returns undefined when the id does not exist at all", async () => {
+      const session = await insertSession(portFor(db), { type: "adhoc" });
 
-      expect(findMessageInSession(db, session.id, 999_999)).toBeUndefined();
+      expect(await findMessageInSession(portFor(db), session.id, 999_999)).toBeUndefined();
     });
   });
 
   describe("deleteMessagesFrom", () => {
-    it("deletes the target message itself (AC-1)", () => {
-      const session = insertSession(db, { type: "adhoc" });
-      const target = insertMessage(db, {
+    it("deletes the target message itself (AC-1)", async () => {
+      const session = await insertSession(portFor(db), { type: "adhoc" });
+      const target = await insertMessage(portFor(db), {
         session_id: session.id,
         role: "user",
         content: "書き直したい発言",
       });
 
-      deleteMessagesFrom(db, session.id, target.id);
+      await deleteMessagesFrom(portFor(db), session.id, target.id);
 
-      expect(findMessageInSession(db, session.id, target.id)).toBeUndefined();
+      expect(await findMessageInSession(portFor(db), session.id, target.id)).toBeUndefined();
     });
 
-    it("deletes every later message in the same session regardless of role (AC-2)", () => {
-      const session = insertSession(db, { type: "adhoc" });
-      const target = insertMessage(db, {
+    it("deletes every later message in the same session regardless of role (AC-2)", async () => {
+      const session = await insertSession(portFor(db), { type: "adhoc" });
+      const target = await insertMessage(portFor(db), {
         session_id: session.id,
         role: "user",
         content: "書き直したい発言",
       });
-      const bossReply = insertMessage(db, {
+      const bossReply = await insertMessage(portFor(db), {
         session_id: session.id,
         role: "boss",
         content: "ボスの応答",
       });
-      const laterUserMessage = insertMessage(db, {
+      const laterUserMessage = await insertMessage(portFor(db), {
         session_id: session.id,
         role: "user",
         content: "その後の発言",
       });
 
-      const deletedCount = deleteMessagesFrom(db, session.id, target.id);
+      const deletedCount = await deleteMessagesFrom(portFor(db), session.id, target.id);
 
       expect(deletedCount).toBe(3);
-      expect(listMessagesBySessionId(db, session.id)).toEqual([]);
+      expect(await listMessagesBySessionId(portFor(db), session.id)).toEqual([]);
       expect(
-        findMessageInSession(db, session.id, bossReply.id),
+        await findMessageInSession(portFor(db), session.id, bossReply.id),
       ).toBeUndefined();
       expect(
-        findMessageInSession(db, session.id, laterUserMessage.id),
+        await findMessageInSession(portFor(db), session.id, laterUserMessage.id),
       ).toBeUndefined();
     });
 
-    it("does not delete earlier messages in the same session (AC-3)", () => {
-      const session = insertSession(db, { type: "adhoc" });
-      const earlier = insertMessage(db, {
+    it("does not delete earlier messages in the same session (AC-3)", async () => {
+      const session = await insertSession(portFor(db), { type: "adhoc" });
+      const earlier = await insertMessage(portFor(db), {
         session_id: session.id,
         role: "user",
         content: "最初の発言",
       });
-      const target = insertMessage(db, {
+      const target = await insertMessage(portFor(db), {
         session_id: session.id,
         role: "user",
         content: "書き直したい発言",
       });
 
-      deleteMessagesFrom(db, session.id, target.id);
+      await deleteMessagesFrom(portFor(db), session.id, target.id);
 
-      const remaining = listMessagesBySessionId(db, session.id);
+      const remaining = await listMessagesBySessionId(portFor(db), session.id);
       expect(remaining.map((m) => m.id)).toEqual([earlier.id]);
     });
 
-    it("does not delete messages belonging to other sessions (AC-4)", () => {
-      const sessionA = insertSession(db, { type: "adhoc" });
-      const sessionB = insertSession(db, { type: "morning" });
-      const target = insertMessage(db, {
+    it("does not delete messages belonging to other sessions (AC-4)", async () => {
+      const sessionA = await insertSession(portFor(db), { type: "adhoc" });
+      const sessionB = await insertSession(portFor(db), { type: "morning" });
+      const target = await insertMessage(portFor(db), {
         session_id: sessionA.id,
         role: "user",
         content: "Aの書き直したい発言",
       });
-      const otherSessionMessage = insertMessage(db, {
+      const otherSessionMessage = await insertMessage(portFor(db), {
         session_id: sessionB.id,
         role: "user",
         content: "Bへの発言",
@@ -223,56 +224,56 @@ describe("messages repository", () => {
       // eligible for deletion when it belongs to a different session.
       setCreatedAt(db, target.id, new Date(2024, 0, 1, 9, 0, 0));
       setCreatedAt(db, otherSessionMessage.id, new Date(2024, 0, 1, 9, 0, 1));
-      const expectedOtherSessionMessage = findMessageInSession(
-        db,
+      const expectedOtherSessionMessage = await findMessageInSession(
+        portFor(db),
         sessionB.id,
         otherSessionMessage.id,
       );
       expect(
-        findMessageInSession(db, sessionA.id, target.id)!.created_at <
+        (await findMessageInSession(portFor(db), sessionA.id, target.id))!.created_at <
           expectedOtherSessionMessage!.created_at,
       ).toBe(true);
 
-      const deletedCount = deleteMessagesFrom(db, sessionA.id, target.id);
+      const deletedCount = await deleteMessagesFrom(portFor(db), sessionA.id, target.id);
 
       expect(deletedCount).toBe(1);
-      expect(findMessageInSession(db, sessionA.id, target.id)).toBeUndefined();
+      expect(await findMessageInSession(portFor(db), sessionA.id, target.id)).toBeUndefined();
       expect(
-        findMessageInSession(db, sessionB.id, otherSessionMessage.id),
+        await findMessageInSession(portFor(db), sessionB.id, otherSessionMessage.id),
       ).toEqual(expectedOtherSessionMessage);
     });
 
-    it("returns 0 and deletes nothing when fromMessageId does not belong to the session", () => {
-      const sessionA = insertSession(db, { type: "adhoc" });
-      const sessionB = insertSession(db, { type: "morning" });
-      const messageInB = insertMessage(db, {
+    it("returns 0 and deletes nothing when fromMessageId does not belong to the session", async () => {
+      const sessionA = await insertSession(portFor(db), { type: "adhoc" });
+      const sessionB = await insertSession(portFor(db), { type: "morning" });
+      const messageInB = await insertMessage(portFor(db), {
         session_id: sessionB.id,
         role: "user",
         content: "Bへの発言",
       });
 
-      const deletedCount = deleteMessagesFrom(db, sessionA.id, messageInB.id);
+      const deletedCount = await deleteMessagesFrom(portFor(db), sessionA.id, messageInB.id);
 
       expect(deletedCount).toBe(0);
-      expect(findMessageInSession(db, sessionB.id, messageInB.id)).toEqual(
+      expect(await findMessageInSession(portFor(db), sessionB.id, messageInB.id)).toEqual(
         messageInB,
       );
     });
 
-    it("returns the number of deleted rows (AC-6)", () => {
-      const session = insertSession(db, { type: "adhoc" });
-      const target = insertMessage(db, {
+    it("returns the number of deleted rows (AC-6)", async () => {
+      const session = await insertSession(portFor(db), { type: "adhoc" });
+      const target = await insertMessage(portFor(db), {
         session_id: session.id,
         role: "user",
         content: "書き直したい発言",
       });
-      insertMessage(db, {
+      await insertMessage(portFor(db), {
         session_id: session.id,
         role: "boss",
         content: "ボスの応答",
       });
 
-      const deletedCount = deleteMessagesFrom(db, session.id, target.id);
+      const deletedCount = await deleteMessagesFrom(portFor(db), session.id, target.id);
 
       expect(deletedCount).toBe(2);
     });
@@ -286,14 +287,14 @@ describe("messages repository", () => {
       // fixed test timestamps).
       const sameCreatedAt = new Date(2024, 0, 1, 9, 0, 0);
 
-      it("deletes both rows when the older id (smaller id) is the target", () => {
-        const session = insertSession(db, { type: "adhoc" });
-        const older = insertMessage(db, {
+      it("deletes both rows when the older id (smaller id) is the target", async () => {
+        const session = await insertSession(portFor(db), { type: "adhoc" });
+        const older = await insertMessage(portFor(db), {
           session_id: session.id,
           role: "user",
           content: "古い方",
         });
-        const newer = insertMessage(db, {
+        const newer = await insertMessage(portFor(db), {
           session_id: session.id,
           role: "user",
           content: "新しい方",
@@ -301,23 +302,23 @@ describe("messages repository", () => {
         setCreatedAt(db, older.id, sameCreatedAt);
         setCreatedAt(db, newer.id, sameCreatedAt);
         expect(
-          findMessageInSession(db, session.id, older.id)?.created_at,
-        ).toBe(findMessageInSession(db, session.id, newer.id)?.created_at);
+          (await findMessageInSession(portFor(db), session.id, older.id))?.created_at,
+        ).toBe((await findMessageInSession(portFor(db), session.id, newer.id))?.created_at);
 
-        const deletedCount = deleteMessagesFrom(db, session.id, older.id);
+        const deletedCount = await deleteMessagesFrom(portFor(db), session.id, older.id);
 
         expect(deletedCount).toBe(2);
-        expect(listMessagesBySessionId(db, session.id)).toEqual([]);
+        expect(await listMessagesBySessionId(portFor(db), session.id)).toEqual([]);
       });
 
-      it("keeps the older row when the newer id (larger id) is the target", () => {
-        const session = insertSession(db, { type: "adhoc" });
-        const older = insertMessage(db, {
+      it("keeps the older row when the newer id (larger id) is the target", async () => {
+        const session = await insertSession(portFor(db), { type: "adhoc" });
+        const older = await insertMessage(portFor(db), {
           session_id: session.id,
           role: "user",
           content: "古い方",
         });
-        const newer = insertMessage(db, {
+        const newer = await insertMessage(portFor(db), {
           session_id: session.id,
           role: "user",
           content: "新しい方",
@@ -325,28 +326,28 @@ describe("messages repository", () => {
         setCreatedAt(db, older.id, sameCreatedAt);
         setCreatedAt(db, newer.id, sameCreatedAt);
         expect(
-          findMessageInSession(db, session.id, older.id)?.created_at,
-        ).toBe(findMessageInSession(db, session.id, newer.id)?.created_at);
+          (await findMessageInSession(portFor(db), session.id, older.id))?.created_at,
+        ).toBe((await findMessageInSession(portFor(db), session.id, newer.id))?.created_at);
 
-        const deletedCount = deleteMessagesFrom(db, session.id, newer.id);
+        const deletedCount = await deleteMessagesFrom(portFor(db), session.id, newer.id);
 
         expect(deletedCount).toBe(1);
-        const remaining = listMessagesBySessionId(db, session.id);
+        const remaining = await listMessagesBySessionId(portFor(db), session.id);
         expect(remaining.map((m) => m.id)).toEqual([older.id]);
       });
     });
   });
 
   describe("listTodaysAdhocMessages", () => {
-    it("returns an empty array when there are no adhoc messages today", () => {
+    it("returns an empty array when there are no adhoc messages today", async () => {
       const now = new Date(2026, 6, 6, 10, 0);
 
-      expect(listTodaysAdhocMessages(db, now)).toEqual([]);
+      expect(await listTodaysAdhocMessages(portFor(db), now)).toEqual([]);
     });
 
-    it("returns messages with the same created_at in id ascending order", () => {
+    it("returns messages with the same created_at in id ascending order", async () => {
       const now = new Date(2026, 6, 6, 10, 0);
-      const session = insertSession(db, { type: "adhoc" });
+      const session = await insertSession(portFor(db), { type: "adhoc" });
       const sameTimestamp = new Date(2026, 6, 6, 9, 0);
       // 同一 created_at のメッセージを2件挿入し、結果が id 昇順という決定的な
       // 順序になることを固定する（`listMessagesBySessionId` と同じ契約）。
@@ -359,7 +360,7 @@ describe("messages repository", () => {
       const insertedFirst = insertAt(session.id, "user", "1件目", sameTimestamp);
       const insertedSecond = insertAt(session.id, "boss", "2件目", sameTimestamp);
 
-      const result = listTodaysAdhocMessages(db, now);
+      const result = await listTodaysAdhocMessages(portFor(db), now);
 
       expect(result.map((m) => m.id)).toEqual([
         insertedFirst.id,
@@ -367,9 +368,9 @@ describe("messages repository", () => {
       ]);
     });
 
-    it("returns full Message rows, not just ids", () => {
+    it("returns full Message rows, not just ids", async () => {
       const now = new Date(2026, 6, 6, 10, 0);
-      const session = insertSession(db, { type: "adhoc" });
+      const session = await insertSession(portFor(db), { type: "adhoc" });
       const message = insertAt(
         session.id,
         "user",
@@ -377,15 +378,15 @@ describe("messages repository", () => {
         new Date(2026, 6, 6, 9, 0),
       );
 
-      const result = listTodaysAdhocMessages(db, now);
+      const result = await listTodaysAdhocMessages(portFor(db), now);
 
       expect(result).toEqual([message]);
     });
 
-    it("merges messages from multiple adhoc sessions in chronological order", () => {
+    it("merges messages from multiple adhoc sessions in chronological order", async () => {
       const now = new Date(2026, 6, 6, 10, 0);
-      const sessionA = insertSession(db, { type: "adhoc" });
-      const sessionB = insertSession(db, { type: "adhoc" });
+      const sessionA = await insertSession(portFor(db), { type: "adhoc" });
+      const sessionB = await insertSession(portFor(db), { type: "adhoc" });
       // sessionB の発言のほうが後に作られたセッションだが created_at は早い、
       // という配置にすることで、セッション横断のマージが created_at 主導で
       // あり、セッションの挿入順・id 順に頼っていないことを検証する。
@@ -402,7 +403,7 @@ describe("messages repository", () => {
         new Date(2026, 6, 6, 9, 0),
       );
 
-      const result = listTodaysAdhocMessages(db, now);
+      const result = await listTodaysAdhocMessages(portFor(db), now);
 
       expect(result.map((m) => m.id)).toEqual([
         earlierFromB.id,
@@ -410,11 +411,11 @@ describe("messages repository", () => {
       ]);
     });
 
-    it("excludes messages belonging to non-adhoc (morning/evening) sessions", () => {
+    it("excludes messages belonging to non-adhoc (morning/evening) sessions", async () => {
       const now = new Date(2026, 6, 6, 10, 0);
-      const adhocSession = insertSession(db, { type: "adhoc" });
-      const morningSession = insertSession(db, { type: "morning" });
-      const eveningSession = insertSession(db, { type: "evening" });
+      const adhocSession = await insertSession(portFor(db), { type: "adhoc" });
+      const morningSession = await insertSession(portFor(db), { type: "morning" });
+      const eveningSession = await insertSession(portFor(db), { type: "evening" });
       const adhocMessage = insertAt(
         adhocSession.id,
         "user",
@@ -434,14 +435,14 @@ describe("messages repository", () => {
         new Date(2026, 6, 6, 9, 0),
       );
 
-      const result = listTodaysAdhocMessages(db, now);
+      const result = await listTodaysAdhocMessages(portFor(db), now);
 
       expect(result.map((m) => m.id)).toEqual([adhocMessage.id]);
     });
 
-    it("ignores a message created on a previous local day while including one created exactly at today's local 00:00:00.000 (inclusive lower bound)", () => {
+    it("ignores a message created on a previous local day while including one created exactly at today's local 00:00:00.000 (inclusive lower bound)", async () => {
       const now = new Date(2026, 6, 6, 9, 0);
-      const session = insertSession(db, { type: "adhoc" });
+      const session = await insertSession(portFor(db), { type: "adhoc" });
       insertAt(session.id, "user", "前日の発言", new Date(2026, 6, 5, 23, 59, 59, 999));
       const todayStart = insertAt(
         session.id,
@@ -450,14 +451,14 @@ describe("messages repository", () => {
         new Date(2026, 6, 6, 0, 0, 0, 0),
       );
 
-      const result = listTodaysAdhocMessages(db, now);
+      const result = await listTodaysAdhocMessages(portFor(db), now);
 
       expect(result.map((m) => m.id)).toEqual([todayStart.id]);
     });
 
-    it("ignores a message created exactly at the next local day's 00:00:00.000 while keeping one created at 23:59:59.999 (half-open interval upper bound)", () => {
+    it("ignores a message created exactly at the next local day's 00:00:00.000 while keeping one created at 23:59:59.999 (half-open interval upper bound)", async () => {
       const now = new Date(2026, 6, 6, 15, 0);
-      const session = insertSession(db, { type: "adhoc" });
+      const session = await insertSession(portFor(db), { type: "adhoc" });
       const lastMoment = insertAt(
         session.id,
         "user",
@@ -471,7 +472,7 @@ describe("messages repository", () => {
         new Date(2026, 6, 7, 0, 0, 0, 0),
       );
 
-      const result = listTodaysAdhocMessages(db, now);
+      const result = await listTodaysAdhocMessages(portFor(db), now);
 
       expect(result.map((m) => m.id)).toEqual([lastMoment.id]);
     });
@@ -482,34 +483,34 @@ describe("messages repository", () => {
   // 用意する側の責務であり、boss のメッセージや他セッションのメッセージは
   // 数えない。
   describe("countUserMessagesBySessionId", () => {
-    it("returns 0 when the session has no messages at all", () => {
-      const session = insertSession(db, { type: "morning" });
+    it("returns 0 when the session has no messages at all", async () => {
+      const session = await insertSession(portFor(db), { type: "morning" });
 
-      expect(countUserMessagesBySessionId(db, session.id)).toBe(0);
+      expect(await countUserMessagesBySessionId(portFor(db), session.id)).toBe(0);
     });
 
-    it("counts only role='user' messages, excluding role='boss' messages in the same session", () => {
-      const session = insertSession(db, { type: "morning" });
-      insertMessage(db, { session_id: session.id, role: "boss", content: "おはよう" });
-      insertMessage(db, { session_id: session.id, role: "user", content: "報告します" });
+    it("counts only role='user' messages, excluding role='boss' messages in the same session", async () => {
+      const session = await insertSession(portFor(db), { type: "morning" });
+      await insertMessage(portFor(db), { session_id: session.id, role: "boss", content: "おはよう" });
+      await insertMessage(portFor(db), { session_id: session.id, role: "user", content: "報告します" });
 
-      expect(countUserMessagesBySessionId(db, session.id)).toBe(1);
+      expect(await countUserMessagesBySessionId(portFor(db), session.id)).toBe(1);
     });
 
-    it("excludes role='user' messages that belong to a different session", () => {
-      const target = insertSession(db, { type: "morning" });
-      const other = insertSession(db, { type: "morning" });
-      insertMessage(db, { session_id: other.id, role: "user", content: "他セッションの発言" });
+    it("excludes role='user' messages that belong to a different session", async () => {
+      const target = await insertSession(portFor(db), { type: "morning" });
+      const other = await insertSession(portFor(db), { type: "morning" });
+      await insertMessage(portFor(db), { session_id: other.id, role: "user", content: "他セッションの発言" });
 
-      expect(countUserMessagesBySessionId(db, target.id)).toBe(0);
+      expect(await countUserMessagesBySessionId(portFor(db), target.id)).toBe(0);
     });
 
-    it("counts multiple user messages in the same session", () => {
-      const session = insertSession(db, { type: "morning" });
-      insertMessage(db, { session_id: session.id, role: "user", content: "発言1" });
-      insertMessage(db, { session_id: session.id, role: "user", content: "発言2" });
+    it("counts multiple user messages in the same session", async () => {
+      const session = await insertSession(portFor(db), { type: "morning" });
+      await insertMessage(portFor(db), { session_id: session.id, role: "user", content: "発言1" });
+      await insertMessage(portFor(db), { session_id: session.id, role: "user", content: "発言2" });
 
-      expect(countUserMessagesBySessionId(db, session.id)).toBe(2);
+      expect(await countUserMessagesBySessionId(portFor(db), session.id)).toBe(2);
     });
   });
 

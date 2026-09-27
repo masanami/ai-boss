@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import Database from "better-sqlite3";
 import { openDatabase } from "./connection.js";
 import { runMigrations } from "./migrate.js";
+import { portFor } from "./test-support/port-for.js";
 
 function tableNames(db: Database.Database): string[] {
   const rows = db
@@ -143,9 +144,9 @@ function insertDecision(db: Database.Database, sessionId: number): number {
 describe("runMigrations", () => {
   let db: Database.Database;
 
-  beforeEach(() => {
+  beforeEach(async () => {
     db = openDatabase(":memory:");
-    runMigrations(db);
+    await runMigrations(portFor(db));
   });
 
   afterEach(() => {
@@ -215,8 +216,8 @@ describe("runMigrations", () => {
     expect(row.category).toBe("work");
   });
 
-  it("is idempotent: running migrations twice does not raise an error", () => {
-    expect(() => runMigrations(db)).not.toThrow();
+  it("is idempotent: running migrations twice does not raise an error", async () => {
+    await expect(runMigrations(portFor(db))).resolves.toBeUndefined();
     expect(tableNames(db).sort()).toEqual(
       [
         "tasks",
@@ -246,10 +247,12 @@ describe("runMigrations", () => {
     `,
   };
 
-  it("rolls back every statement of a failed version, leaving schema and user_version at the previous version boundary", () => {
+  it("rolls back every statement of a failed version, leaving schema and user_version at the previous version boundary", async () => {
     const failingDb = openDatabase(":memory:");
 
-    expect(() => runMigrations(failingDb, FAILING_MIGRATIONS)).toThrow();
+    await expect(
+      runMigrations(portFor(failingDb), FAILING_MIGRATIONS),
+    ).rejects.toThrow();
 
     // Version 1 (applied before the failure) stays committed; version 2 is
     // rolled back entirely, including its successful CREATE TABLE statement.
@@ -260,7 +263,7 @@ describe("runMigrations", () => {
     failingDb.close();
   });
 
-  it("re-running after an interrupted migration brings the database up to the latest version", () => {
+  it("re-running after an interrupted migration brings the database up to the latest version", async () => {
     // An interrupted (rolled-back) migration leaves the DB exactly at the
     // previous version boundary, so once the transient cause is gone the
     // *same* migration map is re-run unchanged and completes — no version's
@@ -280,14 +283,14 @@ describe("runMigrations", () => {
     interruptedDb.pragma("user_version = 1");
     interruptedDb.prepare("INSERT INTO seed_rows (value) VALUES (1), (1)").run();
 
-    expect(() =>
-      runMigrations(interruptedDb, interruptibleMigrations),
-    ).toThrow();
+    await expect(
+      runMigrations(portFor(interruptedDb), interruptibleMigrations),
+    ).rejects.toThrow();
     expect(interruptedDb.pragma("user_version", { simple: true })).toBe(1);
 
     // Transient cause resolved (conflicting row removed); re-run the same map.
     interruptedDb.prepare("DELETE FROM seed_rows WHERE rowid > 1").run();
-    runMigrations(interruptedDb, interruptibleMigrations);
+    await runMigrations(portFor(interruptedDb), interruptibleMigrations);
 
     expect(interruptedDb.pragma("user_version", { simple: true })).toBe(2);
     expect(tableNames(interruptedDb)).toContain("second_table");
@@ -295,7 +298,7 @@ describe("runMigrations", () => {
     interruptedDb.close();
   });
 
-  it("fails fast, without applying any migration, when the database's user_version is ahead of the latest known migration version", () => {
+  it("fails fast, without applying any migration, when the database's user_version is ahead of the latest known migration version", async () => {
     // Simulates opening a DB created by a newer build of the app with an
     // older build: the loop from currentVersion + 1 to latestVersion would
     // run zero times and silently return, leaving the mismatch undetected.
@@ -316,9 +319,9 @@ describe("runMigrations", () => {
     // Order-sensitive: the DB's user_version (9) must appear before the
     // implementation's latest known version (2) so the two numbers can't be
     // silently transposed (#204 AC-1).
-    expect(() => runMigrations(futureDb, smallMigrations)).toThrow(
-      /user_version is 9[\s\S]*latest known migration version is 2/,
-    );
+    await expect(
+      runMigrations(portFor(futureDb), smallMigrations),
+    ).rejects.toThrow(/user_version is 9[\s\S]*latest known migration version is 2/);
     // user_version and schema are left untouched (no migration was attempted).
     expect(futureDb.pragma("user_version", { simple: true })).toBe(9);
     expect(tableNames(futureDb)).toEqual([]);
@@ -326,16 +329,16 @@ describe("runMigrations", () => {
     futureDb.close();
   });
 
-  it("fails fast with the missing version number when the migrations map has a gap", () => {
+  it("fails fast with the missing version number when the migrations map has a gap", async () => {
     const gappedDb = openDatabase(":memory:");
     const gappedMigrations: Record<number, string> = {
       1: "CREATE TABLE first_table (id INTEGER PRIMARY KEY);",
       3: "CREATE TABLE third_table (id INTEGER PRIMARY KEY);",
     };
 
-    expect(() => runMigrations(gappedDb, gappedMigrations)).toThrow(
-      /missing migration for version 2/,
-    );
+    await expect(
+      runMigrations(portFor(gappedDb), gappedMigrations),
+    ).rejects.toThrow(/missing migration for version 2/);
     // Versions applied before the gap stay committed; nothing is skipped.
     expect(gappedDb.pragma("user_version", { simple: true })).toBe(1);
     expect(tableNames(gappedDb)).not.toContain("third_table");
@@ -343,7 +346,7 @@ describe("runMigrations", () => {
     gappedDb.close();
   });
 
-  it("wraps a migration failure in an error naming the failed version", () => {
+  it("wraps a migration failure in an error naming the failed version", async () => {
     // Legacy half-migrated state from the pre-#175 non-atomic implementation:
     // v2's ALTER TABLE was applied but user_version was never advanced.
     // Re-running v2 fails (duplicate column), and the error must say which
@@ -352,17 +355,17 @@ describe("runMigrations", () => {
     legacyDb.exec(V1_AND_V2_SQL);
     legacyDb.pragma("user_version = 1");
 
-    expect(() => runMigrations(legacyDb)).toThrow(/version 2/);
+    await expect(runMigrations(portFor(legacyDb))).rejects.toThrow(/version 2/);
 
     legacyDb.close();
   });
 
-  it("keeps the original SQLite error as the cause of the wrapped migration error", () => {
+  it("keeps the original SQLite error as the cause of the wrapped migration error", async () => {
     const failingDb = openDatabase(":memory:");
 
     let thrown: unknown;
     try {
-      runMigrations(failingDb, FAILING_MIGRATIONS);
+      await runMigrations(portFor(failingDb), FAILING_MIGRATIONS);
     } catch (error) {
       thrown = error;
     }
@@ -374,7 +377,7 @@ describe("runMigrations", () => {
     failingDb.close();
   });
 
-  it("upgrades a v2 database to v3 (adds daily_reports) without touching existing tables", () => {
+  it("upgrades a v2 database to v3 (adds daily_reports) without touching existing tables", async () => {
     // Simulate a pre-existing v2 database: fresh :memory: db, run only
     // migrations 1-2 by pragma-limiting, then upgrade to v3 via runMigrations.
     const v2Db = openDatabase(":memory:");
@@ -383,7 +386,7 @@ describe("runMigrations", () => {
 
     expect(tableNames(v2Db)).not.toContain("daily_reports");
 
-    runMigrations(v2Db);
+    await runMigrations(portFor(v2Db));
 
     expect(tableNames(v2Db)).toContain("daily_reports");
     // runMigrations always advances to the latest known version (v3 adds
@@ -395,7 +398,7 @@ describe("runMigrations", () => {
     v2Db.close();
   });
 
-  it("upgrades a v3 database to v4 (adds paused status and task_pause type) without touching existing tables", () => {
+  it("upgrades a v3 database to v4 (adds paused status and task_pause type) without touching existing tables", async () => {
     const v3Db = openDatabase(":memory:");
     v3Db.exec(V1_THROUGH_V3_SQL);
     v3Db.pragma("user_version = 3");
@@ -413,7 +416,7 @@ describe("runMigrations", () => {
       )
       .run("task_start", taskId, NOW);
 
-    runMigrations(v3Db);
+    await runMigrations(portFor(v3Db));
 
     expect(v3Db.pragma("user_version", { simple: true })).toBe(10);
     expect(tableNames(v3Db)).toContain("tasks");
@@ -428,6 +431,77 @@ describe("runMigrations", () => {
       .prepare("SELECT type, task_id FROM activity_events WHERE task_id = ?")
       .get(taskId) as { type: string; task_id: number };
     expect(event).toEqual({ type: "task_start", task_id: taskId });
+
+    v3Db.close();
+  });
+
+  // #602・機能仕様 docs/features/async-db-layer.md 受入基準 AC-13/AC-13b:
+  // v4 マイグレーション（表の再構築＋`foreign_keys` のトグル）が失敗したとき
+  // の後始末を固定する。post-rebuild の `PRAGMA foreign_key_check` を確実に
+  // 失敗させるため、`foreign_keys = OFF` の間に孤立行（参照先の task を後から
+  // 削除した activity_events 行）を仕込む——ON のままではこの仕込み自体が
+  // INSERT/DELETE のどちらかで失敗してしまう。
+  function seedOrphanActivityEventForV4Failure(v3Db: Database.Database): void {
+    v3Db.pragma("foreign_keys = OFF");
+    const orphanTaskId = Number(
+      v3Db
+        .prepare(
+          "INSERT INTO tasks (title, status, created_at, updated_at) VALUES (?, ?, ?, ?)",
+        )
+        .run("消えるタスク", "todo", NOW, NOW).lastInsertRowid,
+    );
+    v3Db
+      .prepare(
+        "INSERT INTO activity_events (type, task_id, created_at) VALUES (?, ?, ?)",
+      )
+      .run("task_start", orphanTaskId, NOW);
+    v3Db.prepare("DELETE FROM tasks WHERE id = ?").run(orphanTaskId);
+    v3Db.pragma("foreign_keys = ON");
+  }
+
+  it("rolls back to v3, leaving user_version unchanged, when the v4 migration fails (AC-13)", async () => {
+    const v3Db = openDatabase(":memory:");
+    v3Db.exec(V1_THROUGH_V3_SQL);
+    v3Db.pragma("user_version = 3");
+    seedOrphanActivityEventForV4Failure(v3Db);
+
+    // 失敗箇所を「再構築の後の foreign_key_check」に固定する（再構築の途中で
+    // 落ちるようになると、下の 'paused' の検査が恒真になるため）。
+    await expect(runMigrations(portFor(v3Db))).rejects.toMatchObject({
+      message: expect.stringMatching(/version 4/),
+      cause: expect.objectContaining({
+        message: expect.stringMatching(/foreign key violations found in "activity_events"/),
+      }),
+    });
+
+    expect(v3Db.pragma("user_version", { simple: true })).toBe(3);
+    // The rebuild itself was rolled back too: `tasks` still has its pre-v4
+    // CHECK constraint (no 'paused' status yet).
+    expect(() =>
+      v3Db
+        .prepare(
+          "INSERT INTO tasks (title, status, created_at, updated_at) VALUES (?, ?, ?, ?)",
+        )
+        .run("タスク", "paused", NOW, NOW),
+    ).toThrow();
+
+    v3Db.close();
+  });
+
+  it("restores foreign_keys to ON even when the v4 migration fails (AC-13b)", async () => {
+    const v3Db = openDatabase(":memory:");
+    v3Db.exec(V1_THROUGH_V3_SQL);
+    v3Db.pragma("user_version = 3");
+    seedOrphanActivityEventForV4Failure(v3Db);
+
+    // 失敗箇所を foreign_keys = OFF の後（再構築の後の foreign_key_check）に固定する。
+    await expect(runMigrations(portFor(v3Db))).rejects.toMatchObject({
+      cause: expect.objectContaining({
+        message: expect.stringMatching(/foreign key violations found in "activity_events"/),
+      }),
+    });
+
+    expect(v3Db.pragma("foreign_keys", { simple: true })).toBe(1);
 
     v3Db.close();
   });
@@ -492,7 +566,7 @@ describe("runMigrations", () => {
     expect(rows.every((row) => row.interrupted === 1)).toBe(true);
   });
 
-  it("upgrades a v4 database to v5 (adds messages.interrupted) leaving existing messages intact and not interrupted", () => {
+  it("upgrades a v4 database to v5 (adds messages.interrupted) leaving existing messages intact and not interrupted", async () => {
     const v4Db = openDatabase(":memory:");
     // v4 は `tasks` と `activity_events` を再構築するだけで `messages` には
     // 触れないため、`messages` の形は v3 と v4 で同一である。よってこのテスト
@@ -517,7 +591,7 @@ describe("runMigrations", () => {
     );
     expect(columnNames(v4Db, "messages")).not.toContain("interrupted");
 
-    runMigrations(v4Db);
+    await runMigrations(portFor(v4Db));
 
     expect(v4Db.pragma("user_version", { simple: true })).toBe(10);
     const message = v4Db
@@ -554,7 +628,7 @@ describe("runMigrations", () => {
     expect(notification).toEqual({ delivered: null, channel: null });
   });
 
-  it("upgrades a v5 database to v6 (adds notifications.delivered/channel) leaving existing notifications intact with unknown delivery", () => {
+  it("upgrades a v5 database to v6 (adds notifications.delivered/channel) leaving existing notifications intact with unknown delivery", async () => {
     const v5Db = openDatabase(":memory:");
     // v4 は `tasks`/`activity_events` の再構築、v5 は `messages.interrupted` の
     // 追加のみで、どちらも `notifications` には触れないため、`notifications` の
@@ -574,7 +648,7 @@ describe("runMigrations", () => {
     expect(columnNames(v5Db, "notifications")).not.toContain("delivered");
     expect(columnNames(v5Db, "notifications")).not.toContain("channel");
 
-    runMigrations(v5Db);
+    await runMigrations(portFor(v5Db));
 
     expect(v5Db.pragma("user_version", { simple: true })).toBe(10);
     const notification = v5Db
@@ -680,7 +754,7 @@ describe("runMigrations", () => {
       expect(task.evidence_required).toBe(0);
     });
 
-    it("upgrades a v6 database to v7, defaulting pre-existing tasks' evidence_required to 0 (AC-3)", () => {
+    it("upgrades a v6 database to v7, defaulting pre-existing tasks' evidence_required to 0 (AC-3)", async () => {
       // v1〜v3 のスキーマ（evidence_required 列が無い）を土台に、既存タスクを
       // 1 件作ってから完全なマイグレーションを走らせる。v4〜v6 は
       // evidence_required に触れないため、この経路で v7 到達時点の遡及有無
@@ -699,7 +773,7 @@ describe("runMigrations", () => {
       expect(columnNames(v6Db, "tasks")).not.toContain("evidence_required");
       expect(tableNames(v6Db)).not.toContain("task_evidences");
 
-      runMigrations(v6Db);
+      await runMigrations(portFor(v6Db));
 
       expect(v6Db.pragma("user_version", { simple: true })).toBe(10);
       expect(tableNames(v6Db)).toContain("task_evidences");
@@ -791,7 +865,7 @@ describe("runMigrations", () => {
       ).toThrow();
     });
 
-    it("backfills kind = 'decision' for decisions rows that existed before v8", () => {
+    it("backfills kind = 'decision' for decisions rows that existed before v8", async () => {
       // Pre-v8 database: v1〜v3 のスキーマ（kind 列が無い）を土台に、appeals
       // 削除前・kind 追加前の既存決定を1件作ってからフルマイグレーションする。
       const preV8Db = openDatabase(":memory:");
@@ -801,7 +875,7 @@ describe("runMigrations", () => {
       const decisionId = insertDecision(preV8Db, sessionId);
       expect(columnNames(preV8Db, "decisions")).not.toContain("kind");
 
-      runMigrations(preV8Db);
+      await runMigrations(portFor(preV8Db));
 
       expect(preV8Db.pragma("user_version", { simple: true })).toBe(10);
       const row = preV8Db
@@ -812,13 +886,13 @@ describe("runMigrations", () => {
       preV8Db.close();
     });
 
-    it("drops the appeals table when upgrading a pre-v8 database", () => {
+    it("drops the appeals table when upgrading a pre-v8 database", async () => {
       const preV8Db = openDatabase(":memory:");
       preV8Db.exec(V1_THROUGH_V3_SQL);
       preV8Db.pragma("user_version = 3");
       expect(tableNames(preV8Db)).toContain("appeals");
 
-      runMigrations(preV8Db);
+      await runMigrations(portFor(preV8Db));
 
       expect(tableNames(preV8Db)).not.toContain("appeals");
 
@@ -830,7 +904,7 @@ describe("runMigrations", () => {
     // code path from dropping an already-empty table — this pins that a
     // non-empty appeals table is dropped successfully too, not just an empty
     // one (self-review: code-reviewer).
-    it("drops the appeals table even when it holds rows", () => {
+    it("drops the appeals table even when it holds rows", async () => {
       const preV8Db = openDatabase(":memory:");
       preV8Db.exec(V1_THROUGH_V3_SQL);
       preV8Db.pragma("user_version = 3");
@@ -845,7 +919,7 @@ describe("runMigrations", () => {
         (preV8Db.prepare("SELECT COUNT(*) AS n FROM appeals").get() as { n: number }).n,
       ).toBe(1);
 
-      expect(() => runMigrations(preV8Db)).not.toThrow();
+      await expect(runMigrations(portFor(preV8Db))).resolves.toBeUndefined();
 
       expect(tableNames(preV8Db)).not.toContain("appeals");
       expect(preV8Db.pragma("user_version", { simple: true })).toBe(10);
@@ -882,7 +956,7 @@ describe("runMigrations", () => {
       expect(task).toEqual({ committed_start_at: null, committed_at: null });
     });
 
-    it("upgrades a v8 database to v9, leaving pre-existing tasks' committed_start_at and committed_at NULL", () => {
+    it("upgrades a v8 database to v9, leaving pre-existing tasks' committed_start_at and committed_at NULL", async () => {
       // v1〜v3 のスキーマ（committed_start_at/committed_at 列が無い）を土台に、
       // 既存タスクを1件作ってから完全なマイグレーションを走らせる。v4〜v8 は
       // これらの列に触れないため、この経路で v9 到達時点の遡及有無を確認できる。
@@ -900,7 +974,7 @@ describe("runMigrations", () => {
       expect(columnNames(v8Db, "tasks")).not.toContain("committed_start_at");
       expect(columnNames(v8Db, "tasks")).not.toContain("committed_at");
 
-      runMigrations(v8Db);
+      await runMigrations(portFor(v8Db));
 
       expect(v8Db.pragma("user_version", { simple: true })).toBe(10);
       expect(columnNames(v8Db, "tasks")).toEqual(
@@ -974,7 +1048,7 @@ describe("runMigrations", () => {
       expect(rows.map((r) => r.meeting_type).sort()).toEqual(["evening", "morning"]);
     });
 
-    it("upgrades a v9 database to v10, leaving existing tables untouched", () => {
+    it("upgrades a v9 database to v10, leaving existing tables untouched", async () => {
       // 直上の v8→v9 のテストと同じ土台の取り方。v1〜v3 のスキーマから完全な
       // マイグレーションを走らせる——v4〜v9 は meeting_time_overrides に触れ
       // ないため、この経路で v10 到達時点の新規テーブル追加と既存データの
@@ -990,7 +1064,7 @@ describe("runMigrations", () => {
           .run("v10以前からのタスク", "todo", NOW, NOW).lastInsertRowid,
       );
 
-      runMigrations(v9Db);
+      await runMigrations(portFor(v9Db));
 
       expect(v9Db.pragma("user_version", { simple: true })).toBe(10);
       expect(tableNames(v9Db)).toContain("meeting_time_overrides");

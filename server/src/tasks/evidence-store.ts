@@ -1,4 +1,4 @@
-import type Database from "better-sqlite3";
+import type { Db } from "../db/db-port.js";
 import type { TaskEvidence } from "./task-evidence.js";
 import { extractExtension, resolveEvidenceMimeType } from "./evidence-validation.js";
 import {
@@ -63,11 +63,32 @@ function generateStoredFilename(originalFilename: string): string {
  * 拡張子がホワイトリスト外の場合は MIME を導出できないため、書き込む前に
  * エラーを投げる（HTTP 400 としての整形はルート層の責務）。
  */
-export function saveFileEvidence(
-  db: Database.Database,
+export async function saveFileEvidence(
+  db: Db,
   store: EvidenceStore,
   input: SaveFileEvidenceInput,
-): TaskEvidence {
+): Promise<TaskEvidence> {
+  const evidence = await saveFileEvidenceIfAllowed(db, store, input, async () => true);
+  if (!evidence) {
+    throw new Error("unreachable: the insert guard always allows");
+  }
+  return evidence;
+}
+
+/**
+ * {@link saveFileEvidence} に、挿入の可否の判定（`canInsert`）を足したもの。
+ * 実体の書き込みはトランザクションの外で先に行い（ファイル操作をトランザク
+ * ションに入れない。機能仕様 docs/features/async-db-layer.md 決定 2）、判定と
+ * 行の挿入を 1 つのトランザクションで確定させる（#604・決定 2 の全数監査:
+ * 件数の上限の判定と挿入の間に並行の追加が入り、上限を超えないように）。
+ * 判定が拒否したら書き込んだ実体を消して `undefined` を返す。
+ */
+export async function saveFileEvidenceIfAllowed(
+  db: Db,
+  store: EvidenceStore,
+  input: SaveFileEvidenceInput,
+  canInsert: (tx: Db) => Promise<boolean>,
+): Promise<TaskEvidence | undefined> {
   const mimeType = resolveEvidenceMimeType(input.originalFilename);
   if (!mimeType) {
     throw new Error(`evidence extension not allowed: ${input.originalFilename}`);
@@ -76,14 +97,23 @@ export function saveFileEvidence(
   const storedFilename = generateStoredFilename(input.originalFilename);
   store.write(storedFilename, input.data);
 
-  return insertTaskEvidence(db, {
-    task_id: input.taskId,
-    kind: "file",
-    stored_filename: storedFilename,
-    original_filename: input.originalFilename,
-    mime_type: mimeType,
-    size_bytes: input.data.length,
+  const evidence = await db.transaction(async (tx) => {
+    if (!(await canInsert(tx))) {
+      return undefined;
+    }
+    return insertTaskEvidence(tx, {
+      task_id: input.taskId,
+      kind: "file",
+      stored_filename: storedFilename,
+      original_filename: input.originalFilename,
+      mime_type: mimeType,
+      size_bytes: input.data.length,
+    });
   });
+  if (!evidence) {
+    store.remove(storedFilename);
+  }
+  return evidence;
 }
 
 export interface SaveLinkEvidenceInput {
@@ -93,10 +123,10 @@ export interface SaveLinkEvidenceInput {
 
 /** リンクエビデンスを保存する。ファイルシステム（`EvidenceStore`）には
  * 一切触れない — DB のみで完結するため、実行環境に依存しない。 */
-export function saveLinkEvidence(
-  db: Database.Database,
+export async function saveLinkEvidence(
+  db: Db,
   input: SaveLinkEvidenceInput,
-): TaskEvidence {
+): Promise<TaskEvidence> {
   return insertTaskEvidence(db, {
     task_id: input.taskId,
     kind: "link",
@@ -110,30 +140,53 @@ export function saveLinkEvidence(
  * 順序なら最悪ケースは実体だけが残ることで、参照されないので実害が無い。
  * 孤児ファイルの掃除機構は作らない＝YAGNI）。
  *
+ * 本番の削除経路（`task-evidences-routes.ts` の `DELETE`）は判定と一緒に
+ * トランザクションを張るため {@link deleteEvidenceRow} と
+ * {@link removeEvidenceFile} を直接使う。この関数は判定の要らない呼び出し元
+ * （`evidence-storage.ts` のラッパーとテスト）向けに残している。
+ *
  * 存在しない id は no-op で `false` を返す。`kind: "link"` の行を消しても
  * `store.remove` は呼ばない。実体が既に無い `stored_filename` に対する
  * `store.remove` の呼び出しを no-op にする責務は各 `EvidenceStore` 実装が
  * 持つ（`evidence-storage.ts` の Node fs 実装は `unlinkSync` の前に
  * `existsSync` で確認する）。
  */
-export function deleteEvidence(
-  db: Database.Database,
+export async function deleteEvidence(
+  db: Db,
   store: EvidenceStore,
   evidenceId: number,
-): boolean {
-  const evidence = findTaskEvidenceById(db, evidenceId);
+): Promise<boolean> {
+  const evidence = await db.transaction((tx) => deleteEvidenceRow(tx, evidenceId));
   if (!evidence) {
     return false;
   }
+  removeEvidenceFile(store, evidence);
+  return true;
+}
 
-  const deleted = deleteTaskEvidence(db, evidenceId);
-  if (!deleted) {
-    return false;
+/**
+ * {@link deleteEvidence} の DB 側だけ: 行を読んで削除し、削除した行を返す
+ * （無ければ `undefined`）。呼び出し元のトランザクション（`tx`）の中で、
+ * 削除の可否の判定と一緒に使う（E1・#604: `task-evidences-routes.ts` の
+ * `DELETE`）。ファイルの実体は消さない — トランザクションの確定後に
+ * {@link removeEvidenceFile} を呼ぶ（ファイル操作をトランザクションに
+ * 入れない。機能仕様 docs/features/async-db-layer.md 決定 2）。
+ */
+export async function deleteEvidenceRow(
+  db: Db,
+  evidenceId: number,
+): Promise<TaskEvidence | undefined> {
+  const evidence = await findTaskEvidenceById(db, evidenceId);
+  if (!evidence) {
+    return undefined;
   }
+  const deleted = await deleteTaskEvidence(db, evidenceId);
+  return deleted ? evidence : undefined;
+}
 
+/** 削除済みの行がファイルエビデンスなら、その実体を消す（リンクは何もしない）。 */
+export function removeEvidenceFile(store: EvidenceStore, evidence: TaskEvidence): void {
   if (evidence.kind === "file" && evidence.stored_filename) {
     store.remove(evidence.stored_filename);
   }
-
-  return true;
 }

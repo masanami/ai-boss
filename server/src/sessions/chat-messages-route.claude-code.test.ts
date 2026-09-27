@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import type Database from "better-sqlite3";
 import { openDatabase } from "../db/connection.js";
 import { runMigrations } from "../db/migrate.js";
+import { portFor } from "../db/test-support/port-for.js";
 import type { Session } from "./session.js";
 import type { Message } from "./message.js";
 
@@ -87,9 +88,9 @@ describe("POST /api/sessions/:id/messages — claude-code backend, end-to-end vi
   // チャットへ効くことを確認するのが本テストの主眼。
   const env = {};
 
-  beforeEach(() => {
+  beforeEach(async () => {
     db = openDatabase(":memory:");
-    runMigrations(db);
+    await runMigrations(portFor(db));
     queryMock.mockReset();
   });
 
@@ -108,7 +109,7 @@ describe("POST /api/sessions/:id/messages — claude-code backend, end-to-end vi
       toAsyncIterable([assistantTextMessage("承知した、進めろ。"), resultMessage()]),
     );
 
-    const app = createApp(db, env);
+    const app = createApp(portFor(db), env);
     const session = await createSession(app);
 
     const res = await app.request(`/api/sessions/${session.id}/messages`, {

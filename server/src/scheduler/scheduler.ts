@@ -1,5 +1,5 @@
 import cron from "node-cron";
-import type Database from "better-sqlite3";
+import type { Db } from "../db/db-port.js";
 import { createTicker, type TickDeps } from "./scheduler-tick.js";
 import { nodeSystemExecFile } from "../notifications/notifier.js";
 
@@ -8,7 +8,7 @@ import { nodeSystemExecFile } from "../notifications/notifier.js";
 const CRON_EXPRESSION = "* * * * *";
 
 export interface SchedulerDeps {
-  db: Database.Database;
+  db: Db;
   env: NodeJS.ProcessEnv;
   notificationUrl?: string;
 }

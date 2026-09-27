@@ -8,6 +8,7 @@ import { resolve as resolvePath } from "node:path";
 import { fileURLToPath } from "node:url";
 import { openDatabase } from "./db/connection.js";
 import { runMigrations } from "./db/migrate.js";
+import { portFor } from "./db/test-support/port-for.js";
 
 /**
  * 受入基準（S1）1〜7・12・14 を固定するバンドル検査（機能仕様
@@ -33,6 +34,8 @@ const FORBIDDEN_PACKAGE_SUBSTRINGS = [
   "@anthropic-ai/claude-agent-sdk",
   "@hono/node-server",
   "@anthropic-ai/sdk",
+  // #597 AC-1: better-sqlite3 実装（`db/connection.ts`）は Node の周辺にだけ置く。
+  "better-sqlite3",
 ] as const;
 
 const FORBIDDEN_CLAUDE_CODE_BACKEND_SUBSTRING = "llm/backends/claude-code-backend.ts";
@@ -472,8 +475,8 @@ describe("core-entry bundle — AC6/AC7 (process/require が無いグローバ�
 
     const db = openDatabase(":memory:");
     try {
-      runMigrations(db);
-      const app = exported.createCoreApp(db, env);
+      await runMigrations(portFor(db));
+      const app = exported.createCoreApp(portFor(db), env);
       expect((await app.request("/api/health")).status).toBe(200);
       expect(exported.registeredCoreLlmBackendNames()).toEqual([]);
 
@@ -523,8 +526,8 @@ describe("core-entry bundle — smoke test (vm 内で構築した app が実 DB 
 
     const db = openDatabase(":memory:");
     try {
-      runMigrations(db);
-      const app = exported.createCoreApp(db, {});
+      await runMigrations(portFor(db));
+      const app = exported.createCoreApp(portFor(db), {});
 
       const res = await app.request("/api/health");
       expect(res.status).toBe(200);
@@ -553,7 +556,7 @@ describe("core-entry bundle — AC12 (グローバル Buffer が未定義でも�
     // で走るので DB は現行のまま — 機能仕様の指示どおり）。
     const db = openDatabase(":memory:");
     try {
-      runMigrations(db);
+      await runMigrations(portFor(db));
 
       const stored = new Map<string, Uint8Array>();
       const memoryEvidenceStore = {
@@ -568,7 +571,7 @@ describe("core-entry bundle — AC12 (グローバル Buffer が未定義でも�
         },
       };
 
-      const app = exported.createCoreApp(db, {}, { evidenceStore: memoryEvidenceStore });
+      const app = exported.createCoreApp(portFor(db), {}, { evidenceStore: memoryEvidenceStore });
 
       const createTaskRes = await app.request("/api/tasks", {
         method: "POST",

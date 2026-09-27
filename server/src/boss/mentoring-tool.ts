@@ -1,5 +1,5 @@
 import type Anthropic from "@anthropic-ai/sdk";
-import type Database from "better-sqlite3";
+import type { Db } from "../db/db-port.js";
 import { insertDecision } from "../decisions/decisions-repository.js";
 import { findTaskById } from "../tasks/tasks-repository.js";
 import type { ToolExecutionResult } from "./task-tools.js";
@@ -53,12 +53,12 @@ function isRecord(value: unknown): value is Record<string, unknown> {
  * explicit `task_id`. An explicit non-null `task_id` from the boss always
  * wins over `mentoringTaskId` (fallback never overwrites it).
  */
-export function executeRecordMentoringTool(
-  db: Database.Database,
+export async function executeRecordMentoringTool(
+  db: Db,
   sessionId: number,
   input: unknown,
   mentoringTaskId?: number,
-): ToolExecutionResult {
+): Promise<ToolExecutionResult> {
   if (!isRecord(input) || typeof input.content !== "string" || input.content.trim() === "") {
     return {
       content: "content is required and must be a non-empty string",
@@ -73,7 +73,7 @@ export function executeRecordMentoringTool(
   const explicitTaskId = typeof input.task_id === "number" ? input.task_id : undefined;
   const effectiveTaskId = explicitTaskId ?? mentoringTaskId ?? null;
 
-  if (effectiveTaskId !== null && !findTaskById(db, effectiveTaskId)) {
+  if (effectiveTaskId !== null && !(await findTaskById(db, effectiveTaskId))) {
     return { content: `task ${effectiveTaskId} not found`, isError: true };
   }
 
@@ -81,7 +81,7 @@ export function executeRecordMentoringTool(
     return { content: "rationale must be a string", isError: true };
   }
 
-  const decision = insertDecision(db, {
+  const decision = await insertDecision(db, {
     session_id: sessionId,
     content: input.content,
     task_id: effectiveTaskId,

@@ -1,6 +1,6 @@
 import { streamSSE } from "hono/streaming";
 import type { Hono } from "hono";
-import type Database from "better-sqlite3";
+import type { Db } from "../db/db-port.js";
 import type Anthropic from "@anthropic-ai/sdk";
 import { readJsonBody } from "../lib/read-json-body.js";
 import { stripHtmlTags, splitPendingTagTail } from "../lib/strip-html-tags.js";
@@ -120,15 +120,15 @@ function toClaudeMessages(messages: Message[]): Anthropic.MessageParam[] {
  * 載せると同じ発言が二重にトークンを消費し、2回発言されたかのような文脈になる
  * （`TodaysAdhocMessage` の JSDoc が呼び出し側の責務としている二重計上の回避）。
  */
-function collectTodaysAdhocContext(
-  db: Database.Database,
+async function collectTodaysAdhocContext(
+  db: Db,
   sessionType: SessionType,
   now: Date,
-): TodaysAdhocMessage[] {
+): Promise<TodaysAdhocMessage[]> {
   if (sessionType === "adhoc") {
     return [];
   }
-  return listTodaysAdhocMessages(db, now).map((message) => ({
+  return (await listTodaysAdhocMessages(db, now)).map((message) => ({
     role: message.role,
     content: message.content,
     sentAt: message.created_at,
@@ -168,6 +168,53 @@ function buildFallbackText(toolSummaries: string[]): string {
   return `${toolSummaries.join("、")}した。詳細はタスクボードで確認してくれ。`;
 }
 
+interface RewriteRejection {
+  status: 400 | 404 | 409;
+  body: { error: string; code: string };
+}
+
+/**
+ * やりなおし（`replaceFromMessageId`）の可否の検査（Issue #376,
+ * docs/features/chat-message-rewrite.md 決定3・決定1）: 会が終了していない
+ * こと・対象の発言がこの会にあること・ボスの発言でないこと。拒否なら応答の
+ * 形を返し、許可なら `undefined`。早期の拒否と、書き直しのトランザクションの
+ * 中の確定の判定（T6・#605）の両方から呼ぶ。
+ */
+async function checkRewriteTarget(
+  db: Db,
+  sessionId: number,
+  replaceFromMessageId: number,
+): Promise<RewriteRejection | undefined> {
+  // 会は削除されない（セッション行の物理削除は無い）ので、見つからないのは
+  // 起こらない。見つからなければ終了済みとは扱わず、既存の判定に任せる。
+  const currentSession = await findSessionById(db, sessionId);
+  if (currentSession !== undefined && currentSession.ended_at !== null) {
+    return {
+      status: 409,
+      body: { error: "終了したセッションの発言は編集できません", code: "session_already_ended" },
+    };
+  }
+
+  const target = await findMessageInSession(db, sessionId, replaceFromMessageId);
+  if (!target) {
+    return {
+      status: 404,
+      body: {
+        error: `message ${replaceFromMessageId} not found in session ${sessionId}`,
+        code: "message_not_found",
+      },
+    };
+  }
+
+  if (target.role === "boss") {
+    return {
+      status: 400,
+      body: { error: "ボスの発言は編集できません", code: "message_not_editable" },
+    };
+  }
+  return undefined;
+}
+
 /**
  * Registers `POST /:id/messages` on the given sessions router. Kept in its
  * own module because the SSE + tool-use orchestration is substantially
@@ -179,7 +226,7 @@ function buildFallbackText(toolSummaries: string[]): string {
  */
 export function registerChatMessageRoute(
   router: Hono,
-  db: Database.Database,
+  db: Db,
   env: NodeJS.ProcessEnv,
   llmBackend: LlmBackend,
 ): void {
@@ -187,7 +234,7 @@ export function registerChatMessageRoute(
     const rawId = c.req.param("id");
     const id = Number(rawId);
 
-    const session = findSessionById(db, id);
+    const session = await findSessionById(db, id);
     if (!session) {
       return c.json(
         { error: "セッションが見つかりません", code: "session_not_found" },
@@ -211,7 +258,7 @@ export function registerChatMessageRoute(
     // （純粋関数である sessions-validation.ts には持ち込まない）。ユーザー
     // 発言を保存する前（insertMessage より前）に判定する — 拒否されたリク
     // エストのユーザー発言だけが残る中間状態を作らないため。
-    if (mentoringTaskId !== undefined && !findTaskById(db, mentoringTaskId)) {
+    if (mentoringTaskId !== undefined && !(await findTaskById(db, mentoringTaskId))) {
       return c.json(
         {
           error: "対象のタスクが見つかりません",
@@ -230,34 +277,12 @@ export function registerChatMessageRoute(
       // ショットなので、その await を挟んで別リクエストが同じセッションを
       // 終了させる余地がある。ここで読み直してから判定することで、
       // 「サーバは `ended_at` を信用元にする」（決定3）を await 跨ぎでも
-      // 保つ。
-      const currentSession = findSessionById(db, id) ?? session;
-      if (currentSession.ended_at !== null) {
-        return c.json(
-          {
-            error: "終了したセッションの発言は編集できません",
-            code: "session_already_ended",
-          },
-          409,
-        );
-      }
-
-      const target = findMessageInSession(db, id, replaceFromMessageId);
-      if (!target) {
-        return c.json(
-          {
-            error: `message ${replaceFromMessageId} not found in session ${id}`,
-            code: "message_not_found",
-          },
-          404,
-        );
-      }
-
-      if (target.role === "boss") {
-        return c.json(
-          { error: "ボスの発言は編集できません", code: "message_not_editable" },
-          400,
-        );
+      // 保つ。ここは早期の拒否（Claude クライアントの初期化より前に 4xx を
+      // 返す既存の応答順を保つ）で、確定の判定は下の書き直しのトランザク
+      // ションの中でもう一度行う（T6・#605）。
+      const rejection = await checkRewriteTarget(db, id, replaceFromMessageId);
+      if (rejection) {
+        return c.json(rejection.body, rejection.status);
       }
     }
 
@@ -285,12 +310,24 @@ export function registerChatMessageRoute(
     // どちらも DB を都度読み直すため、物理 DELETE がここで先に確定していれば
     // 「書き直した後、元の発言はボスの文脈に含まれない」（#255 完了条件）が
     // 両経路で構造的に成り立つ。切り捨てを下へ動かすとこの保証が静かに壊れる。
+    //
+    // T6（#605・機能仕様 docs/features/async-db-layer.md 決定 2）: 会の終了済み
+    // と書き直し対象の検査を、切り捨て＋挿入と同じトランザクションの中で
+    // やり直す。上の早期の検査から Claude クライアントの初期化までの間に
+    // 別の要求が会を終了させても、その終了はこの書き込みが確定するまで
+    // 待たされるか（AC-20）、先に確定していればここで 409 になる。
     if (replaceFromMessageId !== undefined) {
+      let rejection: RewriteRejection | undefined;
       try {
-        db.transaction(() => {
-          deleteMessagesFrom(db, id, replaceFromMessageId);
-          insertMessage(db, { session_id: id, role: "user", content });
-        })();
+        rejection = await db.transaction(async (tx) => {
+          const check = await checkRewriteTarget(tx, id, replaceFromMessageId);
+          if (check) {
+            return check;
+          }
+          await deleteMessagesFrom(tx, id, replaceFromMessageId);
+          await insertMessage(tx, { session_id: id, role: "user", content });
+          return undefined;
+        });
       } catch (err) {
         // このルートの他の失敗経路（createClaudeClient 初期化失敗）と同じ
         // 規律: ログにはエラークラス名までしか残さない（ADR 0002 決定 4）。
@@ -307,18 +344,21 @@ export function registerChatMessageRoute(
         // uncoded 500 (the createClaudeClient failure branch above).
         return c.json({ error: "書き直した発言の保存に失敗しました" }, 500);
       }
+      if (rejection) {
+        return c.json(rejection.body, rejection.status);
+      }
     } else {
-      insertMessage(db, { session_id: id, role: "user", content });
+      await insertMessage(db, { session_id: id, role: "user", content });
     }
-    recordActivityEvent(db, { type: "chat_message" });
+    await recordActivityEvent(db, { type: "chat_message" });
 
-    const tasks = listTasks(db);
-    const recentDecisions = listRecentDecisions(db, 5);
+    const tasks = await listTasks(db);
+    const recentDecisions = await listRecentDecisions(db, 5);
     // Same "5 most recent" convention as recentDecisions above (Issue #96 —
     // 直近の報告履歴の参照). Feeds AC-2: the boss can refer back to recent
     // morning/evening reports without the user re-explaining them.
-    const recentSessionSummaries = listRecentSessionSummaries(db, 5);
-    const { model, persona } = resolveBossSettings(db);
+    const recentSessionSummaries = await listRecentSessionSummaries(db, 5);
+    const { model, persona } = await resolveBossSettings(db);
     // 時刻の読みは1回にまとめる（Issue #367）。`listTodaysAdhocMessages` は
     // ローカル暦日の半開区間の両端をこの値から導出するため、プロンプト側の
     // `now` と読みが割れると真夜中をまたいで窓が壊れる（`local-day.ts` の
@@ -331,7 +371,7 @@ export function registerChatMessageRoute(
     // （機能仕様「IF（境界となる契約）」・`PersonaPromptContext.mentoring`
     // の JSDoc）。
     const mentoring =
-      (session.type === "morning" && resolveMorningMentoringRequired(db)) ||
+      (session.type === "morning" && (await resolveMorningMentoringRequired(db))) ||
       requestedMentoring === true;
     // Issue #471（親 #444 決定3・決定7の結線）: mentoringTaskId は
     // mentoring が真のときだけ後段（プロンプト・ツール実行）へ渡す。
@@ -348,16 +388,19 @@ export function registerChatMessageRoute(
     const taskRelatedRecords =
       mentoringTaskIdForTurn === undefined
         ? undefined
-        : listDecisionsByTaskId(db, mentoringTaskIdForTurn, TASK_RELATED_RECORD_LIMIT);
+        : await listDecisionsByTaskId(db, mentoringTaskIdForTurn, TASK_RELATED_RECORD_LIMIT);
     const system = buildPersonaPrompt(persona, {
       tasks,
       // 決定 3-a: ボスが自分の裁定（要否）と現状（添付件数）を参照できる
       // ようにする。ボスチャットは update_task ツールで完了操作にも使われる
       // 経路なので、この呼び出し元だけは実件数を渡す必要がある。
-      taskEvidenceCounts: countTaskEvidencesByTaskIds(db, tasks.map((task) => task.id)),
+      taskEvidenceCounts: await countTaskEvidencesByTaskIds(
+        db,
+        tasks.map((task) => task.id),
+      ),
       recentDecisions,
       recentSessionSummaries,
-      todaysAdhocMessages: collectTodaysAdhocContext(db, session.type, now),
+      todaysAdhocMessages: await collectTodaysAdhocContext(db, session.type, now),
       now,
       sessionType: session.type,
       mentoring,
@@ -368,7 +411,7 @@ export function registerChatMessageRoute(
       // 「今何時か」「締切まであと何時間か」の主経路（Issue #288）
       includeCurrentDateTime: true,
     });
-    const messages = toClaudeMessages(listMessagesBySessionId(db, id));
+    const messages = toClaudeMessages(await listMessagesBySessionId(db, id));
 
     // The client stopping the generation *is* the client hanging up: there is
     // no stop endpoint, just an aborted `fetch` (#254 論点2). On Node, an
@@ -513,7 +556,7 @@ export function registerChatMessageRoute(
         // 保存する `content` は**フォールバックしない限り生のまま**である
         // （「保存 content の扱い」決定を壊さない）。
         const hasVisibleText = stripHtmlTags(fullText).trim() !== "";
-        const bossMessage = insertMessage(db, {
+        const bossMessage = await insertMessage(db, {
           session_id: id,
           role: "boss",
           content: hasVisibleText ? fullText : buildFallbackText(toolSummaries),
@@ -578,7 +621,7 @@ export function registerChatMessageRoute(
         const deliveredRawText = splitPendingTagTail(fullText).committed;
         if (deliveredRawText !== "") {
           try {
-            insertMessage(db, {
+            await insertMessage(db, {
               session_id: id,
               role: "boss",
               content: deliveredRawText,

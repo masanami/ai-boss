@@ -1,5 +1,5 @@
 import { Hono } from "hono";
-import type Database from "better-sqlite3";
+import type { DbPort } from "./db/db-port.js";
 import { createTasksRouter } from "./tasks/tasks-routes.js";
 import { createSessionsRouter } from "./sessions/sessions-routes.js";
 import { createActivityRouter } from "./activity/activity-routes.js";
@@ -28,9 +28,9 @@ import type { EvidenceStore } from "./tasks/evidence-store.js";
  * 呼ぶ。
  */
 
-function checkDatabaseConnection(db: Database.Database): boolean {
+async function checkDatabaseConnection(db: DbPort): Promise<boolean> {
   try {
-    db.prepare("SELECT 1").get();
+    await db.get("SELECT 1");
     return true;
   } catch {
     return false;
@@ -109,15 +109,15 @@ export interface CreateCoreAppOptions {
  * llmBackend`'s doc comment above).
  */
 export function createCoreApp(
-  db: Database.Database,
+  db: DbPort,
   env: AppEnv,
   options: CreateCoreAppOptions = {},
 ): Hono {
   const api = new Hono();
   const llmBackend: LlmBackend = options.llmBackend ?? resolveLlmBackend(env);
 
-  api.get("/health", (c) => {
-    return c.json({ status: "ok", db: checkDatabaseConnection(db) });
+  api.get("/health", async (c) => {
+    return c.json({ status: "ok", db: await checkDatabaseConnection(db) });
   });
 
   api.route("/tasks", createTasksRouter(db, options.evidenceStore));

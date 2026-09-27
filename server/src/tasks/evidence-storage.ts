@@ -1,6 +1,6 @@
 import { existsSync, mkdirSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import type Database from "better-sqlite3";
+import type { Db } from "../db/db-port.js";
 import type { TaskEvidence } from "./task-evidence.js";
 import {
   saveFileEvidence as saveFileEvidenceCore,
@@ -59,21 +59,21 @@ export function createNodeFsEvidenceStore(evidenceDir: string): EvidenceStore {
 }
 
 export function saveFileEvidence(
-  db: Database.Database,
+  db: Db,
   evidenceDir: string,
   input: SaveFileEvidenceInput,
-): TaskEvidence {
+): Promise<TaskEvidence> {
   return saveFileEvidenceCore(db, createNodeFsEvidenceStore(evidenceDir), input);
 }
 
-export function saveLinkEvidence(db: Database.Database, input: SaveLinkEvidenceInput): TaskEvidence {
+export function saveLinkEvidence(db: Db, input: SaveLinkEvidenceInput): Promise<TaskEvidence> {
   return saveLinkEvidenceCore(db, input);
 }
 
 export function deleteEvidence(
-  db: Database.Database,
+  db: Db,
   evidenceDir: string,
   evidenceId: number,
-): boolean {
+): Promise<boolean> {
   return deleteEvidenceCore(db, createNodeFsEvidenceStore(evidenceDir), evidenceId);
 }

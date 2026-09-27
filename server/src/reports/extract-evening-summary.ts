@@ -10,7 +10,7 @@
 // もの: API キー未設定（MissingApiKeyError）／ClaudeCodeUnavailableError／
 // LLM 呼び出しエラー／タイムアウト／ツール未呼び出し／入力の形式不正・空文字
 // （親要件チケット #100 のクリティカル設計決定）。
-import type Database from "better-sqlite3";
+import type { Db } from "../db/db-port.js";
 import { resolveBossSettings } from "../boss/boss-settings.js";
 import { buildPersonaPrompt } from "../boss/persona-prompt.js";
 import { resolveLlmBackend } from "../config.js";
@@ -125,7 +125,7 @@ function withOptionalTimeout<T>(
  * は null を「同じレンダラーへ4値なしで渡す」フォールバック経路として扱う）。
  */
 export async function extractEveningSummary(
-  db: Database.Database,
+  db: Db,
   env: NodeJS.ProcessEnv,
   eveningMessages: Message[],
   decisionContents: string[],
@@ -135,7 +135,7 @@ export async function extractEveningSummary(
   try {
     const backend = resolveLlmBackend(env);
     const client: BossLlmClient = createClaudeClient(env, backend);
-    const { model, persona } = resolveBossSettings(db);
+    const { model, persona } = await resolveBossSettings(db);
     const system = buildPersonaPrompt(persona, {
       tasks: [],
       recentDecisions: [],

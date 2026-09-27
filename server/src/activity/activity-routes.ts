@@ -1,5 +1,5 @@
 import { Hono } from "hono";
-import type Database from "better-sqlite3";
+import type { Db } from "../db/db-port.js";
 import { listEventsSince } from "./activity-events-repository.js";
 import { startOfLocalDayIso, startOfNextLocalDayIso } from "./local-day.js";
 
@@ -12,10 +12,10 @@ import { startOfLocalDayIso, startOfNextLocalDayIso } from "./local-day.js";
  * Creates the activity sub-router, mounted under `/api/activity` by the
  * caller. Handles `GET /api/activity/today`.
  */
-export function createActivityRouter(db: Database.Database): Hono {
+export function createActivityRouter(db: Db): Hono {
   const activity = new Hono();
 
-  activity.get("/today", (c) => {
+  activity.get("/today", async (c) => {
     // Both boundaries must come from the same clock read: deriving them from
     // two separate `new Date()` calls risks the pair landing on different
     // local days if evaluation straddles local midnight — either widening
@@ -27,7 +27,7 @@ export function createActivityRouter(db: Database.Database): Hono {
     // make the mistake impossible — `startOfLocalDayIso()` still defaults,
     // so a mixed call would still type-check. Keep passing one shared `now`.
     const now = new Date();
-    return c.json(listEventsSince(db, startOfLocalDayIso(now), startOfNextLocalDayIso(now)));
+    return c.json(await listEventsSince(db, startOfLocalDayIso(now), startOfNextLocalDayIso(now)));
   });
 
   return activity;

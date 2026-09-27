@@ -5,14 +5,15 @@ import { join } from "node:path";
 import type Database from "better-sqlite3";
 import { openDatabase } from "./db/connection.js";
 import { runMigrations } from "./db/migrate.js";
+import { portFor } from "./db/test-support/port-for.js";
 import { createApp } from "./app.js";
 
 describe("createApp", () => {
   let db: Database.Database;
 
-  beforeEach(() => {
+  beforeEach(async () => {
     db = openDatabase(":memory:");
-    runMigrations(db);
+    await runMigrations(portFor(db));
   });
 
   afterEach(() => {
@@ -20,7 +21,7 @@ describe("createApp", () => {
   });
 
   it("returns 200 with status ok and db true from GET /api/health", async () => {
-    const app = createApp(db);
+    const app = createApp(portFor(db));
 
     const res = await app.request("/api/health");
 
@@ -29,7 +30,7 @@ describe("createApp", () => {
   });
 
   it("returns 404 for an unknown path", async () => {
-    const app = createApp(db);
+    const app = createApp(portFor(db));
 
     const res = await app.request("/api/unknown");
 
@@ -38,7 +39,7 @@ describe("createApp", () => {
 
   it("returns db: false when the database query fails", async () => {
     db.close();
-    const app = createApp(db);
+    const app = createApp(portFor(db));
 
     const res = await app.request("/api/health");
 
@@ -50,7 +51,7 @@ describe("createApp", () => {
   // どのルーターも読まないため、受け取ってもアプリの既存の振る舞いに影響が
   // 無いことだけを確認する（実際の配線・利用は後続チケット #388）。
   it("accepts an evidenceDir option without changing existing behavior", async () => {
-    const app = createApp(db, process.env, { evidenceDir: "/tmp/ai-boss-evidence-unused" });
+    const app = createApp(portFor(db), process.env, { evidenceDir: "/tmp/ai-boss-evidence-unused" });
 
     const res = await app.request("/api/health");
 
@@ -72,7 +73,7 @@ describe("createApp", () => {
     });
 
     it("serves index.html from GET /", async () => {
-      const app = createApp(db, process.env, { staticRoot });
+      const app = createApp(portFor(db), process.env, { staticRoot });
 
       const res = await app.request("/");
 
@@ -82,7 +83,7 @@ describe("createApp", () => {
     });
 
     it("serves an asset file with its content type", async () => {
-      const app = createApp(db, process.env, { staticRoot });
+      const app = createApp(portFor(db), process.env, { staticRoot });
 
       const res = await app.request("/assets/app.js");
 
@@ -92,7 +93,7 @@ describe("createApp", () => {
     });
 
     it("serves favicon.svg with an image/svg+xml content type", async () => {
-      const app = createApp(db, process.env, { staticRoot });
+      const app = createApp(portFor(db), process.env, { staticRoot });
 
       const res = await app.request("/favicon.svg");
 
@@ -102,7 +103,7 @@ describe("createApp", () => {
     });
 
     it("serves manifest.webmanifest with an application/manifest+json content type", async () => {
-      const app = createApp(db, process.env, { staticRoot });
+      const app = createApp(portFor(db), process.env, { staticRoot });
 
       const res = await app.request("/manifest.webmanifest");
 
@@ -112,7 +113,7 @@ describe("createApp", () => {
     });
 
     it("falls back to index.html for an unknown non-API path (SPA routing)", async () => {
-      const app = createApp(db, process.env, { staticRoot });
+      const app = createApp(portFor(db), process.env, { staticRoot });
 
       const res = await app.request("/some/spa/route");
 
@@ -121,7 +122,7 @@ describe("createApp", () => {
     });
 
     it("still serves API routes with precedence over static files", async () => {
-      const app = createApp(db, process.env, { staticRoot });
+      const app = createApp(portFor(db), process.env, { staticRoot });
 
       const res = await app.request("/api/health");
 
@@ -130,7 +131,7 @@ describe("createApp", () => {
     });
 
     it("returns 404 for an unknown /api path instead of index.html", async () => {
-      const app = createApp(db, process.env, { staticRoot });
+      const app = createApp(portFor(db), process.env, { staticRoot });
 
       const res = await app.request("/api/unknown");
 

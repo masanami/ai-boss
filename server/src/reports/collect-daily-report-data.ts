@@ -2,7 +2,7 @@
 // 1段目。docs/adr/0006-renderer-owns-structure.md）。tasks / activity_events / decisions を
 // 読み取り専用で参照する。LLM 呼び出し・API ルート・夕会終了フックはここでは
 // 扱わない（依存チケット #107-#110 の範囲）。
-import type Database from "better-sqlite3";
+import type { Db } from "../db/db-port.js";
 import type { Session } from "../sessions/session.js";
 import { computeActivityRecord } from "./activity-record.js";
 import type { ActivityRecordEvent } from "./activity-record.js";
@@ -40,10 +40,19 @@ export interface CollectedDailyReportData {
  * として例外を投げる（前提条件チェック自体は依頼側チケット #107/#108 の生成
  * サービスが担う）。
  */
-export function collectDailyReportData(
-  db: Database.Database,
+export async function collectDailyReportData(
+  db: Db,
   eveningSession: Session,
-): CollectedDailyReportData {
+): Promise<CollectedDailyReportData> {
+  // 複数の表を読むため、1 つのトランザクションでスナップショットとして読む
+  // （#606・決定 2 の全数監査: 並行する書き込みの途中の組み合わせを材料にしない）。
+  return db.transaction((tx) => collectDailyReportDataInSnapshot(tx, eveningSession));
+}
+
+async function collectDailyReportDataInSnapshot(
+  db: Db,
+  eveningSession: Session,
+): Promise<CollectedDailyReportData> {
   if (eveningSession.ended_at === null) {
     throw new Error(
       "collectDailyReportData requires an ended evening session (ended_at is null)",
@@ -68,51 +77,46 @@ export function collectDailyReportData(
   const breakSearchEndIso = sessionEndedAtIso > nextDayStartIso ? sessionEndedAtIso : nextDayStartIso;
 
   const completedTasks = (
-    db
-      .prepare(
-        `SELECT title FROM tasks
+    await db.all<{ title: string }>(
+      `SELECT title FROM tasks
          WHERE status = 'done' AND completed_at >= ? AND completed_at < ?
          ORDER BY completed_at ASC, id ASC`,
-      )
-      .all(dayStartIso, nextDayStartIso) as { title: string }[]
+      [dayStartIso, nextDayStartIso],
+    )
   ).map((row) => row.title);
 
   const inProgressTasks = (
-    db
-      .prepare(
-        `SELECT DISTINCT t.title, t.created_at, t.id FROM tasks t
+    await db.all<{ title: string }>(
+      `SELECT DISTINCT t.title, t.created_at, t.id FROM tasks t
          JOIN activity_events e ON e.task_id = t.id
          WHERE t.status = 'in_progress'
            AND e.type IN ('task_start', 'task_update')
            AND e.created_at >= ? AND e.created_at < ?
          ORDER BY t.created_at ASC, t.id ASC`,
-      )
-      .all(dayStartIso, nextDayStartIso) as { title: string }[]
+      [dayStartIso, nextDayStartIso],
+    )
   ).map((row) => row.title);
 
-  const taskStarts = db
-    .prepare(
-      `SELECT id, created_at FROM activity_events
+  const taskStarts = await db.all<ActivityRecordEvent>(
+    `SELECT id, created_at FROM activity_events
        WHERE type = 'task_start' AND created_at >= ? AND created_at < ?
        ORDER BY created_at ASC, id ASC`,
-    )
-    .all(dayStartIso, nextDayStartIso) as ActivityRecordEvent[];
+    [dayStartIso, nextDayStartIso],
+  );
 
-  const breakStarts = db
-    .prepare(
-      `SELECT id, created_at FROM activity_events
+  const breakStarts = await db.all<ActivityRecordEvent>(
+    `SELECT id, created_at FROM activity_events
        WHERE type = 'break_start' AND created_at >= ? AND created_at < ?
        ORDER BY created_at ASC, id ASC`,
-    )
-    .all(dayStartIso, breakSearchEndIso) as ActivityRecordEvent[];
+    [dayStartIso, breakSearchEndIso],
+  );
 
-  const breakEnds = db
-    .prepare(
-      `SELECT id, created_at FROM activity_events
+  const breakEnds = await db.all<ActivityRecordEvent>(
+    `SELECT id, created_at FROM activity_events
        WHERE type = 'break_end' AND created_at >= ? AND created_at < ?
        ORDER BY created_at ASC, id ASC`,
-    )
-    .all(dayStartIso, breakSearchEndIso) as ActivityRecordEvent[];
+    [dayStartIso, breakSearchEndIso],
+  );
 
   const activityRecord = computeActivityRecord({
     taskStarts,
@@ -126,13 +130,12 @@ export function collectDailyReportData(
   // #358 のタスク軸ログ（listDecisions）から参照する記録であり、日報の
   // 「決定事項」として混入させない。
   const decisions = (
-    db
-      .prepare(
-        `SELECT content FROM decisions
+    await db.all<{ content: string }>(
+      `SELECT content FROM decisions
          WHERE status = 'active' AND kind = 'decision' AND created_at >= ? AND created_at < ?
          ORDER BY created_at ASC, id ASC`,
-      )
-      .all(dayStartIso, nextDayStartIso) as { content: string }[]
+      [dayStartIso, nextDayStartIso],
+    )
   ).map((row) => row.content);
 
   return {

@@ -4,7 +4,7 @@ import { fileURLToPath } from "node:url";
 import { serve } from "@hono/node-server";
 import { createApp } from "./app.js";
 import { loadConfig, resolveEvidenceDir } from "./config.js";
-import { openDatabase } from "./db/connection.js";
+import { createBetterSqlite3Port, openDatabase } from "./db/connection.js";
 import { runMigrations } from "./db/migrate.js";
 import { startScheduler } from "./scheduler/scheduler.js";
 // 機能仕様 docs/features/tauri-in-app-runtime.md 実装計画①: `claude-client.ts`
@@ -20,8 +20,14 @@ import {
 } from "./llm/dev-llm-backends.js";
 
 const config = loadConfig(process.env);
-const db = openDatabase(config.dbPath);
-runMigrations(db);
+// 接続は 1 本だけ開き、その上の直列化済みポート 1 つをマイグレーション・
+// API・スケジューラで共有する（機能仕様 docs/features/async-db-layer.md
+// 決定 1: 接続 1 本＋TS の直列化層で単一ライターを保つ）。
+const db = createBetterSqlite3Port(openDatabase(config.dbPath));
+// `runMigrations`（#602）はポート経由の非同期関数なので、ESM の top-level
+// await でこのモジュールの初期化を待つ（`"type": "module"` のもとで有効。
+// 以降の起動処理はマイグレーション完了後に進む）。
+await runMigrations(db);
 
 // 開発者用の版（このエントリ）だけが `claude-code`/`api` を登録する
 // （オーナーの決定 Q4-b・Q4-c）。以前は `createApp` 呼び出しの副作用として

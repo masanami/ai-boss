@@ -5,12 +5,13 @@ import { join, sep } from "node:path";
 import type Database from "better-sqlite3";
 import { openDatabase } from "../db/connection.js";
 import { runMigrations } from "../db/migrate.js";
+import { portFor } from "../db/test-support/port-for.js";
 import { insertTask } from "./tasks-repository.js";
 import { insertTaskEvidence, findTaskEvidenceById } from "./task-evidences-repository.js";
 import { deleteEvidence, saveFileEvidence, saveLinkEvidence } from "./evidence-storage.js";
 
-function createTask(db: Database.Database): number {
-  const task = insertTask(db, {
+async function createTask(db: Database.Database): Promise<number> {
+  const task = await insertTask(portFor(db), {
     title: "テストタスク",
     description: null,
     category: "work",
@@ -27,23 +28,23 @@ describe("evidence-storage", () => {
   let db: Database.Database;
   let evidenceDir: string;
 
-  beforeEach(() => {
+  beforeEach(async () => {
     db = openDatabase(":memory:");
-    runMigrations(db);
+    await runMigrations(portFor(db));
     evidenceDir = mkdtempSync(join(tmpdir(), "ai-boss-evidence-"));
   });
 
-  afterEach(() => {
+  afterEach(async () => {
     db.close();
     rmSync(evidenceDir, { recursive: true, force: true });
   });
 
   describe("saveFileEvidence", () => {
-    it("writes the file bytes into the evidence directory (AC-40)", () => {
-      const taskId = createTask(db);
+    it("writes the file bytes into the evidence directory (AC-40)", async () => {
+      const taskId = await createTask(db);
       const data = Buffer.from("hello evidence");
 
-      const evidence = saveFileEvidence(db, evidenceDir, {
+      const evidence = await saveFileEvidence(portFor(db), evidenceDir, {
         taskId,
         originalFilename: "note.txt",
         data,
@@ -54,10 +55,10 @@ describe("evidence-storage", () => {
       expect(readFileSync(writtenPath)).toEqual(data);
     });
 
-    it("generates a stored_filename different from the original filename (AC-41)", () => {
-      const taskId = createTask(db);
+    it("generates a stored_filename different from the original filename (AC-41)", async () => {
+      const taskId = await createTask(db);
 
-      const evidence = saveFileEvidence(db, evidenceDir, {
+      const evidence = await saveFileEvidence(portFor(db), evidenceDir, {
         taskId,
         originalFilename: "screenshot.png",
         data: Buffer.from("fake-png-bytes"),
@@ -66,10 +67,10 @@ describe("evidence-storage", () => {
       expect(evidence.stored_filename).not.toBe("screenshot.png");
     });
 
-    it("preserves the original filename in original_filename", () => {
-      const taskId = createTask(db);
+    it("preserves the original filename in original_filename", async () => {
+      const taskId = await createTask(db);
 
-      const evidence = saveFileEvidence(db, evidenceDir, {
+      const evidence = await saveFileEvidence(portFor(db), evidenceDir, {
         taskId,
         originalFilename: "screenshot.png",
         data: Buffer.from("fake-png-bytes"),
@@ -78,10 +79,10 @@ describe("evidence-storage", () => {
       expect(evidence.original_filename).toBe("screenshot.png");
     });
 
-    it("stores stored_filename as a directory-relative name with no path separators (AC-43)", () => {
-      const taskId = createTask(db);
+    it("stores stored_filename as a directory-relative name with no path separators (AC-43)", async () => {
+      const taskId = await createTask(db);
 
-      const evidence = saveFileEvidence(db, evidenceDir, {
+      const evidence = await saveFileEvidence(portFor(db), evidenceDir, {
         taskId,
         originalFilename: "../../etc/passwd.png",
         data: Buffer.from("x"),
@@ -93,10 +94,10 @@ describe("evidence-storage", () => {
       expect(existsSync(join(evidenceDir, storedFilename))).toBe(true);
     });
 
-    it("derives mime_type from the extension, not from any client-provided value", () => {
-      const taskId = createTask(db);
+    it("derives mime_type from the extension, not from any client-provided value", async () => {
+      const taskId = await createTask(db);
 
-      const evidence = saveFileEvidence(db, evidenceDir, {
+      const evidence = await saveFileEvidence(portFor(db), evidenceDir, {
         taskId,
         originalFilename: "report.pdf",
         data: Buffer.from("%PDF-1.4"),
@@ -105,11 +106,11 @@ describe("evidence-storage", () => {
       expect(evidence.mime_type).toBe("application/pdf");
     });
 
-    it("records size_bytes matching the written data length", () => {
-      const taskId = createTask(db);
+    it("records size_bytes matching the written data length", async () => {
+      const taskId = await createTask(db);
       const data = Buffer.from("0123456789");
 
-      const evidence = saveFileEvidence(db, evidenceDir, {
+      const evidence = await saveFileEvidence(portFor(db), evidenceDir, {
         taskId,
         originalFilename: "data.txt",
         data,
@@ -118,15 +119,15 @@ describe("evidence-storage", () => {
       expect(evidence.size_bytes).toBe(data.length);
     });
 
-    it("produces a distinct stored_filename for two files with the same original name", () => {
-      const taskId = createTask(db);
+    it("produces a distinct stored_filename for two files with the same original name", async () => {
+      const taskId = await createTask(db);
 
-      const first = saveFileEvidence(db, evidenceDir, {
+      const first = await saveFileEvidence(portFor(db), evidenceDir, {
         taskId,
         originalFilename: "screenshot.png",
         data: Buffer.from("first"),
       });
-      const second = saveFileEvidence(db, evidenceDir, {
+      const second = await saveFileEvidence(portFor(db), evidenceDir, {
         taskId,
         originalFilename: "screenshot.png",
         data: Buffer.from("second"),
@@ -136,44 +137,44 @@ describe("evidence-storage", () => {
       expect(readdirSync(evidenceDir)).toHaveLength(2);
     });
 
-    it("throws for a disallowed extension and does not write any file", () => {
-      const taskId = createTask(db);
+    it("throws for a disallowed extension and does not write any file", async () => {
+      const taskId = await createTask(db);
 
-      expect(() =>
-        saveFileEvidence(db, evidenceDir, {
+      await expect(
+        saveFileEvidence(portFor(db), evidenceDir, {
           taskId,
           originalFilename: "evil.exe",
           data: Buffer.from("MZ"),
         }),
-      ).toThrow();
+      ).rejects.toThrow();
       expect(readdirSync(evidenceDir)).toHaveLength(0);
     });
   });
 
   describe("saveLinkEvidence", () => {
-    it("saves a link evidence row with the given url and no file fields", () => {
-      const taskId = createTask(db);
+    it("saves a link evidence row with the given url and no file fields", async () => {
+      const taskId = await createTask(db);
 
-      const evidence = saveLinkEvidence(db, { taskId, url: "https://example.com/pr/1" });
+      const evidence = await saveLinkEvidence(portFor(db), { taskId, url: "https://example.com/pr/1" });
 
       expect(evidence.kind).toBe("link");
       expect(evidence.url).toBe("https://example.com/pr/1");
       expect(evidence.stored_filename).toBeNull();
     });
 
-    it("does not write any file to the evidence directory", () => {
-      const taskId = createTask(db);
+    it("does not write any file to the evidence directory", async () => {
+      const taskId = await createTask(db);
 
-      saveLinkEvidence(db, { taskId, url: "https://example.com/pr/1" });
+      await saveLinkEvidence(portFor(db), { taskId, url: "https://example.com/pr/1" });
 
       expect(readdirSync(evidenceDir)).toHaveLength(0);
     });
   });
 
   describe("deleteEvidence", () => {
-    it("removes both the DB row and the file for a file evidence", () => {
-      const taskId = createTask(db);
-      const evidence = saveFileEvidence(db, evidenceDir, {
+    it("removes both the DB row and the file for a file evidence", async () => {
+      const taskId = await createTask(db);
+      const evidence = await saveFileEvidence(portFor(db), evidenceDir, {
         taskId,
         originalFilename: "note.txt",
         data: Buffer.from("bye"),
@@ -181,30 +182,30 @@ describe("evidence-storage", () => {
       const storedPath = join(evidenceDir, evidence.stored_filename as string);
       expect(existsSync(storedPath)).toBe(true);
 
-      const result = deleteEvidence(db, evidenceDir, evidence.id);
+      const result = await deleteEvidence(portFor(db), evidenceDir, evidence.id);
 
       expect(result).toBe(true);
-      expect(findTaskEvidenceById(db, evidence.id)).toBeUndefined();
+      expect(await findTaskEvidenceById(portFor(db), evidence.id)).toBeUndefined();
       expect(existsSync(storedPath)).toBe(false);
     });
 
-    it("removes the DB row for a link evidence without touching the filesystem", () => {
-      const taskId = createTask(db);
-      const evidence = saveLinkEvidence(db, { taskId, url: "https://example.com/x" });
+    it("removes the DB row for a link evidence without touching the filesystem", async () => {
+      const taskId = await createTask(db);
+      const evidence = await saveLinkEvidence(portFor(db), { taskId, url: "https://example.com/x" });
 
-      const result = deleteEvidence(db, evidenceDir, evidence.id);
+      const result = await deleteEvidence(portFor(db), evidenceDir, evidence.id);
 
       expect(result).toBe(true);
-      expect(findTaskEvidenceById(db, evidence.id)).toBeUndefined();
+      expect(await findTaskEvidenceById(portFor(db), evidence.id)).toBeUndefined();
     });
 
-    it("returns false and does nothing when the evidence id does not exist", () => {
-      expect(deleteEvidence(db, evidenceDir, 999999)).toBe(false);
+    it("returns false and does nothing when the evidence id does not exist", async () => {
+      expect(await deleteEvidence(portFor(db), evidenceDir, 999999)).toBe(false);
     });
 
-    it("deletes the DB row before the file, so a row for a manually-inserted evidence whose file never existed is still removable", () => {
-      const taskId = createTask(db);
-      const evidence = insertTaskEvidence(db, {
+    it("deletes the DB row before the file, so a row for a manually-inserted evidence whose file never existed is still removable", async () => {
+      const taskId = await createTask(db);
+      const evidence = await insertTaskEvidence(portFor(db), {
         task_id: taskId,
         kind: "file",
         stored_filename: "never-written.png",
@@ -213,10 +214,10 @@ describe("evidence-storage", () => {
         size_bytes: 1,
       });
 
-      const result = deleteEvidence(db, evidenceDir, evidence.id);
+      const result = await deleteEvidence(portFor(db), evidenceDir, evidence.id);
 
       expect(result).toBe(true);
-      expect(findTaskEvidenceById(db, evidence.id)).toBeUndefined();
+      expect(await findTaskEvidenceById(portFor(db), evidence.id)).toBeUndefined();
     });
   });
 });

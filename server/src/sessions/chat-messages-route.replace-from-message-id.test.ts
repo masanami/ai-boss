@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type Database from "better-sqlite3";
 import { openDatabase } from "../db/connection.js";
 import { runMigrations } from "../db/migrate.js";
+import { portFor } from "../db/test-support/port-for.js";
 import { endSession } from "./sessions-repository.js";
 import type { Session } from "./session.js";
 import type { Message } from "./message.js";
@@ -128,9 +129,9 @@ describe("POST /api/sessions/:id/messages with replaceFromMessageId (Issue #376)
   let db: Database.Database;
   const env = { ANTHROPIC_API_KEY: "sk-ant-test-key" };
 
-  beforeEach(() => {
+  beforeEach(async () => {
     db = openDatabase(":memory:");
-    runMigrations(db);
+    await runMigrations(portFor(db));
     createClaudeClientMock.mockReset();
     streamBossMessageMock.mockReset();
     createBossMessageMock.mockReset();
@@ -160,7 +161,7 @@ describe("POST /api/sessions/:id/messages with replaceFromMessageId (Issue #376)
   async function createSession(
     type: "adhoc" | "morning" | "evening" = "adhoc",
   ): Promise<Session> {
-    const app = createApp(db, env);
+    const app = createApp(portFor(db), env);
     return readJson<Session>(
       await app.request("/api/sessions", {
         method: "POST",
@@ -175,7 +176,7 @@ describe("POST /api/sessions/:id/messages with replaceFromMessageId (Issue #376)
     content: string,
     replaceFromMessageId?: number,
   ): Promise<Response> {
-    const app = createApp(db, env);
+    const app = createApp(portFor(db), env);
     return app.request(`/api/sessions/${sessionId}/messages`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -214,7 +215,7 @@ describe("POST /api/sessions/:id/messages with replaceFromMessageId (Issue #376)
     const firstRes = await sendMessage(session.id, "最初の発言");
     await firstRes.text();
     const target = messagesOf(db, session.id).find((m) => m.role === "user")!;
-    endSession(db, session.id);
+    await endSession(portFor(db), session.id);
     const before = messagesOf(db, session.id);
 
     const res = await sendMessage(session.id, "書き直した内容", target.id);
@@ -234,7 +235,7 @@ describe("POST /api/sessions/:id/messages with replaceFromMessageId (Issue #376)
     const firstRes = await sendMessage(session.id, "最初の発言");
     await firstRes.text();
     const target = messagesOf(db, session.id).find((m) => m.role === "user")!;
-    endSession(db, session.id);
+    await endSession(portFor(db), session.id);
     streamBossMessageMock.mockClear();
 
     await sendMessage(session.id, "書き直した内容", target.id);
@@ -250,7 +251,7 @@ describe("POST /api/sessions/:id/messages with replaceFromMessageId (Issue #376)
     const session = await createSession("evening");
     const firstRes = await sendMessage(session.id, "最初の発言");
     await firstRes.text();
-    endSession(db, session.id);
+    await endSession(portFor(db), session.id);
 
     const res = await sendMessage(session.id, "通常の追加発言");
 
@@ -419,7 +420,7 @@ describe("POST /api/sessions/:id/messages with replaceFromMessageId (Issue #376)
   // （self-review 指摘）。
   it("AC-19/20: keeps a tool's side effect (an updated task) and its task_update activity_events row after the containing turn is truncated away", async () => {
     const session = await createSession();
-    const app = createApp(db, env);
+    const app = createApp(portFor(db), env);
     const task = await readJson<{ id: number; priority: string }>(
       await app.request("/api/tasks", {
         method: "POST",
@@ -590,7 +591,7 @@ describe("POST /api/sessions/:id/messages with replaceFromMessageId (Issue #376)
     ).length;
     expect(userMessageCount).toBeGreaterThanOrEqual(1);
 
-    const app = createApp(db, env);
+    const app = createApp(portFor(db), env);
     const endRes = await app.request(`/api/sessions/${session.id}/end`, { method: "POST" });
     expect(endRes.status).toBe(200);
 

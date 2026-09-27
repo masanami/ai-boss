@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type Database from "better-sqlite3";
 import { openDatabase } from "../db/connection.js";
 import { runMigrations } from "../db/migrate.js";
+import { portFor } from "../db/test-support/port-for.js";
 import {
   createSession,
   endSession,
@@ -42,18 +43,18 @@ function insertRawSession(
 describe("sessions repository", () => {
   let db: Database.Database;
 
-  beforeEach(() => {
+  beforeEach(async () => {
     db = openDatabase(":memory:");
-    runMigrations(db);
+    await runMigrations(portFor(db));
   });
 
-  afterEach(() => {
+  afterEach(async () => {
     db.close();
   });
 
   describe("insertSession", () => {
-    it("inserts a session with server-managed started_at and null ended_at/summary", () => {
-      const session = insertSession(db, { type: "morning" });
+    it("inserts a session with server-managed started_at and null ended_at/summary", async () => {
+      const session = await insertSession(portFor(db), { type: "morning" });
 
       expect(session).toMatchObject({
         type: "morning",
@@ -66,55 +67,55 @@ describe("sessions repository", () => {
   });
 
   describe("findSessionById", () => {
-    it("returns the session when it exists", () => {
-      const created = insertSession(db, { type: "adhoc" });
+    it("returns the session when it exists", async () => {
+      const created = await insertSession(portFor(db), { type: "adhoc" });
 
-      const found = findSessionById(db, created.id);
+      const found = await findSessionById(portFor(db), created.id);
 
       expect(found).toEqual(created);
     });
 
-    it("returns undefined when the session does not exist", () => {
-      expect(findSessionById(db, 9999)).toBeUndefined();
+    it("returns undefined when the session does not exist", async () => {
+      expect(await findSessionById(portFor(db), 9999)).toBeUndefined();
     });
   });
 
   describe("listSessions", () => {
-    it("returns an empty array when no sessions exist", () => {
-      expect(listSessions(db)).toEqual([]);
+    it("returns an empty array when no sessions exist", async () => {
+      expect(await listSessions(portFor(db))).toEqual([]);
     });
 
-    it("orders sessions by started_at descending, id descending as tie-breaker", () => {
-      const first = insertSession(db, { type: "morning" });
-      const second = insertSession(db, { type: "evening" });
-      const third = insertSession(db, { type: "adhoc" });
+    it("orders sessions by started_at descending, id descending as tie-breaker", async () => {
+      const first = await insertSession(portFor(db), { type: "morning" });
+      const second = await insertSession(portFor(db), { type: "evening" });
+      const third = await insertSession(portFor(db), { type: "adhoc" });
 
-      const result = listSessions(db);
+      const result = (await listSessions(portFor(db)));
 
       expect(result.map((s) => s.id)).toEqual([third.id, second.id, first.id]);
     });
 
-    it("filters sessions by type", () => {
-      insertSession(db, { type: "morning" });
-      const adhoc = insertSession(db, { type: "adhoc" });
+    it("filters sessions by type", async () => {
+      await insertSession(portFor(db), { type: "morning" });
+      const adhoc = await insertSession(portFor(db), { type: "adhoc" });
 
-      const result = listSessions(db, { type: "adhoc" });
+      const result = await listSessions(portFor(db), { type: "adhoc" });
 
       expect(result.map((s) => s.id)).toEqual([adhoc.id]);
     });
   });
 
   describe("endSession", () => {
-    afterEach(() => {
+    afterEach(async () => {
       vi.useRealTimers();
     });
 
-    it("sets ended_at to the current time and returns the updated session", () => {
-      const session = insertSession(db, { type: "morning" });
+    it("sets ended_at to the current time and returns the updated session", async () => {
+      const session = await insertSession(portFor(db), { type: "morning" });
       vi.useFakeTimers();
       vi.setSystemTime(new Date("2026-07-06T09:00:00+09:00"));
 
-      const ended = endSession(db, session.id);
+      const ended = await endSession(portFor(db), session.id);
 
       expect(ended).toMatchObject({
         id: session.id,
@@ -122,152 +123,152 @@ describe("sessions repository", () => {
       });
     });
 
-    it("returns undefined when the session does not exist", () => {
-      expect(endSession(db, 9999)).toBeUndefined();
+    it("returns undefined when the session does not exist", async () => {
+      expect(await endSession(portFor(db), 9999)).toBeUndefined();
     });
 
-    it("is idempotent: ending an already-ended session leaves ended_at unchanged", () => {
-      const session = insertSession(db, { type: "evening" });
+    it("is idempotent: ending an already-ended session leaves ended_at unchanged", async () => {
+      const session = await insertSession(portFor(db), { type: "evening" });
       vi.useFakeTimers();
       vi.setSystemTime(new Date("2026-07-06T09:00:00+09:00"));
-      const firstEnd = endSession(db, session.id);
+      const firstEnd = await endSession(portFor(db), session.id);
 
       vi.setSystemTime(new Date("2026-07-06T10:00:00+09:00"));
-      const secondEnd = endSession(db, session.id);
+      const secondEnd = await endSession(portFor(db), session.id);
 
       expect(secondEnd).toEqual(firstEnd);
     });
   });
 
   describe("createSession", () => {
-    afterEach(() => {
+    afterEach(async () => {
       vi.useRealTimers();
     });
 
-    it("creates an evening session when no evening session exists today", () => {
+    it("creates an evening session when no evening session exists today", async () => {
       vi.useFakeTimers();
       vi.setSystemTime(new Date(2026, 7, 14, 18, 0));
 
-      const result = createSession(db, { type: "evening" });
+      const result = await createSession(portFor(db), { type: "evening" });
 
       expect(result.ok).toBe(true);
       if (result.ok) {
         expect(result.session).toMatchObject({ type: "evening", ended_at: null });
       }
-      expect(listSessions(db, { type: "evening" })).toHaveLength(1);
+      expect(await listSessions(portFor(db), { type: "evening" })).toHaveLength(1);
     });
 
-    it("rejects a second evening session on the same local day without inserting a row", () => {
+    it("rejects a second evening session on the same local day without inserting a row", async () => {
       vi.useFakeTimers();
       vi.setSystemTime(new Date(2026, 7, 14, 18, 0));
-      const first = createSession(db, { type: "evening" });
+      const first = await createSession(portFor(db), { type: "evening" });
       expect(first.ok).toBe(true);
 
       vi.setSystemTime(new Date(2026, 7, 14, 20, 0));
-      const second = createSession(db, { type: "evening" });
+      const second = await createSession(portFor(db), { type: "evening" });
 
       expect(second).toEqual({
         ok: false,
         code: "evening_session_already_exists",
       });
-      expect(listSessions(db, { type: "evening" })).toHaveLength(1);
+      expect(await listSessions(portFor(db), { type: "evening" })).toHaveLength(1);
     });
 
-    it("allows today's evening session when only a previous day's evening session exists (date boundary)", () => {
+    it("allows today's evening session when only a previous day's evening session exists (date boundary)", async () => {
       vi.useFakeTimers();
       vi.setSystemTime(new Date(2026, 7, 13, 23, 50));
-      const previousDay = createSession(db, { type: "evening" });
+      const previousDay = await createSession(portFor(db), { type: "evening" });
       expect(previousDay.ok).toBe(true);
       if (!previousDay.ok) {
         throw new Error("expected previous day's session to be created");
       }
 
       vi.setSystemTime(new Date(2026, 7, 14, 0, 30));
-      endSession(db, previousDay.session.id);
+      await endSession(portFor(db), previousDay.session.id);
 
       vi.setSystemTime(new Date(2026, 7, 14, 18, 0));
-      const today = createSession(db, { type: "evening" });
+      const today = await createSession(portFor(db), { type: "evening" });
 
       expect(today.ok).toBe(true);
-      expect(listSessions(db, { type: "evening" })).toHaveLength(2);
+      expect(await listSessions(portFor(db), { type: "evening" })).toHaveLength(2);
     });
 
-    it("rejects a second evening session even when the existing one is already ended", () => {
+    it("rejects a second evening session even when the existing one is already ended", async () => {
       vi.useFakeTimers();
       vi.setSystemTime(new Date(2026, 7, 14, 18, 0));
-      const first = createSession(db, { type: "evening" });
+      const first = await createSession(portFor(db), { type: "evening" });
       expect(first.ok).toBe(true);
       if (!first.ok) {
         throw new Error("expected first session to be created");
       }
       vi.setSystemTime(new Date(2026, 7, 14, 19, 0));
-      endSession(db, first.session.id);
+      await endSession(portFor(db), first.session.id);
 
       vi.setSystemTime(new Date(2026, 7, 14, 20, 0));
-      const second = createSession(db, { type: "evening" });
+      const second = await createSession(portFor(db), { type: "evening" });
 
       expect(second).toEqual({
         ok: false,
         code: "evening_session_already_exists",
       });
-      expect(listSessions(db, { type: "evening" })).toHaveLength(1);
+      expect(await listSessions(portFor(db), { type: "evening" })).toHaveLength(1);
     });
 
-    it("does not limit morning or adhoc sessions on the same local day", () => {
+    it("does not limit morning or adhoc sessions on the same local day", async () => {
       vi.useFakeTimers();
       vi.setSystemTime(new Date(2026, 7, 14, 9, 0));
 
-      const firstMorning = createSession(db, { type: "morning" });
-      const secondMorning = createSession(db, { type: "morning" });
-      const firstAdhoc = createSession(db, { type: "adhoc" });
-      const secondAdhoc = createSession(db, { type: "adhoc" });
+      const firstMorning = await createSession(portFor(db), { type: "morning" });
+      const secondMorning = await createSession(portFor(db), { type: "morning" });
+      const firstAdhoc = await createSession(portFor(db), { type: "adhoc" });
+      const secondAdhoc = await createSession(portFor(db), { type: "adhoc" });
 
       expect(firstMorning.ok).toBe(true);
       expect(secondMorning.ok).toBe(true);
       expect(firstAdhoc.ok).toBe(true);
       expect(secondAdhoc.ok).toBe(true);
-      expect(listSessions(db, { type: "morning" })).toHaveLength(2);
-      expect(listSessions(db, { type: "adhoc" })).toHaveLength(2);
+      expect(await listSessions(portFor(db), { type: "morning" })).toHaveLength(2);
+      expect(await listSessions(portFor(db), { type: "adhoc" })).toHaveLength(2);
     });
   });
 
   describe("updateSessionSummary", () => {
-    it("sets the summary and returns the updated session", () => {
-      const session = insertSession(db, { type: "morning" });
+    it("sets the summary and returns the updated session", async () => {
+      const session = await insertSession(portFor(db), { type: "morning" });
 
-      const updated = updateSessionSummary(db, session.id, "今日の要約");
+      const updated = await updateSessionSummary(portFor(db), session.id, "今日の要約");
 
       expect(updated).toMatchObject({ id: session.id, summary: "今日の要約" });
     });
 
-    it("returns undefined when the session does not exist", () => {
-      expect(updateSessionSummary(db, 9999, "要約")).toBeUndefined();
+    it("returns undefined when the session does not exist", async () => {
+      expect(await updateSessionSummary(portFor(db), 9999, "要約")).toBeUndefined();
     });
 
     // 同時終了レース: 2 つの POST /:id/end が両方 summary === null を読んでから
     // それぞれ生成を終えると、後着の無条件 UPDATE が先着の要約を潰しうる。
     // WHERE summary IS NULL の compare-and-set で先着を守る。
-    it("keeps the first stored summary when a second update races in", () => {
-      const session = insertSession(db, { type: "morning" });
+    it("keeps the first stored summary when a second update races in", async () => {
+      const session = await insertSession(portFor(db), { type: "morning" });
 
-      const first = updateSessionSummary(db, session.id, "先に保存された要約");
-      const second = updateSessionSummary(db, session.id, "後から来た要約");
+      const first = await updateSessionSummary(portFor(db), session.id, "先に保存された要約");
+      const second = await updateSessionSummary(portFor(db), session.id, "後から来た要約");
 
       expect(first).toMatchObject({ summary: "先に保存された要約" });
       // 後着は上書きせず、保存済みの行（先着の要約）を返す
       expect(second).toMatchObject({ summary: "先に保存された要約" });
-      expect(findSessionById(db, session.id)).toMatchObject({
+      expect(await findSessionById(portFor(db), session.id)).toMatchObject({
         summary: "先に保存された要約",
       });
     });
   });
 
   describe("listRecentSessionSummaries", () => {
-    it("returns an empty array when there are no summarized sessions", () => {
-      expect(listRecentSessionSummaries(db, 5)).toEqual([]);
+    it("returns an empty array when there are no summarized sessions", async () => {
+      expect(await listRecentSessionSummaries(portFor(db), 5)).toEqual([]);
     });
 
-    it("maps type/summary/reportedAt, ordered most-recent (ended_at, falling back to started_at) first", () => {
+    it("maps type/summary/reportedAt, ordered most-recent (ended_at, falling back to started_at) first", async () => {
       insertRawSession(db, {
         type: "morning",
         startedAt: "2026-07-01T00:00:00.000Z",
@@ -281,7 +282,7 @@ describe("sessions repository", () => {
         summary: "新しい夕会の要約",
       });
 
-      const result = listRecentSessionSummaries(db, 5);
+      const result = await listRecentSessionSummaries(portFor(db), 5);
 
       expect(result).toEqual([
         { type: "evening", content: "新しい夕会の要約", reportedAt: "2026-07-05T01:00:00.000Z" },
@@ -289,7 +290,7 @@ describe("sessions repository", () => {
       ]);
     });
 
-    it("falls back to started_at for ordering when ended_at is null", () => {
+    it("falls back to started_at for ordering when ended_at is null", async () => {
       insertRawSession(db, {
         type: "adhoc",
         startedAt: "2026-07-03T00:00:00.000Z",
@@ -297,7 +298,7 @@ describe("sessions repository", () => {
         summary: "終了していないが要約はある",
       });
 
-      const result = listRecentSessionSummaries(db, 5);
+      const result = await listRecentSessionSummaries(portFor(db), 5);
 
       expect(result).toEqual([
         {
@@ -308,7 +309,7 @@ describe("sessions repository", () => {
       ]);
     });
 
-    it("excludes sessions whose summary is null or an empty string", () => {
+    it("excludes sessions whose summary is null or an empty string", async () => {
       insertRawSession(db, {
         type: "morning",
         startedAt: "2026-07-01T00:00:00.000Z",
@@ -328,14 +329,14 @@ describe("sessions repository", () => {
         summary: "有効な要約",
       });
 
-      const result = listRecentSessionSummaries(db, 5);
+      const result = await listRecentSessionSummaries(portFor(db), 5);
 
       expect(result).toEqual([
         { type: "adhoc", content: "有効な要約", reportedAt: "2026-07-03T01:00:00.000Z" },
       ]);
     });
 
-    it("caps the result at the given limit, keeping the most recent ones", () => {
+    it("caps the result at the given limit, keeping the most recent ones", async () => {
       for (let i = 0; i < 7; i++) {
         insertRawSession(db, {
           type: "adhoc",
@@ -345,7 +346,7 @@ describe("sessions repository", () => {
         });
       }
 
-      const result = listRecentSessionSummaries(db, 5);
+      const result = await listRecentSessionSummaries(portFor(db), 5);
 
       expect(result.map((s) => s.content)).toEqual([
         "要約6",

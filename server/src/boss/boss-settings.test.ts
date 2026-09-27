@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type Database from "better-sqlite3";
 import { openDatabase } from "../db/connection.js";
 import { runMigrations } from "../db/migrate.js";
+import { portFor } from "../db/test-support/port-for.js";
 import { DEFAULT_MODEL } from "../llm/claude-client.js";
 import { DEFAULT_PERSONA_SETTINGS } from "./persona-prompt.js";
 import { resolveBossSettings } from "./boss-settings.js";
@@ -13,17 +14,17 @@ function putSetting(db: Database.Database, key: string, value: string): void {
 describe("resolveBossSettings", () => {
   let db: Database.Database;
 
-  beforeEach(() => {
+  beforeEach(async () => {
     db = openDatabase(":memory:");
-    runMigrations(db);
+    await runMigrations(portFor(db));
   });
 
   afterEach(() => {
     db.close();
   });
 
-  it("falls back to defaults when no settings are stored", () => {
-    const result = resolveBossSettings(db);
+  it("falls back to defaults when no settings are stored", async () => {
+    const result = (await resolveBossSettings(portFor(db)));
 
     expect(result).toEqual({
       model: DEFAULT_MODEL,
@@ -31,19 +32,19 @@ describe("resolveBossSettings", () => {
     });
   });
 
-  it("reads the model from settings when present", () => {
+  it("reads the model from settings when present", async () => {
     putSetting(db, "model", "claude-opus-4-8");
 
-    expect(resolveBossSettings(db).model).toBe("claude-opus-4-8");
+    expect((await resolveBossSettings(portFor(db))).model).toBe("claude-opus-4-8");
   });
 
-  it("reads persona fields (name / tone / strictness / custom instructions) from settings", () => {
+  it("reads persona fields (name / tone / strictness / custom instructions) from settings", async () => {
     putSetting(db, "boss_name", "スミス");
     putSetting(db, "boss_tone_preset", "strict");
     putSetting(db, "boss_strictness", "5");
     putSetting(db, "boss_custom_instructions", "語尾に「〜だ」をつけること");
 
-    const result = resolveBossSettings(db);
+    const result = (await resolveBossSettings(portFor(db)));
 
     expect(result.persona).toEqual({
       name: "スミス",
@@ -53,18 +54,18 @@ describe("resolveBossSettings", () => {
     });
   });
 
-  it("falls back to the default tone when the stored value is not a known preset", () => {
+  it("falls back to the default tone when the stored value is not a known preset", async () => {
     putSetting(db, "boss_tone_preset", "not-a-preset");
 
-    expect(resolveBossSettings(db).persona.tone).toBe(DEFAULT_PERSONA_SETTINGS.tone);
+    expect((await resolveBossSettings(portFor(db))).persona.tone).toBe(DEFAULT_PERSONA_SETTINGS.tone);
   });
 
   it.each(["0", "6", "not-a-number"])(
     "falls back to the default strictness when the stored value (%s) is out of range or invalid",
-    (value) => {
+    async (value) => {
       putSetting(db, "boss_strictness", value);
 
-      expect(resolveBossSettings(db).persona.strictness).toBe(
+      expect((await resolveBossSettings(portFor(db))).persona.strictness).toBe(
         DEFAULT_PERSONA_SETTINGS.strictness,
       );
     },

@@ -3,6 +3,7 @@ import type { Hono } from "hono";
 import type Database from "better-sqlite3";
 import { openDatabase } from "../db/connection.js";
 import { runMigrations } from "../db/migrate.js";
+import { portFor } from "../db/test-support/port-for.js";
 import { createApp } from "../app.js";
 import type { DailyReport, DailyReportSummary } from "./daily-report.js";
 import type { SessionType } from "../sessions/session.js";
@@ -153,9 +154,9 @@ const env = { ANTHROPIC_API_KEY: "sk-ant-test-key" };
 describe("reports routes", () => {
   let db: Database.Database;
 
-  beforeEach(() => {
+  beforeEach(async () => {
     db = openDatabase(":memory:");
-    runMigrations(db);
+    await runMigrations(portFor(db));
     createClaudeClientMock.mockReset();
     requestVerdictMock.mockReset();
     createBossMessageMock.mockReset();
@@ -181,7 +182,7 @@ describe("reports routes", () => {
 
   describe("GET /api/reports", () => {
     it("returns an empty array when no reports exist", async () => {
-      const app = createApp(db, env);
+      const app = createApp(portFor(db), env);
 
       const res = await app.request("/api/reports");
 
@@ -190,7 +191,7 @@ describe("reports routes", () => {
     });
 
     it("returns reports newest-first, with only date/created_at/updated_at (no content)", async () => {
-      const app = createApp(db, env);
+      const app = createApp(portFor(db), env);
       const sessionId = insertRawSession(db, "evening", iso(2026, 8, 13, 19, 0), iso(2026, 8, 13, 19, 30));
       insertRawDailyReport(db, "2026-08-13", "# 日報 2026-08-13", sessionId, iso(2026, 8, 13, 19, 30), iso(2026, 8, 13, 19, 30));
       const sessionId2 = insertRawSession(db, "evening", iso(2026, 8, 14, 19, 0), iso(2026, 8, 14, 19, 30));
@@ -210,7 +211,7 @@ describe("reports routes", () => {
     });
 
     it("does not list the same date twice after regeneration", async () => {
-      const app = createApp(db, env);
+      const app = createApp(portFor(db), env);
       vi.useFakeTimers();
       vi.setSystemTime(new Date(2026, 7, 14, 19, 0));
       const session = await readJson<{ id: number }>(
@@ -234,7 +235,7 @@ describe("reports routes", () => {
 
   describe("GET /api/reports/:date", () => {
     it("returns the report body for an existing date", async () => {
-      const app = createApp(db, env);
+      const app = createApp(portFor(db), env);
       const sessionId = insertRawSession(db, "evening", iso(2026, 8, 14, 19, 0), iso(2026, 8, 14, 19, 30));
       insertRawDailyReport(
         db,
@@ -259,7 +260,7 @@ describe("reports routes", () => {
     });
 
     it("returns 404 with code report_not_found when the date has no report", async () => {
-      const app = createApp(db, env);
+      const app = createApp(portFor(db), env);
 
       const res = await app.request("/api/reports/2026-08-14");
 
@@ -272,7 +273,7 @@ describe("reports routes", () => {
 
   describe("POST /api/reports/generate", () => {
     it("generates and saves today's report, returning the same shape as GET /:date", async () => {
-      const app = createApp(db, env);
+      const app = createApp(portFor(db), env);
       vi.useFakeTimers();
       vi.setSystemTime(new Date(2026, 7, 14, 19, 0));
       const session = await readJson<{ id: number }>(
@@ -302,7 +303,7 @@ describe("reports routes", () => {
     // 程度）。ここでは固定フォーマットの中身そのものを assert する。
     describe("response content reflects the render-daily-report.ts fixed format (AC-1, AC-2)", () => {
       it("falls back to FALLBACK_EVENING_SUMMARY_NOTE in content when LLM extraction fails (AC-1)", async () => {
-        const app = createApp(db, env);
+        const app = createApp(portFor(db), env);
         // extract-evening-summary.ts: requestVerdict の `called: false` は
         // 「ツール未呼び出し」（抽出失敗の一種）として null を返す経路。
         requestVerdictMock.mockResolvedValue({ called: false });
@@ -326,7 +327,7 @@ describe("reports routes", () => {
       });
 
       it("reflects completed tasks, in-progress tasks, and the activity record (first start time, break count/total) in content (AC-2)", async () => {
-        const app = createApp(db, env);
+        const app = createApp(portFor(db), env);
         vi.useFakeTimers();
         vi.setSystemTime(new Date(2026, 7, 14, 19, 0));
         const session = await readJson<{ id: number }>(
@@ -375,7 +376,7 @@ describe("reports routes", () => {
     });
 
     it("returns 409 with code evening_session_required when the prerequisite is not met", async () => {
-      const app = createApp(db, env);
+      const app = createApp(portFor(db), env);
 
       const res = await app.request("/api/reports/generate", { method: "POST" });
 
@@ -386,7 +387,7 @@ describe("reports routes", () => {
     });
 
     it("overwrites the same day's report on regeneration", async () => {
-      const app = createApp(db, env);
+      const app = createApp(portFor(db), env);
       vi.useFakeTimers();
       vi.setSystemTime(new Date(2026, 7, 14, 19, 0));
       const session = await readJson<{ id: number }>(
@@ -452,7 +453,7 @@ describe("reports routes", () => {
       }
 
       it("fails with the default (no-param) resolution once the date has rolled over — the bug this ticket fixes", async () => {
-        const app = createApp(db, env);
+        const app = createApp(portFor(db), env);
         await setUpCrossMidnightSession(app);
 
         const res = await app.request("/api/reports/generate", { method: "POST" });
@@ -463,7 +464,7 @@ describe("reports routes", () => {
       });
 
       it("resolves the target evening session by started_at's local calendar day via the date param", async () => {
-        const app = createApp(db, env);
+        const app = createApp(portFor(db), env);
         const { sessionId } = await setUpCrossMidnightSession(app);
 
         const res = await app.request("/api/reports/generate", {
@@ -479,7 +480,7 @@ describe("reports routes", () => {
       });
 
       it("resolves the target evening session directly via the eveningSessionId param", async () => {
-        const app = createApp(db, env);
+        const app = createApp(portFor(db), env);
         const { sessionId } = await setUpCrossMidnightSession(app);
 
         const res = await app.request("/api/reports/generate", {
@@ -495,7 +496,7 @@ describe("reports routes", () => {
       });
 
       it("prioritizes eveningSessionId over date when both are provided", async () => {
-        const app = createApp(db, env);
+        const app = createApp(portFor(db), env);
         const { sessionId } = await setUpCrossMidnightSession(app);
 
         // date は該当する夕会が無い日を指定する（date 単体なら 409 になる
@@ -516,7 +517,7 @@ describe("reports routes", () => {
 
     describe("invalid parameters", () => {
       it("returns 400 invalid_request when eveningSessionId is not an integer", async () => {
-        const app = createApp(db, env);
+        const app = createApp(portFor(db), env);
 
         const res = await app.request("/api/reports/generate", {
           method: "POST",
@@ -530,7 +531,7 @@ describe("reports routes", () => {
       });
 
       it("returns 400 invalid_request when date is not in YYYY-MM-DD format", async () => {
-        const app = createApp(db, env);
+        const app = createApp(portFor(db), env);
 
         const res = await app.request("/api/reports/generate", {
           method: "POST",
@@ -544,7 +545,7 @@ describe("reports routes", () => {
       });
 
       it("returns 400 invalid_request when date is not a real calendar day", async () => {
-        const app = createApp(db, env);
+        const app = createApp(portFor(db), env);
 
         const res = await app.request("/api/reports/generate", {
           method: "POST",
@@ -558,7 +559,7 @@ describe("reports routes", () => {
       });
 
       it("returns 400 invalid_request when the body cannot be parsed as JSON", async () => {
-        const app = createApp(db, env);
+        const app = createApp(portFor(db), env);
 
         const res = await app.request("/api/reports/generate", {
           method: "POST",
@@ -572,7 +573,7 @@ describe("reports routes", () => {
       });
 
       it("returns 400 invalid_request when the body is valid JSON but not an object", async () => {
-        const app = createApp(db, env);
+        const app = createApp(portFor(db), env);
 
         const res = await app.request("/api/reports/generate", {
           method: "POST",
@@ -605,7 +606,7 @@ describe("reports routes", () => {
       }
 
       it("returns 409 evening_session_required when eveningSessionId does not reference an existing session, even though today's default session exists", async () => {
-        const app = createApp(db, env);
+        const app = createApp(portFor(db), env);
         await setUpTodaysValidSession(app);
 
         const sanity = await app.request("/api/reports/generate", { method: "POST" });
@@ -623,7 +624,7 @@ describe("reports routes", () => {
       });
 
       it("returns 409 evening_session_required when date has no matching evening session, even though today's default session exists", async () => {
-        const app = createApp(db, env);
+        const app = createApp(portFor(db), env);
         await setUpTodaysValidSession(app);
 
         const sanity = await app.request("/api/reports/generate", { method: "POST" });

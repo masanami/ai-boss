@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import type Database from "better-sqlite3";
 import { openDatabase } from "../db/connection.js";
 import { runMigrations } from "../db/migrate.js";
+import { portFor } from "../db/test-support/port-for.js";
 import type { Task } from "../tasks/task.js";
 
 /**
@@ -76,16 +77,16 @@ describe("generateNotificationBody (claude-code backend, end-to-end via the real
   const env = { LLM_BACKEND: "claude-code" };
   const now = new Date("2026-07-05T10:00:00+09:00");
 
-  beforeEach(() => {
+  beforeEach(async () => {
     db = openDatabase(":memory:");
-    runMigrations(db);
+    await runMigrations(portFor(db));
     queryMock.mockReset();
   });
 
   it("generates via the claude-code backend without ANTHROPIC_API_KEY", async () => {
     queryMock.mockReturnValueOnce(toAsyncIterable([assistantTextMessage("着手しろ"), resultMessage()]));
 
-    const body = await generateNotificationBody(db, env, {
+    const body = await generateNotificationBody(portFor(db), env, {
       ruleType: "todo_stall",
       escalationLevel: 1,
       task: makeTask(),
@@ -102,7 +103,7 @@ describe("generateNotificationBody (claude-code backend, end-to-end via the real
         throw new Error("claude code executable not found");
       });
 
-      const bodyPromise = generateNotificationBody(db, env, {
+      const bodyPromise = generateNotificationBody(portFor(db), env, {
         ruleType: "todo_stall",
         escalationLevel: 1,
         task: makeTask(),

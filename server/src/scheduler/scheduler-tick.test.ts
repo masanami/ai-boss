@@ -5,6 +5,7 @@ import { join } from "node:path";
 import type Database from "better-sqlite3";
 import { openDatabase } from "../db/connection.js";
 import { runMigrations } from "../db/migrate.js";
+import { portFor } from "../db/test-support/port-for.js";
 import { insertTask, updateTask } from "../tasks/tasks-repository.js";
 import { recordActivityEvent } from "../activity/activity-events-repository.js";
 import { insertSession } from "../sessions/sessions-repository.js";
@@ -99,9 +100,9 @@ function ok(): Promise<{ stdout: string; stderr: string }> {
  * `new Date().toISOString()`) stay consistent with each other as the test
  * advances time, instead of drifting against a real wall clock.
  */
-function markTodaysMeetingsDone(db: Database.Database): void {
+async function markTodaysMeetingsDone(db: Database.Database): Promise<void> {
   for (const type of ["morning", "evening"] as SessionType[]) {
-    insertSession(db, { type });
+    await insertSession(portFor(db), { type });
   }
 }
 
@@ -194,15 +195,15 @@ const AVOIDANCE_L1_FIRE_OFFSET_MINUTES = 20;
  */
 interface RuleGateScenario {
   ruleType: DetectionRuleType;
-  setup: (db: Database.Database, baseTime: Date) => string;
+  setup: (db: Database.Database, baseTime: Date) => Promise<string>;
 }
 
 const RULE_GATE_SCENARIOS: RuleGateScenario[] = [
   {
     ruleType: "unstarted",
-    setup: (db, baseTime) => {
+    setup: async (db, baseTime) => {
       vi.setSystemTime(baseTime);
-      const task = insertTask(db, {
+      const task = await insertTask(portFor(db), {
         title: "資料作成",
         description: null,
         category: "work",
@@ -212,7 +213,7 @@ const RULE_GATE_SCENARIOS: RuleGateScenario[] = [
         boss_comment: null,
         estimated_minutes: 30,
       });
-      markTodaysMeetingsDone(db);
+      await markTodaysMeetingsDone(db);
       // Past the (scaled) unstarted threshold for a 30-minute task (30 min).
       vi.setSystemTime(addMinutes(baseTime, 31));
       return `unstarted:${task.id}`;
@@ -220,9 +221,9 @@ const RULE_GATE_SCENARIOS: RuleGateScenario[] = [
   },
   {
     ruleType: "avoidance",
-    setup: (db, baseTime) => {
+    setup: async (db, baseTime) => {
       vi.setSystemTime(baseTime);
-      const topTask = insertTask(db, {
+      const topTask = await insertTask(portFor(db), {
         title: "資料作成",
         description: null,
         category: "work",
@@ -232,7 +233,7 @@ const RULE_GATE_SCENARIOS: RuleGateScenario[] = [
         boss_comment: null,
         estimated_minutes: 15,
       });
-      const otherTask = insertTask(db, {
+      const otherTask = await insertTask(portFor(db), {
         title: "別件",
         description: null,
         category: "work",
@@ -242,11 +243,11 @@ const RULE_GATE_SCENARIOS: RuleGateScenario[] = [
         boss_comment: null,
         estimated_minutes: null,
       });
-      markTodaysMeetingsDone(db);
+      await markTodaysMeetingsDone(db);
       // Recent activity on the *other* (non-top-priority) task, inside the
       // avoidance window (30 min default).
       vi.setSystemTime(addMinutes(baseTime, AVOIDANCE_OTHER_TASK_UPDATE_OFFSET_MINUTES));
-      recordActivityEvent(db, { type: "task_update", task_id: otherTask.id });
+      await recordActivityEvent(portFor(db), { type: "task_update", task_id: otherTask.id });
       // Past the top task's (scaled) unstarted threshold (15 min) and still
       // inside the avoidance window relative to the task_update above.
       vi.setSystemTime(addMinutes(baseTime, AVOIDANCE_L1_FIRE_OFFSET_MINUTES));
@@ -255,10 +256,10 @@ const RULE_GATE_SCENARIOS: RuleGateScenario[] = [
   },
   {
     ruleType: "break_overrun",
-    setup: (db, baseTime) => {
+    setup: async (db, baseTime) => {
       vi.setSystemTime(baseTime);
-      recordActivityEvent(db, { type: "break_start", expected_minutes: 15 });
-      markTodaysMeetingsDone(db);
+      await recordActivityEvent(portFor(db), { type: "break_start", expected_minutes: 15 });
+      await markTodaysMeetingsDone(db);
       // Past the declared 15-minute break.
       vi.setSystemTime(addMinutes(baseTime, 31));
       return "break_overrun";
@@ -266,10 +267,10 @@ const RULE_GATE_SCENARIOS: RuleGateScenario[] = [
   },
   {
     ruleType: "silence",
-    setup: (db, baseTime) => {
+    setup: async (db, baseTime) => {
       vi.setSystemTime(baseTime);
-      recordActivityEvent(db, { type: "checkin" });
-      markTodaysMeetingsDone(db);
+      await recordActivityEvent(portFor(db), { type: "checkin" });
+      await markTodaysMeetingsDone(db);
       // Past the silence fallback threshold (45 min default; no in-progress
       // task with estimated_minutes exists, so the fallback applies).
       vi.setSystemTime(addMinutes(baseTime, 46));
@@ -278,7 +279,7 @@ const RULE_GATE_SCENARIOS: RuleGateScenario[] = [
   },
   {
     ruleType: "deadline_overdue",
-    setup: (db, baseTime) => {
+    setup: async (db, baseTime) => {
       vi.setSystemTime(baseTime);
       // due_at はローカル暦日で、超過が成立するのは翌暦日 00:00 から
       // （ADR 0010 決定 2）。baseTime の**前日**の暦日キーにすることで、
@@ -291,7 +292,7 @@ const RULE_GATE_SCENARIOS: RuleGateScenario[] = [
           baseTime.getDate() - 1,
         ),
       );
-      const task = insertTask(db, {
+      const task = await insertTask(portFor(db), {
         title: "資料作成",
         description: null,
         category: "work",
@@ -301,7 +302,7 @@ const RULE_GATE_SCENARIOS: RuleGateScenario[] = [
         boss_comment: null,
         estimated_minutes: null,
       });
-      markTodaysMeetingsDone(db);
+      await markTodaysMeetingsDone(db);
       // 締切は前日の暦日なので、その翌暦日 00:00（= baseTime の当日 00:00）を
       // 過ぎた時点で超過が成立している。したがって baseTime 以降のどの tick でも
       // findOverdueTasks を通る。他シナリオと違いこのオフセットは閾値に紐づかず、
@@ -349,17 +350,17 @@ it("RULE_GATE_SCENARIOS declares exactly one scenario per rule type the working-
 // 落ちる）。ここでその前提を独立した1テストとして明示的にアサートし、壊れた
 // 場合はこのテスト自体が分かりやすい理由で落ちるようにする。
 //
-// ラダー側と同じ `loadDetectionSettings(db)`（settings テーブル経由で
+// ラダー側と同じ `(await loadDetectionSettings(portFor(db)))`（settings テーブル経由で
 // escalation の間隔が上書きされうる本番同様の読み出し経路）を使うため、この
 // テスト専用の :memory: db を自前で開閉する（DB を使わない他の module-scope
 // ガード — 上の「RULE_GATE_SCENARIOS declares...」— とは異なり、ここでは
 // describe("createTicker().tick") の beforeEach/afterEach のライフサイクルに
 // 依存せず自己完結させる）。
-it("guards the invariant the avoidance scenario below depends on: the escalation intervals scheduler-tick.ts actually reads keep its seeded activity signal within the avoidance window through L1 -> L2 -> L3", () => {
+it("guards the invariant the avoidance scenario below depends on: the escalation intervals scheduler-tick.ts actually reads keep its seeded activity signal within the avoidance window through L1 -> L2 -> L3", async () => {
   const guardDb = openDatabase(":memory:");
   try {
-    runMigrations(guardDb);
-    const { escalation, avoidanceWindowMinutes } = loadDetectionSettings(guardDb);
+    await runMigrations(portFor(guardDb));
+    const { escalation, avoidanceWindowMinutes } = (await loadDetectionSettings(portFor(guardDb)));
     const avoidanceSeedToL1GapMinutes =
       AVOIDANCE_L1_FIRE_OFFSET_MINUTES - AVOIDANCE_OTHER_TASK_UPDATE_OFFSET_MINUTES;
     const elapsedFromSeedToL3 =
@@ -390,12 +391,12 @@ async function tickThroughL1ToL3(
   ruleType: DetectionRuleType,
   expectedRuleKey: string,
 ): Promise<void> {
-  const { level1ToLevel2Minutes, level2ToLevel3Minutes } = loadDetectionSettings(db).escalation;
+  const { level1ToLevel2Minutes, level2ToLevel3Minutes } = (await loadDetectionSettings(portFor(db))).escalation;
 
   // L1 (tick 1): setup already advanced the clock past the rule's firing
   // threshold.
   await ticker.tick();
-  let recorded = listNotificationsSince(db, "1970-01-01T00:00:00.000Z");
+  let recorded = await listNotificationsSince(portFor(db), "1970-01-01T00:00:00.000Z");
   expect(recorded).toHaveLength(1);
   expect(recorded[0]).toMatchObject({
     type: ruleType,
@@ -407,7 +408,7 @@ async function tickThroughL1ToL3(
   // boundary-inclusive note above), no new activity signal recorded.
   advanceSystemTimeByMinutes(level1ToLevel2Minutes);
   await ticker.tick();
-  recorded = listNotificationsSince(db, "1970-01-01T00:00:00.000Z");
+  recorded = await listNotificationsSince(portFor(db), "1970-01-01T00:00:00.000Z");
   expect(recorded).toHaveLength(2);
   expect(recorded[1]).toMatchObject({
     type: ruleType,
@@ -418,7 +419,7 @@ async function tickThroughL1ToL3(
   // L3 (tick 3): advance to exactly the L2->L3 interval boundary.
   advanceSystemTimeByMinutes(level2ToLevel3Minutes);
   await ticker.tick();
-  recorded = listNotificationsSince(db, "1970-01-01T00:00:00.000Z");
+  recorded = await listNotificationsSince(portFor(db), "1970-01-01T00:00:00.000Z");
   expect(recorded).toHaveLength(3);
   expect(recorded[2]).toMatchObject({
     type: ruleType,
@@ -431,9 +432,9 @@ describe("createTicker().tick", () => {
   let db: Database.Database;
   const env = {};
 
-  beforeEach(() => {
+  beforeEach(async () => {
     db = openDatabase(":memory:");
-    runMigrations(db);
+    await runMigrations(portFor(db));
     createClaudeClientMock.mockReset();
     streamBossMessageMock.mockReset();
     generateNotificationBodyMock.mockReset();
@@ -456,7 +457,7 @@ describe("createTicker().tick", () => {
   });
 
   it("fires, generates a body, sends the notification, and records it when a rule condition is met", async () => {
-    const task = insertTask(db, {
+    const task = await insertTask(portFor(db), {
       title: "資料作成",
       description: null,
       category: "work",
@@ -466,13 +467,13 @@ describe("createTicker().tick", () => {
       boss_comment: null,
       estimated_minutes: 30,
     });
-    markTodaysMeetingsDone(db);
+    await markTodaysMeetingsDone(db);
 
     // Past the (scaled) unstarted threshold for a 30-minute task.
     vi.setSystemTime(new Date("2026-07-05T09:31:00.000"));
 
     const execFile = vi.fn().mockImplementation(ok);
-    const ticker = createTicker({ db, env, execFile });
+    const ticker = createTicker({ db: portFor(db), env, execFile });
 
     await ticker.tick();
 
@@ -481,7 +482,7 @@ describe("createTicker().tick", () => {
       expect.arrayContaining(["-title", "-message"]),
     );
 
-    const recorded = listNotificationsSince(db, "1970-01-01T00:00:00.000Z");
+    const recorded = await listNotificationsSince(portFor(db), "1970-01-01T00:00:00.000Z");
     expect(recorded).toHaveLength(1);
     expect(recorded[0]).toMatchObject({
       type: "unstarted",
@@ -497,7 +498,7 @@ describe("createTicker().tick", () => {
   // docs/features/task-start-commitment.md 受入基準「通知文面」3件目）。
   it("records a commitment_missed notification with its type/rule_key/escalation_level when a commitment is missed", async () => {
     const committedStartAt = new Date(2026, 6, 5, 9, 31).toISOString();
-    const task = insertTask(db, {
+    const task = await insertTask(portFor(db), {
       title: "資料作成",
       description: null,
       category: "work",
@@ -508,16 +509,16 @@ describe("createTicker().tick", () => {
       estimated_minutes: null,
       committed_start_at: committedStartAt,
     });
-    markTodaysMeetingsDone(db);
+    await markTodaysMeetingsDone(db);
 
     vi.setSystemTime(new Date(committedStartAt));
 
     const execFile = vi.fn().mockImplementation(ok);
-    const ticker = createTicker({ db, env, execFile });
+    const ticker = createTicker({ db: portFor(db), env, execFile });
 
     await ticker.tick();
 
-    const recorded = listNotificationsSince(db, "1970-01-01T00:00:00.000Z");
+    const recorded = await listNotificationsSince(portFor(db), "1970-01-01T00:00:00.000Z");
     expect(recorded).toHaveLength(1);
     expect(recorded[0]).toMatchObject({
       type: "commitment_missed",
@@ -533,7 +534,7 @@ describe("createTicker().tick", () => {
   // すれば commitment_missed も発火しない（変異: 退役処理を外す）。
   it("does not record commitment_missed when the commitment was retired by a status change and the task later returns to todo (T2)", async () => {
     const committedStartAt = new Date(2026, 6, 5, 14, 0).toISOString();
-    const task = insertTask(db, {
+    const task = await insertTask(portFor(db), {
       title: "資料作成",
       description: null,
       category: "work",
@@ -544,22 +545,22 @@ describe("createTicker().tick", () => {
       estimated_minutes: null,
       committed_start_at: committedStartAt,
     });
-    markTodaysMeetingsDone(db);
+    await markTodaysMeetingsDone(db);
 
     // task_start チェックイン相当（todo -> in_progress）で約束が退役する。
-    updateTask(db, task.id, { status: "in_progress" });
+    await updateTask(portFor(db), task.id, { status: "in_progress" });
     // PATCH /api/tasks/:id 相当で todo に戻しても、退役済みの約束は復活
     // しない（決定3-2「退役した約束は、後でタスクを todo に戻しても復活
     // しない」）。
-    updateTask(db, task.id, { status: "todo" });
+    await updateTask(portFor(db), task.id, { status: "todo" });
 
     vi.setSystemTime(new Date(2026, 6, 5, 14, 30));
 
     const execFile = vi.fn().mockImplementation(ok);
-    const ticker = createTicker({ db, env, execFile });
+    const ticker = createTicker({ db: portFor(db), env, execFile });
     await ticker.tick();
 
-    const recorded = listNotificationsSince(db, "1970-01-01T00:00:00.000Z");
+    const recorded = await listNotificationsSince(portFor(db), "1970-01-01T00:00:00.000Z");
     expect(recorded.filter((n) => n.type === "commitment_missed")).toHaveLength(0);
     db.close();
   });
@@ -569,7 +570,7 @@ describe("createTicker().tick", () => {
   // が空振りでないことを示す。
   it("records commitment_missed for the same commitment input when the commitment is not retired (control for the test above)", async () => {
     const committedStartAt = new Date(2026, 6, 5, 14, 0).toISOString();
-    insertTask(db, {
+    await insertTask(portFor(db), {
       title: "資料作成",
       description: null,
       category: "work",
@@ -580,21 +581,21 @@ describe("createTicker().tick", () => {
       estimated_minutes: null,
       committed_start_at: committedStartAt,
     });
-    markTodaysMeetingsDone(db);
+    await markTodaysMeetingsDone(db);
 
     vi.setSystemTime(new Date(2026, 6, 5, 14, 30));
 
     const execFile = vi.fn().mockImplementation(ok);
-    const ticker = createTicker({ db, env, execFile });
+    const ticker = createTicker({ db: portFor(db), env, execFile });
     await ticker.tick();
 
-    const recorded = listNotificationsSince(db, "1970-01-01T00:00:00.000Z");
+    const recorded = await listNotificationsSince(portFor(db), "1970-01-01T00:00:00.000Z");
     expect(recorded.filter((n) => n.type === "commitment_missed")).toHaveLength(1);
     db.close();
   });
 
   it("does not resend within the escalation interval on the next tick (duplicate suppression)", async () => {
-    insertTask(db, {
+    await insertTask(portFor(db), {
       title: "資料作成",
       description: null,
       category: "work",
@@ -604,10 +605,10 @@ describe("createTicker().tick", () => {
       boss_comment: null,
       estimated_minutes: 30,
     });
-    markTodaysMeetingsDone(db);
+    await markTodaysMeetingsDone(db);
 
     const execFile = vi.fn().mockImplementation(ok);
-    const ticker = createTicker({ db, env, execFile });
+    const ticker = createTicker({ db: portFor(db), env, execFile });
 
     vi.setSystemTime(new Date("2026-07-05T09:31:00.000"));
     await ticker.tick();
@@ -617,13 +618,13 @@ describe("createTicker().tick", () => {
     vi.setSystemTime(new Date("2026-07-05T09:32:00.000"));
     await ticker.tick();
 
-    const recorded = listNotificationsSince(db, "1970-01-01T00:00:00.000Z");
+    const recorded = await listNotificationsSince(portFor(db), "1970-01-01T00:00:00.000Z");
     expect(recorded).toHaveLength(1);
     db.close();
   });
 
   it("resets the escalation level to L1 after an activity signal is recorded", async () => {
-    const task = insertTask(db, {
+    const task = await insertTask(portFor(db), {
       title: "資料作成",
       description: null,
       category: "work",
@@ -633,28 +634,28 @@ describe("createTicker().tick", () => {
       boss_comment: null,
       estimated_minutes: 30,
     });
-    markTodaysMeetingsDone(db);
+    await markTodaysMeetingsDone(db);
 
     const execFile = vi.fn().mockImplementation(ok);
-    const ticker = createTicker({ db, env, execFile });
+    const ticker = createTicker({ db: portFor(db), env, execFile });
 
     vi.setSystemTime(new Date("2026-07-05T09:31:00.000"));
     await ticker.tick();
 
     vi.setSystemTime(new Date("2026-07-05T09:32:00.000"));
-    recordActivityEvent(db, { type: "task_update", task_id: task.id });
+    await recordActivityEvent(portFor(db), { type: "task_update", task_id: task.id });
 
     vi.setSystemTime(new Date("2026-07-05T09:33:00.000"));
     await ticker.tick();
 
-    const recorded = listNotificationsSince(db, "1970-01-01T00:00:00.000Z");
+    const recorded = await listNotificationsSince(portFor(db), "1970-01-01T00:00:00.000Z");
     expect(recorded).toHaveLength(2);
     expect(recorded[1]).toMatchObject({ escalation_level: 1 });
     db.close();
   });
 
   it("does not crash and still records the notification when sending fails (both channels reject)", async () => {
-    insertTask(db, {
+    await insertTask(portFor(db), {
       title: "資料作成",
       description: null,
       category: "work",
@@ -664,16 +665,16 @@ describe("createTicker().tick", () => {
       boss_comment: null,
       estimated_minutes: 30,
     });
-    markTodaysMeetingsDone(db);
+    await markTodaysMeetingsDone(db);
     vi.setSystemTime(new Date("2026-07-05T09:31:00.000"));
 
     const execFile = vi.fn().mockRejectedValue(new Error("boom"));
     const consoleErrorSpy = vi.spyOn(console, "error").mockImplementation(() => undefined);
-    const ticker = createTicker({ db, env, execFile });
+    const ticker = createTicker({ db: portFor(db), env, execFile });
 
     await expect(ticker.tick()).resolves.toBeUndefined();
 
-    const recorded = listNotificationsSince(db, "1970-01-01T00:00:00.000Z");
+    const recorded = await listNotificationsSince(portFor(db), "1970-01-01T00:00:00.000Z");
     expect(recorded).toHaveLength(1);
     consoleErrorSpy.mockRestore();
     db.close();
@@ -688,7 +689,7 @@ describe("createTicker().tick", () => {
   // naturally", which is the pre-existing Issue #38 contract (a failed send is
   // not retried; the still-holding condition re-fires on its own schedule).
   it("records the notification before sending it, so a send is never delivered unrecorded (Issue #221)", async () => {
-    insertTask(db, {
+    await insertTask(portFor(db), {
       title: "資料作成",
       description: null,
       category: "work",
@@ -698,18 +699,18 @@ describe("createTicker().tick", () => {
       boss_comment: null,
       estimated_minutes: 30,
     });
-    markTodaysMeetingsDone(db);
+    await markTodaysMeetingsDone(db);
     vi.setSystemTime(new Date("2026-07-05T09:31:00.000"));
 
     // Observed from inside the send itself: the row the duplicate-suppression
     // logic reads must already be committed by the time the notification can
     // possibly reach the user.
     let recordedAtSendTime: number | null = null;
-    const execFile = vi.fn().mockImplementation(() => {
-      recordedAtSendTime = listNotificationsSince(db, "1970-01-01T00:00:00.000Z").length;
+    const execFile = vi.fn().mockImplementation(async () => {
+      recordedAtSendTime = (await listNotificationsSince(portFor(db), "1970-01-01T00:00:00.000Z")).length;
       return ok();
     });
-    const ticker = createTicker({ db, env, execFile });
+    const ticker = createTicker({ db: portFor(db), env, execFile });
 
     await ticker.tick();
 
@@ -724,7 +725,7 @@ describe("createTicker().tick", () => {
   });
 
   it("does not send the notification at all when recording it fails (Issue #221)", async () => {
-    insertTask(db, {
+    await insertTask(portFor(db), {
       title: "資料作成",
       description: null,
       category: "work",
@@ -734,7 +735,7 @@ describe("createTicker().tick", () => {
       boss_comment: null,
       estimated_minutes: 30,
     });
-    markTodaysMeetingsDone(db);
+    await markTodaysMeetingsDone(db);
     vi.setSystemTime(new Date("2026-07-05T09:31:00.000"));
 
     insertNotificationMock.mockImplementation(() => {
@@ -743,7 +744,7 @@ describe("createTicker().tick", () => {
 
     const consoleErrorSpy = vi.spyOn(console, "error").mockImplementation(() => undefined);
     const execFile = vi.fn().mockImplementation(ok);
-    const ticker = createTicker({ db, env, execFile });
+    const ticker = createTicker({ db: portFor(db), env, execFile });
 
     // The firing is dropped by `runTick`'s per-firing catch, not by a crash.
     await expect(ticker.tick()).resolves.toBeUndefined();
@@ -752,7 +753,7 @@ describe("createTicker().tick", () => {
     // this rule from a clean state rather than duplicating a notification the
     // user has already seen.
     expect(execFile).not.toHaveBeenCalled();
-    expect(listNotificationsSince(db, "1970-01-01T00:00:00.000Z")).toHaveLength(0);
+    expect(await listNotificationsSince(portFor(db), "1970-01-01T00:00:00.000Z")).toHaveLength(0);
     const loggedArgs = consoleErrorSpy.mock.calls.flat().join(" ");
     expect(loggedArgs).toContain("scheduler firing failed");
     consoleErrorSpy.mockRestore();
@@ -781,13 +782,13 @@ describe("createTicker().tick", () => {
     }
 
     it("records delivered=1 / channel=terminal-notifier when terminal-notifier succeeds, without logging a delivery error", async () => {
-      const expectedRuleKey = seedUnstartedFiring(db, BASE_TIME);
+      const expectedRuleKey = await seedUnstartedFiring(db, BASE_TIME);
       const consoleErrorSpy = vi.spyOn(console, "error").mockImplementation(() => undefined);
       const execFile = vi.fn().mockImplementation(ok);
 
-      await createTicker({ db, env, execFile }).tick();
+      await createTicker({ db: portFor(db), env, execFile }).tick();
 
-      const recorded = listNotificationsSince(db, "1970-01-01T00:00:00.000Z");
+      const recorded = await listNotificationsSince(portFor(db), "1970-01-01T00:00:00.000Z");
       expect(recorded).toHaveLength(1);
       expect(recorded[0]).toMatchObject({
         rule_key: expectedRuleKey,
@@ -803,13 +804,13 @@ describe("createTicker().tick", () => {
     });
 
     it("records delivered=1 / channel=osascript when only the osascript fallback succeeds", async () => {
-      const expectedRuleKey = seedUnstartedFiring(db, BASE_TIME);
+      const expectedRuleKey = await seedUnstartedFiring(db, BASE_TIME);
       const consoleErrorSpy = vi.spyOn(console, "error").mockImplementation(() => undefined);
       const execFile = vi.fn().mockImplementation(failTerminalNotifierOnly);
 
-      await createTicker({ db, env, execFile }).tick();
+      await createTicker({ db: portFor(db), env, execFile }).tick();
 
-      const recorded = listNotificationsSince(db, "1970-01-01T00:00:00.000Z");
+      const recorded = await listNotificationsSince(portFor(db), "1970-01-01T00:00:00.000Z");
       expect(recorded).toHaveLength(1);
       expect(recorded[0]).toMatchObject({
         rule_key: expectedRuleKey,
@@ -825,15 +826,15 @@ describe("createTicker().tick", () => {
     });
 
     it("records delivered=0 / channel=none and logs an error naming rule_key and channel when both channels fail, keeping the record and not retrying", async () => {
-      const expectedRuleKey = seedUnstartedFiring(db, BASE_TIME);
+      const expectedRuleKey = await seedUnstartedFiring(db, BASE_TIME);
       const consoleErrorSpy = vi.spyOn(console, "error").mockImplementation(() => undefined);
       const execFile = vi.fn().mockRejectedValue(new Error("boom"));
 
-      await expect(createTicker({ db, env, execFile }).tick()).resolves.toBeUndefined();
+      await expect(createTicker({ db: portFor(db), env, execFile }).tick()).resolves.toBeUndefined();
 
       // Pre-existing contracts (Issue #38 / #221): the record stays, and the
       // failed send is not retried — exactly one attempt per channel.
-      const recorded = listNotificationsSince(db, "1970-01-01T00:00:00.000Z");
+      const recorded = await listNotificationsSince(portFor(db), "1970-01-01T00:00:00.000Z");
       expect(recorded).toHaveLength(1);
       expect(execFile).toHaveBeenCalledTimes(2);
       expect(execFile.mock.calls.map(([file]) => file)).toEqual(["terminal-notifier", "osascript"]);
@@ -872,18 +873,18 @@ describe("createTicker().tick", () => {
     ] as const)(
       "keeps the record, does not resend, and logs the %s outcome distinctly when writing the outcome itself fails",
       async (_label, execFileImpl, expected) => {
-        const expectedRuleKey = seedUnstartedFiring(db, BASE_TIME);
+        const expectedRuleKey = await seedUnstartedFiring(db, BASE_TIME);
         recordNotificationDeliveryMock.mockImplementation(() => {
           throw new Error("update boom");
         });
         const consoleErrorSpy = vi.spyOn(console, "error").mockImplementation(() => undefined);
         const execFile = vi.fn().mockImplementation(execFileImpl);
 
-        await expect(createTicker({ db, env, execFile }).tick()).resolves.toBeUndefined();
+        await expect(createTicker({ db: portFor(db), env, execFile }).tick()).resolves.toBeUndefined();
 
         // The outcome column stays "unknown" (NULL) rather than being
         // misreported either way; the record and the no-retry contract hold.
-        const recorded = listNotificationsSince(db, "1970-01-01T00:00:00.000Z");
+        const recorded = await listNotificationsSince(portFor(db), "1970-01-01T00:00:00.000Z");
         expect(recorded).toHaveLength(1);
         expect(recorded[0]).toMatchObject({ rule_key: expectedRuleKey, delivered: null, channel: null });
         expect(execFile).toHaveBeenCalledTimes(expected.sends);
@@ -910,7 +911,7 @@ describe("createTicker().tick", () => {
   });
 
   it("skips a tick that starts while the previous one is still running (concurrency guard)", async () => {
-    insertTask(db, {
+    await insertTask(portFor(db), {
       title: "資料作成",
       description: null,
       category: "work",
@@ -920,7 +921,7 @@ describe("createTicker().tick", () => {
       boss_comment: null,
       estimated_minutes: 30,
     });
-    markTodaysMeetingsDone(db);
+    await markTodaysMeetingsDone(db);
     vi.setSystemTime(new Date("2026-07-05T09:31:00.000"));
 
     let resolveExecFile: (() => void) | undefined;
@@ -930,7 +931,7 @@ describe("createTicker().tick", () => {
           resolveExecFile = () => resolve({ stdout: "", stderr: "" });
         }),
     );
-    const ticker = createTicker({ db, env, execFile });
+    const ticker = createTicker({ db: portFor(db), env, execFile });
 
     const first = ticker.tick();
 
@@ -947,7 +948,7 @@ describe("createTicker().tick", () => {
     resolveExecFile?.();
     await first;
 
-    const recorded = listNotificationsSince(db, "1970-01-01T00:00:00.000Z");
+    const recorded = await listNotificationsSince(portFor(db), "1970-01-01T00:00:00.000Z");
     expect(recorded).toHaveLength(1);
     db.close();
   });
@@ -967,7 +968,7 @@ describe("createTicker().tick", () => {
       ),
     );
     for (const title of ["資料A", "資料B"]) {
-      const task = insertTask(db, {
+      const task = await insertTask(portFor(db), {
         title,
         description: null,
         category: "work",
@@ -977,9 +978,9 @@ describe("createTicker().tick", () => {
         boss_comment: null,
         estimated_minutes: null,
       });
-      recordActivityEvent(db, { type: "task_start", task_id: task.id });
+      await recordActivityEvent(portFor(db), { type: "task_start", task_id: task.id });
     }
-    markTodaysMeetingsDone(db);
+    await markTodaysMeetingsDone(db);
     vi.setSystemTime(mockedNow);
 
     // 1 件目の firing だけ DB 記録（insertNotification）を失敗させ、2 件目は
@@ -993,11 +994,11 @@ describe("createTicker().tick", () => {
 
     const consoleErrorSpy = vi.spyOn(console, "error").mockImplementation(() => undefined);
     const execFile = vi.fn().mockImplementation(ok);
-    const ticker = createTicker({ db, env, execFile });
+    const ticker = createTicker({ db: portFor(db), env, execFile });
 
     await expect(ticker.tick()).resolves.toBeUndefined();
 
-    const recorded = listNotificationsSince(db, "1970-01-01T00:00:00.000Z");
+    const recorded = await listNotificationsSince(portFor(db), "1970-01-01T00:00:00.000Z");
     expect(recorded).toHaveLength(1);
     expect(recorded[0].type).toBe("deadline_overdue");
     const loggedArgs = consoleErrorSpy.mock.calls.flat().join(" ");
@@ -1007,7 +1008,7 @@ describe("createTicker().tick", () => {
   });
 
   it("sends and records the notification using a fallback template when notification body generation itself throws (Issue #205)", async () => {
-    const task = insertTask(db, {
+    const task = await insertTask(portFor(db), {
       title: "資料作成",
       description: null,
       category: "work",
@@ -1017,7 +1018,7 @@ describe("createTicker().tick", () => {
       boss_comment: null,
       estimated_minutes: 30,
     });
-    markTodaysMeetingsDone(db);
+    await markTodaysMeetingsDone(db);
     vi.setSystemTime(new Date("2026-07-05T09:31:00.000"));
 
     // `generateNotificationBody` itself throws (distinct from its own
@@ -1029,7 +1030,7 @@ describe("createTicker().tick", () => {
 
     const consoleErrorSpy = vi.spyOn(console, "error").mockImplementation(() => undefined);
     const execFile = vi.fn().mockImplementation(ok);
-    const ticker = createTicker({ db, env, execFile });
+    const ticker = createTicker({ db: portFor(db), env, execFile });
 
     await expect(ticker.tick()).resolves.toBeUndefined();
 
@@ -1043,7 +1044,7 @@ describe("createTicker().tick", () => {
       expect.arrayContaining(["-title", "-message", fallbackBody]),
     );
 
-    const recorded = listNotificationsSince(db, "1970-01-01T00:00:00.000Z");
+    const recorded = await listNotificationsSince(portFor(db), "1970-01-01T00:00:00.000Z");
     expect(recorded).toHaveLength(1);
     expect(recorded[0]).toMatchObject({
       type: "unstarted",
@@ -1062,7 +1063,7 @@ describe("createTicker().tick", () => {
     db.close();
     const consoleErrorSpy = vi.spyOn(console, "error").mockImplementation(() => undefined);
     const execFile = vi.fn().mockImplementation(ok);
-    const ticker = createTicker({ db, env, execFile });
+    const ticker = createTicker({ db: portFor(db), env, execFile });
 
     await expect(ticker.tick()).resolves.toBeUndefined();
     expect(consoleErrorSpy).toHaveBeenCalled();
@@ -1088,11 +1089,11 @@ describe("createTicker().tick", () => {
         // itself) still closes `db` (this test reuses beforeEach's `db` for
         // the first half only).
         try {
-          const expectedRuleKey = setup(db, WORKING_HOURS_BASE_TIME);
+          const expectedRuleKey = await setup(db, WORKING_HOURS_BASE_TIME);
           const withinExecFile = vi.fn().mockImplementation(ok);
-          await createTicker({ db, env, execFile: withinExecFile }).tick();
+          await createTicker({ db: portFor(db), env, execFile: withinExecFile }).tick();
 
-          const firedWithin = listNotificationsSince(db, "1970-01-01T00:00:00.000Z");
+          const firedWithin = await listNotificationsSince(portFor(db), "1970-01-01T00:00:00.000Z");
           expect(firedWithin).toHaveLength(1);
           expect(firedWithin[0]).toMatchObject({ type: ruleType, rule_key: expectedRuleKey });
           expect(withinExecFile).toHaveBeenCalled();
@@ -1107,18 +1108,18 @@ describe("createTicker().tick", () => {
         // independent of the positive control above.
         const outsideDb = openDatabase(":memory:");
         try {
-          runMigrations(outsideDb);
-          const outsideRuleKey = setup(outsideDb, OUTSIDE_WORKING_HOURS_BASE_TIME);
+          await runMigrations(portFor(outsideDb));
+          const outsideRuleKey = await setup(outsideDb, OUTSIDE_WORKING_HOURS_BASE_TIME);
           const outsideDayKey = toDateKey(new Date());
           const outsideExecFile = vi.fn().mockImplementation(ok);
-          const outsideTicker = createTicker({ db: outsideDb, env, execFile: outsideExecFile });
+          const outsideTicker = createTicker({ db: portFor(outsideDb), env, execFile: outsideExecFile });
           await outsideTicker.tick();
 
           // L1→L2 の既定間隔（15 分）を過ぎ、かつ avoidance の判定窓（30 分）の内側
           vi.setSystemTime(new Date(Date.now() + 16 * 60_000));
           await outsideTicker.tick();
 
-          const firedOutside = listNotificationsSince(outsideDb, "1970-01-01T00:00:00.000Z");
+          const firedOutside = await listNotificationsSince(portFor(outsideDb), "1970-01-01T00:00:00.000Z");
           expect(firedOutside).toHaveLength(1);
           expect(firedOutside[0]).toMatchObject({
             type: ruleType,
@@ -1151,11 +1152,11 @@ describe("createTicker().tick", () => {
         // try/finally so a failure anywhere in this half (including `setup`
         // itself) still closes `db`.
         try {
-          const expectedRuleKey = setup(db, BASE_TIME);
+          const expectedRuleKey = await setup(db, BASE_TIME);
           const withoutBreakExecFile = vi.fn().mockImplementation(ok);
-          await createTicker({ db, env, execFile: withoutBreakExecFile }).tick();
+          await createTicker({ db: portFor(db), env, execFile: withoutBreakExecFile }).tick();
 
-          const firedWithoutBreak = listNotificationsSince(db, "1970-01-01T00:00:00.000Z");
+          const firedWithoutBreak = await listNotificationsSince(portFor(db), "1970-01-01T00:00:00.000Z");
           expect(firedWithoutBreak).toHaveLength(1);
           expect(firedWithoutBreak[0]).toMatchObject({
             type: ruleType,
@@ -1180,17 +1181,17 @@ describe("createTicker().tick", () => {
         // the excluded break_overrun scenario does that).
         const breakDb = openDatabase(":memory:");
         try {
-          runMigrations(breakDb);
+          await runMigrations(portFor(breakDb));
           vi.setSystemTime(BASE_TIME);
-          recordActivityEvent(breakDb, {
+          await recordActivityEvent(portFor(breakDb), {
             type: "break_start",
             expected_minutes: NEVER_OVERRUNNING_BREAK_MINUTES,
           });
-          setup(breakDb, BASE_TIME);
+          await setup(breakDb, BASE_TIME);
           const withBreakExecFile = vi.fn().mockImplementation(ok);
-          await createTicker({ db: breakDb, env, execFile: withBreakExecFile }).tick();
+          await createTicker({ db: portFor(breakDb), env, execFile: withBreakExecFile }).tick();
 
-          const firedWithBreak = listNotificationsSince(breakDb, "1970-01-01T00:00:00.000Z");
+          const firedWithBreak = await listNotificationsSince(portFor(breakDb), "1970-01-01T00:00:00.000Z");
           expect(firedWithBreak).toHaveLength(0);
           expect(withBreakExecFile).not.toHaveBeenCalled();
         } finally {
@@ -1237,17 +1238,17 @@ describe("createTicker().tick", () => {
           // passed by the tick time below).
           const otherSessionType: SessionType =
             sessionType === "morning" ? "evening" : "morning";
-          insertSession(db, { type: otherSessionType });
+          await insertSession(portFor(db), { type: otherSessionType });
 
           vi.setSystemTime(new Date("2026-07-05T19:50:00.000"));
-          recordActivityEvent(db, {
+          await recordActivityEvent(portFor(db), {
             type: "break_start",
             expected_minutes: NEVER_OVERRUNNING_BREAK_MINUTES,
           });
 
           vi.setSystemTime(OUTSIDE_WORKING_HOURS_AND_ON_BREAK_TIME);
           const execFile = vi.fn().mockImplementation(ok);
-          const ticker = createTicker({ db, env, execFile });
+          const ticker = createTicker({ db: portFor(db), env, execFile });
 
           await ticker.tick();
 
@@ -1255,7 +1256,7 @@ describe("createTicker().tick", () => {
           // 無いため、恒常設定の既定時刻（morning: 09:00 / evening: 18:00）
           // がそのまま実効時刻になる。
           const expectedMeetingTime = sessionType === "morning" ? "09:00" : "18:00";
-          const recorded = listNotificationsSince(db, "1970-01-01T00:00:00.000Z");
+          const recorded = await listNotificationsSince(portFor(db), "1970-01-01T00:00:00.000Z");
           expect(recorded).toHaveLength(1);
           expect(recorded[0]).toMatchObject({
             type: ruleType,
@@ -1278,27 +1279,27 @@ describe("createTicker().tick", () => {
 
     it("does not fire the evening meeting at 20:59 when today's evening override postpones it to 21:00 (AC-15)", async () => {
       vi.setSystemTime(BASE_TIME);
-      insertSession(db, { type: "morning" });
-      upsertOverride(db, TODAY_KEY, "evening", "21:00");
+      await insertSession(portFor(db), { type: "morning" });
+      await upsertOverride(portFor(db), TODAY_KEY, "evening", "21:00");
 
       vi.setSystemTime(new Date(2026, 6, 5, 20, 59, 0));
       const execFile = vi.fn().mockImplementation(ok);
-      await createTicker({ db, env, execFile }).tick();
+      await createTicker({ db: portFor(db), env, execFile }).tick();
 
-      const recorded = listNotificationsSince(db, "1970-01-01T00:00:00.000Z");
+      const recorded = await listNotificationsSince(portFor(db), "1970-01-01T00:00:00.000Z");
       expect(recorded.filter((n) => n.type === "evening_meeting")).toHaveLength(0);
     });
 
     it("fires the evening meeting at 21:00 when today's evening override postpones it to 21:00 (AC-16)", async () => {
       vi.setSystemTime(BASE_TIME);
-      insertSession(db, { type: "morning" });
-      upsertOverride(db, TODAY_KEY, "evening", "21:00");
+      await insertSession(portFor(db), { type: "morning" });
+      await upsertOverride(portFor(db), TODAY_KEY, "evening", "21:00");
 
       vi.setSystemTime(new Date(2026, 6, 5, 21, 0, 0));
       const execFile = vi.fn().mockImplementation(ok);
-      await createTicker({ db, env, execFile }).tick();
+      await createTicker({ db: portFor(db), env, execFile }).tick();
 
-      const recorded = listNotificationsSince(db, "1970-01-01T00:00:00.000Z");
+      const recorded = await listNotificationsSince(portFor(db), "1970-01-01T00:00:00.000Z");
       expect(recorded).toHaveLength(1);
       expect(recorded[0]).toMatchObject({
         type: "evening_meeting",
@@ -1309,14 +1310,14 @@ describe("createTicker().tick", () => {
 
     it("fires the morning meeting at 07:00 when today's morning override moves it earlier to 07:00 (AC-17)", async () => {
       vi.setSystemTime(BASE_TIME);
-      insertSession(db, { type: "evening" });
-      upsertOverride(db, TODAY_KEY, "morning", "07:00");
+      await insertSession(portFor(db), { type: "evening" });
+      await upsertOverride(portFor(db), TODAY_KEY, "morning", "07:00");
 
       vi.setSystemTime(new Date(2026, 6, 5, 7, 0, 0));
       const execFile = vi.fn().mockImplementation(ok);
-      await createTicker({ db, env, execFile }).tick();
+      await createTicker({ db: portFor(db), env, execFile }).tick();
 
-      const recorded = listNotificationsSince(db, "1970-01-01T00:00:00.000Z");
+      const recorded = await listNotificationsSince(portFor(db), "1970-01-01T00:00:00.000Z");
       expect(recorded).toHaveLength(1);
       expect(recorded[0]).toMatchObject({
         type: "morning_meeting",
@@ -1327,20 +1328,20 @@ describe("createTicker().tick", () => {
 
     it("fires at the standing setting's time when the only override row on file is dated yesterday (AC-18)", async () => {
       vi.setSystemTime(BASE_TIME);
-      insertSession(db, { type: "morning" });
+      await insertSession(portFor(db), { type: "morning" });
       const yesterdayKey = toDateKey(
         new Date(BASE_TIME.getFullYear(), BASE_TIME.getMonth(), BASE_TIME.getDate() - 1),
       );
       // Yesterday's leftover override row must not leak into today's
       // resolution (findOverridesByDate is scoped by date).
-      upsertOverride(db, yesterdayKey, "evening", "21:00");
+      await upsertOverride(portFor(db), yesterdayKey, "evening", "21:00");
 
       // Standing default evening time (18:00) still applies today.
       vi.setSystemTime(new Date(2026, 6, 5, 18, 0, 0));
       const execFile = vi.fn().mockImplementation(ok);
-      await createTicker({ db, env, execFile }).tick();
+      await createTicker({ db: portFor(db), env, execFile }).tick();
 
-      const recorded = listNotificationsSince(db, "1970-01-01T00:00:00.000Z");
+      const recorded = await listNotificationsSince(portFor(db), "1970-01-01T00:00:00.000Z");
       expect(recorded).toHaveLength(1);
       expect(recorded[0]).toMatchObject({
         type: "evening_meeting",
@@ -1350,16 +1351,16 @@ describe("createTicker().tick", () => {
 
     it("keeps the morning meeting firing at the standing setting's time when only today's evening meeting has an override (AC-19)", async () => {
       vi.setSystemTime(BASE_TIME);
-      insertSession(db, { type: "evening" });
-      upsertOverride(db, TODAY_KEY, "evening", "21:00");
+      await insertSession(portFor(db), { type: "evening" });
+      await upsertOverride(portFor(db), TODAY_KEY, "evening", "21:00");
 
       // Standing default morning time (09:00), unaffected by the evening-only
       // override.
       vi.setSystemTime(new Date(2026, 6, 5, 9, 0, 0));
       const execFile = vi.fn().mockImplementation(ok);
-      await createTicker({ db, env, execFile }).tick();
+      await createTicker({ db: portFor(db), env, execFile }).tick();
 
-      const recorded = listNotificationsSince(db, "1970-01-01T00:00:00.000Z");
+      const recorded = await listNotificationsSince(portFor(db), "1970-01-01T00:00:00.000Z");
       expect(recorded).toHaveLength(1);
       expect(recorded[0]).toMatchObject({
         type: "morning_meeting",
@@ -1374,15 +1375,15 @@ describe("createTicker().tick", () => {
     // しまう（今回の実装が壊れたときにこのテストで検出できるようにする）。
     it("restarts at escalation_level 1 for the first firing after postponing the evening meeting past its already-fired standing time (AC-20)", async () => {
       vi.setSystemTime(BASE_TIME);
-      insertSession(db, { type: "morning" });
+      await insertSession(portFor(db), { type: "morning" });
 
       // Standing time (18:00) fires first, recorded at L1.
       vi.setSystemTime(new Date(2026, 6, 5, 18, 0, 0));
       const execFile = vi.fn().mockImplementation(ok);
-      const ticker = createTicker({ db, env, execFile });
+      const ticker = createTicker({ db: portFor(db), env, execFile });
       await ticker.tick();
 
-      let recorded = listNotificationsSince(db, "1970-01-01T00:00:00.000Z");
+      let recorded = await listNotificationsSince(portFor(db), "1970-01-01T00:00:00.000Z");
       expect(recorded).toHaveLength(1);
       expect(recorded[0]).toMatchObject({
         type: "evening_meeting",
@@ -1393,11 +1394,11 @@ describe("createTicker().tick", () => {
       // Postpone today's evening meeting to 21:00, 180 minutes after the
       // 18:00 firing above (> level1ToLevel2Minutes's default 15 minutes),
       // with no activity signal recorded in between.
-      upsertOverride(db, TODAY_KEY, "evening", "21:00");
+      await upsertOverride(portFor(db), TODAY_KEY, "evening", "21:00");
       vi.setSystemTime(new Date(2026, 6, 5, 21, 0, 0));
       await ticker.tick();
 
-      recorded = listNotificationsSince(db, "1970-01-01T00:00:00.000Z");
+      recorded = await listNotificationsSince(portFor(db), "1970-01-01T00:00:00.000Z");
       expect(recorded).toHaveLength(2);
       expect(recorded[1]).toMatchObject({
         type: "evening_meeting",
@@ -1415,15 +1416,15 @@ describe("createTicker().tick", () => {
       // case below records nothing.
       try {
         vi.setSystemTime(BASE_TIME);
-        recordActivityEvent(db, { type: "checkin" });
-        insertSession(db, { type: "morning" });
-        upsertOverride(db, TODAY_KEY, "evening", "21:00");
+        await recordActivityEvent(portFor(db), { type: "checkin" });
+        await insertSession(portFor(db), { type: "morning" });
+        await upsertOverride(portFor(db), TODAY_KEY, "evening", "21:00");
 
         vi.setSystemTime(new Date(2026, 6, 5, 17, 59, 0));
         const controlExecFile = vi.fn().mockImplementation(ok);
-        await createTicker({ db, env, execFile: controlExecFile }).tick();
+        await createTicker({ db: portFor(db), env, execFile: controlExecFile }).tick();
 
-        const firedWithinHours = listNotificationsSince(db, "1970-01-01T00:00:00.000Z");
+        const firedWithinHours = await listNotificationsSince(portFor(db), "1970-01-01T00:00:00.000Z");
         expect(firedWithinHours.filter((n) => n.type === "silence")).toHaveLength(1);
       } finally {
         db.close();
@@ -1431,11 +1432,11 @@ describe("createTicker().tick", () => {
 
       const outsideDb = openDatabase(":memory:");
       try {
-        runMigrations(outsideDb);
+        await runMigrations(portFor(outsideDb));
         vi.setSystemTime(BASE_TIME);
-        recordActivityEvent(outsideDb, { type: "checkin" });
-        insertSession(outsideDb, { type: "morning" });
-        upsertOverride(outsideDb, TODAY_KEY, "evening", "21:00");
+        await recordActivityEvent(portFor(outsideDb), { type: "checkin" });
+        await insertSession(portFor(outsideDb), { type: "morning" });
+        await upsertOverride(portFor(outsideDb), TODAY_KEY, "evening", "21:00");
 
         // Past the standing work_end (18:00) but still before the postponed
         // evening meeting (21:00): silence must be treated as outside the
@@ -1444,9 +1445,9 @@ describe("createTicker().tick", () => {
         // escalating `silence` rule_key.
         vi.setSystemTime(new Date(2026, 6, 5, 19, 0, 0));
         const execFile = vi.fn().mockImplementation(ok);
-        await createTicker({ db: outsideDb, env, execFile }).tick();
+        await createTicker({ db: portFor(outsideDb), env, execFile }).tick();
 
-        const recorded = listNotificationsSince(outsideDb, "1970-01-01T00:00:00.000Z");
+        const recorded = await listNotificationsSince(portFor(outsideDb), "1970-01-01T00:00:00.000Z");
         const silence = recorded.filter((n) => n.type === "silence");
         expect(silence).toHaveLength(1);
         expect(silence[0]).toMatchObject({ rule_key: `silence:${TODAY_KEY}`, escalation_level: 1 });
@@ -1517,7 +1518,7 @@ describe("createTicker().tick", () => {
           // task's own id (not some other task) — otherwise
           // `hasRecentActivityOnOtherTasks` would flip the rule from
           // `unstarted` to `avoidance`, changing `rule_key`.
-          const expectedRuleKey = unstartedScenario.setup(db, BASE_TIME);
+          const expectedRuleKey = await unstartedScenario.setup(db, BASE_TIME);
           const taskId = Number(expectedRuleKey.split(":")[1]);
           if (!Number.isInteger(taskId)) {
             throw new Error(
@@ -1526,7 +1527,7 @@ describe("createTicker().tick", () => {
           }
 
           const execFile = vi.fn().mockImplementation(ok);
-          const ticker = createTicker({ db, env, execFile });
+          const ticker = createTicker({ db: portFor(db), env, execFile });
 
           // First tick: L1 fires (the scenario's setup already advanced the
           // clock past the unstarted threshold).
@@ -1541,11 +1542,11 @@ describe("createTicker().tick", () => {
           // `loadDetectionSettings` the scheduler itself uses (not the
           // hardcoded default), so this stays correct even if `settings`
           // ever overrides it.
-          const interval = loadDetectionSettings(db).escalation.level1ToLevel2Minutes;
+          const interval = (await loadDetectionSettings(portFor(db))).escalation.level1ToLevel2Minutes;
           const fireTime = currentMockedTime();
 
           vi.setSystemTime(withinEscalationInterval(fireTime, interval, 1 / 3));
-          recordActivityEvent(db, {
+          await recordActivityEvent(portFor(db), {
             type: activityType,
             task_id: TASK_SCOPED_ACTIVITY_TYPES.includes(activityType) ? taskId : null,
           });
@@ -1553,7 +1554,7 @@ describe("createTicker().tick", () => {
           vi.setSystemTime(withinEscalationInterval(fireTime, interval, 2 / 3));
           await ticker.tick();
 
-          const recorded = listNotificationsSince(db, "1970-01-01T00:00:00.000Z");
+          const recorded = await listNotificationsSince(portFor(db), "1970-01-01T00:00:00.000Z");
           expect(recorded).toHaveLength(2);
           expect(recorded[1]).toMatchObject({
             escalation_level: 1,
@@ -1584,13 +1585,13 @@ describe("createTicker().tick", () => {
       "records %s once with its expected rule_key/type, then suppresses a duplicate within the escalation interval",
       async (ruleType, setup) => {
         try {
-          const expectedRuleKey = setup(db, BASE_TIME);
+          const expectedRuleKey = await setup(db, BASE_TIME);
           const execFile = vi.fn().mockImplementation(ok);
-          const ticker = createTicker({ db, env, execFile });
+          const ticker = createTicker({ db: portFor(db), env, execFile });
 
           await ticker.tick();
 
-          const firstRecorded = listNotificationsSince(db, "1970-01-01T00:00:00.000Z");
+          const firstRecorded = await listNotificationsSince(portFor(db), "1970-01-01T00:00:00.000Z");
           expect(firstRecorded).toHaveLength(1);
           expect(firstRecorded[0]).toMatchObject({
             type: ruleType,
@@ -1601,14 +1602,14 @@ describe("createTicker().tick", () => {
           // Re-tick strictly *within* the L1->L2 escalation interval without
           // recording any new activity signal, so it is resolveEscalation's
           // interval check (not the hasActivitySince reset) that is under
-          // test here. Interval read via loadDetectionSettings(db) — see the
+          // test here. Interval read via (await loadDetectionSettings(portFor(db))) — see the
           // comment on the GAP-01 describe above for why.
-          const interval = loadDetectionSettings(db).escalation.level1ToLevel2Minutes;
+          const interval = (await loadDetectionSettings(portFor(db))).escalation.level1ToLevel2Minutes;
           const fireTime = currentMockedTime();
           vi.setSystemTime(withinEscalationInterval(fireTime, interval, 1 / 2));
           await ticker.tick();
 
-          const afterDuplicateTick = listNotificationsSince(db, "1970-01-01T00:00:00.000Z");
+          const afterDuplicateTick = await listNotificationsSince(portFor(db), "1970-01-01T00:00:00.000Z");
           expect(afterDuplicateTick).toHaveLength(1);
         } finally {
           db.close();
@@ -1634,9 +1635,9 @@ describe("createTicker().tick", () => {
       "escalates %s from L1 to L2 to L3 across successive ticks spaced by the configured intervals",
       async (ruleType, setup) => {
         try {
-          const expectedRuleKey = setup(db, ESCALATION_LADDER_BASE_TIME);
+          const expectedRuleKey = await setup(db, ESCALATION_LADDER_BASE_TIME);
           const execFile = vi.fn().mockImplementation(ok);
-          const ticker = createTicker({ db, env, execFile });
+          const ticker = createTicker({ db: portFor(db), env, execFile });
 
           await tickThroughL1ToL3(db, ticker, ruleType, expectedRuleKey);
         } finally {
@@ -1667,20 +1668,20 @@ describe("createTicker().tick", () => {
       "keeps %s at escalation_level 3 (not 4) on the repeat tick after L3 is reached",
       async (ruleType, setup) => {
         try {
-          const expectedRuleKey = setup(db, ESCALATION_LADDER_BASE_TIME);
+          const expectedRuleKey = await setup(db, ESCALATION_LADDER_BASE_TIME);
           const execFile = vi.fn().mockImplementation(ok);
-          const ticker = createTicker({ db, env, execFile });
+          const ticker = createTicker({ db: portFor(db), env, execFile });
 
           await tickThroughL1ToL3(db, ticker, ruleType, expectedRuleKey);
 
           // Repeat tick at exactly the L3-repeat interval boundary (same
           // boundary-inclusive semantics as tickThroughL1ToL3) — must not
           // become 4.
-          const { level3RepeatMinutes } = loadDetectionSettings(db).escalation;
+          const { level3RepeatMinutes } = (await loadDetectionSettings(portFor(db))).escalation;
           advanceSystemTimeByMinutes(level3RepeatMinutes);
           await ticker.tick();
 
-          const recorded = listNotificationsSince(db, "1970-01-01T00:00:00.000Z");
+          const recorded = await listNotificationsSince(portFor(db), "1970-01-01T00:00:00.000Z");
           // Asserts the *full* level sequence (not just the last entry) so a
           // regression earlier in the ladder (e.g. L2 stalling at 2 forever)
           // can't slip through unnoticed just because the final tick still
@@ -1703,10 +1704,10 @@ describe("daily notification cap via tick on a file-backed DB (#562)", () => {
   let db: Database.Database;
   const env = {};
 
-  beforeEach(() => {
+  beforeEach(async () => {
     dir = mkdtempSync(join(tmpdir(), "ai-boss-daily-cap-"));
     db = openDatabase(join(dir, "ai-boss.db"));
-    runMigrations(db);
+    await runMigrations(portFor(db));
     createClaudeClientMock.mockReset();
     generateNotificationBodyMock.mockReset();
     insertNotificationMock.mockReset();
@@ -1731,7 +1732,7 @@ describe("daily notification cap via tick on a file-backed DB (#562)", () => {
 
   /** unstarted が成立し続ける状態で、帯の中の tick を L1→L2 の間隔を空けて 2 回走らせる */
   async function tickTwiceWhileUnstarted(): Promise<{ ruleKey: string; sends: number }> {
-    const task = insertTask(db, {
+    const task = await insertTask(portFor(db), {
       title: "資料作成",
       description: null,
       category: "work",
@@ -1741,38 +1742,38 @@ describe("daily notification cap via tick on a file-backed DB (#562)", () => {
       boss_comment: null,
       estimated_minutes: 30,
     });
-    markTodaysMeetingsDone(db);
+    await markTodaysMeetingsDone(db);
     const execFile = vi.fn().mockImplementation(ok);
-    const ticker = createTicker({ db, env, execFile });
+    const ticker = createTicker({ db: portFor(db), env, execFile });
 
     vi.setSystemTime(new Date(2026, 6, 5, 9, 31));
     await ticker.tick();
-    advanceSystemTimeByMinutes(loadDetectionSettings(db).escalation.level1ToLevel2Minutes);
+    advanceSystemTimeByMinutes((await loadDetectionSettings(portFor(db))).escalation.level1ToLevel2Minutes);
     await ticker.tick();
 
     return { ruleKey: `unstarted:${task.id}`, sends: execFile.mock.calls.length };
   }
 
-  function recordedFor(ruleKey: string) {
-    return listNotificationsSince(db, "1970-01-01T00:00:00.000Z").filter(
+  async function recordedFor(ruleKey: string) {
+    return (await listNotificationsSince(portFor(db), "1970-01-01T00:00:00.000Z")).filter(
       (row) => row.rule_key === ruleKey,
     );
   }
 
   it("records only one unstarted notification when the cap is 1 (the second tick neither records nor sends)", async () => {
-    setSettingValue(db, "detection_daily_notification_cap", "1");
+    await setSettingValue(portFor(db), "detection_daily_notification_cap", "1");
 
     const { ruleKey, sends } = await tickTwiceWhileUnstarted();
 
-    expect(recordedFor(ruleKey)).toHaveLength(1);
+    expect(await recordedFor(ruleKey)).toHaveLength(1);
     expect(sends).toBe(1);
   });
 
   it("records the second notification on the second tick when the cap is 2 (the stored cap reaches the engine)", async () => {
-    setSettingValue(db, "detection_daily_notification_cap", "2");
+    await setSettingValue(portFor(db), "detection_daily_notification_cap", "2");
 
     const { ruleKey } = await tickTwiceWhileUnstarted();
 
-    expect(recordedFor(ruleKey).map((row) => row.escalation_level)).toEqual([1, 2]);
+    expect((await recordedFor(ruleKey)).map((row) => row.escalation_level)).toEqual([1, 2]);
   });
 });

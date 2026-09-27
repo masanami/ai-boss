@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type Database from "better-sqlite3";
 import { openDatabase } from "../db/connection.js";
 import { runMigrations } from "../db/migrate.js";
+import { portFor } from "../db/test-support/port-for.js";
 import { evaluateRules } from "../detection/rule-engine.js";
 import {
   DEFAULT_DETECTION_SETTINGS,
@@ -97,9 +98,9 @@ describe("working-hours gate under a corrupted work_start/work_end pair (AC-10)"
     };
   }
 
-  beforeEach(() => {
+  beforeEach(async () => {
     db = openDatabase(":memory:");
-    runMigrations(db);
+    await runMigrations(portFor(db));
     vi.spyOn(console, "warn").mockImplementation(() => undefined);
     // work_start >= work_end の不正な組を直接書き込む。PUT 経由では
     // #480/#481 に弾かれてこの状態を作れない。
@@ -112,14 +113,14 @@ describe("working-hours gate under a corrupted work_start/work_end pair (AC-10)"
     vi.restoreAllMocks();
   });
 
-  it("sanity check: loadDetectionSettings falls back the corrupted pair to the default working hours", () => {
-    expect(loadDetectionSettings(db).workingHours).toEqual(
+  it("sanity check: loadDetectionSettings falls back the corrupted pair to the default working hours", async () => {
+    expect((await loadDetectionSettings(portFor(db))).workingHours).toEqual(
       DEFAULT_DETECTION_SETTINGS.workingHours,
     );
   });
 
-  it("evaluates break_overrun while on break", () => {
-    const guardedSettings = loadDetectionSettings(db);
+  it("evaluates break_overrun while on break", async () => {
+    const guardedSettings = (await loadDetectionSettings(portFor(db)));
     const activeBreak = makeActivityEvent({
       type: "break_start",
       expected_minutes: 15,
@@ -140,8 +141,8 @@ describe("working-hours gate under a corrupted work_start/work_end pair (AC-10)"
     ]);
   });
 
-  it("evaluates unstarted, silence, and deadline_overdue together while not on break", () => {
-    const result = evaluateRules(notOnBreakScenario(loadDetectionSettings(db)));
+  it("evaluates unstarted, silence, and deadline_overdue together while not on break", async () => {
+    const result = evaluateRules(notOnBreakScenario((await loadDetectionSettings(portFor(db)))));
 
     expect(result).toEqual(
       expect.arrayContaining([
@@ -158,8 +159,8 @@ describe("working-hours gate under a corrupted work_start/work_end pair (AC-10)"
     expect(result).toHaveLength(3);
   });
 
-  it("evaluates avoidance when there is recent activity on another task", () => {
-    const guardedSettings = loadDetectionSettings(db);
+  it("evaluates avoidance when there is recent activity on another task", async () => {
+    const guardedSettings = (await loadDetectionSettings(portFor(db)));
     const topTask = makeTask({
       id: 1,
       status: "todo",

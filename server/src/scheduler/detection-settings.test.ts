@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type Database from "better-sqlite3";
 import { openDatabase } from "../db/connection.js";
 import { runMigrations } from "../db/migrate.js";
+import { portFor } from "../db/test-support/port-for.js";
 import { DEFAULT_DETECTION_SETTINGS } from "../detection/detection-types.js";
 import { loadDetectionSettings } from "./detection-settings.js";
 
@@ -12,9 +13,9 @@ function putSetting(db: Database.Database, key: string, value: string): void {
 describe("loadDetectionSettings", () => {
   let db: Database.Database;
 
-  beforeEach(() => {
+  beforeEach(async () => {
     db = openDatabase(":memory:");
-    runMigrations(db);
+    await runMigrations(portFor(db));
     vi.spyOn(console, "warn").mockImplementation(() => undefined);
   });
 
@@ -23,11 +24,11 @@ describe("loadDetectionSettings", () => {
     vi.restoreAllMocks();
   });
 
-  it("returns DEFAULT_DETECTION_SETTINGS when no settings rows exist (Issue #38 explicit assumptions)", () => {
-    expect(loadDetectionSettings(db)).toEqual(DEFAULT_DETECTION_SETTINGS);
+  it("returns DEFAULT_DETECTION_SETTINGS when no settings rows exist (Issue #38 explicit assumptions)", async () => {
+    expect(await loadDetectionSettings(portFor(db))).toEqual(DEFAULT_DETECTION_SETTINGS);
   });
 
-  it("overrides working hours, meeting times, fallback minutes, and escalation intervals from settings", () => {
+  it("overrides working hours, meeting times, fallback minutes, and escalation intervals from settings", async () => {
     putSetting(db, "work_start", "08:00");
     putSetting(db, "work_end", "20:00");
     putSetting(db, "morning_meeting_time", "08:30");
@@ -39,7 +40,7 @@ describe("loadDetectionSettings", () => {
     putSetting(db, "escalation_l3_after_minutes", "5");
     putSetting(db, "escalation_repeat_minutes", "8");
 
-    const settings = loadDetectionSettings(db);
+    const settings = (await loadDetectionSettings(portFor(db)));
 
     expect(settings.workingHours).toEqual({ start: "08:00", end: "20:00" });
     expect(settings.morningMeetingTime).toBe("08:30");
@@ -54,10 +55,10 @@ describe("loadDetectionSettings", () => {
     });
   });
 
-  it("does not override scale/min/max/avoidanceWindowMinutes (Issue #38 lists no settings keys for them)", () => {
+  it("does not override scale/min/max/avoidanceWindowMinutes (Issue #38 lists no settings keys for them)", async () => {
     putSetting(db, "detection_unstarted_fallback_minutes", "90");
 
-    const settings = loadDetectionSettings(db);
+    const settings = (await loadDetectionSettings(portFor(db)));
 
     expect(settings.unstarted.scale).toBe(DEFAULT_DETECTION_SETTINGS.unstarted.scale);
     expect(settings.unstarted.min).toBe(DEFAULT_DETECTION_SETTINGS.unstarted.min);
@@ -67,19 +68,19 @@ describe("loadDetectionSettings", () => {
     );
   });
 
-  it("falls back to the default and warns when a time setting has an invalid format", () => {
+  it("falls back to the default and warns when a time setting has an invalid format", async () => {
     putSetting(db, "work_start", "not-a-time");
 
-    const settings = loadDetectionSettings(db);
+    const settings = (await loadDetectionSettings(portFor(db)));
 
     expect(settings.workingHours.start).toBe(DEFAULT_DETECTION_SETTINGS.workingHours.start);
     expect(console.warn).toHaveBeenCalled();
   });
 
-  it("falls back to the default and warns when a minutes setting is not a positive integer", () => {
+  it("falls back to the default and warns when a minutes setting is not a positive integer", async () => {
     putSetting(db, "detection_silence_fallback_minutes", "not-a-number");
 
-    const settings = loadDetectionSettings(db);
+    const settings = (await loadDetectionSettings(portFor(db)));
 
     expect(settings.silence.fallback).toBe(DEFAULT_DETECTION_SETTINGS.silence.fallback);
     expect(console.warn).toHaveBeenCalled();
@@ -89,29 +90,29 @@ describe("loadDetectionSettings", () => {
   // バリデータに弾かれて作れない「既に不正な組が保存された DB」を、
   // putSetting でリポジトリ層へ直接書き込んで再現する。
   describe("work_start / work_end correlation guard (AC-7, AC-8, AC-9)", () => {
-    it("falls back to the default working-hours pair when work_start equals work_end (AC-7)", () => {
+    it("falls back to the default working-hours pair when work_start equals work_end (AC-7)", async () => {
       putSetting(db, "work_start", "09:00");
       putSetting(db, "work_end", "09:00");
 
-      const settings = loadDetectionSettings(db);
+      const settings = (await loadDetectionSettings(portFor(db)));
 
       expect(settings.workingHours).toEqual(DEFAULT_DETECTION_SETTINGS.workingHours);
     });
 
-    it("falls back to the default working-hours pair for an overnight range (work_start=22:00, work_end=02:00) (AC-7)", () => {
+    it("falls back to the default working-hours pair for an overnight range (work_start=22:00, work_end=02:00) (AC-7)", async () => {
       putSetting(db, "work_start", "22:00");
       putSetting(db, "work_end", "02:00");
 
-      const settings = loadDetectionSettings(db);
+      const settings = (await loadDetectionSettings(portFor(db)));
 
       expect(settings.workingHours).toEqual(DEFAULT_DETECTION_SETTINGS.workingHours);
     });
 
-    it("warns with a message distinguishable from the format-invalid warning when the relationship is invalid (AC-8)", () => {
+    it("warns with a message distinguishable from the format-invalid warning when the relationship is invalid (AC-8)", async () => {
       putSetting(db, "work_start", "22:00");
       putSetting(db, "work_end", "02:00");
 
-      loadDetectionSettings(db);
+      (await loadDetectionSettings(portFor(db)));
 
       expect(console.warn).toHaveBeenCalledTimes(1);
       const [message] = vi.mocked(console.warn).mock.calls[0] as [string];
@@ -122,21 +123,21 @@ describe("loadDetectionSettings", () => {
       expect(message).toContain("work_end");
     });
 
-    it("does not fall back and returns the stored pair as-is when work_start < work_end (AC-9)", () => {
+    it("does not fall back and returns the stored pair as-is when work_start < work_end (AC-9)", async () => {
       putSetting(db, "work_start", "07:59");
       putSetting(db, "work_end", "08:00");
 
-      const settings = loadDetectionSettings(db);
+      const settings = (await loadDetectionSettings(portFor(db)));
 
       expect(settings.workingHours).toEqual({ start: "07:59", end: "08:00" });
       expect(console.warn).not.toHaveBeenCalled();
     });
 
-    it("falls back to the default pair as a whole, not by patching only one side, for an overnight range", () => {
+    it("falls back to the default pair as a whole, not by patching only one side, for an overnight range", async () => {
       putSetting(db, "work_start", "22:00");
       putSetting(db, "work_end", "02:00");
 
-      const settings = loadDetectionSettings(db);
+      const settings = (await loadDetectionSettings(portFor(db)));
 
       // 片方だけ既定に差し替えると 22:00-18:00 や 09:00-02:00 のように
       // まだ不正な組が残ってしまう。組として既定へ倒っていることを確認する。
@@ -144,11 +145,11 @@ describe("loadDetectionSettings", () => {
       expect(settings.workingHours.end).toBe(DEFAULT_DETECTION_SETTINGS.workingHours.end);
     });
 
-    it("runs the relational guard after the format fallback (a format-invalid work_start that falls back to 09:00, combined with a format-valid work_end=05:00, is still an invalid pair)", () => {
+    it("runs the relational guard after the format fallback (a format-invalid work_start that falls back to 09:00, combined with a format-valid work_end=05:00, is still an invalid pair)", async () => {
       putSetting(db, "work_start", "not-a-time");
       putSetting(db, "work_end", "05:00");
 
-      const settings = loadDetectionSettings(db);
+      const settings = (await loadDetectionSettings(portFor(db)));
 
       // work_start が書式不正で既定 09:00 に一旦フォールバックした後、
       // 05:00 との組がなお不正（09:00 >= 05:00）なので、さらに既定の組
@@ -159,22 +160,22 @@ describe("loadDetectionSettings", () => {
   });
 
   describe("detection_daily_notification_cap (#562 決定 16)", () => {
-    it("returns 5 as the daily notification cap when the key is unset", () => {
-      expect(loadDetectionSettings(db).dailyNotificationCap).toBe(5);
+    it("returns 5 as the daily notification cap when the key is unset", async () => {
+      expect((await loadDetectionSettings(portFor(db))).dailyNotificationCap).toBe(5);
     });
 
-    it("returns the stored value when detection_daily_notification_cap is \"3\"", () => {
+    it("returns the stored value when detection_daily_notification_cap is \"3\"", async () => {
       putSetting(db, "detection_daily_notification_cap", "3");
 
-      expect(loadDetectionSettings(db).dailyNotificationCap).toBe(3);
+      expect((await loadDetectionSettings(portFor(db))).dailyNotificationCap).toBe(3);
     });
 
     it.each(["0", "-1", "abc", "2.5"])(
       "falls back to 5 and warns with the key and stored value when detection_daily_notification_cap is %j",
-      (stored) => {
+      async (stored) => {
         putSetting(db, "detection_daily_notification_cap", stored);
 
-        expect(loadDetectionSettings(db).dailyNotificationCap).toBe(5);
+        expect((await loadDetectionSettings(portFor(db))).dailyNotificationCap).toBe(5);
         expect(console.warn).toHaveBeenCalledWith(
           expect.stringContaining(`settings.detection_daily_notification_cap の値 "${stored}"`),
         );

@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type Database from "better-sqlite3";
 import { openDatabase } from "../db/connection.js";
 import { runMigrations } from "../db/migrate.js";
+import { portFor } from "../db/test-support/port-for.js";
 import { createApp } from "../app.js";
 import { insertSession } from "../sessions/sessions-repository.js";
 import { insertTask } from "../tasks/tasks-repository.js";
@@ -31,9 +32,9 @@ function newTask(title: string): NewTaskRecord {
 describe("GET /api/decisions", () => {
   let db: Database.Database;
 
-  beforeEach(() => {
+  beforeEach(async () => {
     db = openDatabase(":memory:");
-    runMigrations(db);
+    await runMigrations(portFor(db));
   });
 
   afterEach(() => {
@@ -41,7 +42,7 @@ describe("GET /api/decisions", () => {
   });
 
   it("returns an empty array when there are no decisions", async () => {
-    const app = createApp(db);
+    const app = createApp(portFor(db));
 
     const res = await app.request("/api/decisions");
 
@@ -54,10 +55,10 @@ describe("GET /api/decisions", () => {
   // 恒真テストにならないよう、正規化を適用すれば実際に変化する HTML タグ
   // （<p> <strong>）を含む content で、保存値との一致を直接アサートする。
   it("AC-19: returns the decision content exactly as stored, without applying HTML-tag normalization", async () => {
-    const app = createApp(db);
-    const session = insertSession(db, { type: "adhoc" });
+    const app = createApp(portFor(db));
+    const session = await insertSession(portFor(db), { type: "adhoc" });
     const rawContent = "<p>資料作成を優先しろ</p><strong>今日中に</strong>。";
-    insertDecision(db, { session_id: session.id, content: rawContent });
+    await insertDecision(portFor(db), { session_id: session.id, content: rawContent });
 
     const res = await app.request("/api/decisions");
 
@@ -66,10 +67,10 @@ describe("GET /api/decisions", () => {
   });
 
   it("returns decisions ordered by created_at descending", async () => {
-    const app = createApp(db);
-    const session = insertSession(db, { type: "adhoc" });
-    insertDecision(db, { session_id: session.id, content: "1つ目の決定" });
-    insertDecision(db, { session_id: session.id, content: "2つ目の決定" });
+    const app = createApp(portFor(db));
+    const session = await insertSession(portFor(db), { type: "adhoc" });
+    await insertDecision(portFor(db), { session_id: session.id, content: "1つ目の決定" });
+    await insertDecision(portFor(db), { session_id: session.id, content: "2つ目の決定" });
 
     const res = await app.request("/api/decisions");
 
@@ -79,10 +80,10 @@ describe("GET /api/decisions", () => {
   });
 
   it("carries the related task's title as task_title", async () => {
-    const app = createApp(db);
-    const session = insertSession(db, { type: "adhoc" });
-    const task = insertTask(db, newTask("見積もり資料の作成"));
-    insertDecision(db, {
+    const app = createApp(portFor(db));
+    const session = await insertSession(portFor(db), { type: "adhoc" });
+    const task = await insertTask(portFor(db), newTask("見積もり資料の作成"));
+    await insertDecision(portFor(db), {
       session_id: session.id,
       task_id: task.id,
       content: "今日はこれを最優先で片付けろ",
@@ -96,9 +97,9 @@ describe("GET /api/decisions", () => {
   });
 
   it("returns task_title = null for a decision with no task", async () => {
-    const app = createApp(db);
-    const session = insertSession(db, { type: "adhoc" });
-    insertDecision(db, {
+    const app = createApp(portFor(db));
+    const session = await insertSession(portFor(db), { type: "adhoc" });
+    await insertDecision(portFor(db), {
       session_id: session.id,
       content: "明日の朝会は 9:30 に変更する",
     });
@@ -111,9 +112,9 @@ describe("GET /api/decisions", () => {
   });
 
   it("exposes kind and no longer exposes an appeals field", async () => {
-    const app = createApp(db);
-    const session = insertSession(db, { type: "adhoc" });
-    insertDecision(db, { session_id: session.id, content: "決定内容" });
+    const app = createApp(portFor(db));
+    const session = await insertSession(portFor(db), { type: "adhoc" });
+    await insertDecision(portFor(db), { session_id: session.id, content: "決定内容" });
 
     const res = await app.request("/api/decisions");
 
@@ -127,9 +128,9 @@ describe("GET /api/decisions", () => {
 describe("POST /api/decisions/:id/appeals", () => {
   let db: Database.Database;
 
-  beforeEach(() => {
+  beforeEach(async () => {
     db = openDatabase(":memory:");
-    runMigrations(db);
+    await runMigrations(portFor(db));
   });
 
   afterEach(() => {
@@ -137,9 +138,9 @@ describe("POST /api/decisions/:id/appeals", () => {
   });
 
   it("returns 404 — the appeals route was removed (#358/#397)", async () => {
-    const app = createApp(db);
-    const session = insertSession(db, { type: "adhoc" });
-    const decision = insertDecision(db, { session_id: session.id, content: "決定内容" });
+    const app = createApp(portFor(db));
+    const session = await insertSession(portFor(db), { type: "adhoc" });
+    const decision = await insertDecision(portFor(db), { session_id: session.id, content: "決定内容" });
 
     const res = await app.request(`/api/decisions/${decision.id}/appeals`, {
       method: "POST",

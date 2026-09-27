@@ -1,5 +1,5 @@
 import { Hono } from "hono";
-import type Database from "better-sqlite3";
+import type { Db } from "../db/db-port.js";
 import { readJsonBody } from "../lib/read-json-body.js";
 import { stripHtmlTags } from "../lib/strip-html-tags.js";
 import { SESSION_TYPES } from "./session.js";
@@ -69,7 +69,7 @@ const EVENING_END_REPORT_TIMEOUT_MS = 20_000;
  * avoid leaking request internals into logs.
  */
 async function triggerDailyReportGeneration(
-  db: Database.Database,
+  db: Db,
   env: NodeJS.ProcessEnv,
   eveningSessionId: number,
 ): Promise<void> {
@@ -107,17 +107,17 @@ async function triggerDailyReportGeneration(
  * must not turn `POST /api/sessions` into anything but 201 (AC-4).
  */
 async function triggerMeetingOpening(
-  db: Database.Database,
+  db: Db,
   env: NodeJS.ProcessEnv,
   session: Session,
 ): Promise<void> {
-  const existingMessageCount = listMessagesBySessionId(db, session.id).length;
+  const existingMessageCount = (await listMessagesBySessionId(db, session.id)).length;
   if (!shouldGenerateMeetingOpening(session.type, existingMessageCount)) {
     return;
   }
   try {
     const result = await generateMeetingOpening(db, env, new Date(), session.type);
-    insertMessage(db, { session_id: session.id, role: "boss", content: result.text });
+    await insertMessage(db, { session_id: session.id, role: "boss", content: result.text });
   } catch (err) {
     console.error(
       "session create: meeting opening generation failed:",
@@ -149,21 +149,29 @@ async function triggerMeetingOpening(
  * - `isMentoringComplete` (mentoring-gate.ts, a pure function) says the
  *   session's mentoring record/user-message counts are incomplete
  */
-function isBlockedByMentoringGate(db: Database.Database, before: Session | undefined): boolean {
+async function isBlockedByMentoringGate(
+  db: Db,
+  before: Session | undefined,
+): Promise<boolean> {
   if (before === undefined || before.ended_at !== null) {
     return false;
   }
   if (before.type !== "morning") {
     return false;
   }
-  if (!resolveMorningMentoringRequired(db)) {
+  if (!(await resolveMorningMentoringRequired(db))) {
     return false;
   }
 
-  const mentoringRecordCount = countMentoringDecisionsBySessionId(db, before.id);
-  const userMessageCount = countUserMessagesBySessionId(db, before.id);
+  const mentoringRecordCount = await countMentoringDecisionsBySessionId(db, before.id);
+  const userMessageCount = await countUserMessagesBySessionId(db, before.id);
   return !isMentoringComplete({ mentoringRecordCount, userMessageCount });
 }
+
+type EndSessionOutcome =
+  | { kind: "mentoring_required" }
+  | { kind: "not_found" }
+  | { kind: "ended"; session: Session; isFirstEnding: boolean };
 
 /**
  * Creates the sessions sub-router, mounted under `/api/sessions` by the
@@ -176,13 +184,13 @@ function isBlockedByMentoringGate(db: Database.Database, before: Session | undef
  * assembly out of `app.ts` into `core-app.ts`).
  */
 export function createSessionsRouter(
-  db: Database.Database,
+  db: Db,
   env: NodeJS.ProcessEnv,
   llmBackend: LlmBackend,
 ): Hono {
   const sessions = new Hono();
 
-  sessions.get("/", (c) => {
+  sessions.get("/", async (c) => {
     const type = c.req.query("type");
     if (type !== undefined) {
       if (!isValidSessionType(type)) {
@@ -191,10 +199,10 @@ export function createSessionsRouter(
           400,
         );
       }
-      return c.json(listSessions(db, { type }));
+      return c.json(await listSessions(db, { type }));
     }
 
-    return c.json(listSessions(db));
+    return c.json(await listSessions(db));
   });
 
   sessions.post("/", async (c) => {
@@ -205,7 +213,7 @@ export function createSessionsRouter(
       return c.json({ error: result.error }, 400);
     }
 
-    const created = createSession(db, result.data);
+    const created = await createSession(db, result.data);
     if (!created.ok) {
       return c.json(
         {
@@ -248,18 +256,43 @@ export function createSessionsRouter(
     const rawId = c.req.param("id");
     const id = Number(rawId);
 
-    // Captured before `endSession` so we can tell a first-time ended_at
-    // transition (NULL -> value) apart from a re-end of an already-ended
-    // session — `endSession` itself is idempotent and returns the existing
-    // row unchanged on re-end (夕会終了フックは初回の
+    // S-END（#605・機能仕様 docs/features/async-db-layer.md 決定 2）: the
+    // first-ending decision (`before.ended_at === null`), the mentoring gate
+    // and the `ended_at` write are settled in one transaction. Read outside,
+    // two concurrent end requests could both see `ended_at === null`, both be
+    // treated as the first ending (the later one overwriting the first
+    // `ended_at`, AC-23) and both run the evening daily-report generation
+    // (AC-24). The LLM work (summary, daily report) stays outside the
+    // transaction and runs only on the result.
+    //
+    // `before` is captured before `endSession` so we can tell a first-time
+    // ended_at transition (NULL -> value) apart from a re-end of an
+    // already-ended session — `endSession` itself is idempotent and returns
+    // the existing row unchanged on re-end (夕会終了フックは初回の
     // `ended_at` 遷移でのみ発火する). Only the first transition triggers
     // report generation.
-    const before = findSessionById(db, id);
+    const outcome = await db.transaction(async (tx): Promise<EndSessionOutcome> => {
+      const before = await findSessionById(tx, id);
 
-    // #276 判断2 (AC-16〜22): must be evaluated against `before`, and before
-    // calling `endSession` below — see isBlockedByMentoringGate's doc
-    // comment for why.
-    if (isBlockedByMentoringGate(db, before)) {
+      // #276 判断2 (AC-16〜22): must be evaluated against `before`, and before
+      // calling `endSession` below — see isBlockedByMentoringGate's doc
+      // comment for why.
+      if (await isBlockedByMentoringGate(tx, before)) {
+        return { kind: "mentoring_required" };
+      }
+
+      const ended = await endSession(tx, id);
+      if (!ended) {
+        return { kind: "not_found" };
+      }
+      return {
+        kind: "ended",
+        session: ended,
+        isFirstEnding: before !== undefined && before.ended_at === null,
+      };
+    });
+
+    if (outcome.kind === "mentoring_required") {
       return c.json(
         {
           error: "仕事の進め方のメンタリングを終えると朝会を終了できます（設定でオフにもできます）",
@@ -268,16 +301,13 @@ export function createSessionsRouter(
         409,
       );
     }
-
-    const session = endSession(db, id);
-    if (!session) {
+    if (outcome.kind === "not_found") {
       return c.json(
         { error: "セッションが見つかりません", code: "session_not_found" },
         404,
       );
     }
-
-    const isFirstEnding = before !== undefined && before.ended_at === null;
+    const { session, isFirstEnding } = outcome;
 
     // The row returned to the client. Starts as the just-ended session and is
     // replaced by the summary-bearing row if step 1 stores one — the daily
@@ -300,7 +330,7 @@ export function createSessionsRouter(
     if (session.type !== "adhoc" && session.summary === null) {
       const summary = await generateSessionSummary(db, env, llmBackend, id);
       if (summary !== null) {
-        const updated = updateSessionSummary(db, id, summary);
+        const updated = await updateSessionSummary(db, id, summary);
         if (updated) {
           responseSession = updated;
         }
@@ -327,10 +357,10 @@ export function createSessionsRouter(
     return c.json(responseSession, 200);
   });
 
-  sessions.get("/:id/messages", (c) => {
+  sessions.get("/:id/messages", async (c) => {
     const id = Number(c.req.param("id"));
 
-    const session = findSessionById(db, id);
+    const session = await findSessionById(db, id);
     if (!session) {
       return c.json(
         { error: "セッションが見つかりません", code: "session_not_found" },
@@ -338,7 +368,7 @@ export function createSessionsRouter(
       );
     }
 
-    return c.json(normalizeMessagesForResponse(listMessagesBySessionId(db, id)));
+    return c.json(normalizeMessagesForResponse(await listMessagesBySessionId(db, id)));
   });
 
   registerChatMessageRoute(sessions, db, env, llmBackend);

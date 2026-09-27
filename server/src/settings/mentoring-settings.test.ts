@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type Database from "better-sqlite3";
 import { openDatabase } from "../db/connection.js";
 import { runMigrations } from "../db/migrate.js";
+import { portFor } from "../db/test-support/port-for.js";
 import { setSettingValue } from "./settings-repository.js";
 import { resolveMorningMentoringRequired } from "./mentoring-settings.js";
 
@@ -10,31 +11,31 @@ import { resolveMorningMentoringRequired } from "./mentoring-settings.js";
 describe("resolveMorningMentoringRequired", () => {
   let db: Database.Database;
 
-  beforeEach(() => {
+  beforeEach(async () => {
     db = openDatabase(":memory:");
-    runMigrations(db);
+    await runMigrations(portFor(db));
   });
 
-  afterEach(() => {
+  afterEach(async () => {
     db.close();
   });
 
-  it("defaults to true when the key is unset (AC-32)", () => {
-    expect(resolveMorningMentoringRequired(db)).toBe(true);
+  it("defaults to true when the key is unset (AC-32)", async () => {
+    expect(await resolveMorningMentoringRequired(portFor(db))).toBe(true);
   });
 
-  it('reads true when stored as the string "true"', () => {
-    setSettingValue(db, "morning_mentoring_required", "true");
-    expect(resolveMorningMentoringRequired(db)).toBe(true);
+  it('reads true when stored as the string "true"', async () => {
+    await setSettingValue(portFor(db), "morning_mentoring_required", "true");
+    expect(await resolveMorningMentoringRequired(portFor(db))).toBe(true);
   });
 
-  it('reads false when stored as the string "false" (AC-33 read-back)', () => {
-    setSettingValue(db, "morning_mentoring_required", "false");
-    expect(resolveMorningMentoringRequired(db)).toBe(false);
+  it('reads false when stored as the string "false" (AC-33 read-back)', async () => {
+    await setSettingValue(portFor(db), "morning_mentoring_required", "false");
+    expect(await resolveMorningMentoringRequired(portFor(db))).toBe(false);
   });
 
-  it('falls back to true (on) for an unrecognized stored value (AC-37)', () => {
-    setSettingValue(db, "morning_mentoring_required", "yes");
-    expect(resolveMorningMentoringRequired(db)).toBe(true);
+  it('falls back to true (on) for an unrecognized stored value (AC-37)', async () => {
+    await setSettingValue(portFor(db), "morning_mentoring_required", "yes");
+    expect(await resolveMorningMentoringRequired(portFor(db))).toBe(true);
   });
 });

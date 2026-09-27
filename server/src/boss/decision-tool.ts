@@ -1,5 +1,5 @@
 import type Anthropic from "@anthropic-ai/sdk";
-import type Database from "better-sqlite3";
+import type { Db } from "../db/db-port.js";
 import { insertDecision } from "../decisions/decisions-repository.js";
 import { findTaskById } from "../tasks/tasks-repository.js";
 import type { ToolExecutionResult } from "./task-tools.js";
@@ -36,11 +36,11 @@ function isRecord(value: unknown): value is Record<string, unknown> {
  * know its own session otherwise) and is not part of the LLM-provided
  * input.
  */
-export function executeRecordDecisionTool(
-  db: Database.Database,
+export async function executeRecordDecisionTool(
+  db: Db,
   sessionId: number,
   input: unknown,
-): ToolExecutionResult {
+): Promise<ToolExecutionResult> {
   if (!isRecord(input) || typeof input.content !== "string" || input.content.trim() === "") {
     return {
       content: "content is required and must be a non-empty string",
@@ -52,7 +52,7 @@ export function executeRecordDecisionTool(
     if (typeof input.task_id !== "number") {
       return { content: "task_id must be a number or null", isError: true };
     }
-    if (!findTaskById(db, input.task_id)) {
+    if (!(await findTaskById(db, input.task_id))) {
       return { content: `task ${input.task_id} not found`, isError: true };
     }
   }
@@ -61,7 +61,7 @@ export function executeRecordDecisionTool(
     return { content: "rationale must be a string", isError: true };
   }
 
-  const decision = insertDecision(db, {
+  const decision = await insertDecision(db, {
     session_id: sessionId,
     content: input.content,
     task_id: (input.task_id as number | undefined) ?? null,
