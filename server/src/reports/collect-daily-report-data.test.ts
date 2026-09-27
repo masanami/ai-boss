@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type Database from "better-sqlite3";
 import { openDatabase } from "../db/connection.js";
 import { runMigrations } from "../db/migrate.js";
-import { portFor } from "../db/transitional-bridge.js";
+import { portFor } from "../db/test-support/port-for.js";
 import type { Session, SessionType } from "../sessions/session.js";
 import { collectDailyReportData } from "./collect-daily-report-data.js";
 

@@ -1,5 +1,5 @@
 import { Hono } from "hono";
-import type Database from "better-sqlite3";
+import type { DbPort } from "./db/db-port.js";
 import { createTasksRouter } from "./tasks/tasks-routes.js";
 import { createSessionsRouter } from "./sessions/sessions-routes.js";
 import { createActivityRouter } from "./activity/activity-routes.js";
@@ -12,7 +12,6 @@ import { createSettingsRouter } from "./settings/settings-routes.js";
 import { createMeetingScheduleRouter } from "./meeting-schedule/meeting-schedule-routes.js";
 import { resolveLlmBackend, type LlmBackend, type AppEnv } from "./config.js";
 import type { EvidenceStore } from "./tasks/evidence-store.js";
-import { portFor } from "./db/transitional-bridge.js";
 
 /**
  * `server/src` を「実行環境に依存しないコア」と「Node の周辺」に分ける
@@ -29,9 +28,9 @@ import { portFor } from "./db/transitional-bridge.js";
  * 呼ぶ。
  */
 
-function checkDatabaseConnection(db: Database.Database): boolean {
+async function checkDatabaseConnection(db: DbPort): Promise<boolean> {
   try {
-    db.prepare("SELECT 1").get();
+    await db.get("SELECT 1");
     return true;
   } catch {
     return false;
@@ -110,27 +109,27 @@ export interface CreateCoreAppOptions {
  * llmBackend`'s doc comment above).
  */
 export function createCoreApp(
-  db: Database.Database,
+  db: DbPort,
   env: AppEnv,
   options: CreateCoreAppOptions = {},
 ): Hono {
   const api = new Hono();
   const llmBackend: LlmBackend = options.llmBackend ?? resolveLlmBackend(env);
 
-  api.get("/health", (c) => {
-    return c.json({ status: "ok", db: checkDatabaseConnection(db) });
+  api.get("/health", async (c) => {
+    return c.json({ status: "ok", db: await checkDatabaseConnection(db) });
   });
 
-  api.route("/tasks", createTasksRouter(portFor(db), options.evidenceStore));
-  api.route("/sessions", createSessionsRouter(portFor(db), env, llmBackend));
-  api.route("/checkins", createCheckinsRouter(portFor(db)));
-  api.route("/activity", createActivityRouter(portFor(db)));
-  api.route("/decisions", createDecisionsRouter(portFor(db)));
-  api.route("/dashboard", createDashboardRouter(portFor(db), env));
-  api.route("/reports", createReportsRouter(portFor(db), env));
-  api.route("/work-logs", createWorkLogsRouter(portFor(db)));
-  api.route("/settings", createSettingsRouter(portFor(db)));
-  api.route("/meeting-schedule", createMeetingScheduleRouter(portFor(db)));
+  api.route("/tasks", createTasksRouter(db, options.evidenceStore));
+  api.route("/sessions", createSessionsRouter(db, env, llmBackend));
+  api.route("/checkins", createCheckinsRouter(db));
+  api.route("/activity", createActivityRouter(db));
+  api.route("/decisions", createDecisionsRouter(db));
+  api.route("/dashboard", createDashboardRouter(db, env));
+  api.route("/reports", createReportsRouter(db, env));
+  api.route("/work-logs", createWorkLogsRouter(db));
+  api.route("/settings", createSettingsRouter(db));
+  api.route("/meeting-schedule", createMeetingScheduleRouter(db));
 
   const app = new Hono();
   app.route("/api", api);

@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type Database from "better-sqlite3";
 import { openDatabase } from "../db/connection.js";
 import { runMigrations } from "../db/migrate.js";
-import { portFor } from "../db/transitional-bridge.js";
+import { portFor } from "../db/test-support/port-for.js";
 import type { Session } from "./session.js";
 import type { Message } from "./message.js";
 
@@ -120,7 +120,7 @@ describe("POST /api/sessions/:id/messages — Issue #117 reproduction", () => {
   it("falls back to the documented 'no response' text (not an empty message) when the SDK returns a thinking-only, max_tokens-truncated turn", async () => {
     const consoleWarnSpy = vi.spyOn(console, "warn").mockImplementation(() => undefined);
     streamMock.mockReturnValue(createThinkingOnlyStream());
-    const app = createApp(db, env);
+    const app = createApp(portFor(db), env);
     const session = await createSession(app);
 
     const res = await app.request(`/api/sessions/${session.id}/messages`, {

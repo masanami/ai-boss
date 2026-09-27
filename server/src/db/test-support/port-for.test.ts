@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import Database from "better-sqlite3";
-import { portFor, rawOf } from "./transitional-bridge.js";
+import { portFor, rawOf } from "./port-for.js";
 
 function openTestDb() {
   const raw = new Database(":memory:");

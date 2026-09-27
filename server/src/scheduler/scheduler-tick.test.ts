@@ -5,7 +5,7 @@ import { join } from "node:path";
 import type Database from "better-sqlite3";
 import { openDatabase } from "../db/connection.js";
 import { runMigrations } from "../db/migrate.js";
-import { portFor } from "../db/transitional-bridge.js";
+import { portFor } from "../db/test-support/port-for.js";
 import { insertTask, updateTask } from "../tasks/tasks-repository.js";
 import { recordActivityEvent } from "../activity/activity-events-repository.js";
 import { insertSession } from "../sessions/sessions-repository.js";

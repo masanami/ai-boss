@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type Database from "better-sqlite3";
 import { openDatabase } from "./db/connection.js";
 import { runMigrations } from "./db/migrate.js";
-import { portFor } from "./db/transitional-bridge.js";
+import { portFor } from "./db/test-support/port-for.js";
 import { createCoreApp } from "./core-app.js";
 import {
   registeredLlmBackendNames,
@@ -30,7 +30,7 @@ describe("createCoreApp", () => {
   });
 
   it("returns 200 with status ok and db true from GET /api/health", async () => {
-    const app = createCoreApp(db, {});
+    const app = createCoreApp(portFor(db), {});
 
     const res = await app.request("/api/health");
 
@@ -56,7 +56,7 @@ describe("createCoreApp", () => {
   ])("registers no LLM backend and cannot reach an LLM from the chat route ($label)", async ({ env, backend }) => {
     resetLlmBackendRegistryForTest();
 
-    const app = createCoreApp(db, env);
+    const app = createCoreApp(portFor(db), env);
     expect((await app.request("/api/health")).status).toBe(200);
     expect(registeredLlmBackendNames()).toEqual([]);
 
@@ -80,7 +80,7 @@ describe("createCoreApp", () => {
   });
 
   it("returns 404 for an unknown path", async () => {
-    const app = createCoreApp(db, {});
+    const app = createCoreApp(portFor(db), {});
 
     const res = await app.request("/api/unknown");
 
@@ -88,7 +88,7 @@ describe("createCoreApp", () => {
   });
 
   it("does not serve any static frontend (that is app.ts's job, not the core's)", async () => {
-    const app = createCoreApp(db, {});
+    const app = createCoreApp(portFor(db), {});
 
     const res = await app.request("/");
 
@@ -96,7 +96,7 @@ describe("createCoreApp", () => {
   });
 
   it("answers the evidence upload route with 500 (not an unhandled exception) when evidenceStore is omitted", async () => {
-    const app = createCoreApp(db, {});
+    const app = createCoreApp(portFor(db), {});
 
     const createTaskRes = await app.request("/api/tasks", {
       method: "POST",
@@ -151,7 +151,7 @@ describe("createCoreApp", () => {
 
     it("returns 404 (not the readFileSync-era 500) for GET content when the stored file is missing from the store", async () => {
       const evidenceStore = createMemoryEvidenceStore();
-      const app = createCoreApp(db, {}, { evidenceStore });
+      const app = createCoreApp(portFor(db), {}, { evidenceStore });
       const taskId = await createTask(app);
 
       const formData = new FormData();
@@ -171,7 +171,7 @@ describe("createCoreApp", () => {
 
     it("returns 500 for GET content when evidenceStore is not configured", async () => {
       const evidenceStore = createMemoryEvidenceStore();
-      const appWithStore = createCoreApp(db, {}, { evidenceStore });
+      const appWithStore = createCoreApp(portFor(db), {}, { evidenceStore });
       const taskId = await createTask(appWithStore);
       const formData = new FormData();
       formData.set("file", new File([new Uint8Array([1])], "note.txt", { type: "text/plain" }));
@@ -182,14 +182,14 @@ describe("createCoreApp", () => {
       const evidence = (await uploadRes.json()) as { id: number };
 
       // 同じ DB を、evidenceStore を渡さない別の app インスタンスから読む。
-      const appWithoutStore = createCoreApp(db, {});
+      const appWithoutStore = createCoreApp(portFor(db), {});
       const res = await appWithoutStore.request(`/api/tasks/${taskId}/evidences/${evidence.id}/content`);
       expect(res.status).toBe(500);
     });
 
     it("returns 500 for DELETE of a file evidence when evidenceStore is not configured", async () => {
       const evidenceStore = createMemoryEvidenceStore();
-      const appWithStore = createCoreApp(db, {}, { evidenceStore });
+      const appWithStore = createCoreApp(portFor(db), {}, { evidenceStore });
       const taskId = await createTask(appWithStore);
       const formData = new FormData();
       formData.set("file", new File([new Uint8Array([1])], "note.txt", { type: "text/plain" }));
@@ -199,7 +199,7 @@ describe("createCoreApp", () => {
       });
       const evidence = (await uploadRes.json()) as { id: number };
 
-      const appWithoutStore = createCoreApp(db, {});
+      const appWithoutStore = createCoreApp(portFor(db), {});
       const res = await appWithoutStore.request(`/api/tasks/${taskId}/evidences/${evidence.id}`, {
         method: "DELETE",
       });
@@ -207,7 +207,7 @@ describe("createCoreApp", () => {
     });
 
     it("returns 204 for DELETE of a link evidence even when evidenceStore is not configured (no file to remove)", async () => {
-      const app = createCoreApp(db, {});
+      const app = createCoreApp(portFor(db), {});
       const taskId = await createTask(app);
 
       const linkRes = await app.request(`/api/tasks/${taskId}/evidences`, {

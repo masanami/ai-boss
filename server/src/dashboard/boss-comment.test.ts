@@ -3,7 +3,7 @@ import type Database from "better-sqlite3";
 import type Anthropic from "@anthropic-ai/sdk";
 import { openDatabase } from "../db/connection.js";
 import { runMigrations } from "../db/migrate.js";
-import { portFor } from "../db/transitional-bridge.js";
+import { portFor } from "../db/test-support/port-for.js";
 import { NOTIFICATION_PLAIN_TEXT_INSTRUCTION } from "../boss/persona-prompt.js";
 import { insertTask, updateTask } from "../tasks/tasks-repository.js";
 import { getCachedBossComment } from "./boss-comment-cache.js";

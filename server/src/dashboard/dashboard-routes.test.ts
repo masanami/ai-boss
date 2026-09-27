@@ -3,7 +3,7 @@ import type Database from "better-sqlite3";
 import type Anthropic from "@anthropic-ai/sdk";
 import { openDatabase } from "../db/connection.js";
 import { runMigrations } from "../db/migrate.js";
-import { portFor } from "../db/transitional-bridge.js";
+import { portFor } from "../db/test-support/port-for.js";
 import { insertTask } from "../tasks/tasks-repository.js";
 import { insertSession } from "../sessions/sessions-repository.js";
 import { insertNotification } from "../notifications/notifications-repository.js";
@@ -57,7 +57,7 @@ describe("GET /api/dashboard", () => {
 
   it("returns 200 with the full dashboard shape", async () => {
     vi.setSystemTime(new Date(2026, 6, 6, 10, 0));
-    const app = createApp(db, env);
+    const app = createApp(portFor(db), env);
 
     const res = await app.request("/api/dashboard");
 
@@ -97,7 +97,7 @@ describe("GET /api/dashboard", () => {
     });
     await insertSession(portFor(db), { type: "morning" });
     await insertNotification(portFor(db), { type: "avoidance", escalation_level: 2, body: "戻れ" });
-    const app = createApp(db, env);
+    const app = createApp(portFor(db), env);
 
     const res = await app.request("/api/dashboard");
 
@@ -114,7 +114,7 @@ describe("GET /api/dashboard", () => {
     createClaudeClientMock.mockImplementationOnce(() => {
       throw new MissingApiKeyError();
     });
-    const app = createApp(db, {});
+    const app = createApp(portFor(db), {});
 
     const res = await app.request("/api/dashboard");
 
@@ -127,7 +127,7 @@ describe("GET /api/dashboard", () => {
 
   it("does not call the Claude API on a second same-day request", async () => {
     vi.setSystemTime(new Date(2026, 6, 6, 10, 0));
-    const app = createApp(db, env);
+    const app = createApp(portFor(db), env);
 
     await app.request("/api/dashboard");
     vi.setSystemTime(new Date(2026, 6, 6, 18, 0));

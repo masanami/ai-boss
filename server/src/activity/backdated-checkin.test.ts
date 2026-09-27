@@ -3,7 +3,7 @@ import type { Hono } from "hono";
 import type Database from "better-sqlite3";
 import { openDatabase } from "../db/connection.js";
 import { runMigrations } from "../db/migrate.js";
-import { portFor } from "../db/transitional-bridge.js";
+import { portFor } from "../db/test-support/port-for.js";
 import { createApp } from "../app.js";
 import { insertTask } from "../tasks/tasks-repository.js";
 import type { Task } from "../tasks/task.js";
@@ -102,7 +102,7 @@ describe("backdated checkins: effect on notifications / escalation / break detec
       });
       vi.setSystemTime(NOW);
 
-      const app = createApp(db);
+      const app = createApp(portFor(db));
       const res = await postCheckin(app, {
         type: "checkin",
         occurred_at: new Date(2026, 6, 5, 10, 0, 0, 0).toISOString(),
@@ -127,7 +127,7 @@ describe("backdated checkins: effect on notifications / escalation / break detec
       });
       vi.setSystemTime(NOW);
 
-      const app = createApp(db);
+      const app = createApp(portFor(db));
       const res = await postCheckin(app, {
         type: "checkin",
         // After sentAt (09:00), before NOW (14:00): a genuine backdated
@@ -170,7 +170,7 @@ describe("backdated checkins: effect on notifications / escalation / break detec
       const shortlyAfterSentAt = new Date(2026, 6, 5, 10, 5, 0, 0);
       vi.setSystemTime(shortlyAfterSentAt);
 
-      const app = createApp(db);
+      const app = createApp(portFor(db));
       const res = await postCheckin(app, {
         type: "checkin",
         // Before sentAt (10:00): must NOT be treated as a reset signal.
@@ -218,7 +218,7 @@ describe("backdated checkins: effect on notifications / escalation / break detec
     });
 
     it("returns the same GET /api/reports/:date content before and after a backdated checkin", async () => {
-      const app = createApp(db, env);
+      const app = createApp(portFor(db), env);
 
       // Evening session -> generate today's report, mirroring
       // reports-routes.test.ts's own fixture.
@@ -272,7 +272,7 @@ describe("backdated checkins: effect on notifications / escalation / break detec
 
   describe("判断5 調査結果: break_end 無しの後追い break_start は継続中の休憩として扱われる (AC-17)", () => {
     it("getActiveBreak still returns the backdated break_start after a later task_start", async () => {
-      const app = createApp(db);
+      const app = createApp(portFor(db));
       const task: Task = await insertTask(portFor(db), {
         title: "資料作成",
         description: null,

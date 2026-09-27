@@ -1,9 +1,9 @@
 import type Database from "better-sqlite3";
 import { openDatabase } from "../connection.js";
 import { runMigrations } from "../migrate.js";
-import { portFor, trackPort } from "../transitional-bridge.js";
+import { portFor, trackPort } from "./port-for.js";
 import type { DbPort } from "../db-port.js";
-import { createBetterSqlite3Driver } from "../better-sqlite3-driver.js";
+import { createBetterSqlite3Driver } from "../connection.js";
 import { createSerializedDb } from "../serialized-db.js";
 import { createHookedDriver, type DriverHook } from "./hooked-driver.js";
 

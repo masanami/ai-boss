@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import Database from "better-sqlite3";
-import { createBetterSqlite3Driver } from "../better-sqlite3-driver.js";
+import { createBetterSqlite3Driver } from "../connection.js";
 import { createSerializedDb } from "../serialized-db.js";
 import { createHookedDriver } from "./hooked-driver.js";
 import type { DbPort } from "../db-port.js";

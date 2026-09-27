@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type Database from "better-sqlite3";
 import { openDatabase } from "../db/connection.js";
 import { runMigrations } from "../db/migrate.js";
-import { portFor } from "../db/transitional-bridge.js";
+import { portFor } from "../db/test-support/port-for.js";
 import { createApp } from "../app.js";
 
 interface ErrorBodyWithCode {
@@ -80,7 +80,7 @@ describe("GET /api/work-logs/:date", () => {
   });
 
   it("returns 200 with the fixed '（記録なし）' body when there is no evening session at all (no prerequisite)", async () => {
-    const app = createApp(db, env);
+    const app = createApp(portFor(db), env);
 
     const res = await app.request("/api/work-logs/2026-08-14");
 
@@ -92,7 +92,7 @@ describe("GET /api/work-logs/:date", () => {
   });
 
   it("returns 200 even when an evening session exists but has not ended (no prerequisite, unlike daily reports)", async () => {
-    const app = createApp(db, env);
+    const app = createApp(portFor(db), env);
     insertRawSession(db, iso(2026, 8, 14, 19, 0));
 
     const res = await app.request("/api/work-logs/2026-08-14");
@@ -101,7 +101,7 @@ describe("GET /api/work-logs/:date", () => {
   });
 
   it("merges decisions and activity events into one created_at-ascending list", async () => {
-    const app = createApp(db, env);
+    const app = createApp(portFor(db), env);
     const sessionId = insertRawSession(db, iso(2026, 8, 14, 19, 0));
     insertRawActivityEvent(db, { type: "task_start", createdAt: iso(2026, 8, 14, 9, 5) });
     insertRawDecision(db, {
@@ -142,7 +142,7 @@ describe("GET /api/work-logs/:date", () => {
   });
 
   it("appends '（予定 N分）' only for task_start/break_start events in the response content", async () => {
-    const app = createApp(db, env);
+    const app = createApp(portFor(db), env);
     insertRawActivityEvent(db, {
       type: "task_start",
       createdAt: iso(2026, 8, 14, 9, 0, 0),
@@ -194,7 +194,7 @@ describe("GET /api/work-logs/:date", () => {
   });
 
   it("appends note as ' — {note}' and orders '（予定 N分） — {note}' when both are present, in the response content", async () => {
-    const app = createApp(db, env);
+    const app = createApp(portFor(db), env);
     insertRawActivityEvent(db, {
       type: "task_start",
       createdAt: iso(2026, 8, 14, 9, 0, 0),
@@ -225,7 +225,7 @@ describe("GET /api/work-logs/:date", () => {
   });
 
   it("excludes chat_message events from the response", async () => {
-    const app = createApp(db, env);
+    const app = createApp(portFor(db), env);
     insertRawActivityEvent(db, { type: "chat_message", createdAt: iso(2026, 8, 14, 9, 5) });
 
     const res = await app.request("/api/work-logs/2026-08-14");
@@ -235,7 +235,7 @@ describe("GET /api/work-logs/:date", () => {
   });
 
   it("excludes records from the previous/next day (local calendar-day boundary)", async () => {
-    const app = createApp(db, env);
+    const app = createApp(portFor(db), env);
     insertRawActivityEvent(db, { type: "task_start", createdAt: iso(2026, 8, 13, 23, 59) });
     insertRawActivityEvent(db, { type: "task_start", createdAt: iso(2026, 8, 15, 0, 0) });
 
@@ -246,7 +246,7 @@ describe("GET /api/work-logs/:date", () => {
   });
 
   it("returns 400 with code invalid_date for a malformed date param", async () => {
-    const app = createApp(db, env);
+    const app = createApp(portFor(db), env);
 
     const res = await app.request("/api/work-logs/2026-13-40");
 
@@ -256,7 +256,7 @@ describe("GET /api/work-logs/:date", () => {
   });
 
   it("returns 400 with code invalid_date for a non-existent calendar date (e.g. Feb 30)", async () => {
-    const app = createApp(db, env);
+    const app = createApp(portFor(db), env);
 
     const res = await app.request("/api/work-logs/2026-02-30");
 
@@ -266,7 +266,7 @@ describe("GET /api/work-logs/:date", () => {
   });
 
   it("returns 400 with code invalid_date for a non YYYY-MM-DD string", async () => {
-    const app = createApp(db, env);
+    const app = createApp(portFor(db), env);
 
     const res = await app.request("/api/work-logs/not-a-date");
 
