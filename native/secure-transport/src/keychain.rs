@@ -9,7 +9,6 @@ use core_foundation::base::{CFType, TCFType};
 use core_foundation::boolean::CFBoolean;
 use core_foundation::data::CFData;
 use core_foundation::dictionary::CFDictionary;
-use core_foundation::number::CFNumber;
 use core_foundation::string::CFString;
 use core_foundation_sys::base::{CFGetTypeID, CFTypeRef};
 use core_foundation_sys::data::CFDataRef;
@@ -32,6 +31,7 @@ use crate::key_store::{KeyStore, Provider, Seal, StoreError};
 #[link(name = "Security", kind = "framework")]
 extern "C" {
     pub(crate) static kSecAttrAccessible: CFStringRef;
+    static kSecMatchLimitOne: CFStringRef;
 }
 
 /// 製品版のキーチェーンの項目の service 名。
@@ -82,6 +82,18 @@ impl KeychainKeyStore {
     }
 }
 
+impl KeychainKeyStore {
+    /// 1 件を探す問い合わせ（`contains` と `load`）。`return_data` が真なら値も返させる。
+    fn lookup_query(&self, provider: Provider, return_data: bool) -> Vec<(CFString, CFType)> {
+        let mut query = self.item_query(provider);
+        query.push(match_limit_one());
+        if return_data {
+            query.push((key(unsafe { kSecReturnData }), CFBoolean::true_value().into_CFType()));
+        }
+        query
+    }
+}
+
 impl Default for KeychainKeyStore {
     fn default() -> Self {
         Self::new()
@@ -119,9 +131,7 @@ impl KeyStore for KeychainKeyStore {
     }
 
     fn contains(&self, provider: Provider) -> Result<bool, StoreError> {
-        let mut query = self.item_query(provider);
-        query.push(match_limit_one());
-        let query = CFDictionary::from_CFType_pairs(&query);
+        let query = CFDictionary::from_CFType_pairs(&self.lookup_query(provider, false));
         match unsafe { SecItemCopyMatching(query.as_concrete_TypeRef(), std::ptr::null_mut()) } {
             status if status == errSecItemNotFound => Ok(false),
             status => check(status).map(|()| true),
@@ -129,13 +139,7 @@ impl KeyStore for KeychainKeyStore {
     }
 
     fn load(&self, provider: Provider, _seal: Seal) -> Result<Option<SecretString>, StoreError> {
-        let mut query = self.item_query(provider);
-        query.push(match_limit_one());
-        query.push((
-            key(unsafe { kSecReturnData }),
-            CFBoolean::true_value().into_CFType(),
-        ));
-        let query = CFDictionary::from_CFType_pairs(&query);
+        let query = CFDictionary::from_CFType_pairs(&self.lookup_query(provider, true));
 
         let mut result: CFTypeRef = std::ptr::null();
         match unsafe { SecItemCopyMatching(query.as_concrete_TypeRef(), &mut result) } {
@@ -162,8 +166,9 @@ fn cf_string(constant: CFStringRef) -> CFType {
     key(constant).into_CFType()
 }
 
+/// 一致を 1 件に絞る（`kSecMatchLimit` に `kSecMatchLimitOne` を渡す）。
 fn match_limit_one() -> (CFString, CFType) {
-    (key(unsafe { kSecMatchLimit }), CFNumber::from(1).into_CFType())
+    (key(unsafe { kSecMatchLimit }), cf_string(unsafe { kSecMatchLimitOne }))
 }
 
 fn check(status: i32) -> Result<(), StoreError> {
@@ -277,9 +282,34 @@ mod tests {
         let synchronizable = if let Some(flag) = synchronizable.downcast::<CFBoolean>() {
             bool::from(flag)
         } else {
-            let number = synchronizable.downcast::<CFNumber>().expect("synchronizable is a boolean or a number");
+            let number = synchronizable.downcast::<core_foundation::number::CFNumber>().expect("synchronizable is a boolean or a number");
             number.to_i64() != Some(0)
         };
         assert!(!synchronizable, "kSecAttrSynchronizable must be false");
+    }
+}
+
+/// 問い合わせ辞書の組み立て（キーチェーンに触れない。既定の `npm run test:rust` で実行する）。
+#[cfg(test)]
+mod query_tests {
+    use super::*;
+
+    fn match_limit(query: &[(CFString, CFType)]) -> Option<CFString> {
+        let limit_key = key(unsafe { kSecMatchLimit });
+        let (_, value) = query.iter().find(|(name, _)| *name == limit_key)?;
+        value.downcast::<CFString>()
+    }
+
+    #[test]
+    fn lookup_queries_limit_to_one_match_with_the_match_limit_one_constant() {
+        let store = KeychainKeyStore::with_service("dev.aiboss.byok.query-test");
+        for return_data in [false, true] {
+            let query = store.lookup_query(Provider::Anthropic, return_data);
+            assert_eq!(
+                match_limit(&query),
+                Some(key(unsafe { kSecMatchLimitOne })),
+                "return_data={return_data}: kSecMatchLimit must be kSecMatchLimitOne"
+            );
+        }
     }
 }
