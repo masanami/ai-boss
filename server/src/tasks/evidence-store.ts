@@ -68,6 +68,27 @@ export async function saveFileEvidence(
   store: EvidenceStore,
   input: SaveFileEvidenceInput,
 ): Promise<TaskEvidence> {
+  const evidence = await saveFileEvidenceIfAllowed(db, store, input, async () => true);
+  if (!evidence) {
+    throw new Error("unreachable: the insert guard always allows");
+  }
+  return evidence;
+}
+
+/**
+ * {@link saveFileEvidence} に、挿入の可否の判定（`canInsert`）を足したもの。
+ * 実体の書き込みはトランザクションの外で先に行い（ファイル操作をトランザク
+ * ションに入れない。機能仕様 docs/features/async-db-layer.md 決定 2）、判定と
+ * 行の挿入を 1 つのトランザクションで確定させる（#604・決定 2 の全数監査:
+ * 件数の上限の判定と挿入の間に並行の追加が入り、上限を超えないように）。
+ * 判定が拒否したら書き込んだ実体を消して `undefined` を返す。
+ */
+export async function saveFileEvidenceIfAllowed(
+  db: Db,
+  store: EvidenceStore,
+  input: SaveFileEvidenceInput,
+  canInsert: (tx: Db) => Promise<boolean>,
+): Promise<TaskEvidence | undefined> {
   const mimeType = resolveEvidenceMimeType(input.originalFilename);
   if (!mimeType) {
     throw new Error(`evidence extension not allowed: ${input.originalFilename}`);
@@ -76,14 +97,23 @@ export async function saveFileEvidence(
   const storedFilename = generateStoredFilename(input.originalFilename);
   store.write(storedFilename, input.data);
 
-  return insertTaskEvidence(db, {
-    task_id: input.taskId,
-    kind: "file",
-    stored_filename: storedFilename,
-    original_filename: input.originalFilename,
-    mime_type: mimeType,
-    size_bytes: input.data.length,
+  const evidence = await db.transaction(async (tx) => {
+    if (!(await canInsert(tx))) {
+      return undefined;
+    }
+    return insertTaskEvidence(tx, {
+      task_id: input.taskId,
+      kind: "file",
+      stored_filename: storedFilename,
+      original_filename: input.originalFilename,
+      mime_type: mimeType,
+      size_bytes: input.data.length,
+    });
   });
+  if (!evidence) {
+    store.remove(storedFilename);
+  }
+  return evidence;
 }
 
 export interface SaveLinkEvidenceInput {
@@ -109,6 +139,11 @@ export async function saveLinkEvidence(
  * （「機能全体の設計」: 逆順だと「行はあるが実体が無い」孤児行が残る。この
  * 順序なら最悪ケースは実体だけが残ることで、参照されないので実害が無い。
  * 孤児ファイルの掃除機構は作らない＝YAGNI）。
+ *
+ * 本番の削除経路（`task-evidences-routes.ts` の `DELETE`）は判定と一緒に
+ * トランザクションを張るため {@link deleteEvidenceRow} と
+ * {@link removeEvidenceFile} を直接使う。この関数は判定の要らない呼び出し元
+ * （`evidence-storage.ts` のラッパーとテスト）向けに残している。
  *
  * 存在しない id は no-op で `false` を返す。`kind: "link"` の行を消しても
  * `store.remove` は呼ばない。実体が既に無い `stored_filename` に対する

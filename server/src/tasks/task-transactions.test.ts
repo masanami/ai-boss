@@ -237,3 +237,30 @@ describe("E1 evidence delete vs T2 completion on the async DB port (#604)", () =
     expect(doneWithoutEvidence(raw, taskId)).toBe(false);
   });
 });
+
+describe("evidence count limit on the async DB port (#604・決定 2 の全数監査)", () => {
+  it("two concurrent link additions to a task with 9 evidences add only one (the other is rejected with evidence_limit_exceeded)", async () => {
+    const { raw, hooks, app } = await setup();
+    const taskId = insertRawTask(raw, { status: "in_progress" });
+    const insertEvidence = raw.prepare(
+      "INSERT INTO task_evidences (task_id, kind, url, created_at) VALUES (?, 'link', ?, ?)",
+    );
+    for (let i = 0; i < 9; i += 1) {
+      insertEvidence.run(taskId, `https://example.com/${i}`, new Date().toISOString());
+    }
+    const addLink = (url: string) => postJson(app, `/api/tasks/${taskId}/evidences`, { url });
+    const second = injectOnce(
+      hooks,
+      (sql) => sql.startsWith("SELECT COUNT(*) AS count FROM task_evidences"),
+      () => addLink("https://example.com/second"),
+    );
+
+    const first = await addLink("https://example.com/first");
+    const secondRes = await second();
+
+    expect([first.status, secondRes.status].sort()).toEqual([201, 409]);
+    expect(
+      raw.prepare("SELECT COUNT(*) AS n FROM task_evidences WHERE task_id = ?").get(taskId),
+    ).toEqual({ n: 10 });
+  });
+});

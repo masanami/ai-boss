@@ -12,7 +12,7 @@ import {
 import {
   deleteEvidenceRow,
   removeEvidenceFile,
-  saveFileEvidence,
+  saveFileEvidenceIfAllowed,
   saveLinkEvidence,
   type EvidenceStore,
 } from "./evidence-store.js";
@@ -57,8 +57,8 @@ function respondEvidenceStoreNotConfigured(c: Context): Response {
   return c.json({ error: "evidence store is not configured" }, 500);
 }
 
-/** `evidence-store.ts` の `deleteEvidence` に渡すだけのフォールバック
- * `EvidenceStore`。呼ばれたら例外を投げる — kind === "link" の削除経路では
+/** 証跡の削除で `evidence-store.ts` の `removeEvidenceFile` に渡すだけの
+ * フォールバック `EvidenceStore`。呼ばれたら例外を投げる — kind === "link" の削除経路では
  * `store.remove` が一切呼ばれない契約（`evidence-store.ts` 参照）なので、
  * 呼ばれること自体が契約違反であることを検出できるようにしている。 */
 const UNAVAILABLE_EVIDENCE_STORE: EvidenceStore = {
@@ -87,6 +87,25 @@ function isInlineMimeType(mimeType: string): boolean {
   return mimeType.startsWith("image/") || mimeType === "application/pdf";
 }
 
+/**
+ * 証跡の追加の可否を、挿入と同じトランザクション（`tx`）の中で判定し直す
+ * （#604・決定 2 の全数監査）。ルートの入口の判定（本文を読む前に 409 を返す
+ * 早期の拒否）だけだと、本文の読み出しやファイルの書き込みの await の間に
+ * 並行の追加が入り、上限（10 件）を超えうる。タスクは削除されない（`dropped`
+ * へ遷移するだけ）ため、存在の確認は入口のものを引き継ぎ、ここでは件数だけ
+ * を確かめる。
+ */
+async function canAddEvidence(tx: Db, taskId: number): Promise<boolean> {
+  return isEvidenceCountUnderLimit(await countTaskEvidences(tx, taskId));
+}
+
+function respondEvidenceLimitExceeded(c: Context): Response {
+  return c.json(
+    { error: "task already has the maximum of 10 evidences", code: "evidence_limit_exceeded" },
+    409,
+  );
+}
+
 async function handleAddLinkEvidence(c: Context, db: Db, taskId: number) {
   const body = await readJsonBody(c);
   const url =
@@ -102,7 +121,12 @@ async function handleAddLinkEvidence(c: Context, db: Db, taskId: number) {
     );
   }
 
-  const evidence = await saveLinkEvidence(db, { taskId, url });
+  const evidence = await db.transaction(async (tx) =>
+    (await canAddEvidence(tx, taskId)) ? saveLinkEvidence(tx, { taskId, url }) : undefined,
+  );
+  if (!evidence) {
+    return respondEvidenceLimitExceeded(c);
+  }
   return c.json(evidence, 201);
 }
 
@@ -140,11 +164,15 @@ async function handleAddFileEvidence(
     );
   }
 
-  const evidence = await saveFileEvidence(db, evidenceStore, {
-    taskId,
-    originalFilename: file.name,
-    data,
-  });
+  const evidence = await saveFileEvidenceIfAllowed(
+    db,
+    evidenceStore,
+    { taskId, originalFilename: file.name, data },
+    (tx) => canAddEvidence(tx, taskId),
+  );
+  if (!evidence) {
+    return respondEvidenceLimitExceeded(c);
+  }
   return c.json(evidence, 201);
 }
 
@@ -173,11 +201,8 @@ export function createTaskEvidencesRouter(db: Db, evidenceStore?: EvidenceStore)
       return respondTaskNotFound(c, taskId);
     }
 
-    if (!isEvidenceCountUnderLimit(await countTaskEvidences(db, taskId))) {
-      return c.json(
-        { error: "task already has the maximum of 10 evidences", code: "evidence_limit_exceeded" },
-        409,
-      );
+    if (!(await canAddEvidence(db, taskId))) {
+      return respondEvidenceLimitExceeded(c);
     }
 
     const contentType = c.req.header("content-type") ?? "";
