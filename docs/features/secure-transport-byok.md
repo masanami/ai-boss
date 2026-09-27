@@ -35,7 +35,9 @@ Q2（TS ⇔ Rust の境界・クリティカル設計決定 2）・Q3（送る�
 ### 親の決定（2026-09-27・S2 の改訂）
 
 - **S2 の範囲に「バックエンドの名前の分岐を能力の宣言へ置き換える」を加える**（#582 の機能仕様 `docs/features/llm-provider-abstraction.md` の決定 Q5）。対象は `reports/extract-evening-summary.ts` の `backend === "api"` による `toolChoice` の強制・`dashboard/boss-comment.ts` の `backend === "claude-code"` による短文の指示と全角 80 字の検証・`llm/claude-client.ts` の `client.backend === "claude-code"` によるツールのループの分岐。#582 S1 の着手条件は「本機能の S2 がマージされ、`LlmBackendImplementation` が 3 つの能力（ループを自分で回すか・強制に対応するか・応答長を制限できるか）を宣言する形になっていること」。能力の項目の名前・型は本機能の S2 が決める（#582 の仮定 A2。クリティカル設計決定 5）
-- **開発者用の版の振る舞いは変えない**: `api`・`claude-code` のバックエンド、自由入力のモデル設定、`LLM_BACKEND` の決め方、開発者用の版の外部送信の範囲（Anthropic のみ）（ADR 0003 改訂の決定 2・ADR 0002 改訂の決定 5）。置き換えの後も、既存の呼び出し元のテストが同じ結果になる
+- **開発者用の版の振る舞いは変えない**: `api`・`claude-code` のバックエンド、自由入力のモデル設定、`LLM_BACKEND` の決め方、開発者用の版の外部送信の範囲（Anthropic のみ）（ADR 0003 改訂の決定 2・ADR 0002 改訂の決定 5）。置き換えの後も、既存の呼び出し元のテストが同じ結果になる（**期待値〔アサーション〕は変えず、変えてよいのは準備〔模擬のバックエンドの登録〕だけ**と確定）
+- **S2 のモジュールをバンドル検査の対象にする方法は案 (A)**: `core-entry.ts` が BYOK（Anthropic）の登録関数を呼ばずに re-export し、S3 で Tauri の器がポートを渡して呼ぶ（クリティカル設計決定 6）
+- 仮定 A9〜A15・クリティカル設計決定 5・6 は本仕様の記述どおり承認
 
 ## 実コードの実測（2026-09-26・`main` 3b65393／#594 ブランチ 18cac97／`spike/ios-tauri`）
 
@@ -67,7 +69,7 @@ S2 の設計はこの実測に拠る。上の表と食い違う点はこちら�
 | `api` の要求の組み立て | `backends/api-backend.ts` の `streamApiMessage` は `model`・`max_tokens`・`system`・`messages`・`tools`・`thinking`・（あれば）`output_config` を送り、**`tool_choice` を送らない**。`createApiMessage` はこれに `tool_choice` を足す。応答は `normalizeMessage` が `text`・`tool_use` だけを `content` に残し、SDK が返した `content` 全体を `rawContent` にする。どちらも無い応答は停止理由・ブロックの種類・モデル・トークン数だけを `console.warn` に出す |
 | `api` のエラーの分類 | `classifyApiError` は SDK の `APIError` の `status`（`undefined`・408・429・5xx は再試行可、他は不可）と、`retry-after`（整数の秒数、または `Www, DD Mon YYYY HH:MM:SS GMT` の形の HTTP 日付。それ以外・過去の日付は無視）で判定する。**`APIError` でない例外は再試行可**。この判定は `@anthropic-ai/sdk` を値で import する `api-backend.ts` の中にあり、コアから import できない |
 | 中止の伝わり方 | `dispatchStream` は `runWithTimeoutAndRetry` の `AbortSignal` を `streamRound` に渡す（生成停止の `signal` はこれに合流する）。`dispatchCreate` は生成停止の `signal` を持たず、タイムアウトだけで中止する。中止された後は `runWithTimeoutAndRetry` が `LlmTimeoutError` を投げる（バックエンドが投げた例外の種類は問わない） |
-| 製品版のコアのバンドル検査 | `core-entry.bundle.test.ts` は `core-entry.ts` から到達できるモジュールだけを束ねて検査する（外部の指定子・`@anthropic-ai/sdk`・Agent SDK の混入の禁止、`server/src` の入力での `process`・`Buffer`・`require`・`setImmediate` 等の Node のグローバルの値参照と `node:` の値 import の禁止、`registeredCoreLlmBackendNames()` が空）。**S2 のモジュールが `core-entry.ts` から到達できなければ、この検査の対象にならない**（クリティカル設計決定 5 の未決の論点） |
+| 製品版のコアのバンドル検査 | `core-entry.bundle.test.ts` は `core-entry.ts` から到達できるモジュールだけを束ねて検査する（外部の指定子・`@anthropic-ai/sdk`・Agent SDK の混入の禁止、`server/src` の入力での `process`・`Buffer`・`require`・`setImmediate` 等の Node のグローバルの値参照と `node:` の値 import の禁止、`registeredCoreLlmBackendNames()` が空）。**S2 のモジュールが `core-entry.ts` から到達できなければ、この検査の対象にならない**（クリティカル設計決定 6。親の決定で `core-entry.ts` から登録関数を re-export する） |
 | Rust の通信層（S1・PR #616） | `SecureTransport::send(SendRequest)` → `ResponseStream`（`head()` が `ResponseHead { status, retry_after, request_id, content_type }`、`next_chunk()` が本文の断片を順に返す）、`cancel(request_id)`。**失敗の種類は仕様の 5 つより多い 8 つ**: `UnknownDestination`・`KeyNotRegistered`・`KeyStore(StoreError)`・`InvalidHeader`・`DuplicateRequestId`・`Connection`・`Cancelled`・`RedirectRefused { status }`。**呼び出し元が `content-type` を付けなければ Rust が `application/json` を付ける**。捨てる要求ヘッダは `x-api-key`・`authorization`・`anthropic-version`・`host`・`content-length`・`transfer-encoding`・`connection` |
 
 ## 機能要件（機能全体。スライスごとの範囲は「スライス」節）
@@ -180,7 +182,7 @@ S2 の設計はこの実測に拠る。上の表と食い違う点はこちら�
   - 要求本文は、`api` の `streamApiMessage`／`createApiMessage` が SDK に渡す項目と同じ名前・同じ値の JSON（`model`・`max_tokens`・`system`・`messages`・`tools`・`tool_choice`・`thinking`・`output_config`）に `stream` を足したもの。ヘッダは付けない（`x-api-key`・`anthropic-version`・`content-type` は Rust が付ける）
   - 応答の解釈: ストリーミングは SSE（`message_start`・`content_block_start`・`content_block_delta`〔`text_delta`・`input_json_delta`・`thinking_delta`・`signature_delta`〕・`content_block_stop`・`message_delta`・`message_stop`・`ping`・`error`）を組み立て、非ストリーミングは JSON を読む。どちらも `normalizeMessage` と同じく `text`・`tool_use` を `content` に、組み立てたブロック全体（`thinking` と署名・`redacted_thinking` を含む）を `rawContent` にする。バイト列の復号は多バイト文字の途中で断片が切れても壊れない形で行う（`TextDecoder` の逐次復号。`Buffer` はバンドル検査で使えない）
   - エラーの分類は `classifyApiError` と同じ規則を SDK なしで持つ（HTTP のステータスと `retry-after`）。ポートの失敗は、接続失敗だけを再試行可、他（宛先不明・キー未登録・キーの保管の失敗・不正なヘッダ・要求 ID の重複・リダイレクト拒否）を再試行不可とする。応答の途中の SSE の `error` イベントと、`message_stop` の前に本文が終わった場合は再試行可とする（SDK の経路で `status` を持たない失敗が再試行可になる現行の規則に揃える）
-- **未決（親への質問 1）: S2 のモジュールをバンドル検査の対象にする方法**。製品版のエントリへの登録は S3 の範囲で、S2 の時点では `core-entry.ts` から BYOK（Anthropic）のモジュールへ到達しないため、`core-entry.bundle.test.ts` は S2 のコードを検査しない（「実コードの実測」）。選択肢は「IF / API（S2）」の後に記す
+- **S2 のモジュールをバンドル検査の対象にする方法（2026-09-27 親の決定）**: 製品版のエントリへの登録は S3 の範囲で、そのままでは S2 の時点で `core-entry.ts` から BYOK（Anthropic）のモジュールへ到達せず、`core-entry.bundle.test.ts` が S2 のコードを検査しない（「実コードの実測」）。このため `core-entry.ts` が登録関数を**呼ばずに re-export** する（案 (A)。選択肢は「IF / API（S2）」の後に記す）
 - **理由**: ポートが `AbortSignal` を受け取る形にすると、ファサードの中止（`runWithTimeoutAndRetry` の `signal`・生成停止）がそのままポートへ届き、`requestId` の管理が TS のクライアントと模擬のポートのテストに漏れない。要求本文を `api` と同じ項目にすると、開発者用の版で確かめた要求の形（Issue #117 の thinking の既定など）を製品版でもそのまま使える
 - **影響範囲**: 新規のポートの型・BYOK（Anthropic）のバックエンド、`retry-after` の解釈を SDK なしで共有する場合は `backends/api-backend.ts`（振る舞いは変えない）（**クリティカル箇所: Claude API 連携・API キーの取り扱い。変更時は人間レビュー必須**）
 
@@ -216,11 +218,14 @@ S2 の設計はこの実測に拠る。上の表と食い違う点はこちら�
 - **HTTP のエラー**: 応答のステータスが 2xx でなければ、本文を `text`・`tool_use` として解釈せず、ステータスと `retry-after` を持つ例外で失敗する（`onTextDelta` は呼ばない）
 - **ログ**: 応答に `text`・`tool_use` が 1 つも無いときは `normalizeMessage` と同じくメタ情報（停止理由・ブロックの種類・モデル・トークン数）だけを `console.warn` に出す。本文・thinking・ツールの入力は出さない
 
-### S2 のモジュールをバンドル検査の対象にする方法（未決・親への質問 1）
+### S2 のモジュールをバンドル検査の対象にする方法（2026-09-27 親の決定: (A)）
+
+- **採用: (A)**。`core-entry.ts` は BYOK（Anthropic）の登録関数を**呼ばずに re-export** し、S3 で Tauri の器がポートを渡して呼ぶ。`registeredCoreLlmBackendNames()` は空のまま（オーナーの決定 Q4-c）
+- **#582 S1 への申し送り**: OpenAI の変換器（BYOK〔OpenAI〕の登録関数）も同じ入口（`core-entry.ts` から呼ばずに re-export）に置けば、既存の `core-entry.bundle.test.ts` がそのまま検査する
 
 | 案 | 内容 | 利点 | 欠点 |
 |---|---|---|---|
-| (A)（推奨） | `core-entry.ts` が BYOK（Anthropic）の登録関数を**呼ばずに** re-export する。S3 で Tauri の器がこの関数に Tauri 実装のポートを渡して呼ぶ | 既存の `core-entry.bundle.test.ts` がそのまま S2 のモジュールを検査する（テストの変更が要らない）。`registeredCoreLlmBackendNames()` は空のまま（オーナーの決定 Q4-c「コアのエントリは何も登録しない」を保つ）。アーキテクチャ決定「製品版のエントリが Tauri 実装のポートを注入する」の注入口がそのまま決まる | S3 の「製品版のエントリへの登録」の一部（公開の形）を S2 で先に決めることになる |
+| (A)（採用） | `core-entry.ts` が BYOK（Anthropic）の登録関数を**呼ばずに** re-export する。S3 で Tauri の器がこの関数に Tauri 実装のポートを渡して呼ぶ | 既存の `core-entry.bundle.test.ts` がそのまま S2 のモジュールを検査する（テストの変更が要らない）。`registeredCoreLlmBackendNames()` は空のまま（オーナーの決定 Q4-c「コアのエントリは何も登録しない」を保つ）。アーキテクチャ決定「製品版のエントリが Tauri 実装のポートを注入する」の注入口がそのまま決まる | S3 の「製品版のエントリへの登録」の一部（公開の形）を S2 で先に決めることになる |
 | (B) | `core-entry.bundle.test.ts` に、BYOK（Anthropic）のモジュールを入口にした 2 本目のバンドル検査を足す（`core-entry.ts` は変えない） | コアのエントリの公開面を S3 まで変えない | #594 の検査の仕組み（esbuild の設定・静的検査）を 2 つの入口で持つ変更が要る。#582 の OpenAI の変換器でも同じ追加が要る |
 | (C) | S2 ではバンドル検査の対象にしない（S3 の登録で到達するようになってから検査される） | S2 の変更が最小 | S2 の時点で「Node 依存・SDK が入らない」が機械的に確かめられない（親の指示「#594 のバンドル検査を通すこと」を満たせない）。#582 S1 の受入基準（`core-entry.bundle.test.ts` が OpenAI の変換器を検査する）も空振りになる |
 
@@ -236,7 +241,7 @@ S2 の設計はこの実測に拠る。上の表と食い違う点はこちら�
 ### 実装計画（S2 のチケット分解の見通し）
 
 1. 能力の宣言: `LlmBackendImplementation` の必須の能力・`api`／`claude-code` の宣言・ファサードの参照関数、レジストリの鍵の型と `LLM_BACKEND` の検証の型の分離、名前の分岐 3 か所の置き換え（既存の呼び出し元のテストの準備に模擬のバックエンドの登録を足す）
-2. 転送のポートの型と、SDK を使わない Anthropic Messages のクライアント（要求本文の組み立て・SSE と JSON の解釈・`rawContent`・エラーの分類・中止）と BYOK（Anthropic）のバックエンドの登録関数（模擬のポートで固定）、バンドル検査への到達（親への質問 1 の回答による）
+2. 転送のポートの型と、SDK を使わない Anthropic Messages のクライアント（要求本文の組み立て・SSE と JSON の解釈・`rawContent`・エラーの分類・中止）と BYOK（Anthropic）のバックエンドの登録関数（模擬のポートで固定）、`core-entry.ts` からの登録関数の re-export（呼ばない）によるバンドル検査への到達
 
 > 1 と 2 は `llm/claude-client.ts`・`llm/llm-backend-registry.ts` で重なる（2 の登録は 1 の能力の宣言を要る）。1 を先に入れて 2 を直列にするのが無難。
 
@@ -406,7 +411,7 @@ S2 の設計はこの実測に拠る。上の表と食い違う点はこちら�
 
 **バンドル検査と品質ゲート**
 
-> 次の 2 項目（`core-entry.ts` からの到達・`registeredCoreLlmBackendNames()` が空）は、親への質問 1 の (A) を前提にする。**質問 1 の回答で確定させてから起票する**。
+> 次の 2 項目は親の決定（2026-09-27・案 (A)）による: `core-entry.ts` は BYOK（Anthropic）の登録関数を呼ばずに re-export する。
 
 - [ ] `core-entry.ts` から BYOK（Anthropic）の登録関数へ到達でき、`core-entry.bundle.test.ts` が合格する（BYOK〔Anthropic〕のモジュールが外部の指定子・SDK・Node のグローバルを持ち込まない）
 - [ ] `core-entry.ts` を読み込んだだけでは、`registeredCoreLlmBackendNames()` は空である（コアのエントリは BYOK〔Anthropic〕を登録しない）
