@@ -178,6 +178,15 @@ describe("resolveLlmBackend", () => {
       /api.*claude-code|claude-code.*api/,
     );
   });
+
+  // 機能仕様 docs/features/secure-transport-byok.md 受入基準（S2）: レジストリ
+  // の鍵の型を広げても（LlmBackendName が "byok-anthropic" を含むようになっ
+  // ても）、開発者用の版の LLM_BACKEND の許容値は変えない（仮定 A11）。
+  it("throws for LLM_BACKEND=byok-anthropic, same as any other disallowed value (registry key widening must not widen this validation)", () => {
+    expect(() => resolveLlmBackend({ LLM_BACKEND: "byok-anthropic" })).toThrow(
+      /api.*claude-code|claude-code.*api/,
+    );
+  });
 });
 
 // エビデンス強制（#256 決定 1-a / #387）: 保管ディレクトリは既存の DB パス

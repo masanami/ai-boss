@@ -19,6 +19,11 @@ import {
 
 function makeFakeImplementation(): LlmBackendImplementation {
   return {
+    // 機能仕様 docs/features/secure-transport-byok.md クリティカル設計
+    // 決定5: capabilities は必須項目。このファイルはレジストリのデータ
+    // 構造としての振る舞い（登録・列挙・参照・リセット）だけを検証する
+    // ため、値そのものはどのテストにも影響しない固定値でよい。
+    capabilities: { runsOwnToolLoop: false, supportsToolChoice: false, limitsResponseLength: false },
     createClient: () => ({ backend: "api", client: {} as never }),
     streamRound: async () => ({ content: [] }),
     createRound: async () => ({ content: [] }),

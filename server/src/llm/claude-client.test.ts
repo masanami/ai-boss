@@ -60,8 +60,11 @@ const {
   createBossMessage,
   requestVerdict,
   runWithTimeoutAndRetry,
+  getLlmBackendCapabilities,
 } = await import("./claude-client.js");
-const { resetLlmBackendRegistryForTest } = await import("./llm-backend-registry.js");
+const { resetLlmBackendRegistryForTest, registerLlmBackend } = await import(
+  "./llm-backend-registry.js"
+);
 // 機能仕様 docs/features/tauri-in-app-runtime.md 実装計画①: `claude-client.ts`
 // はもう `backends/*.ts` を静的 import しない。この facade のテストは
 // `createApp`（登録の呼び出し元）を経由せず `createClaudeClient` を直接
@@ -1897,5 +1900,74 @@ describe("streamBossMessage (claude-code backend — api retry-hook is not appli
     } finally {
       vi.useRealTimers();
     }
+  });
+});
+
+/**
+ * 機能仕様 docs/features/secure-transport-byok.md クリティカル設計決定5
+ * （#582 の決定 Q5）「能力の宣言」: `streamBossMessage` はもうバックエンドの
+ * **名前**では分岐せず、`getLlmBackendCapabilities(backend).runsOwnToolLoop`
+ * を参照する。ここでは名前と逆の能力を宣言した模擬のバックエンドを
+ * 名前 `api`/`claude-code` の下に登録して、名前で分岐する実装を検知する
+ * （受入基準 S2）。
+ */
+describe("capability-driven tool-loop ownership (getLlmBackendCapabilities)", () => {
+  afterEach(() => {
+    resetLlmBackendRegistryForTest();
+    registerDevLlmBackends();
+  });
+
+  it("throws LlmBackendNotRegisteredError when the backend name has no registered implementation", () => {
+    resetLlmBackendRegistryForTest();
+    expect(() => getLlmBackendCapabilities("api")).toThrow(LlmBackendNotRegisteredError);
+  });
+
+  it("the real registerDevLlmBackends()-registered api implementation declares runsOwnToolLoop=false/supportsToolChoice=true/limitsResponseLength=true", () => {
+    expect(getLlmBackendCapabilities("api")).toEqual({
+      runsOwnToolLoop: false,
+      supportsToolChoice: true,
+      limitsResponseLength: true,
+    });
+  });
+
+  it('a mock backend registered under the name "api" declaring runsOwnToolLoop=true makes streamBossMessage dispatch a single round and never call executeTool, even though round 1 returns tool_use', async () => {
+    resetLlmBackendRegistryForTest();
+    const streamRoundMock = vi
+      .fn()
+      .mockResolvedValue({ content: [{ type: "tool_use", id: "t1", name: "do_it", input: {} }] });
+    const executeTool = vi.fn().mockResolvedValue({ content: "done", isError: false });
+    registerLlmBackend("api", {
+      capabilities: { runsOwnToolLoop: true, supportsToolChoice: true, limitsResponseLength: true },
+      createClient: () => ({ backend: "api", client: {} as never }),
+      streamRound: streamRoundMock,
+      createRound: async () => ({ content: [] }),
+    });
+
+    const client = createClaudeClient({ ANTHROPIC_API_KEY: "sk-ant-test-key" }, "api");
+    await streamBossMessage(client, { messages: [{ role: "user", content: "hi" }] }, { executeTool });
+
+    expect(streamRoundMock).toHaveBeenCalledTimes(1);
+    expect(executeTool).not.toHaveBeenCalled();
+  });
+
+  it('a mock backend registered under the name "claude-code" declaring runsOwnToolLoop=false makes streamBossMessage call executeTool and dispatch a 2nd round when round 1 returns tool_use', async () => {
+    resetLlmBackendRegistryForTest();
+    const streamRoundMock = vi
+      .fn()
+      .mockResolvedValueOnce({ content: [{ type: "tool_use", id: "t1", name: "do_it", input: {} }] })
+      .mockResolvedValueOnce({ content: [{ type: "text", text: "done" }] });
+    const executeTool = vi.fn().mockResolvedValue({ content: "done", isError: false });
+    registerLlmBackend("claude-code", {
+      capabilities: { runsOwnToolLoop: false, supportsToolChoice: false, limitsResponseLength: false },
+      createClient: () => ({ backend: "claude-code", env: {} }),
+      streamRound: streamRoundMock,
+      createRound: async () => ({ content: [] }),
+    });
+
+    const client = createClaudeClient({}, "claude-code");
+    await streamBossMessage(client, { messages: [{ role: "user", content: "hi" }] }, { executeTool });
+
+    expect(executeTool).toHaveBeenCalledTimes(1);
+    expect(streamRoundMock).toHaveBeenCalledTimes(2);
   });
 });

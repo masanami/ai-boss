@@ -2,13 +2,18 @@ import type Anthropic from "@anthropic-ai/sdk";
 // Issue #118 の `resolveLlmBackend`（`createClaudeClient` の backend 既定の
 // 解決元）と、Issue #117 の `ApiMessageRequest`（thinking / outputConfig を
 // 含む api バックエンドのリクエスト型）は目的が異なり、両方必要（マージ解消）。
-import { resolveLlmBackend, type LlmBackend, type AppEnv } from "../config.js";
+import { resolveLlmBackend, type AppEnv } from "../config.js";
 import { ClaudeCodeUnavailableError, CLAUDE_CODE_UNAVAILABLE_HINT } from "./llm-errors.js";
 import {
   getLlmBackendImplementation,
+  type LlmBackendCapabilities,
+  type LlmBackendName,
   type LlmDispatchHooks,
   type ResolvedLlmRequest,
 } from "./llm-backend-registry.js";
+import type { SecureTransportPort } from "./secure-transport-port.js";
+
+export type { LlmBackendCapabilities, LlmBackendName } from "./llm-backend-registry.js";
 
 /** Re-exported so callers/tests can reference the FR-11 error type (and
  * Issue #118's switch-back guidance) without reaching into `llm-errors.js`
@@ -111,7 +116,12 @@ export class LlmTimeoutError extends Error {
  * invocation on that client", not "once for the process's lifetime". */
 export type BossLlmClient =
   | { backend: "api"; client: Anthropic }
-  | { backend: "claude-code"; env: Record<string, string | undefined> };
+  | { backend: "claude-code"; env: Record<string, string | undefined> }
+  // 機能仕様 docs/features/secure-transport-byok.md 仮定 A12: BYOK
+  // （Anthropic）のバリアントはポート（`SecureTransportPort`）を持つ——
+  // キーは持たない（`createClient` は `env` を読まず、キーの値を TS 側の
+  // どのオブジェクトにも保持しない）。
+  | { backend: "byok-anthropic"; transport: SecureTransportPort };
 
 export interface BossTextBlock {
   type: "text";
@@ -185,13 +195,26 @@ export interface BossLlmMessage {
  */
 export function createClaudeClient(
   env: AppEnv,
-  backend: LlmBackend = resolveLlmBackend(env),
+  backend: LlmBackendName = resolveLlmBackend(env),
 ): BossLlmClient {
   const implementation = getLlmBackendImplementation(backend);
   if (!implementation) {
     throw new LlmBackendNotRegisteredError(backend);
   }
   return implementation.createClient(env);
+}
+
+/**
+ * バックエンドの名前から、そのバックエンドが宣言する能力
+ * {@link LlmBackendCapabilities} を引く（機能仕様
+ * docs/features/secure-transport-byok.md クリティカル設計決定5・
+ * 「IF / API（S2）」）。呼び出し元・ファサードはバックエンドの**名前**では
+ * なくこの戻り値で振る舞いを変える——名前から能力を推し量る既定値は無い
+ * （未登録なら {@link createClaudeClient} と同じ
+ * {@link LlmBackendNotRegisteredError} で失敗する）。
+ */
+export function getLlmBackendCapabilities(backend: LlmBackendName): LlmBackendCapabilities {
+  return requireLlmBackendImplementation(backend).capabilities;
 }
 
 export interface ClaudeMessageRequest {
@@ -383,7 +406,7 @@ function trackSideEffects(callbacks?: StreamBossMessageCallbacks): {
  * failure mode {@link createClaudeClient} raises, kept consistent so a
  * `BossLlmClient` built before a backend was (hypothetically) unregistered
  * fails the same way a fresh `createClaudeClient` call would. */
-function requireLlmBackendImplementation(backend: LlmBackend) {
+function requireLlmBackendImplementation(backend: LlmBackendName) {
   const implementation = getLlmBackendImplementation(backend);
   if (!implementation) {
     throw new LlmBackendNotRegisteredError(backend);
@@ -544,25 +567,18 @@ async function dispatchCreate(
  * reworking `hasSideEffect` to track side effects across rounds too — judged
  * out of Issue #176's scope (self-review: design-reviewer/code-reviewer).
  *
- * **Known scope boundary of 機能仕様 docs/features/tauri-in-app-runtime.md
- * 実装計画①'s registry-based DI** (self-review: design-reviewer, PLAUSIBLE):
- * this facade still branches on `client.backend === "claude-code"` (here)
- * instead of the branch being owned entirely by `LlmBackendImplementation`.
- * (`runClaudeCodeDispatch`, by contrast, does *not* branch on
- * `client.backend` — self-review correction, 2周目: an earlier version of
- * this paragraph said it did. It only recognizes the claude-code-specific
- * `ClaudeCodeUnavailableError` type via `instanceof`, which is backend-name-
- * agnostic and a no-op for any error the `api` implementation raises — see
- * that function's own doc comment.) This was a deliberate, minimal-diff
- * choice for S1: the tool-loop-ownership question ("does this backend run
- * its own internal tool loop, or does the facade's outer loop own it?") is
- * backend *behavior*, not backend *wiring* — the registry abstraction this
- * ticket introduces is scoped to wiring (which implementation handles a
- * given named backend), not to redesigning where tool-loop ownership lives.
- * Moving it (e.g. an `ownsToolLoop` flag on `LlmBackendImplementation`) is
- * left to whichever of #581/#582 next touches this loop — S1 only needed
- * `claude-client.ts` to stop *importing* backend modules, not to stop
- * knowing backend *names* exist.
+ * **更新（#581 S2・機能仕様 docs/features/secure-transport-byok.md クリティ
+ * カル設計決定5）**: 上のツールループの所有権判定はもう `client.backend ===
+ * "claude-code"` という名前分岐ではなく、`getLlmBackendCapabilities(client.
+ * backend).runsOwnToolLoop` という**宣言された能力**への参照になっている
+ * （`LlmBackendImplementation.capabilities`）。このパラグラフが元々「S1 の
+ * 意図的な最小差分」として残していた「所有権を `LlmBackendImplementation`
+ * 側の `ownsToolLoop` フラグへ移すのは #581/#582 の宿題」という記述は、この
+ * 変更で解消済み——新しいバックエンド（BYOK〔Anthropic〕・将来の BYOK
+ * 〔OpenAI〕）を追加してもこの facade 自身の分岐は増えない。
+ * `runClaudeCodeDispatch` は依然 `client.backend` では分岐しない
+ * （`ClaudeCodeUnavailableError` を `instanceof` で見るだけ——バックエンド名
+ * に依存しない）。
  */
 export async function streamBossMessage(
   client: BossLlmClient,
@@ -570,7 +586,11 @@ export async function streamBossMessage(
   callbacks?: StreamBossMessageCallbacks,
   options?: StreamBossMessageOptions,
 ): Promise<BossLlmMessage> {
-  if (client.backend === "claude-code") {
+  // 機能仕様 docs/features/secure-transport-byok.md クリティカル設計決定5
+  // （#582 の決定 Q5）: バックエンドの**名前**ではなく、宣言された能力
+  // `runsOwnToolLoop` で分岐する。真（現行の `claude-code`）なら1回だけ
+  // dispatch して返す——ツールのループは Agent SDK 内部が既に回している。
+  if (getLlmBackendCapabilities(client.backend).runsOwnToolLoop) {
     return dispatchStream(client, request, callbacks, options?.signal);
   }
 

@@ -1,6 +1,7 @@
 # 秘密情報を扱う Rust 通信層と BYOK キーの保管（キーチェーン）
 
 > Issue #581。2026-09-26 に論点 Q1〜Q5 を確定した（親の回答とオーナーの回答。オーナーの回答は「決定」節に要約して記録する）。
+> 2026-09-27: S1（#600・PR #616）のマージ後、S2 を実装対象にするため改訂した（「実コードの実測」の取り直し・クリティカル設計決定 5・S2 の IF・受入基準（S2））。S2 の範囲に、#582 の決定 Q5（親）による「バックエンドの名前の分岐を能力の宣言へ置き換える」を加えた。
 
 ## 概要
 
@@ -31,6 +32,13 @@
 
 Q2（TS ⇔ Rust の境界・クリティカル設計決定 2）・Q3（送る先と資格情報の範囲・同 3）・Q5（S1 の切り方＝Tauri に依存しない Rust ライブラリを S1 とし、TS 側を S2、器への配線・キーの登録と削除の画面・製品版のエントリへの登録・動作確認を S3 とする。「スライス」節）は推奨どおり。Q4-b（実キーチェーンの結合テスト）は手動実行とし、手順を本仕様に書く。未署名の開発ビルドでデータ保護キーチェーンが使えない可能性は未検証のリスクとして S1 で実測し、使えない場合の開発ビルドの扱いは実測した時点で決める。
 
+### 親の決定（2026-09-27・S2 の改訂）
+
+- **S2 の範囲に「バックエンドの名前の分岐を能力の宣言へ置き換える」を加える**（#582 の機能仕様 `docs/features/llm-provider-abstraction.md` の決定 Q5）。対象は `reports/extract-evening-summary.ts` の `backend === "api"` による `toolChoice` の強制・`dashboard/boss-comment.ts` の `backend === "claude-code"` による短文の指示と全角 80 字の検証・`llm/claude-client.ts` の `client.backend === "claude-code"` によるツールのループの分岐。#582 S1 の着手条件は「本機能の S2 がマージされ、`LlmBackendImplementation` が 3 つの能力（ループを自分で回すか・強制に対応するか・応答長を制限できるか）を宣言する形になっていること」。能力の項目の名前・型は本機能の S2 が決める（#582 の仮定 A2。クリティカル設計決定 5）
+- **開発者用の版の振る舞いは変えない**: `api`・`claude-code` のバックエンド、自由入力のモデル設定、`LLM_BACKEND` の決め方、開発者用の版の外部送信の範囲（Anthropic のみ）（ADR 0003 改訂の決定 2・ADR 0002 改訂の決定 5）。置き換えの後も、既存の呼び出し元のテストが同じ結果になる（**期待値〔アサーション〕は変えず、変えてよいのは準備〔模擬のバックエンドの登録〕だけ**と確定）
+- **S2 のモジュールをバンドル検査の対象にする方法は案 (A)**: `core-entry.ts` が BYOK（Anthropic）の登録関数を呼ばずに re-export し、S3 で Tauri の器がポートを渡して呼ぶ（クリティカル設計決定 6）
+- 仮定 A9〜A15・クリティカル設計決定 5・6 は本仕様の記述どおり承認
+
 ## 実コードの実測（2026-09-26・`main` 3b65393／#594 ブランチ 18cac97／`spike/ios-tauri`）
 
 仕様の決定はこの実測に拠る。食い違ったらコードが正。以下、TS のパスは `server/src/` を省いて `llm/...` と書く。
@@ -42,12 +50,27 @@ Q2（TS ⇔ Rust の境界・クリティカル設計決定 2）・Q3（送る�
 | tool use のループ | `api` では TS のファサード（`streamBossMessage`）が最大 `MAX_TOOL_ROUNDS = 5` ラウンド回す。**thinking を使うターンは、アシスタントの元のブロック（`thinking` と署名）を `rawContent` として保持して次ラウンドにそのまま送り返す必要がある**（Issue #117。落とすと次ラウンドが拒否される） |
 | 中止とタイムアウト | ファサードの `runWithTimeoutAndRetry` が `AbortSignal` を 1 ラウンドごとにバックエンドへ渡す（既定 120 秒・2 回まで再試行・副作用〔テキスト配信・ツール実行〕の後は再試行しない）。生成停止（#254）も同じ `signal` を使う |
 | エラーの分類 | `api` の `classifyApiError` は SDK の `APIError` の `status`（408・429・5xx は再試行、他の 4xx は再試行しない）と `retry-after` ヘッダで判定する。**SDK の型に依存するため、SDK を使わない経路ではステータスと `retry-after` を別の形で受け取る必要がある** |
-| バックエンドの注入（#594・並行実装中） | `llm/llm-backend-registry.ts` の `registerLlmBackend(name, { createClient, streamRound, createRound, classifyError? })` に、エントリが実装を登録する。製品版のコアのエントリ（`core-entry.ts`）は何も登録しない。**バックエンド名 `LlmBackend` と `BossLlmClient` は `"api" \| "claude-code"` の閉じた型**で、新しいバックエンドを足すにはこの 2 つを広げる必要がある |
+| バックエンドの注入（#594。2026-09-27 訂正: PR #598 で `main` にマージ済み） | `llm/llm-backend-registry.ts` の `registerLlmBackend(name, { createClient, streamRound, createRound, classifyError? })` に、エントリが実装を登録する。製品版のコアのエントリ（`core-entry.ts`）は何も登録しない。**バックエンド名 `LlmBackend` と `BossLlmClient` は `"api" \| "claude-code"` の閉じた型**で、新しいバックエンドを足すにはこの 2 つを広げる必要がある |
 | #594 のバンドル検査 | 製品版のコアのバンドルに `@anthropic-ai/sdk` が含まれないことを受入基準で固定している（SDK は資格情報読み込みで `import('node:fs')` を持つ）。**したがって本機能の TS 側でも SDK を使えない**（SDK に独自の `fetch` を渡す形も採れない） |
 | spike のキーチェーン | `security_framework::passwords::{set,get,delete}_generic_password`（service `dev.aiboss.spike.tauri`・account `anthropic-api-key`）を Tauri コマンド 3 つで公開。**`keychain_get` はキーの値を WebView へ返す**。アクセス制御（アクセシビリティ・同期可否）は指定していない |
 | `security-framework` 3.7 の既定 | `PasswordOptions` は `use_protected_keychain()`（データ保護キーチェーン。「macOS 以外では常に真」）・`set_access_synchronized`・`set_access_control_options`・`set_access_group` を持つ。**macOS で `use_protected_keychain()` を呼ばない既定は、従来のファイル型キーチェーン（ログインキーチェーン）になる**（docs.rs で確認。挙動の実測はしていない） |
-| 検証の実行環境 | CI は無い（`.github/workflows` なし）。品質ゲートは `npm run lint`・`typecheck`・`test`・`test:tz` だけで、Rust のテストはまだどこからも実行されない。ローカルは `rustc 1.98.1`・`cargo 1.98.1` |
-| Tauri の器 | `main` に `src-tauri` はまだ無い（#579 S2 で作る） |
+| 検証の実行環境 | CI は無い（`.github/workflows` なし）。品質ゲートは `npm run lint`・`typecheck`・`test`・`test:tz` だけで、Rust のテストはまだどこからも実行されない。ローカルは `rustc 1.98.1`・`cargo 1.98.1`（2026-09-27 訂正: S1 で `npm run test:rust` が必須ゲートに加わった。CI は引き続き無い） |
+| Tauri の器 | `main` に `src-tauri` はまだ無い（#579 S2 で作る。2026-09-27 の `main` ad351f5 でも無い） |
+
+### S2 向けの取り直し（2026-09-27・`main` ad351f5）
+
+S2 の設計はこの実測に拠る。上の表と食い違う点はこちらが新しい。
+
+| 対象 | 実測 |
+|---|---|
+| バックエンドの名前の分岐（置き換えの対象） | (1) `llm/claude-client.ts:573` の `streamBossMessage` は `client.backend === "claude-code"` なら 1 回だけ `dispatchStream` して返し、それ以外はファサードが最大 `MAX_TOOL_ROUNDS = 5` ラウンドのツールのループを回す（同 547〜565 行のコメントが「`ownsToolLoop` のような能力へ移すのは #581／#582 の次の変更」と申し送っている）。(2) `reports/extract-evening-summary.ts:136・161` は `resolveLlmBackend(env)` の結果が `"api"` のときだけ `toolChoice: { type: "tool", name: "submit_evening_summary" }` を渡す。(3) `dashboard/boss-comment.ts:66〜71・134` は `"claude-code"` のときだけ `CLAUDE_CODE_SHORT_TEXT_INSTRUCTION`（全角 80 字以内の指示）をユーザーの指示に足し、応答が全角換算 80 字を超えたらテンプレートへ退避する。**名前で分岐しているのはこの 3 か所だけ**（`notifications/notification-body.ts`・`sessions/meeting-opening.ts`・`sessions/session-summary.ts` は `maxTokens` を渡すだけで名前で分岐しない）。`llm/dev-llm-backends.ts` の `client.backend !== "api"` 等は、実装が自分のクライアントの種類を確かめる型の絞り込みであり、置き換えの対象ではない |
+| 呼び出し元のテストの作り | `reports/extract-evening-summary.test.ts`・`dashboard/boss-comment.test.ts` は `../llm/claude-client.js` の `createClaudeClient`（と `requestVerdict`／`createBossMessage`）を `vi.mock` で差し替え、**バックエンドの選択を環境変数 `LLM_BACKEND` だけで与える**（レジストリには何も登録しない。`boss-comment.test.ts` の模擬のクライアントは `{}`）。`boss-comment.claude-code.test.ts`・`notification-body.claude-code.test.ts` は Agent SDK を模擬にして `registerDevLlmBackends()` を呼ぶ。**能力をレジストリから引く形にすると、前者 2 つのテストは準備（模擬のバックエンドの登録）を足す必要がある** |
+| `LlmBackend` の 2 つの役割 | `config.ts` の `LlmBackend` は `ALLOWED_LLM_BACKENDS = ["api", "claude-code"]` から作る型で、(a) 開発者用の版の `LLM_BACKEND` の検証（許容値以外は `resolveLlmBackend` が例外）と、(b) レジストリの鍵（`Map<LlmBackend, …>`）の両方に使われている。**型を広げるだけだと `LLM_BACKEND=byok-anthropic` が開発者用の版で通ってしまう** |
+| `api` の要求の組み立て | `backends/api-backend.ts` の `streamApiMessage` は `model`・`max_tokens`・`system`・`messages`・`tools`・`thinking`・（あれば）`output_config` を送り、**`tool_choice` を送らない**。`createApiMessage` はこれに `tool_choice` を足す。応答は `normalizeMessage` が `text`・`tool_use` だけを `content` に残し、SDK が返した `content` 全体を `rawContent` にする。どちらも無い応答は停止理由・ブロックの種類・モデル・トークン数だけを `console.warn` に出す |
+| `api` のエラーの分類 | `classifyApiError` は SDK の `APIError` の `status`（`undefined`・408・429・5xx は再試行可、他は不可）と、`retry-after`（整数の秒数、または `Www, DD Mon YYYY HH:MM:SS GMT` の形の HTTP 日付。それ以外・過去の日付は無視）で判定する。**`APIError` でない例外は再試行可**。この判定は `@anthropic-ai/sdk` を値で import する `api-backend.ts` の中にあり、コアから import できない |
+| 中止の伝わり方 | `dispatchStream` は `runWithTimeoutAndRetry` の `AbortSignal` を `streamRound` に渡す（生成停止の `signal` はこれに合流する）。`dispatchCreate` は生成停止の `signal` を持たず、タイムアウトだけで中止する。中止された後は `runWithTimeoutAndRetry` が `LlmTimeoutError` を投げる（バックエンドが投げた例外の種類は問わない） |
+| 製品版のコアのバンドル検査 | `core-entry.bundle.test.ts` は `core-entry.ts` から到達できるモジュールだけを束ねて検査する（外部の指定子・`@anthropic-ai/sdk`・Agent SDK の混入の禁止、`server/src` の入力での `process`・`Buffer`・`require`・`setImmediate` 等の Node のグローバルの値参照と `node:` の値 import の禁止、`registeredCoreLlmBackendNames()` が空）。**S2 のモジュールが `core-entry.ts` から到達できなければ、この検査の対象にならない**（クリティカル設計決定 6。親の決定で `core-entry.ts` から登録関数を re-export する） |
+| Rust の通信層（S1・PR #616） | `SecureTransport::send(SendRequest)` → `ResponseStream`（`head()` が `ResponseHead { status, retry_after, request_id, content_type }`、`next_chunk()` が本文の断片を順に返す）、`cancel(request_id)`。**失敗の種類は仕様の 5 つより多い 8 つ**: `UnknownDestination`・`KeyNotRegistered`・`KeyStore(StoreError)`・`InvalidHeader`・`DuplicateRequestId`・`Connection`・`Cancelled`・`RedirectRefused { status }`。**呼び出し元が `content-type` を付けなければ Rust が `application/json` を付ける**。捨てる要求ヘッダは `x-api-key`・`authorization`・`anthropic-version`・`host`・`content-length`・`transfer-encoding`・`connection` |
 
 ## 機能要件（機能全体。スライスごとの範囲は「スライス」節）
 
@@ -65,6 +88,7 @@ Q2（TS ⇔ Rust の境界・クリティカル設計決定 2）・Q3（送る�
 - [ ] キーは WebView に出ない
 - [ ] キーはログに出ない
 - [ ] キーは DB に出ない
+- [ ] LLM のバックエンドは、ツールのループを自分で回すか・ツール呼び出しの強制に対応するか・要求ごとに応答長を制限できるかを能力として宣言し、呼び出し元とファサードはバックエンドの名前ではなく宣言された能力で振る舞いを変える（S2。#582 の決定 Q5）
 - [ ] 製品版のエントリに BYOK（Anthropic）のバックエンドが登録される（S3。#579 S2 の後）
 - [ ] 製品版の Tauri アプリで、朝会の開始時にボスの発言が LLM で生成されて表示される（確認は S3。#580 S2 の後）
 - [ ] 製品版の Tauri アプリで、夕会の終了時に日報の要約が LLM で生成される（確認は S3。#580 S2 の後）
@@ -80,7 +104,7 @@ Q2（TS ⇔ Rust の境界・クリティカル設計決定 2）・Q3（送る�
 
 - 使用技術: S1 は Tauri に依存しない Rust ライブラリ（HTTP クライアント・`security-framework`）。S3 で Tauri 2 のコマンドと `tauri::ipc::Channel` で公開する。TS 側は既存の `server/src/llm/` のファサードと #594 のレジストリに接続する
 - 前提（別 Issue・並行）: Tauri の器は #579 S2、製品版の DB は #580 S2、プロバイダの抽象化（OpenAI・許可モデル）は #582、中継サーバーは #583、アカウント・ライセンスは #584。**本機能はこれらを実装しない**
-- 依存関係（着手の順序）: S1（Rust ライブラリ）は TS に触れないため #594 を待たずに着手できる。S2（TS 側）は #594（#579 S1。レジストリ）のマージ後。**Tauri コマンドへの配線と製品版での動作確認（S3）は #579 S2 の器ができてから**。製品版の朝会・夕会・チャットの実動作確認は #580 S2（製品版の DB）の後（生成のルートが LLM を呼ぶ前に DB を読むため。#579 仕様のクリティカル設計決定 1「未検証点の扱い」と同じ理由）
+- 依存関係（着手の順序）: S1（Rust ライブラリ）は TS に触れないため #594 を待たずに着手できる。S2（TS 側）は #594（#579 S1。レジストリ）のマージ後（2026-09-27 時点で S1〔PR #616〕・#594〔PR #598〕とも `main` にマージ済み）。**#582 S1（OpenAI の変換器）は本機能の S2 のマージ後に着手する**（転送のポート・Anthropic の変換器・能力の宣言の上に作る）。**Tauri コマンドへの配線と製品版での動作確認（S3）は #579 S2 の器ができてから**。製品版の朝会・夕会・チャットの実動作確認は #580 S2（製品版の DB）の後（生成のルートが LLM を呼ぶ前に DB を読むため。#579 仕様のクリティカル設計決定 1「未検証点の扱い」と同じ理由）
 - 既存コードとの関係: 開発者用の版（`api`・`claude-code`・`server/.env`）は変えない（ADR 0002 改訂の決定 5）
 
 ## クリティカル設計決定
@@ -110,7 +134,7 @@ Q2（TS ⇔ Rust の境界・クリティカル設計決定 2）・Q3（送る�
 - **代替案**:
   - (B) Rust が SSE を解釈して、テキストの差分と最終メッセージを TS へ渡す — Rust にプロバイダの形式の知識が入り、#582 で OpenAI の形式を Rust と TS の両方に書くことになる。thinking の署名の保持も Rust 側の責務になる
   - (C) `@anthropic-ai/sdk` に Rust 経由の `fetch` を渡す — #594 の受入基準（製品版のコアに SDK を入れない）に反する
-- **影響範囲**: `llm/claude-client.ts`（`BossLlmClient` の閉じた型を広げる）・`config.ts`（`LlmBackend` の閉じた型を広げる）・#594 のレジストリ・製品版のエントリ（**クリティカル箇所: Claude API 連携・API キーの取り扱い。変更時は人間レビュー必須**）
+- **影響範囲**: `llm/claude-client.ts`（`BossLlmClient` の閉じた型と `createClaudeClient` の `backend` の型を広げる）・`config.ts`（2026-09-27 訂正: `LlmBackend` をそのまま広げると `LLM_BACKEND` の許容値まで広がるため、レジストリの鍵の型と環境変数の検証の型を分ける。クリティカル設計決定 5・仮定 A11）・#594 のレジストリ・製品版のエントリ（**クリティカル箇所: Claude API 連携・API キーの取り扱い。変更時は人間レビュー必須**）
 
 ### 3. 送る先と付与する資格情報の範囲（Q3・確定）
 
@@ -134,6 +158,34 @@ Q2（TS ⇔ Rust の境界・クリティカル設計決定 2）・Q3（送る�
   - **品質ゲートへの組み込み（オーナーの決定 Q4-a）**: `npm run test:rust`（Rust ライブラリの `cargo test`）を新設し、**必須ゲートに加える**。`npm test` は `cargo` を呼ばず、Rust のツールチェーンが無くても従来どおり動く。repo の `CLAUDE.md` の品質方針（必須ゲート）と「よく使うコマンド」の更新は S1 の範囲とする
 - **代替案**: (a) 実キーチェーンの結合テストを既定の実行に含める — 開発機の状態（ログイン・署名）でテストが揺れる。CI も無い。(b) `cargo test` を `npm test` に含める — Rust のツールチェーンが無い環境で `npm test` が動かなくなる
 
+### 5. バックエンドの能力の宣言（S2・範囲は親の決定〔#582 の決定 Q5〕、形は本仕様で決める）
+
+- **採用案**: `LlmBackendImplementation` に**必須の**能力の宣言（3 つの真偽値）を持たせ、名前で分岐していた 3 か所を宣言の参照へ置き換える。
+  - 「ツールのループを自分で回す」（仮に `runsOwnToolLoop`）: 真なら `streamBossMessage` はファサードのループを回さず 1 回だけ送る（現行の `claude-code` の扱い）。偽ならファサードが最大 `MAX_TOOL_ROUNDS` ラウンド回す
+  - 「ツール呼び出しの強制に対応する」（仮に `supportsToolChoice`）: 真のときだけ夕会の要約抽出が `toolChoice` で `submit_evening_summary` を強制する。偽なら渡さない（プロンプトの指示で代替する現行の `claude-code` の扱い）
+  - 「要求ごとに応答長を制限できる」（仮に `limitsResponseLength`）: 偽のときだけダッシュボードのひとことが短文の指示を足し、全角換算 80 字を超えた応答をテンプレートへ退避する
+  - 各バックエンドの宣言: `api` ＝ 回さない・対応する・制限できる／`claude-code` ＝ 回す・対応しない・制限できない／BYOK（Anthropic）＝ 回さない・対応する・制限できる（#582 の BYOK〔OpenAI〕も同じ宣言になる）
+  - 呼び出し元は、クライアントを作るのと同じバックエンドの名前でレジストリから宣言を引く（ファサードが引く関数を公開する。未登録なら `createClaudeClient` と同じ `LlmBackendNotRegisteredError`）。**名前から能力を推し量る既定値は置かない**（宣言が無いバックエンドを黙って `api` 扱い・`claude-code` 扱いにしない）
+  - **開発者用の版の `LLM_BACKEND` の許容値は `api`・`claude-code` のまま**。レジストリの鍵の型だけを広げ、環境変数の検証に使う型とは分ける（「実コードの実測」の `LlmBackend` の 2 つの役割）
+- **理由**: #582 で BYOK（OpenAI）が加わっても呼び出し元を変えずに済み、新しいバックエンドの名前を足したときに夕会の要約抽出の強制が黙って外れる事故（#582 の実測）を防ぐ。3 つの能力は、名前で分岐していた 3 か所の意味をそのまま名前に置き換えたもので、これ以上細かい宣言（例: 強制の種類ごとの対応）を使う呼び出し元は無い（YAGNI）。任意の項目にしないのは、宣言し忘れた実装が既定値へ黙って倒れるのを型で防ぐため
+- **代替案**:
+  - 能力を `BossLlmClient` の値に載せる — `createClaudeClient` を模擬にしている既存のテスト（模擬のクライアントは `{}` や `{ backend: "api", client: {} }`）では、どちらにしても準備を足す必要があり、差が無い。クライアントの判別共用体の各バリアントに同じ項目が重複する
+  - 名前 → 能力の表をコアに置く — コアがバックエンドの名前を知ることになり、置き換えの目的（名前で分岐しない）に反する
+- **既存のテストへの影響**: 名前の分岐を宣言へ置き換えると、`LLM_BACKEND` だけでバックエンドを選んでいた呼び出し元のテスト（`extract-evening-summary.test.ts`・`boss-comment.test.ts`）は、`api`・`claude-code` と同じ能力を宣言する模擬のバックエンドの登録を準備に足す必要がある。**期待値（アサーション）は変えない**（親の決定「既存の呼び出し元のテストが同じ結果になる」をこの意味に読む）
+- **影響範囲**: `llm/llm-backend-registry.ts`・`llm/claude-client.ts`・`llm/dev-llm-backends.ts`・`reports/extract-evening-summary.ts`・`dashboard/boss-comment.ts`・`config.ts`（**クリティカル箇所: Claude API 連携。変更時は人間レビュー必須**）
+
+### 6. SDK を使わない Anthropic のクライアントと転送のポート（S2・クリティカル設計決定 2 の TS 側の具体化）
+
+- **採用案**:
+  - **転送のポート**は「宛先の名前・秘密でないヘッダ・本文と `AbortSignal` を受け取り、応答の頭（ステータスと許可したヘッダ）と本文のバイト列の断片の非同期の列を返す」関数型の境界とする。`requestId` の発行と `secure_cancel` の呼び出しは S3 の Tauri 実装のポートの中に閉じる（TS のクライアントは `AbortSignal` を中止するだけ）。失敗は Rust の 8 つの種類に対応する種類を持つ 1 つのエラーの型で表す
+  - **BYOK（Anthropic）のバックエンド**（仮に `byok-anthropic`）は、ポートを引数に取る登録関数でレジストリへ登録する。`createClient(env)` は `env` を読まない（`ANTHROPIC_API_KEY` を含め、キーを受け取る場所を TS 側に作らない）
+  - 要求本文は、`api` の `streamApiMessage`／`createApiMessage` が SDK に渡す項目と同じ名前・同じ値の JSON（`model`・`max_tokens`・`system`・`messages`・`tools`・`tool_choice`・`thinking`・`output_config`）に `stream` を足したもの。ヘッダは付けない（`x-api-key`・`anthropic-version`・`content-type` は Rust が付ける）
+  - 応答の解釈: ストリーミングは SSE（`message_start`・`content_block_start`・`content_block_delta`〔`text_delta`・`input_json_delta`・`thinking_delta`・`signature_delta`〕・`content_block_stop`・`message_delta`・`message_stop`・`ping`・`error`）を組み立て、非ストリーミングは JSON を読む。どちらも `normalizeMessage` と同じく `text`・`tool_use` を `content` に、組み立てたブロック全体（`thinking` と署名・`redacted_thinking` を含む）を `rawContent` にする。バイト列の復号は多バイト文字の途中で断片が切れても壊れない形で行う（`TextDecoder` の逐次復号。`Buffer` はバンドル検査で使えない）
+  - エラーの分類は `classifyApiError` と同じ規則を SDK なしで持つ（HTTP のステータスと `retry-after`）。ポートの失敗は、接続失敗だけを再試行可、他（宛先不明・キー未登録・キーの保管の失敗・不正なヘッダ・要求 ID の重複・リダイレクト拒否）を再試行不可とする。応答の途中の SSE の `error` イベントと、`message_stop` の前に本文が終わった場合は再試行可とする（SDK の経路で `status` を持たない失敗が再試行可になる現行の規則に揃える）
+- **S2 のモジュールをバンドル検査の対象にする方法（2026-09-27 親の決定）**: 製品版のエントリへの登録は S3 の範囲で、そのままでは S2 の時点で `core-entry.ts` から BYOK（Anthropic）のモジュールへ到達せず、`core-entry.bundle.test.ts` が S2 のコードを検査しない（「実コードの実測」）。このため `core-entry.ts` が登録関数を**呼ばずに re-export** する（案 (A)。選択肢は「IF / API（S2）」の後に記す）
+- **理由**: ポートが `AbortSignal` を受け取る形にすると、ファサードの中止（`runWithTimeoutAndRetry` の `signal`・生成停止）がそのままポートへ届き、`requestId` の管理が TS のクライアントと模擬のポートのテストに漏れない。要求本文を `api` と同じ項目にすると、開発者用の版で確かめた要求の形（Issue #117 の thinking の既定など）を製品版でもそのまま使える
+- **影響範囲**: 新規のポートの型・BYOK（Anthropic）のバックエンド、`retry-after` の解釈を SDK なしで共有する場合は `backends/api-backend.ts`（振る舞いは変えない）（**クリティカル箇所: Claude API 連携・API キーの取り扱い。変更時は人間レビュー必須**）
+
 ## 機能全体の設計
 
 ### アーキテクチャ決定
@@ -152,6 +204,32 @@ Q2（TS ⇔ Rust の境界・クリティカル設計決定 2）・Q3（送る�
 - 応答の頭の `request-id` は Anthropic が返す応答ヘッダであり、呼び出し元が生成する `requestId` とは別物である
 - 失敗の種類: 宛先不明／キー未登録／接続失敗／中止／リダイレクト拒否（3xx。ステータスだけを持つ）（3xx 以外の HTTP のステータスは応答の頭で返す）。**エラーの値にキー・要求本文・応答本文を含めない**
 - キーの操作: 登録（プロバイダ・値）／削除（プロバイダ）／登録の有無（プロバイダ → 真偽値）
+- 失敗の種類（2026-09-27 追記・S1 の実装の実測）: 上の 5 つに、キーの保管の失敗・不正なヘッダ・要求 ID の重複を加えた 8 つ
+
+### IF / API（S2 で固定する TS 側の境界・名前は仮）
+
+- **能力の宣言**（クリティカル設計決定 5）: `LlmBackendImplementation` に必須の `capabilities: { runsOwnToolLoop: boolean; supportsToolChoice: boolean; limitsResponseLength: boolean }`。ファサードは、バックエンドの名前から宣言を引く関数（仮に `getLlmBackendCapabilities(backend)`。未登録なら `LlmBackendNotRegisteredError`）を公開する
+- **転送のポート**（クリティカル設計決定 6）:
+  - 送信: `send({ destination: "anthropic-messages", headers?: Record<string, string>, body: string }, signal: AbortSignal)` → `{ status: number, headers: { "retry-after"?: string, "request-id"?: string, "content-type"?: string }, body: AsyncIterable<Uint8Array> }`
+  - 失敗: 送信の段階・本文を読む段階のどちらでも、種類（宛先不明・キー未登録・キーの保管の失敗・不正なヘッダ・要求 ID の重複・接続失敗・中止・リダイレクト拒否）を持つ 1 つのエラーの型で投げる。リダイレクト拒否はステータスを持つ。**エラーの値にキー・要求本文・応答本文を含めない**
+  - `signal` が中止されたら、ポートは送信中の要求を中止する（S3 の Tauri 実装では `secure_cancel`）
+- **BYOK（Anthropic）のバックエンドの登録**: 登録関数（仮に `registerByokAnthropicBackend(transport)`）がポートを受け取り、`byok-anthropic` の名前でレジストリへ登録する。宣言する能力は「ループを自分で回さない・強制に対応する・応答長を制限できる」
+- **要求本文**: `model`・`max_tokens`・`messages` と、呼び出し元が指定したときだけ `system`・`tools`・`tool_choice`・`output_config`。`thinking` は常に含める（ファサードの既定の `{ type: "disabled" }` を含む）。ストリーミングは `stream: true`、非ストリーミングは `stream: false`
+- **HTTP のエラー**: 応答のステータスが 2xx でなければ、本文を `text`・`tool_use` として解釈せず、ステータスと `retry-after` を持つ例外で失敗する（`onTextDelta` は呼ばない）
+- **ログ**: 応答に `text`・`tool_use` が 1 つも無いときは `normalizeMessage` と同じくメタ情報（停止理由・ブロックの種類・モデル・トークン数）だけを `console.warn` に出す。本文・thinking・ツールの入力は出さない
+
+### S2 のモジュールをバンドル検査の対象にする方法（2026-09-27 親の決定: (A)）
+
+- **採用: (A)**。`core-entry.ts` は BYOK（Anthropic）の登録関数を**呼ばずに re-export** し、S3 で Tauri の器がポートを渡して呼ぶ。`registeredCoreLlmBackendNames()` は空のまま（オーナーの決定 Q4-c）
+- **#582 S1 への申し送り**: OpenAI の変換器（BYOK〔OpenAI〕の登録関数）も同じ入口（`core-entry.ts` から呼ばずに re-export）に置けば、既存の `core-entry.bundle.test.ts` がそのまま検査する
+
+| 案 | 内容 | 利点 | 欠点 |
+|---|---|---|---|
+| (A)（採用） | `core-entry.ts` が BYOK（Anthropic）の登録関数を**呼ばずに** re-export する。S3 で Tauri の器がこの関数に Tauri 実装のポートを渡して呼ぶ | 既存の `core-entry.bundle.test.ts` がそのまま S2 のモジュールを検査する（テストの変更が要らない）。`registeredCoreLlmBackendNames()` は空のまま（オーナーの決定 Q4-c「コアのエントリは何も登録しない」を保つ）。アーキテクチャ決定「製品版のエントリが Tauri 実装のポートを注入する」の注入口がそのまま決まる | S3 の「製品版のエントリへの登録」の一部（公開の形）を S2 で先に決めることになる |
+| (B) | `core-entry.bundle.test.ts` に、BYOK（Anthropic）のモジュールを入口にした 2 本目のバンドル検査を足す（`core-entry.ts` は変えない） | コアのエントリの公開面を S3 まで変えない | #594 の検査の仕組み（esbuild の設定・静的検査）を 2 つの入口で持つ変更が要る。#582 の OpenAI の変換器でも同じ追加が要る |
+| (C) | S2 ではバンドル検査の対象にしない（S3 の登録で到達するようになってから検査される） | S2 の変更が最小 | S2 の時点で「Node 依存・SDK が入らない」が機械的に確かめられない（親の指示「#594 のバンドル検査を通すこと」を満たせない）。#582 S1 の受入基準（`core-entry.bundle.test.ts` が OpenAI の変換器を検査する）も空振りになる |
+
+> 受入基準（S2）の該当項目は (A) を前提に書いた。親の回答が (B)・(C) なら、その項目を書き換える。
 
 ### 実装計画（S1 のチケット分解の見通し）
 
@@ -160,6 +238,13 @@ Q2（TS ⇔ Rust の境界・クリティカル設計決定 2）・Q3（送る�
 3. Rust ライブラリ: 実キーチェーンの結合テスト（`#[ignore]`・手動実行の手順・属性のアサーション）
 4. `npm run test:rust` の新設と、`CLAUDE.md` の品質方針（必須ゲート）・よく使うコマンドの更新
 
+### 実装計画（S2 のチケット分解の見通し）
+
+1. 能力の宣言: `LlmBackendImplementation` の必須の能力・`api`／`claude-code` の宣言・ファサードの参照関数、レジストリの鍵の型と `LLM_BACKEND` の検証の型の分離、名前の分岐 3 か所の置き換え（既存の呼び出し元のテストの準備に模擬のバックエンドの登録を足す）
+2. 転送のポートの型と、SDK を使わない Anthropic Messages のクライアント（要求本文の組み立て・SSE と JSON の解釈・`rawContent`・エラーの分類・中止）と BYOK（Anthropic）のバックエンドの登録関数（模擬のポートで固定）、`core-entry.ts` からの登録関数の re-export（呼ばない）によるバンドル検査への到達
+
+> 1 と 2 は `llm/claude-client.ts`・`llm/llm-backend-registry.ts` で重なる（2 の登録は 1 の能力の宣言を要る）。1 を先に入れて 2 を直列にするのが無難。
+
 ## スライス（出荷の単位）
 
 > Q5（親の決定）。#579 S2 の器が無い時点で出荷できる最小の単位として、Tauri に依存しない Rust ライブラリを S1 にした。
@@ -167,10 +252,10 @@ Q2（TS ⇔ Rust の境界・クリティカル設計決定 2）・Q3（送る�
 | スライス | 内容 | 触るファイル数（概算） | 出荷条件 |
 |---|---|---|---|
 | S1（最小） | Tauri に依存しない Rust の通信層ライブラリ。保管のポート（macOS キーチェーン実装とテスト用のメモリ実装）・宛先の表（Anthropic Messages のみ）・キーを付与するストリーミング転送と中止。`cargo test` で、付与するヘッダ・認証ヘッダの除去・宛先外の拒否・逐次の中継・中止・キーの非露出を固定する。`npm run test:rust` を必須ゲートに加える（`CLAUDE.md` の更新を含む）。実キーチェーンの結合テスト（手動）で、未署名の開発ビルドでのデータ保護キーチェーンの可否を実測する | 10-14 | #594 のマージを待たずに着手できる（TS に触れない）。これだけで、#576 で未検証だった「Rust からのストリーミング転送」と「キーを返さない保管」の成立が確かめられる |
-| S2 | TS 側: SDK を使わない Anthropic Messages のクライアント（SSE の解釈・thinking の署名の保持・tool use のループへの接続・エラーの分類）を転送のポートの上に作り、#594 のレジストリへ BYOK（Anthropic）として登録できる形にする（`LlmBackend`・`BossLlmClient` の拡張）。vitest で模擬のポートを使って固定する | 8-12 | S1 と #594 がマージされてから |
+| S2 | TS 側: SDK を使わない Anthropic Messages のクライアント（SSE の解釈・thinking の署名の保持・tool use のループへの接続・エラーの分類）を転送のポートの上に作り、#594 のレジストリへ BYOK（Anthropic）として登録できる形にする（`LlmBackend`・`BossLlmClient` の拡張）。**呼び出し元とファサードのバックエンドの名前の分岐（`reports/extract-evening-summary.ts`・`dashboard/boss-comment.ts`・`llm/claude-client.ts`）を、`LlmBackendImplementation` が宣言する能力（ツールのループを自分で回すか・ツール呼び出しの強制に対応するか・要求ごとに応答長を制限できるか）へ置き換える**（#582 の決定 Q5・クリティカル設計決定 5。開発者用の版の振る舞いは変えない）。vitest で模擬のポートを使って固定する | 14-20 | S1 と #594 がマージされてから（2026-09-27 時点で両方マージ済み）。#582 S1 はこのスライスのマージ後に着手する |
 | S3 | #579 S2 の器への配線: Tauri のコマンドと `Channel`・capability、製品版のエントリへの登録、キーの登録・削除の画面、検査手順。製品版でのチャット（SSE・生成停止）・朝会・夕会の動作確認 | 8-15 | S2 と #579 S2 がマージされてから（動作確認は #580 S2 の後） |
 
-実装対象: S1
+実装対象: S2
 
 ## やらないこと
 
@@ -184,6 +269,10 @@ Q2（TS ⇔ Rust の境界・クリティカル設計決定 2）・Q3（送る�
 - 登録時のキーの有効性の事前確認（テスト送信）（理由: 本仕様では決めない。必要なら S3 を実装対象にするときの論点）
 - 端末をまたいだキーの同期・iCloud キーチェーンへの保管（理由: オーナーの決定 Q1-a。端末ごとに登録し直す）
 - キーを WebView を通さずに入力するネイティブの入力画面（理由: オーナーの決定 Q1-b。登録時の 1 回の通過を許容する。ADR 0011 決定 6 はネイティブ UI を採らない）
+- 開発者用の版（Node サーバー）で BYOK（Anthropic）のバックエンドを登録すること・`LLM_BACKEND` の許容値を増やすこと（理由: ADR 0003 改訂の決定 2・ADR 0002 改訂の決定 5。開発者用の版には Rust の通信層が無い）
+- 保存した選択を要求ごとに送信先へ反映する経路（選択の解決関数）（理由: #582 S2 の範囲。#582 のクリティカル設計決定 5）
+- 転送のポートの Tauri 実装（`invoke`・`Channel`・`secure_cancel` と `requestId` の発行）（理由: S3 の範囲）
+- 実キー・実 API での動作確認（理由: S3 の範囲。S2 は模擬のポートと手書きの応答で固定する）
 
 ## 受入基準（S1）
 
@@ -233,6 +322,105 @@ Q2（TS ⇔ Rust の境界・クリティカル設計決定 2）・Q3（送る�
 - [ ] `npm test` が合格する
 - [ ] `npm run test:tz` が合格する
 
+## 受入基準（S2）
+
+> テストはすべて vitest で、模擬の転送のポートと、Anthropic Messages API の形に合わせた手書きの応答（SSE のバイト列・JSON）で行い、実 API は呼ばない。「能力を宣言した模擬のバックエンド」は、テストの中でレジストリへ登録する、名前も能力も任意に選べる実装を指す。
+
+**能力の宣言（バックエンドの名前の分岐の置き換え）**
+
+- [ ] `registerDevLlmBackends()` が登録する `api` の実装は「ループを自分で回さない・強制に対応する・応答長を制限できる」と宣言する
+- [ ] `registerDevLlmBackends()` が登録する `claude-code` の実装は「ループを自分で回す・強制に対応しない・応答長を制限できない」と宣言する
+- [ ] BYOK（Anthropic）の登録関数が登録する実装は「ループを自分で回さない・強制に対応する・応答長を制限できる」と宣言する
+> 次の 8 項目は、**名前と逆の能力を宣言した模擬のバックエンド**を名前 `api`・`claude-code` の下に登録して確かめる（呼び出し元はバックエンドを `LLM_BACKEND` で選ぶため、名前はこの 2 つに限られる）。名前で分岐する実装はこれらの項目で落ちる。
+
+- [ ] 名前 `api` の下に「ループを自分で回す」と宣言した模擬のバックエンドを登録し、`streamBossMessage` に `executeTool` を渡して呼ぶと、1 回目の応答に `tool_use` があっても、`streamRound` は 1 回だけ呼ばれ、ファサードは `executeTool` を呼ばない
+- [ ] 名前 `claude-code` の下に「ループを自分で回さない」と宣言した模擬のバックエンドを登録し、`streamBossMessage` に `executeTool` を渡して呼ぶと、1 回目の応答に `tool_use` があれば、ファサードは `executeTool` を呼び、`streamRound` を 2 回目も呼ぶ
+- [ ] `LLM_BACKEND=claude-code` で、名前 `claude-code` の下に「強制に対応する」と宣言した模擬のバックエンドを登録して夕会の要約抽出を呼ぶと、要求の `toolChoice` は `{ type: "tool", name: "submit_evening_summary" }` である
+- [ ] `LLM_BACKEND=api` で、名前 `api` の下に「強制に対応しない」と宣言した模擬のバックエンドを登録して夕会の要約抽出を呼ぶと、要求に `toolChoice` が無い
+- [ ] `LLM_BACKEND=api` で、名前 `api` の下に「応答長を制限できない」と宣言した模擬のバックエンドを登録してダッシュボードのひとことを生成すると、要求のユーザーの指示に `CLAUDE_CODE_SHORT_TEXT_INSTRUCTION` が含まれる
+- [ ] 同じ条件で全角換算 81 字の応答が返ると、ダッシュボードのひとことはテンプレートの文面になる
+- [ ] `LLM_BACKEND=claude-code` で、名前 `claude-code` の下に「応答長を制限できる」と宣言した模擬のバックエンドを登録してダッシュボードのひとことを生成すると、要求のユーザーの指示に `CLAUDE_CODE_SHORT_TEXT_INSTRUCTION` が含まれない
+- [ ] 同じ条件で全角換算 81 字の応答が返ると、ダッシュボードのひとことはその応答の文面になる（テンプレートへ退避しない）
+- [ ] 能力の宣言を引く関数に未登録のバックエンドの名前を渡すと、`LlmBackendNotRegisteredError` で失敗する
+- [ ] 既存の `reports/extract-evening-summary.test.ts`・`dashboard/boss-comment.test.ts`・`dashboard/boss-comment.claude-code.test.ts`・`notifications/notification-body.claude-code.test.ts`・`llm/claude-client.test.ts`・`config.test.ts` は、既存のテストケースの期待値（アサーション）を変えずに合格する（変えてよいのはテストの準備〔模擬のバックエンドの登録・模擬の実装への能力の宣言の追加〕だけ）
+- [ ] `resolveLlmBackend` に `LLM_BACKEND=byok-anthropic` を渡すと、他の許容外の値と同じく例外で失敗する
+- [ ] `registerDevLlmBackends()` の後、`registeredLlmBackendNames()` は `api` と `claude-code` の 2 つだけである（開発者用の版は BYOK〔Anthropic〕を登録しない）
+
+**BYOK（Anthropic）の登録と要求**
+
+- [ ] BYOK（Anthropic）の登録関数に模擬のポートを渡した後、`createClaudeClient(env, "byok-anthropic")` は `env` に `ANTHROPIC_API_KEY` が無くても失敗しない
+- [ ] BYOK（Anthropic）で送ると、ポートに渡る宛先の名前は `anthropic-messages` である（ストリーミング・非ストリーミングの両方）
+- [ ] BYOK（Anthropic）でポートに渡る要求の `headers` に、`x-api-key`・`authorization`・`anthropic-version` のいずれも無い（大文字小文字を区別しない）
+- [ ] `env` の `ANTHROPIC_API_KEY` に値を入れてクライアントを作っても、ポートに渡る要求の `headers` の値と本文に、その値の文字列が現れない
+- [ ] ストリーミングの要求本文の `stream` は `true`、非ストリーミングの要求本文の `stream` は `false` である
+- [ ] 要求本文の `model` は、呼び出し元が指定したモデル ID である
+- [ ] 要求本文の `max_tokens` は、呼び出し元の `maxTokens` と一致する
+- [ ] 要求本文の `system` は、呼び出し元の `system` と一致する
+- [ ] 呼び出し元が `system` を指定しないと、要求本文に `system` の項目が無い
+- [ ] 要求本文の `messages` は、呼び出し元の `messages` と同じ順・同じ値である
+- [ ] 要求本文の `tools` は、呼び出し元が渡した `tools` と一致する
+- [ ] 呼び出し元が `tools` を渡さないと、要求本文に `tools` の項目が無い
+- [ ] 呼び出し元が `thinking` を指定しないと、要求本文の `thinking` は `{ "type": "disabled" }` である
+- [ ] 呼び出し元が `thinking: { type: "adaptive" }` と `outputConfig: { effort: "low" }` を渡すと、要求本文の `thinking` は `{ "type": "adaptive" }`、`output_config` は `{ "effort": "low" }` である
+- [ ] 呼び出し元が `outputConfig` を渡さないと、要求本文に `output_config` の項目が無い
+- [ ] 夕会の要約抽出を BYOK（Anthropic）で呼ぶと、要求本文の `tool_choice` は `{ "type": "tool", "name": "submit_evening_summary" }` である
+
+**ストリーミングの応答の解釈**
+
+- [ ] 模擬の応答が `text_delta` を 2 回返すと、`onTextDelta` は同じ順で 2 回、それぞれの差分の文字列で呼ばれる
+- [ ] 模擬の応答の断片の区切りが SSE のイベントの途中にあっても、`onTextDelta` が受け取る文字列の連結は、応答の `text_delta` の連結と一致する
+- [ ] 模擬の応答の断片の区切りが UTF-8 の多バイト文字（例: 「上司」）のバイト列の途中にあっても、`onTextDelta` が受け取る文字列の連結は、応答の `text_delta` の連結と一致する（置換文字 U+FFFD が現れない）
+- [ ] 模擬の応答に `tool_use` のブロックがあり、`input_json_delta` を 2 回以上に分けて返すと、`BossLlmMessage.content` に同じ `id`・`name` と、`partial_json` を連結して JSON として解釈した値を `input` に持つ `tool_use` のブロックが入る
+- [ ] 模擬の応答の `tool_use` のブロックに `input_json_delta` が 1 回も無いと、そのブロックの `input` は `{}` である
+- [ ] 模擬の応答の `text` のブロックは、`BossLlmMessage.content` に同じ文字列の `text` のブロックとして入る
+- [ ] 模擬の応答に `thinking` のブロック（`thinking_delta` と `signature_delta`）があると、`BossLlmMessage.content` にはそのブロックが入らず、`rawContent` には `thinking_delta` の連結を `thinking` に、`signature_delta` の値を `signature` に持つ `thinking` のブロックが入る
+- [ ] 模擬の応答に `redacted_thinking` のブロックがあると、`rawContent` に同じ `data` を持つ `redacted_thinking` のブロックが入る
+- [ ] `rawContent` のブロックは、応答のブロックの `index` の順に並ぶ
+- [ ] 模擬の応答に `ping` のイベントが挟まっても、`BossLlmMessage` は `ping` が無い場合と同じである
+- [ ] 模擬の応答に `text`・`tool_use` のブロックが 1 つも無い（`thinking` だけの）とき、`console.warn` に渡る値に、その `thinking` の文字列が含まれない
+
+**非ストリーミングの応答の解釈**
+
+- [ ] 模擬の非ストリーミングの応答（JSON。複数の断片に分けて返す）の `content` の `text` は `text` のブロックに、`tool_use` は同じ `id`・`name`・`input` の `tool_use` のブロックになる
+- [ ] 模擬の非ストリーミングの応答の `content` 全体（`thinking` を含む）は、同じ順・同じ値で `rawContent` に入る
+
+**ツールのループ（ファサード経由の送り返し）**
+
+- [ ] BYOK（Anthropic）で `streamBossMessage` に `executeTool` を渡して呼び、1 回目の応答が `thinking`（署名つき）と `tool_use` を返すと、2 回目の要求本文の `messages` には、1 回目の `rawContent` と同じ値・同じ順のブロックを `content` に持つ `assistant` のメッセージが含まれる（`thinking` の `signature` は 1 回目の応答の値と一致する）
+- [ ] 同じ場面で、2 回目の要求本文の `messages` の最後は、1 回目の `tool_use` の `id` を `tool_use_id` に持つ `tool_result` を含む `user` のメッセージである
+
+**エラーの分類**
+
+- [ ] 応答のステータスが 429・408・500・503・529 のとき、BYOK（Anthropic）の分類は再試行可である
+- [ ] 応答のステータスが 400・401・403・404 のとき、BYOK（Anthropic）の分類は再試行不可である
+- [ ] 応答のステータスが 429 で応答の頭の `retry-after` が `"3"` のとき、分類の待ち時間は 3000 ミリ秒である
+- [ ] 基準の時刻を `2026-09-27T00:00:00Z` に固定し、応答の頭の `retry-after` が `"Sun, 27 Sep 2026 00:00:05 GMT"` のとき、分類の待ち時間は 5000 ミリ秒である
+- [ ] 同じ基準の時刻で、応答の頭の `retry-after` が過去の HTTP 日付（`"Sat, 26 Sep 2026 23:59:55 GMT"`）のとき、分類の待ち時間は無い
+- [ ] 応答の頭の `retry-after` が数でも HTTP 日付でもない値（例: `"soon"`）のとき、分類の待ち時間は無い
+- [ ] 応答のステータスが 2xx でないとき、そのラウンドは失敗し、応答の本文に `text_delta` の形のイベントがあっても `onTextDelta` は呼ばれない
+- [ ] ポートが「接続失敗」で失敗すると、分類は再試行可である
+- [ ] ポートが「宛先不明」「キー未登録」「キーの保管の失敗」「不正なヘッダ」「要求 ID の重複」「リダイレクト拒否」のそれぞれで失敗すると、分類は再試行不可である
+- [ ] 模擬の応答の途中に SSE の `error` イベント（例: `overloaded_error`）があると、そのラウンドは失敗し、分類は再試行可である
+- [ ] 模擬の応答の本文が `message_stop` の前に終わると、そのラウンドは失敗し、分類は再試行可である
+- [ ] BYOK（Anthropic）が投げる失敗の値の `message` に、要求本文の文字列と応答本文の文字列が含まれない（HTTP のエラーの応答本文を含む）
+
+**中止**
+
+- [ ] `streamBossMessage` の `signal` を、1 つ目の断片を受け取った後に中止すると、ポートに渡った `signal` が中止され、`streamBossMessage` は失敗する
+- [ ] 送信の前に中止済みの `signal` を渡すと、ポートは呼ばれないか、呼ばれた時点で渡った `signal` が中止済みである
+
+**バンドル検査と品質ゲート**
+
+> 次の 2 項目は親の決定（2026-09-27・案 (A)）による: `core-entry.ts` は BYOK（Anthropic）の登録関数を呼ばずに re-export する。
+
+- [ ] `core-entry.ts` から BYOK（Anthropic）の登録関数へ到達でき、`core-entry.bundle.test.ts` が合格する（BYOK〔Anthropic〕のモジュールが外部の指定子・SDK・Node のグローバルを持ち込まない）
+- [ ] `core-entry.ts` を読み込んだだけでは、`registeredCoreLlmBackendNames()` は空である（コアのエントリは BYOK〔Anthropic〕を登録しない）
+- [ ] `npm run lint` が合格する
+- [ ] `npm run typecheck` が合格する
+- [ ] `npm test` が合格する
+- [ ] `npm run test:tz` が合格する
+- [ ] `npm run test:rust` が合格する
+
 ## 仮定（軽微・可逆）
 
 - A1: Rust ライブラリの置き場所は仮に `native/secure-transport/`。#579 S2 で `src-tauri` の位置が決まったら移してよい
@@ -243,3 +431,10 @@ Q2（TS ⇔ Rust の境界・クリティカル設計決定 2）・Q3（送る�
 - A2: コマンド名・宛先の名前・エラーの種類の名前は仮で、実装で決めてよい
 - A3: `anthropic-version` は現行の `@anthropic-ai/sdk` が送る値 `2023-06-01` に合わせる（`node_modules/@anthropic-ai/sdk` で確認）
 - A4: 応答の本文は Rust ではバイト列のまま中継し、SSE の区切りも解釈しない（区切りの復元は S2 の TS 側）
+- A9（S2）: 能力の項目の名前（`runsOwnToolLoop`・`supportsToolChoice`・`limitsResponseLength`）・参照関数の名前（`getLlmBackendCapabilities`）・バックエンドの名前（`byok-anthropic`）・登録関数の名前（`registerByokAnthropicBackend`）・ポートとエラーの型の名前は仮で、実装で決めてよい（#582 の仮定 A2 はこの命名に合わせる）
+- A10（S2）: 新規のモジュールは仮に `server/src/llm/secure-transport-port.ts`（ポートの型と失敗の型）・`server/src/llm/backends/byok-anthropic-backend.ts`（Anthropic Messages の形式の変換器・BYOK〔Anthropic〕のバックエンド・登録関数）に置く。SSE の区切りの復元を #582 の OpenAI の変換器と共有する部品に切り出すかは実装で決めてよい
+- A11（S2）: レジストリの鍵の型と `LLM_BACKEND` の検証に使う型の分け方（`config.ts` の `LlmBackend` を環境変数の許容値のまま残し、レジストリ側に広い型を新設する、またはその逆）は実装で決めてよい。守るのは受入基準（`LLM_BACKEND=byok-anthropic` を拒否する）だけ
+- A12（S2）: `BossLlmClient` の BYOK（Anthropic）のバリアントはポートを持つ（キーは持たない）。形は実装で決めてよい
+- A13（S2）: `retry-after` の解釈を SDK に依存しない関数へ切り出し、`backends/api-backend.ts` の `getApiRetryAfterMs` から使ってよい（`api` の振る舞いは変えない。`api-backend.test.ts` が合格すること）
+- A14（S2）: 要求本文の JSON の項目の順序は問わない。`system`・`tools`・`tool_choice` は呼び出し元が指定しなかったとき項目ごと省く（`null` を入れない）
+- A15（S2）: `citations`・サーバー側のツール（`server_tool_use` 等）のブロックは現行のボスが使わないため、S2 のクライアントは `content` に入れない（`rawContent` へは `content_block_start` で受け取った値のまま残す）

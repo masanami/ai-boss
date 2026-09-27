@@ -18,3 +18,35 @@
  */
 export { createCoreApp, type CreateCoreAppOptions } from "./core-app.js";
 export { registeredLlmBackendNames as registeredCoreLlmBackendNames } from "./llm/llm-backend-registry.js";
+
+/**
+ * BYOK（Anthropic）の登録関数を**呼ばずに re-export する**（機能仕様
+ * docs/features/secure-transport-byok.md「S2 のモジュールをバンドル検査の
+ * 対象にする方法」・親の決定・案 (A)）。S3 で Tauri の器がこの関数へ
+ * Tauri 実装の転送のポートを渡して呼ぶ——このモジュール自身は呼ばない
+ * ため、`registeredCoreLlmBackendNames()` は依然空のまま
+ * （オーナーの決定 Q4-c）。呼ばずに re-export するだけでも、この関数（と
+ * その依存グラフ）は `core-entry.bundle.test.ts` のバンドル検査の対象に
+ * なる——`@anthropic-ai/sdk` を値 import しない・Node のグローバルを
+ * 参照しないことがそこで固定される。
+ */
+export { registerByokAnthropicBackend } from "./llm/backends/byok-anthropic-backend.js";
+
+/**
+ * `SecureTransportError`（と失敗の種類の型）も re-export する（self-review:
+ * design-reviewer, PLAUSIBLE）。エラーの分類（`classifyByokAnthropicError`）
+ * は `instanceof SecureTransportError` というクラスの同一性に依存する。S3
+ * の Tauri 実装のポートがこのモジュールから直接 `import` すれば元々問題は
+ * 起きないが、コアのエントリの公開面（案 A）に揃えておくことで、S3 の
+ * 実装がどこから転送のポートを組み立てても、同じクラスの実体で失敗を
+ * 投げられるようにする。
+ */
+export {
+  SecureTransportError,
+  ANTHROPIC_MESSAGES_DESTINATION,
+  type SecureTransportErrorKind,
+  type SecureTransportPort,
+  type SecureTransportSendRequest,
+  type SecureTransportResponse,
+  type SecureTransportResponseHeaders,
+} from "./llm/secure-transport-port.js";

@@ -43,6 +43,11 @@ export { checkClaudeCodeAvailability, nodeExecFileForAvailabilityCheck };
  */
 export function registerDevLlmBackends(): void {
   const apiImplementation: LlmBackendImplementation = {
+    // 機能仕様 docs/features/secure-transport-byok.md クリティカル設計決定5・
+    // 受入基準（S2）「能力の宣言」: api はループを自分で回さず（ファサードの
+    // 外側ループに従う）・toolChoice による強制に対応し・maxTokens で
+    // 応答長を制限できる。
+    capabilities: { runsOwnToolLoop: false, supportsToolChoice: true, limitsResponseLength: true },
     createClient(env: AppEnv): BossLlmClient {
       const apiKey = env.ANTHROPIC_API_KEY;
       if (!apiKey) {
@@ -66,6 +71,11 @@ export function registerDevLlmBackends(): void {
   };
 
   const claudeCodeImplementation: LlmBackendImplementation = {
+    // claude-code は Agent SDK 自身の内部ツールループを回し（
+    // runsOwnToolLoop: true）、toolChoice 相当の強制手段を持たず（プロンプト
+    // の指示で代替）、要求ごとの応答長の制限手段も持たない（同様にプロンプト
+    // の指示＋事後検証で代替する）。
+    capabilities: { runsOwnToolLoop: true, supportsToolChoice: false, limitsResponseLength: false },
     createClient(env: AppEnv): BossLlmClient {
       return { backend: "claude-code", env: buildClaudeCodeEnv(env) };
     },

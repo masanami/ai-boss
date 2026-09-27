@@ -16,6 +16,7 @@ import { buildPersonaPrompt } from "../boss/persona-prompt.js";
 import { resolveLlmBackend } from "../config.js";
 import {
   createClaudeClient,
+  getLlmBackendCapabilities,
   requestVerdict,
   type BossLlmClient,
 } from "../llm/claude-client.js";
@@ -156,9 +157,12 @@ export async function extractEveningSummary(
           { role: "user", content: buildUserInstruction(eveningMessages, decisionContents) },
         ],
         tools: [SUBMIT_EVENING_SUMMARY_TOOL],
-        // api バックエンドのみ toolChoice でツール呼び出しを強制する。
-        // claude-code は toolChoice 非対応のため渡さない（プロンプト指示で代替）。
-        ...(backend === "api"
+        // 機能仕様 docs/features/secure-transport-byok.md クリティカル設計
+        // 決定5（#582 の決定 Q5）: バックエンドの**名前**ではなく、宣言された
+        // 能力 supportsToolChoice で分岐する。対応するバックエンドのみ
+        // toolChoice でツール呼び出しを強制する。対応しない場合は渡さない
+        // （プロンプト指示で代替——`buildUserInstruction` 冒頭の指示文）。
+        ...(getLlmBackendCapabilities(backend).supportsToolChoice
           ? { toolChoice: { type: "tool" as const, name: "submit_evening_summary" } }
           : {}),
         // `thinking` は指定せずファサード既定（`{ type: "disabled" }`）に

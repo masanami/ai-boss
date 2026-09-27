@@ -6,6 +6,7 @@ import type {
   RetryDecision,
 } from "../claude-client.js";
 import type { ResolvedLlmRequest } from "../llm-backend-registry.js";
+import { parseRetryAfterMs } from "./retry-after.js";
 
 /**
  * `api` backend: thin wrapper around the Claude API (`@anthropic-ai/sdk`),
@@ -102,15 +103,6 @@ export function isRetryableApiError(error: unknown): boolean {
   return status >= 500;
 }
 
-/** RFC 9110 §5.6.7 IMF-fixdate — the only `Retry-After` date format handled
- * here (also what `Date.prototype.toUTCString()` produces). Deliberately
- * stricter than handing the raw header value to `Date.parse`, which accepts
- * far more than the HTTP-date grammar: without this allowlist, a value like
- * `"-9999"` — meant to be rejected as an unparsable/negative delay — is
- * silently reinterpreted as a valid far-future date.
- */
-const RETRY_AFTER_HTTP_DATE_RE = /^[A-Za-z]{3}, \d{2} [A-Za-z]{3} \d{4} \d{2}:\d{2}:\d{2} GMT$/;
-
 /**
  * Extracts the server's requested wait (in milliseconds) from `error`'s
  * `Retry-After` response header, per RFC 9110 §10.2.3 — either a
@@ -141,44 +133,20 @@ const RETRY_AFTER_HTTP_DATE_RE = /^[A-Za-z]{3}, \d{2} [A-Za-z]{3} \d{4} \d{2}:\d
  * Scope: only the standard `Retry-After` header. Non-standard headers some
  * providers also send (`retry-after-ms`, `x-should-retry`) are out of scope
  * (YAGNI).
+ *
+ * The actual parsing (numeric-seconds / HTTP-date grammar) now lives in
+ * {@link parseRetryAfterMs}（機能仕様 docs/features/secure-transport-byok.md
+ * 仮定 A13）— extracted so the SDK-free BYOK（Anthropic）バックエンド
+ * （`byok-anthropic-backend.ts`）can share the identical rule without
+ * importing `@anthropic-ai/sdk`. This function's own behavior (and every
+ * `api-backend.test.ts` assertion against it) is unchanged — it still only
+ * unwraps `APIError#headers` before delegating.
  */
 export function getApiRetryAfterMs(error: unknown, now: Date = new Date()): number | undefined {
   if (!(error instanceof APIError)) {
     return undefined;
   }
-  const value = error.headers?.get("retry-after");
-  if (value === null || value === undefined) {
-    return undefined;
-  }
-  const trimmed = value.trim();
-  if (trimmed === "") {
-    return undefined;
-  }
-
-  // Numeric (seconds) form — RFC 9110 only allows a non-negative integer
-  // here, so anything else (a leading `-`, decimals, whitespace inside the
-  // digits) is treated as "not this form" and falls through to the
-  // HTTP-date attempt below (which, per `RETRY_AFTER_HTTP_DATE_RE` above,
-  // rejects it too rather than loosely re-parsing it as a date).
-  if (/^\d+$/.test(trimmed)) {
-    const seconds = Number(trimmed);
-    const milliseconds = seconds * 1000;
-    // Finiteness is checked on the *product*: `seconds` can be finite (e.g.
-    // 1e306) while `seconds * 1000` overflows to `Infinity`, which would
-    // break this function's "milliseconds" contract.
-    return Number.isFinite(milliseconds) ? milliseconds : undefined;
-  }
-
-  // HTTP-date form (e.g. "Wed, 21 Oct 2026 07:28:00 GMT").
-  if (!RETRY_AFTER_HTTP_DATE_RE.test(trimmed)) {
-    return undefined;
-  }
-  const targetMs = Date.parse(trimmed);
-  if (Number.isNaN(targetMs)) {
-    return undefined;
-  }
-  const waitMs = targetMs - now.getTime();
-  return waitMs >= 0 ? waitMs : undefined;
+  return parseRetryAfterMs(error.headers?.get("retry-after"), now);
 }
 
 /**
