@@ -245,7 +245,7 @@ describe("generateNotificationBody", () => {
     const consoleErrorSpy = vi
       .spyOn(console, "error")
       .mockImplementation(() => undefined);
-    // resolveBossSettings(db) は db.prepare を呼ぶため、閉じた DB で例外になる
+    // resolveBossSettings(portFor(db)) は閉じた DB への読み出しで reject する
     db.close();
 
     const body = await generateNotificationBody(db, env, {

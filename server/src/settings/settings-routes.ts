@@ -24,9 +24,10 @@ import {
 
 /**
  * Flat, key-named view of the effective settings, as returned by
- * `GET /api/settings`. Built from the same readers the rest of the app
- * uses (`resolveBossSettings` / `loadDetectionSettings`) so the API can
- * never drift from what those readers actually see.
+ * `GET /api/settings`. Built from the same pure resolvers the rest of the
+ * app's readers apply (`resolveBossSettingsFrom` / `resolveDetectionSettings`
+ * etc., which back `resolveBossSettings` / `loadDetectionSettings`) so the API
+ * can never drift from what those readers actually see.
  *
  * Every key is read from one {@link SettingsSnapshot} (#603・Issue #597 の
  * コメント P2): reading each reader's keys with separate awaits would let a
@@ -126,8 +127,9 @@ function resolveEffectiveWorkingHours(
  * Creates the settings sub-router, mounted under `/api/settings` by the
  * caller. `PUT` validates every provided key before writing any of them
  * (all-or-nothing, see `settings-validation.ts`), then re-reads the
- * effective settings so the response always reflects what was actually
- * persisted.
+ * effective settings inside the same transaction so the response always
+ * reflects what this request actually persisted (not a later concurrent
+ * save's values — #603).
  */
 export function createSettingsRouter(db: Db): Hono {
   const settings = new Hono();
@@ -171,23 +173,23 @@ export function createSettingsRouter(db: Db): Hono {
     const touchesWorkingHours =
       result.data.work_start !== undefined || result.data.work_end !== undefined;
     const patch: Record<string, string | null> = result.data;
-    const saved = await db.transaction(async (tx) => {
+    const persisted = await db.transaction(async (tx) => {
       if (touchesWorkingHours) {
         const { start, end } = resolveEffectiveWorkingHours(
           await readSettingsSnapshot(tx),
           result.data,
         );
         if (!isValidWorkingHoursRange(start, end)) {
-          return false;
+          return undefined;
         }
       }
       for (const [key, value] of Object.entries(patch)) {
         await setSettingValue(tx, key, value);
       }
-      return true;
+      return readEffectiveSettings(tx);
     });
 
-    if (!saved) {
+    if (persisted === undefined) {
       // #517 決定5: :272（settings-validation.ts）とは独立にオブジェクトを
       // 組む（定数は共有するが組み立て文は共有しない。片方だけを崩す変異で
       // 片方のテストだけが落ちることを担保するため）。
@@ -197,7 +199,7 @@ export function createSettingsRouter(db: Db): Hono {
       );
     }
 
-    return c.json(await readEffectiveSettings(db));
+    return c.json(persisted);
   });
 
   return settings;
