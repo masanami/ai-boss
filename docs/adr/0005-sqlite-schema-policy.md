@@ -45,12 +45,12 @@
 
 製品版（Tauri 2 アプリ）では、ネイティブ Node モジュールの better-sqlite3 が WebView で動かないため、DB を非同期 API の `@tauri-apps/plugin-sql` へ移す（[ADR 0011](./0011-productization-architecture.md) 決定 17）。plugin-sql（2.4.1）は sqlx の接続プール（既定で最大 10 接続）越しに文を実行し、`execute`／`select` のたびに接続を取り直すため、別々の文で張ったトランザクションが同じ接続に乗る保証が無い。また非同期 API では、1 本の接続でも `BEGIN` の後の await の間に別の流れの文が混ざる（ローカルで実測）。決定 1 の「同期 API・単一ライター」と決定 5 の「`db.transaction` で原子性は足りる」は、同期 API で await を挟まずに走ることを暗黙の前提にしていた。
 
-#580 の S1 でリポジトリ層を非同期の DB ポートに統一し（開発者用の版は better-sqlite3 実装）、S2 で製品版の plugin-sql 実装をそろえた。本改訂は、両版の実装がそろった時点で決定 1・5 と帰結を書き換える（[ADR 0011](./0011-productization-architecture.md) の帰結「ADR 0005 の改訂は実装で具体が決まってから行う」）。
+#580 の S1 でリポジトリ層を非同期の DB ポートに統一し（開発者用の版は better-sqlite3 実装）、S2 で製品版の plugin-sql 実装をそろえた。本改訂は、両版の実装がそろった時点で決定 1・5 と帰結を書き換える（[ADR 0011](./0011-productization-architecture.md) は ADR 0005 を「今回は改訂しない」とし、改訂を #580 の実装時に行うとしていた）。
 
 ### 改訂後の決定
 
 1. **DB は非同期の DB ポート（`run`／`get`／`all`／`exec`／`transaction`。`server/src/db/db-port.ts`）越しに使い、ドライバは版ごとに替える。** 開発者用の版は better-sqlite3、製品版は plugin-sql（Rust 側はリポジトリ内の fork `native/tauri-plugin-sql/`。JS 側は上流の `@tauri-apps/plugin-sql`）。リポジトリ層・ルート・スケジューラ・マイグレーションは両版で同じ TypeScript のコードを使う。
-2. **接続は 1 本とする。** 開発者用の版は better-sqlite3 の接続 1 本、製品版は fork でプールを最大接続数 1・接続の寿命なし・アイドルの期限なしにする（sqlx は寿命を過ぎた接続をプールへ返す時点で閉じて新しい接続に替えるため、最大接続数だけでなく寿命と期限も外す）。製品版の DB ファイルは Rust 側がアプリのデータディレクトリに開き、WebView には DB を開く権限（`load`）を与えない。
+2. **接続は 1 本とする。** 開発者用の版は better-sqlite3 の接続 1 本、製品版は fork でプールを最大接続数 1・接続の寿命なし・アイドルの期限なしにする（sqlx は寿命を過ぎた接続をプールへ返す時点で閉じて新しい接続に替えるため、最大接続数だけでなく寿命と期限も外す）。製品版の DB ファイルは Rust 側がアプリのデータディレクトリに開き、WebView には DB を開く権限（`load`）を与えず、接続には別の DB ファイルを付け足せない（ATTACH の上限 0）。
 3. **単一ライターは、接続 1 本と TypeScript の直列化層（`server/src/db/serialized-db.ts`）で保つ。** 直列化層は DB 操作を 1 つずつ通し、`transaction(fn)` は `BEGIN IMMEDIATE`〜`COMMIT`（例外なら `ROLLBACK`）の間、他の流れの DB 操作を待たせる。入れ子は `SAVEPOINT` で合成する。直列化層はドライバに依存しないため、トランザクションの意味は両版で同じテストで固定する（両版で同じ契約スイート `server/src/db/test-support/db-port-contract.ts`）。
 4. **判定に使う読み出しも、書き込みと同じトランザクションの中で行う。** 「トランザクションの外で読み、その結果を根拠に書く」流れと、複数の文で読んだ結果を 1 つの材料として組み合わせる流れは、非同期では間に別の流れが割り込めるため、トランザクションの中へ移す（#580 S1 の全数監査）。LLM の呼び出し・通知の送信・ファイル操作など DB 以外の長い await はトランザクションに入れない。
 5. マイグレーションの規約（決定 4。`user_version`・版ごとのトランザクション）は両版で変えない。製品版も `migrate.ts` をポート越しに走らせ、plugin-sql のマイグレーション機能（`_sqlx_migrations`）は使わない。

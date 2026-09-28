@@ -332,6 +332,34 @@ pub(crate) fn sqlite_pool_options() -> sqlx::sqlite::SqlitePoolOptions {
         .max_connections(1)
         .max_lifetime(None)
         .idle_timeout(None)
+        .after_connect(|conn, _meta| Box::pin(forbid_attaching_other_databases(conn)))
+}
+
+/// ai-boss fork（FORK.md の差分 3）: この接続に別の DB ファイルを付け足せない
+/// ようにする（`SQLITE_LIMIT_ATTACHED` を 0 にする）。
+///
+/// WebView には `execute` を許可しているため、上流のままだと
+/// `ATTACH DATABASE '<任意のパス>'` や `VACUUM INTO '<任意のパス>'`（内部で
+/// ATTACH する）で、アプリのデータディレクトリの外の DB ファイル（オーナーの
+/// 開発者用の版の DB を含む）を読み書きできる。`load` を許可しないだけでは
+/// この経路は塞がらない（機能仕様 docs/features/async-db-layer.md「S2 の設計」
+/// ＞「DB ファイルと権限」）。ai-boss のスキーマとマイグレーションは ATTACH を
+/// 使わない。
+#[cfg(feature = "sqlite")]
+async fn forbid_attaching_other_databases(
+    conn: &mut sqlx::sqlite::SqliteConnection,
+) -> Result<(), sqlx::Error> {
+    let mut handle = conn.lock_handle().await?;
+    // SAFETY: `lock_handle` が返すハンドルは、ロックを握っている間この接続の
+    // 有効な `sqlite3*` であり、`sqlite3_limit` は他のスレッドと競合しない。
+    unsafe {
+        libsqlite3_sys::sqlite3_limit(
+            handle.as_raw_handle().as_ptr(),
+            libsqlite3_sys::SQLITE_LIMIT_ATTACHED,
+            0,
+        );
+    }
+    Ok(())
 }
 
 #[cfg(feature = "sqlite")]

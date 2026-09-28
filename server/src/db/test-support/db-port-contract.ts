@@ -69,7 +69,7 @@ export function describeDbPortContract(
   openEmpty: () => Promise<DbPortContractSubject>,
 ): void {
   describe(`DB ポートの契約（${driverName}）`, () => {
-    let subject: DbPortContractSubject;
+    let subject: DbPortContractSubject | undefined;
     let db: DbPort;
 
     beforeEach(async () => {
@@ -78,7 +78,9 @@ export function describeDbPortContract(
     });
 
     afterEach(async () => {
-      await subject.close();
+      // `openEmpty` が失敗したときは閉じるものが無い（元の失敗を隠さない）。
+      await subject?.close();
+      subject = undefined;
     });
 
     it("AC-S2-13: run は changes と挿入した行の ID を返し、get は該当が無いとき undefined、all は空配列を返す", async () => {

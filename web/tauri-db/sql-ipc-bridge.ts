@@ -20,6 +20,9 @@ const BRIDGE_BINARY = fileURLToPath(
   new URL("../../native/tauri-app/target/debug/examples/sql-ipc-bridge", import.meta.url),
 );
 
+/** `close()` が中継の終了を待つ上限。過ぎたら強制終了する。 */
+const CLOSE_TIMEOUT_MS = 5_000;
+
 export interface SqlIpcBridge {
   /** IPC の要求を送り、戻り値（エラーなら拒否）を返す */
   invoke(cmd: string, args: unknown): Promise<unknown>;
@@ -42,20 +45,35 @@ export async function startSqlIpcBridge(): Promise<SqlIpcBridge> {
     env: { ...process.env, AI_BOSS_SQL_BRIDGE_HOME: home },
     stdio: ["pipe", "pipe", "inherit"],
   });
-  const exited = new Promise<number | null>((resolve) => child.once("exit", (code) => resolve(code)));
   const pending = new Map<number, { resolve: (value: unknown) => void; reject: (reason: unknown) => void }>();
   let nextId = 1;
-
-  await new Promise<void>((resolveReady, rejectReady) => {
-    child.once("error", rejectReady);
-    void exited.then((code) => {
-      const error = new Error(`the IPC bridge exited (code ${code})`);
-      rejectReady(error);
-      for (const entry of pending.values()) {
-        entry.reject(error);
-      }
-      pending.clear();
+  /** 中継が終わった（または起動に失敗した）理由。以後の要求は即座に拒否する。 */
+  let stopped: Error | undefined;
+  let exitCode: number | null = null;
+  const exited = new Promise<void>((resolve) => {
+    child.once("exit", (code) => {
+      exitCode = code;
+      resolve();
     });
+  });
+
+  function stop(reason: Error): void {
+    stopped ??= reason;
+    for (const entry of pending.values()) {
+      entry.reject(stopped);
+    }
+    pending.clear();
+  }
+
+  // 終わった中継の標準入力へ書くと EPIPE になる。未処理の例外にせず、
+  // 待っている要求を拒否する。
+  child.stdin.on("error", (error) => stop(error));
+  child.once("error", (error) => stop(error));
+  void exited.then(() => stop(new Error(`the IPC bridge exited (code ${exitCode})`)));
+
+  const ready = new Promise<void>((resolveReady, rejectReady) => {
+    child.once("error", rejectReady);
+    void exited.then(() => rejectReady(stopped));
     createInterface({ input: child.stdout }).on("line", (line) => {
       const message = JSON.parse(line) as BridgeMessage;
       if ("ready" in message) {
@@ -72,19 +90,40 @@ export async function startSqlIpcBridge(): Promise<SqlIpcBridge> {
     });
   });
 
+  async function close(): Promise<void> {
+    if (exitCode === null && !child.killed) {
+      child.stdin.end();
+      const timer = setTimeout(() => child.kill("SIGKILL"), CLOSE_TIMEOUT_MS);
+      await exited;
+      clearTimeout(timer);
+    }
+    rmSync(home, { recursive: true, force: true });
+  }
+
+  try {
+    await ready;
+  } catch (error) {
+    // 起動できなかった（spawn の失敗）ときは pid が無く、exit も来ない。
+    if (child.pid !== undefined) {
+      child.kill("SIGKILL");
+      await exited;
+    }
+    rmSync(home, { recursive: true, force: true });
+    throw error;
+  }
+
   return {
     home,
     invoke(cmd, args) {
+      if (stopped) {
+        return Promise.reject(stopped);
+      }
       const id = nextId++;
       return new Promise((resolve, reject) => {
         pending.set(id, { resolve, reject });
         child.stdin.write(`${JSON.stringify({ id, cmd, args })}\n`);
       });
     },
-    async close() {
-      child.stdin.end();
-      await exited;
-      rmSync(home, { recursive: true, force: true });
-    },
+    close,
   };
 }

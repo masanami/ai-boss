@@ -94,6 +94,30 @@ describe("製品版のエントリ（plugin-sql 実装・器の IPC の中継）
     expect(tasks.map((task) => task.title)).toEqual(["牛乳を買う"]);
   });
 
+  it("前のページが残したトランザクションは、DB の準備で閉じられ、以後の書き込みはコミットされる（仮定 A11）", async () => {
+    // 前のページが BEGIN IMMEDIATE の途中で読み込み直された状態を作る。
+    await connection.bridge.invoke("plugin:sql|execute", {
+      db: "sqlite:ai-boss.db",
+      query: "BEGIN IMMEDIATE",
+      values: [],
+    });
+    const app = createProductCoreApp(await openProductDb(getProductDatabase()));
+    const created = await app.request("/api/tasks", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ title: "残る" }),
+    });
+    expect(created.status).toBe(201);
+
+    // 開いたトランザクションが残っていれば、この ROLLBACK がタスクを消す。
+    await connection.bridge
+      .invoke("plugin:sql|execute", { db: "sqlite:ai-boss.db", query: "ROLLBACK", values: [] })
+      .catch(() => undefined);
+
+    const tasks = (await (await app.request("/api/tasks")).json()) as { title: string }[];
+    expect(tasks.map((task) => task.title)).toEqual(["残る"]);
+  });
+
   it("AC-S2-9: 製品版の DB の準備で中継へ流れるのは sqlite:ai-boss.db 宛ての execute/select だけで、load を呼ばない", async () => {
     await openProductDb(getProductDatabase());
 

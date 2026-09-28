@@ -186,7 +186,8 @@
 #### fork（決定 1 の具体化）
 
 - **置き場所**: ai-boss リポジトリ内の `native/tauri-plugin-sql/`（親の決定。別の GitHub リポジトリは作らない）。上流の配布物（2.4.1）の Rust クレートをそのまま置き、上流のライセンス表記（`LICENSE_MIT`・`LICENSE_APACHE-2.0`・`LICENSE.spdx`）を残す。由来（版・上流のコミット・パス）と上流からの差分の一覧は `native/tauri-plugin-sql/FORK.md` に書く。器のクレート（`native/tauri-app/`）は path 依存（`features = ["sqlite"]`）で使い、crates.io の `tauri-plugin-sql` には依存しない。
-- **差分**: SQLite の接続を `Pool::connect` から `SqlitePoolOptions::new().max_connections(1).max_lifetime(None).idle_timeout(None).connect(...)` に替える。**寿命とアイドルの期限も外す**のは、sqlx が寿命（既定 30 分）を過ぎた接続をプールへ返す時点で閉じ、次の文を新しい接続で実行するため——直列化層の `BEGIN IMMEDIATE` の後で接続が入れ替わると、それ以降の文はトランザクションの外（オートコミット）で確定してしまう。決定 1 の「接続を 1 本に固定」は、1 本であり続けることまでを含む。
+- **差分 1**: SQLite の接続を `Pool::connect` から `SqlitePoolOptions::new().max_connections(1).max_lifetime(None).idle_timeout(None).connect(...)` に替える。**寿命とアイドルの期限も外す**のは、sqlx が寿命（既定 30 分）を過ぎた接続をプールへ返す時点で閉じ、次の文を新しい接続で実行するため——直列化層の `BEGIN IMMEDIATE` の後で接続が入れ替わると、それ以降の文はトランザクションの外（オートコミット）で確定してしまう。決定 1 の「接続を 1 本に固定」は、1 本であり続けることまでを含む。
+- **差分 2（2026-09-29・実装のセルフレビューで追加）**: 接続を開くたびに `sqlite3_limit(SQLITE_LIMIT_ATTACHED, 0)` で別の DB ファイルを付け足せないようにする。`execute` は任意の SQL を通すため、上流のままだと `ATTACH DATABASE '<任意のパス>'`・`VACUUM INTO '<任意のパス>'` でアプリのデータディレクトリの外の DB（オーナーの DB を含む）を読み書きできる（実測: 既にあるファイルは ATTACH で開ける）。下の「DB ファイルと権限」の到達経路の境界を保つための差分で、ai-boss のスキーマとマイグレーションは ATTACH を使わない。
 - **JS 側**: `@tauri-apps/plugin-sql` を**そのまま**使う（決定 1）。版の minor は fork の版にそろえる（2.4）。
 - **成り立たなかったときの切り替え**: 決定 1 のとおり (C) 自前の Rust コマンドへ切り替える（直列化層とポートの契約は変えない）。切り替えたときは経緯を「仮定」と PR に書く。
 
@@ -194,7 +195,7 @@
 
 - **DB を開くのは Rust 側だけ**: `tauri.conf.json` の `plugins.sql.preload` を `["sqlite:ai-boss.db"]` にし、起動時にアプリのデータディレクトリ（`app_config_dir`。macOS では `~/Library/Application Support/dev.aiboss.app/`）の `ai-boss.db` を開く（無ければ作る）。製品版の web のエントリは `Database.get("sqlite:ai-boss.db")` で参照するだけで `load` を呼ばない。
 - **capability は DB に要る最小の単位**: `capabilities/` にメインのウィンドウ（`main`）だけを対象とする capability を 1 つ置き、許可は `sql:allow-execute`・`sql:allow-select` の 2 つに限る。`sql:allow-load`（WebView から任意のパスの DB を開ける。上の実測のとおり絶対パスならアプリのディレクトリの外も開ける）・`sql:allow-close`・`sql:default` は許可しない。
-- この 2 つで、WebView からオーナーの DB（`server/data/ai-boss.db`）を含むアプリのディレクトリの外の DB を開く経路が無くなる。
+- この 2 つと fork の差分 2（ATTACH・`VACUUM INTO` の禁止）で、WebView からオーナーの DB（`server/data/ai-boss.db`）を含むアプリのディレクトリの外の DB を開く経路が無くなる（Rust の結合テスト `native/tauri-app/tests/sql_plugin.rs` で、`load` の拒否と ATTACH・`VACUUM INTO` の失敗を固定する）。
 
 #### 製品版のエントリ（#579 S2「DB 未接続の間の振る舞い」の差し替え）
 
@@ -338,7 +339,8 @@ S1 の契約（トランザクションの原子性・直列化・`user_version`
 - A4（S2）: fork の由来は crates.io の `tauri-plugin-sql` 2.4.1 の配布物（ローカルの cargo のキャッシュ）とする。2026-09-26 に 2.5.0 が出ているが、仕様の実測（2.4.1）と同じ版から始め、上流への追従は必要になったときに行う
 - A5（S2）: fork の置き場所は `native/tauri-plugin-sql/`、クレート名は上流と同じ `tauri-plugin-sql` とする（`native/secure-transport/`・`native/tauri-app/` と同じく独立したクレート。Cargo のワークスペースにしない）。fork の単体テスト用に fork 自身の `Cargo.lock` をコミットする
 - A6（S2）: DB ファイルの名前は `ai-boss.db` とする（開発者用の版と同じ名前。場所がアプリのデータディレクトリなので取り違えない）
-- A7（S2）: DB の準備が失敗したときは起動を止めず「DB 未接続」ポートにフォールバックする（#579 S2 の器と同じ見え方に戻すだけで、データに触れない。失敗の画面表示は作らない）
+- A7（S2）: DB の準備が失敗したときは起動を止めず「DB 未接続」ポートにフォールバックする（#579 S2 の器と同じ見え方に戻すだけで、データに触れない。失敗の画面表示は作らない）。**フォールバックの範囲は TS 側の準備（最初の文・マイグレーション）の失敗に限る**。Rust 側の preload が DB を開けない（ファイルが壊れている・読めない）ときは、上流の plugin-sql の setup が失敗してアプリは起動しない（fork の差分を増やさないため手当てしない。必要になったら別 Issue）
 - A8（S2）: IPC の中継は器のクレートの `examples/sql-ipc-bridge.rs` に置き、`tauri` の `test` 機能は dev-dependencies でだけ有効にする（製品のバイナリには入らない）
 - A9（S2）: 契約スイートは `server/src/db/test-support/db-port-contract.ts` に置き、S1 の既存のテスト（`serialized-db.test.ts`・`migrate.test.ts`）は動かさず残す（S1 の担保を変えない。契約スイートは両版で同じ本体を回すための追加）
 - A10（S2）: 製品版の plugin-sql 実装の `run` の `lastInsertRowid` は、`lastInsertId` が返らないとき 0 とする（SQLite の実装では常に返る）
+- A11（S2・実装のセルフレビューで追加）: 製品版の DB の準備の最初に `ROLLBACK` を 1 回送り、失敗は無視する。Rust 側の接続はプロセスが続く限り残るが直列化層の状態はページの読み込みごとに作り直されるため、`BEGIN IMMEDIATE` の途中でページが読み込み直されると、残ったトランザクションに以後の書き込みが黙って混ざる。これを閉じておく（担保は `web/tauri-db/plugin-sql.tauri-db.test.ts`）

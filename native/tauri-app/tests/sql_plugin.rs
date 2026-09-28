@@ -24,17 +24,17 @@ use tauri::{App, Manager, WebviewWindow};
 /// 製品版の DB の名前（`tauri.conf.json` の `plugins.sql.preload`）。
 const DB: &str = "sqlite:ai-boss.db";
 
-/// テストのプロセスの `HOME`（一時ディレクトリ）。最初の呼び出しで作り、
+/// テストのプロセスの `HOME`。cargo がテスト用に用意する `target/` の下の
+/// ディレクトリ（`CARGO_TARGET_TMPDIR`）を最初の呼び出しで空にして使い、
 /// ほかのテストが器を組む前に `HOME` を向け替える（`OnceLock` の初期化が
-/// 終わるまで、ほかのスレッドは待たされる）。
+/// 終わるまで、ほかのスレッドは待たされる）。実行のたびに空にするため、
+/// 一時ファイルが溜まらない。
 fn test_home() -> &'static Path {
     static HOME: OnceLock<PathBuf> = OnceLock::new();
     HOME.get_or_init(|| {
-        let dir = tempfile::Builder::new()
-            .prefix("ai-boss-tauri-sql-test-")
-            .tempdir()
-            .expect("failed to create a temporary HOME")
-            .keep();
+        let dir = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("sql-plugin-home");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("failed to create the test HOME");
         std::env::set_var("HOME", &dir);
         dir
     })
@@ -210,12 +210,82 @@ fn begin_and_rollback_sent_as_separate_executes_undo_the_insert() {
     .unwrap();
 
     execute(&window, "BEGIN IMMEDIATE").unwrap();
+    // 時間のかかる select を並行に走らせたまま INSERT を送る。プールに 2 本目の
+    // 接続があれば INSERT はそちらに乗り、書き込みロック（`BEGIN IMMEDIATE`
+    // の接続が握る）で失敗するか、トランザクションの外で確定してしまう。
+    let slow_query =
+        "WITH RECURSIVE c(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM c WHERE i < 200000) \
+                      SELECT count(*) AS m FROM c";
+    let slow: Vec<_> = (0..4)
+        .map(|_| {
+            let window = window.clone();
+            thread::spawn(move || select(&window, slow_query))
+        })
+        .collect();
     execute(&window, "INSERT INTO items (name) VALUES ('rolled back')").unwrap();
+    for handle in slow {
+        handle.join().unwrap().unwrap();
+    }
     execute(&window, "ROLLBACK").unwrap();
 
     assert_eq!(
         select(&window, "SELECT count(*) AS n FROM items").unwrap(),
         json!([{ "n": 0 }])
+    );
+}
+
+// ---------------------------------------------------------------------------
+// fork の差分 3: WebView から別の DB ファイルへ届かない（ATTACH・VACUUM INTO）
+// ---------------------------------------------------------------------------
+
+/// アプリのデータディレクトリの外に置いた、オーナーの DB に見立てたファイル。
+fn outside_db(label: &str) -> PathBuf {
+    let dir = test_home().join("outside").join(label);
+    std::fs::create_dir_all(&dir).unwrap();
+    dir.join("owner.db")
+}
+
+#[test]
+fn attaching_another_database_file_is_rejected() {
+    let (_app, window) = build_app("attach");
+    // オーナーの DB は既にある（接続は作成のフラグ無しで開かれるため、無い
+    // ファイルの ATTACH はこのハードニングが無くても失敗する）。空のファイルは
+    // SQLite にとって空の DB として開ける。
+    let other = outside_db("attach");
+    std::fs::write(&other, b"").unwrap();
+
+    let attached = execute(
+        &window,
+        &format!("ATTACH DATABASE '{}' AS other", other.display()),
+    );
+    let written = execute(&window, "CREATE TABLE other.stolen (x INTEGER)");
+
+    assert!(attached.is_err(), "ATTACH should be rejected: {attached:?}");
+    assert!(
+        written.is_err(),
+        "nothing should be written through ATTACH: {written:?}"
+    );
+    assert_eq!(
+        std::fs::metadata(&other).unwrap().len(),
+        0,
+        "{other:?} must stay untouched"
+    );
+}
+
+#[test]
+fn vacuum_into_another_file_is_rejected() {
+    let (_app, window) = build_app("vacuum-into");
+    let other = outside_db("vacuum-into");
+
+    let result = execute(&window, &format!("VACUUM INTO '{}'", other.display()));
+
+    assert!(
+        result.is_err(),
+        "VACUUM INTO should be rejected: {result:?}"
+    );
+    assert!(
+        !other.exists(),
+        "a rejected VACUUM INTO must not create {other:?}"
     );
 }
 

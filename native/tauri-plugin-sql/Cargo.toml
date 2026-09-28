@@ -69,6 +69,7 @@ postgres = [
 sqlite = [
     "sqlx/sqlite",
     "sqlx/runtime-tokio",
+    "dep:libsqlite3-sys",
 ]
 
 [lib]
@@ -81,6 +82,12 @@ version = "0.3"
 [dependencies.indexmap]
 version = "2"
 features = ["serde"]
+
+# ai-boss fork（FORK.md の差分 3）: `sqlite3_limit` を呼ぶため。版は sqlx-sqlite
+# 0.8 が使うものにそろえる（`links = "sqlite3"` のため 1 つの版しか共存できない）。
+[dependencies.libsqlite3-sys]
+version = "0.30.1"
+optional = true
 
 [dependencies.log]
 version = "0.4.21"
