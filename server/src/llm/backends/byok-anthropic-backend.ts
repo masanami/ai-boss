@@ -53,22 +53,40 @@ export class AnthropicMessagesHttpError extends Error {
   }
 }
 
+/** {@link AnthropicMessagesStreamError} の理由。 */
+type AnthropicMessagesStreamErrorReason =
+  | "sse-error-event"
+  | "incomplete-stream"
+  | "malformed-payload"
+  // Issue #643: stop_reason が "max_tokens" で、応答に tool_use のブロックが
+  // 1つ以上ある（＝出力上限で打ち切られた tool_use）。同じ要求を再送しても
+  // 同じ上限で再び打ち切られるだけなので、classifyByokAnthropicError は
+  // この理由を無条件に再試行不可とする（#637 の OpenAI 側と同じ方針）。
+  | "truncated-tool-use";
+
 /**
  * 応答の解釈中に生じた失敗——SSE の `error` イベント・`message_stop` 前の
  * 途絶（ストリーミングのみ）に加え、**壊れた JSON（`"malformed-payload"`。
  * SSE の `data:` ペイロード・`tool_use` の `input_json_delta` の連結・
  * 非ストリーミングの応答本文のいずれも対象）**（self-review 2周目:
  * code-reviewer が「非ストリーミングも対象だがコメントがストリーミング専用
- * のままだった」と指摘・CONFIRMED）。**応答本文の文字列を message に含めない**
- * ——固定の文言のみ（`parseJsonWithoutLeakingPayload` 参照）。
+ * のままだった」と指摘・CONFIRMED）、**出力上限で打ち切られた `tool_use`
+ * （`"truncated-tool-use"`。Issue #643: `stop_reason: "max_tokens"` の応答に
+ * `tool_use` のブロックが1つ以上あるとき。ストリーミング・非ストリーミング
+ * いずれも対象で、`partialJson`／`input` を解釈する前に判定する）**。
+ * **応答本文の文字列を message に含めない**——固定の文言のみ
+ * （`parseJsonWithoutLeakingPayload` 参照）。
  */
 export class AnthropicMessagesStreamError extends Error {
-  constructor(reason: "sse-error-event" | "incomplete-stream" | "malformed-payload") {
+  readonly reason: AnthropicMessagesStreamErrorReason;
+
+  constructor(reason: AnthropicMessagesStreamErrorReason) {
     super(AnthropicMessagesStreamError.describe(reason));
     this.name = "AnthropicMessagesStreamError";
+    this.reason = reason;
   }
 
-  private static describe(reason: "sse-error-event" | "incomplete-stream" | "malformed-payload"): string {
+  private static describe(reason: AnthropicMessagesStreamErrorReason): string {
     switch (reason) {
       case "sse-error-event":
         return "Anthropic Messages streaming response contained an SSE error event";
@@ -80,6 +98,9 @@ export class AnthropicMessagesStreamError extends Error {
         // 解釈できなかった入力の断片（応答本文）がそのまま入る。ここでは
         // その断片を一切引かず、固定の文言だけにする。
         return "Anthropic Messages response contained a malformed payload";
+      case "truncated-tool-use":
+        // 入力（partialJson／input）・応答本文は含めない（漏洩防止の規律）。
+        return "Anthropic Messages response contained a truncated tool_use";
     }
   }
 }
@@ -329,6 +350,15 @@ async function parseStreamingResponse(
     throw new AnthropicMessagesStreamError("incomplete-stream");
   }
 
+  // Issue #643: stop_reason が "max_tokens" で tool_use のブロックが1つ以上
+  // あれば、出力上限で打ち切られた tool_use とみなし、finalizeBlock
+  // （＝partialJson の解釈）より前に判定する。途中までの JSON を誤って
+  // malformed-payload（再試行可）に分類しないため——partialJson が空でも
+  // （黙って {} として tool_use を返さないため）判定する。
+  if (stopReason === "max_tokens" && [...blocksByIndex.values()].some((block) => block.type === "tool_use")) {
+    throw new AnthropicMessagesStreamError("truncated-tool-use");
+  }
+
   const content: BossContentBlock[] = [];
   const rawContent: unknown[] = [];
   const blockTypes: string[] = [];
@@ -360,6 +390,18 @@ function parseNonStreamingResponse(text: string): BossLlmMessage {
     stop_reason?: string;
     usage?: unknown;
   };
+  // Issue #643: stop_reason が "max_tokens" で tool_use のブロックが1つ以上
+  // あれば、出力上限で打ち切られた tool_use とみなし、content の走査前に
+  // 判定する（非ストリーミングは応答全体が既に1つの JSON として解釈済みの
+  // ため malformed-payload にはならないが、`input` の中身が不完全なまま
+  // 正常な tool_use として返ってしまう——ストリーミングと同じ理由で失敗
+  // させる）。
+  if (
+    message.stop_reason === "max_tokens" &&
+    message.content.some((rawBlock) => (rawBlock as Record<string, unknown>).type === "tool_use")
+  ) {
+    throw new AnthropicMessagesStreamError("truncated-tool-use");
+  }
   const content: BossContentBlock[] = [];
   const blockTypes: string[] = [];
   for (const rawBlock of message.content) {
@@ -418,13 +460,17 @@ async function createAnthropicMessage(
  *   の重複・リダイレクト拒否・中止）は再試行不可。
  * - {@link AnthropicMessagesHttpError} は 408/429/5xx が再試行可（`retry-
  *   after` があれば待ち時間も返す）、他の 4xx は再試行不可。
- * - それ以外（{@link AnthropicMessagesStreamError} を含む——SSE の `error`
- *   イベント・`message_stop` 前の途絶・壊れた JSON（`"malformed-payload"`。
- *   ストリーミング・非ストリーミングいずれの経路も対象）はいずれも
- *   `status` を持たない）は、`api-backend.ts` の `isRetryableApiError` が
- *   「正体不明の失敗は再試行可」とする既定と同じく、再試行可のままにする
- *   （課金される要求の再送になる点は、`retryable: true` を明示的に確かめる
- *   テストがこの既定を意図どおりと固定している）。
+ * - {@link AnthropicMessagesStreamError} の理由が `"truncated-tool-use"`
+ *   （出力上限で打ち切られた tool_use。Issue #643）は無条件に再試行不可
+ *   （同じ要求の再送は同じ上限で再び打ち切られるだけで直らない——`#637` の
+ *   OpenAI 側〔`classifyByokOpenAiError`〕と同じ方針）。
+ * - それ以外（他の理由の {@link AnthropicMessagesStreamError} を含む——SSE の
+ *   `error` イベント・`message_stop` 前の途絶・壊れた JSON
+ *   （`"malformed-payload"`。ストリーミング・非ストリーミングいずれの経路も
+ *   対象）はいずれも `status` を持たない）は、`api-backend.ts` の
+ *   `isRetryableApiError` が「正体不明の失敗は再試行可」とする既定と同じく、
+ *   再試行可のままにする（課金される要求の再送になる点は、`retryable: true`
+ *   を明示的に確かめるテストがこの既定を意図どおりと固定している）。
  */
 export function classifyByokAnthropicError(error: unknown, now: Date = new Date()): RetryDecision {
   // 機能仕様 docs/features/llm-provider-abstraction.md クリティカル設計決定3
@@ -440,6 +486,9 @@ export function classifyByokAnthropicError(error: unknown, now: Date = new Date(
     const retryable =
       error.status === 408 || error.status === 429 || error.status >= 500;
     return { retryable, retryAfterMs: parseRetryAfterMs(error.retryAfter, now) };
+  }
+  if (error instanceof AnthropicMessagesStreamError && error.reason === "truncated-tool-use") {
+    return { retryable: false };
   }
   return { retryable: true };
 }
