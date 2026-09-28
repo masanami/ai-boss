@@ -125,6 +125,26 @@ export async function updateReservationBody(
 }
 
 /**
+ * OS からは取り消せたが控えの削除だけ失敗した行（`canceledInOs`）を、
+ * 新しい計画の文面で登録し直した後に有効へ戻す（機能仕様 決定 2・仮定
+ * A22）。控えの文面・出どころ・使い回しのキーも新しい計画の値に合わせる
+ * （古いままだと `swapToIndividual` の `content_key` 判定が食い違い、B への
+ * 差し替えが止まりうるため）。
+ */
+export async function reactivateReservationWithNewBody(
+  db: Db,
+  id: number,
+  reservation: Pick<NewReservation, "body" | "bodySource" | "contentKey" | "registeredAt">,
+): Promise<void> {
+  await db.run(
+    `UPDATE nudge_reservations
+       SET state = 'active', body = ?, body_source = ?, content_key = ?, registered_at = ?
+     WHERE id = ?`,
+    [reservation.body, reservation.bodySource, reservation.contentKey, reservation.registeredAt, id],
+  );
+}
+
+/**
  * 突き合わせの結果を DB へ反映する（機能仕様 決定 2）。予約時刻を過ぎた
  * 催促の控えを `sent_at` ＝ 予約時刻で `notifications` へ確定し、確定した
  * 行と確定しない固定の通知の行を消す。確定と削除を 1 つのトランザクション

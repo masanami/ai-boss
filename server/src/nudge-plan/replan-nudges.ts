@@ -44,6 +44,7 @@ import {
   findReservationByKey,
   insertReservation,
   listReservations,
+  reactivateReservationWithNewBody,
   setReservationState,
   updateReservationBody,
   type NewReservation,
@@ -264,6 +265,19 @@ function describeError(err: unknown): string {
   return err instanceof Error ? err.name : typeof err;
 }
 
+/**
+ * 失敗の後始末（控えの削除・取り消し待ちへの更新）の DB 書き込みが失敗して
+ * も、同じ計画し直しの残り（後続の予約の登録・固定の通知・上乗せ）を止めない
+ * （仮定 A23）。残った行は次の計画し直しで扱い直す。
+ */
+async function tryCleanup(action: () => Promise<void>, message: string): Promise<void> {
+  try {
+    await action();
+  } catch (err) {
+    console.error(message, describeError(err));
+  }
+}
+
 /** 非同期の処理を 1 本ずつ直列に流す単純な排他 */
 function createMutex(): <T>(fn: () => Promise<T>) => Promise<T> {
   let tail: Promise<unknown> = Promise.resolve();
@@ -299,8 +313,14 @@ export function createNudgeReplanner(deps: NudgeReplannerDeps): NudgeReplanner {
         body: reservation.body,
       });
     } catch (err) {
-      // 登録に失敗した予約は控えに残さない（＝確定しない。決定 2）。
-      await deleteReservation(db, id);
+      // 登録に失敗した予約は控えに残さない（＝確定しない。決定 2）。この削除
+      // 自体が失敗すると、行は OS に無いのに有効として残る → 予約時刻を過ぎる
+      // 前の次の計画し直しで取り消し対象になり（OS には元々無い）、削除を
+      // やり直す（予約時刻を過ぎた後は確定されうる。#649 の観察）。
+      await tryCleanup(
+        () => deleteReservation(db, id),
+        `nudge replan: failed to remove a reservation that failed to register (key=${reservation.reservationKey}):`,
+      );
       console.error(
         `nudge replan: failed to register a reservation (key=${reservation.reservationKey}):`,
         describeError(err),
@@ -311,8 +331,11 @@ export function createNudgeReplanner(deps: NudgeReplannerDeps): NudgeReplanner {
   /**
    * 取り消し待ちの行に同じ予約があれば有効に戻し、無ければ新しく登録する。
    * OS からは取り消せたが控えを消せなかった行（`canceledInOs`）は OS に予約が
-   * 無いため、控えの文面で登録し直してから有効に戻す（登録できなければ
-   * 「登録に失敗した予約」として控えから消す。決定 2）。
+   * 無いため、**新しい計画の文面**（`reservation` の値）で登録し直してから
+   * 有効に戻す（登録できなければ「登録に失敗した予約」として控えから消す。
+   * 決定 2）。控えの文面・出どころ・使い回しのキーも新しい計画の値に合わせる
+   * （古いままだと後続の B への差し替えが `content_key` の不一致で止まりうる。
+   * 仮定 A22）。
    */
   async function placeReservation(
     reservation: NewReservation,
@@ -328,16 +351,24 @@ export function createNudgeReplanner(deps: NudgeReplannerDeps): NudgeReplanner {
             id: pending.id,
             at: new Date(pending.scheduled_at),
             title: DEFAULT_NOTIFICATION_TITLE,
-            body: pending.body,
+            body: reservation.body,
           });
         } catch (err) {
-          await deleteReservation(db, pending.id);
+          // 登録し直しに失敗した予約は控えに残さない（決定 2）。この削除自体が
+          // 失敗すると、行は OS に無いのに有効として残る → 予約時刻を過ぎる前の
+          // 次の計画し直しで取り消し対象になり（OS には無い）、削除をやり直す。
+          await tryCleanup(
+            () => deleteReservation(db, pending.id),
+            `nudge replan: failed to remove a reservation that failed to re-register (key=${reservation.reservationKey}):`,
+          );
           console.error(
             `nudge replan: failed to re-register a reservation (key=${reservation.reservationKey}):`,
             describeError(err),
           );
           return;
         }
+        await reactivateReservationWithNewBody(db, pending.id, reservation);
+        return;
       }
       await setReservationState(db, pending.id, "active");
       return;
@@ -356,8 +387,14 @@ export function createNudgeReplanner(deps: NudgeReplannerDeps): NudgeReplanner {
       try {
         await port.cancel(row.id);
       } catch (err) {
-        // 行を先に消すと、OS に残った古い催促を取り消す手がかりが無くなる（決定 2）
-        await setReservationState(db, row.id, "pending_cancel");
+        // 行を先に消すと、OS に残った古い催促を取り消す手がかりが無くなる（決定
+        // 2）。この更新自体が失敗すると、行は active のまま残る → 次の計画し
+        // 直しでも取り消し対象になり、取り消しを再試行する（残りの行の処理は
+        // 止めない）。
+        await tryCleanup(
+          () => setReservationState(db, row.id, "pending_cancel"),
+          `nudge replan: failed to mark a reservation pending_cancel (id=${row.id}):`,
+        );
         console.error(`nudge replan: failed to cancel a reservation (id=${row.id}):`, describeError(err));
         continue;
       }
@@ -521,6 +558,14 @@ export function createNudgeReplanner(deps: NudgeReplannerDeps): NudgeReplanner {
         await port.register(request(row.body));
       } catch (err) {
         console.error(`nudge swap: failed to restore the previous body (id=${row.id}):`, describeError(err));
+        if (registered && port.replacesSameId) {
+          // 置き換えるポートで B の登録が成功しているときは、OS に B の予約が
+          // 残っているとみなす（失敗した置き換えは前の予約を消さない前提。実機の
+          // 挙動は S3 で確かめる。仮定 A16）。取り消し・削除をすると届けられる
+          // B を自分から消すため、B の予約と控えの行を残す（催促を失わない。
+          // 控えの文面は B と食い違ったまま残る。仮定 A21）。
+          return;
+        }
         // 元の文面でも登録できなければ「登録に失敗した予約」（決定 2・4）:
         // 控えに残さず確定しない。次の計画し直しで登録し直される。置き換えの
         // 失敗では元の予約が OS に残りうる（控えを消すと取り消す手がかりを
@@ -530,7 +575,14 @@ export function createNudgeReplanner(deps: NudgeReplannerDeps): NudgeReplanner {
         } catch (cancelErr) {
           console.error(`nudge swap: failed to cancel before dropping (id=${row.id}):`, describeError(cancelErr));
         }
-        await deleteReservation(db, row.id);
+        // 削除自体が失敗すると、行は OS に登録されていない催促を指したまま
+        // active で残る → 次の計画し直しでは取り消し対象になり（OS には無い/
+        // 取り消し済み）取り消しと削除をやり直しつつ、他の対象の B・C の生成
+        // は続く（仮定 A23）。
+        await tryCleanup(
+          () => deleteReservation(db, row.id),
+          `nudge swap: failed to remove a reservation that failed to re-register (id=${row.id}):`,
+        );
       }
     });
   }
