@@ -1,6 +1,7 @@
 # 実行の仕組みを Tauri 2 アプリ内へ作り替える（Node サーバー常駐の廃止・開発者用版の除外）
 
 > Issue #579。2026-09-26 に論点 Q1〜Q5 を確定した（親の回答とオーナーの回答。オーナーの回答は「オーナーの決定」節に原文のまま引用する）。
+> 2026-09-28: S1（#594・PR #598）と #580 S1（#597・PR #615）のマージ後、S2 を実装対象にするため改訂した（「S2 の器の設計」・受入基準（S2）・手動の確認手順（S2）・やらないことと仮定の追加）。確定済みの設計（クリティカル設計決定 1〜4・スライス表・オーナーの決定）は変えていない。
 
 ## 概要
 
@@ -110,6 +111,25 @@
 - **データは移さない**。Tauri アプリは新しい DB で始める（オーナーの決定 Q3-b）。
 - **日常利用を Tauri アプリへ切り替える時期は本仕様で決めない**。S3 以降にオーナーが判断する。
 
+### S2 の器の設計（2026-09-28・S2 の着手時に確定済みの設計から導いた形）
+
+- **用語**: 決定 1・4 の `createApp` は、S1（#594）で実行環境に依存しないコアの `createCoreApp`（`server/src/core-app.ts`）と、開発者用の版の Node の周辺の `createApp`（`server/src/app.ts`）に分かれた。以下の「製品版のエントリが渡す先」はコアの `createCoreApp` を指す（決定の中身は変わらない）。製品版のコアのエントリは S1 で `server/src/core-entry.ts` になった（仮定 A3）。
+- **器の構成**: Tauri 2 のアプリ本体は Rust のクレート（`native/` 配下・仮定 A4）で、WebView には製品版の web のエントリ（web の既存の `App` を描画する別エントリ。開発者用の `index.html`／`main.tsx` とは別のビルド出力・仮定 A5）を載せる。`devUrl` は使わず、開発時もビルド済みの出力を読む（`localhost` の配信に依存しない）。
+- **`/api` の振り向け（決定 1）**: 製品版の web のエントリは、描画より前にグローバルの `fetch` を包み、**アプリと同じオリジンで、パスが `/api` または `/api/` で始まる要求**だけを `createCoreApp` の `app.fetch(Request)` へ渡す。それ以外は元の `fetch` へそのまま渡す（外部への通信は下の CSP が止める）。要求の方法・ヘッダ・本文・`signal` は `Request` のまま渡し、応答は `Response` のまま返す（SSE は `ReadableStream` の逐次の読み出し、生成停止は `signal` の中止で成り立つ）。
+- **DB 未接続の間の振る舞い（決定 4 から導出）**: 決定 4 は「製品版のエントリは #580 の製品版実装を `createCoreApp` に渡すだけ」「#580 の S2 が済むまで DB を実行する経路を動かさない」としている。両方を満たす形として、S2 の製品版のエントリは **すべての操作を「DB 未接続」のエラーで拒否し SQL を実行しない DB ポート**を `createCoreApp` に渡す。この結果 `/api/health` は `db: false` を返し、DB を使うルートは失敗の応答（既存のエラー処理のまま）になる。#580 S2 でこのポートを製品版の DB 実装に差し替える。
+- **LLM**: 製品版のエントリは LLM バックエンドを 1 つも登録しない（オーナーの決定 Q4-c。S1 と同じ）。`env` は空（`process.env` を読まない）。
+- **証跡ファイルの `<a href>`（決定 1）**: 製品版のエントリだけが「Blob URL で開く」方式を画面へ注入する（React のコンテキストで注入し、`TaskCard.tsx` の証跡ファイルのリンクと `use-task-evidences.ts` がそれを読む。取得の失敗は既存の証跡の操作のエラー表示〔`actionError`〕に出す。影響範囲は決定 1 の 2 ファイルに `use-task-evidences.ts` を加えたもの）。注入された場合、証跡ファイルのリンクを押すと本文を `fetch` で取得し、その `blob:` URL を新しいウィンドウで開き、一定時間後に失効させる。**注入しない開発者用の版は、現行どおり `<a href="/api/.../content">` のまま**（`npm run start` の挙動を変えない）。
+- **権限と到達経路の境界（安全側）**:
+  - capability は 1 つも置かない（S2 の WebView は Tauri のコマンド・プラグインを呼ばない。`/api` はアプリ内の JS で完結する）。`withGlobalTauri` も有効にしない。権限は、使うスライス（S3 の通知・トレイ、#581 S3 の通信層、#580 S2 の DB）がそのとき最小の単位で足す。
+  - CSP を設定する（`null` にしない）。スクリプトは自オリジンだけ（`unsafe-inline`・`unsafe-eval` なし）、通信先は自オリジンと Tauri の IPC だけ、`object-src`・`frame-src`・`base-uri`・`form-action` は `'none'`。画像は自オリジン・`data:`・`blob:`。
+  - `asset:` プロトコルは有効にしない（設定・クレートの機能ともに）。WebView から端末の任意のファイルへ到達する経路を作らない。
+  - メインのウィンドウのナビゲーションはアプリのオリジン（`tauri://localhost`）の中だけを許し、それ以外（`http(s):`・`file:`・`blob:`・`data:` 等）は拒否する。
+  - 新しいウィンドウの要求は、アプリのオリジンの `blob:` URL（証跡ファイル）だけを許し、それ以外は拒否する。ダウンロードの要求はすべて拒否する。
+  - 上の 3 つの判定は Tauri 2（2.12）の `WebviewWindowBuilder` の `on_navigation`・`on_new_window`（`NewWindowResponse::Allow`／`Deny`）・`on_download` で行う（2026-09-28 に crate のソースで API を確かめた。判定を登録しない場合、macOS の WebView は新しいウィンドウの要求を開かない〔wry 0.55〕）。判定は URL を受け取る純粋な関数にして `cargo test` で固定する。`blob:` の新しいウィンドウが実機で本文を表示できるかは、証跡を扱えるようになる #580 S2・S4 の後に手動で確かめる（未検証のリスクとして残す）。
+  - 子プロセス・サイドカーの仕組み（`tauri-plugin-shell`・`bundle.externalBin`）を入れない（オーナーの決定 Q4-b。Node・`claude-code` を器から起動する経路を作らない）。
+- **製品版に開発者用の経路が混入しないことの検査（決定 3 の延長）**: S1 はコアのエントリ（`server/src/core-entry.ts`）のバンドルを検査した。S2 では、器に実際に載る**製品版の web のビルド**（Vite）の入力モジュール（Vite の `build()` が返す Rollup の出力の各チャンクの `moduleIds` の和集合。S1 のメタファイルに当たる）を検査し、`claude-code`・`@anthropic-ai/sdk`・Node の周辺（`@hono/node-server`・`better-sqlite3`・`server/src/app.ts`・`server/src/index.ts`・開発者用の LLM バックエンドの登録）が含まれないことを固定する。逆に開発者用の web のビルドにはコア（`server/src`）が入らないことも固定する。
+- **ADR 0002 の改訂**: 決定 4 のとおり、製品版で永続状態と DB への副作用を受け持つ層を「WebView 内の TS コア（Hono アプリ）」と ADR 0002 に記録する。
+
 ### 実装計画（S1 のチケット分解の見通し）
 
 1. LLM バックエンドの注入化と、`claude-code`・`api` の開発者用エントリへの分離
@@ -125,7 +145,7 @@
 | S3 | デスクトップのスケジューラ・通知・メニューバー常駐（node-cron と `execFile` の置き換え）。WKWebView のタイマー間引きの確認 | 8-15 | S2 がマージされてから |
 | S4 | 証跡ファイルの保存をアプリのデータディレクトリへ（plugin-fs） | 5-10 | S2 がマージされてから |
 
-実装対象: S1
+実装対象: S2
 
 ## やらないこと
 
@@ -142,6 +162,9 @@
 - 端末間同期（理由: ADR 0011 決定 18〔#590・PR #591 で追加。本仕様の作成時点で未マージ〕の実装は別 Issue）
 - Windows 対応（理由: ADR 0011 決定 19〔同上〕で後続リリース）
 - ログイン時の自動起動（理由: 現行版にも無い。必要なら別 Issue）
+- （S2 で追加）製品版で外部の URL（リンクの証跡など）を既定のブラウザや新しいウィンドウで開くこと（理由: 外部 URL を開くには opener 等の権限と、開いてよい URL の範囲の決定が要る。S2 は安全側に倒し、アプリの外へのナビゲーションと新しいウィンドウを `blob:` 以外すべて拒否する。必要になったら別 Issue で範囲を決める）
+- （S2 で追加）製品版で証跡ファイルをダウンロード（端末へ保存）すること（理由: 保存先の扱いは S4〔plugin-fs〕と併せて決める。S2 では WebView のダウンロード要求をすべて拒否する。画像・PDF 以外の証跡は S2 の器では開けない）
+- （S2 で追加）製品版の DB の実装・DB を使う画面の動作確認（理由: #580 S2。S2 の器は DB に接続せず、DB を使うルートは失敗の応答になる）
 
 ## 受入基準（S1）
 
@@ -160,8 +183,96 @@
 - [ ] 証跡ファイルの保存・読み出し・削除の既存テストが、保存先をポート経由に変えた後も変更なしで合格する
 - [ ] `npm run lint`・`npm run typecheck`・`npm test`・`npm run test:tz` が合格する
 
+## 受入基準（S2）
+
+> S2 は DB と LLM を使わずに確かめられるものだけを受入基準にする（スライス表）。ウィンドウが開き画面が表示されることなど、人間が実機で見るしかないものは「手動の確認手順（S2）」に分ける。
+
+### アプリ内の `/api`（製品版の web のエントリ）
+
+- [ ] 製品版の web のエントリが包んだ `fetch` で同一オリジンの `/api/health` を呼ぶと、元の `fetch` を呼ばずにアプリ内のコアのルートが応答する
+- [ ] 製品版の web のエントリが包んだ `fetch` で、パスが `/api`・`/api/` で始まらない同一オリジンの URL（例: `/apix`・`/index.html`）は、元の `fetch` へ渡される
+- [ ] 製品版の web のエントリが包んだ `fetch` で、別オリジンの URL（例: `https://example.com/api/x`）は、元の `fetch` へ渡される
+- [ ] 包んだ `fetch` で `/api` 配下へ送った要求の方法・ヘッダ・本文は、アプリ内のルートにそのまま届く（`POST` の JSON 本文で確かめる）
+- [ ] 包んだ `fetch` に渡した `signal` を中止すると、アプリ内のルートが受け取った要求の `signal` も中止される
+- [ ] 包んだ `fetch` の応答本文は逐次に読める（ルートが本文の最初の断片を送り、最後の断片をまだ送っていない時点で、呼び出し元が最初の断片を読める）
+- [ ] 製品版の web のエントリが組み立てたアプリで `/api/health` を呼ぶと、ステータス 200・本文 `{"status":"ok","db":false}` を返す（DB 未接続）
+- [ ] 製品版の web のエントリが組み立てたアプリで DB を使うルート（`GET /api/tasks`）を呼ぶと、2xx を返さない
+- [ ] 製品版の web のエントリが `createCoreApp` に渡す DB ポートの `run` は、呼ぶと拒否する（SQL を実行しない）
+- [ ] 製品版の web のエントリが `createCoreApp` に渡す DB ポートの `get` は、呼ぶと拒否する（SQL を実行しない）
+- [ ] 製品版の web のエントリが `createCoreApp` に渡す DB ポートの `all` は、呼ぶと拒否する（SQL を実行しない）
+- [ ] 製品版の web のエントリが `createCoreApp` に渡す DB ポートの `exec` は、呼ぶと拒否する（SQL を実行しない）
+- [ ] 製品版の web のエントリが `createCoreApp` に渡す DB ポートの `transaction` は、呼ぶと渡した関数を実行せずに拒否する
+- [ ] 製品版の web のエントリを読み込んだ後も、登録済みの LLM バックエンドは 0 件である
+
+### 製品版に開発者用の経路が混入しないこと（ビルドの検査）
+
+- [ ] 製品版の web のビルド（Vite）の入力モジュールに `@anthropic-ai/claude-agent-sdk` が含まれない
+- [ ] 製品版の web のビルドの入力モジュールに `server/src/llm/backends/claude-code-backend.ts` が含まれない
+- [ ] 製品版の web のビルドの入力モジュールに `@anthropic-ai/sdk` が含まれない
+- [ ] 製品版の web のビルドの入力モジュールに `@hono/node-server` が含まれない
+- [ ] 製品版の web のビルドの入力モジュールに `better-sqlite3` が含まれない
+- [ ] 製品版の web のビルドの入力モジュールに `server/src/db/connection.ts` が含まれない
+- [ ] 製品版の web のビルドの入力モジュールに `server/src/app.ts` が含まれない
+- [ ] 製品版の web のビルドの入力モジュールに `server/src/index.ts` が含まれない
+- [ ] 製品版の web のビルドの入力モジュールに `server/src/llm/dev-llm-backends.ts` が含まれない
+- [ ] 製品版の web のビルドの入力モジュールに `server/src/core-app.ts` が含まれる（コアがアプリ内に載る）
+- [ ] 開発者用の web のビルド（`web/index.html` のエントリ）の入力モジュールに `server/src/` のモジュールが含まれない
+
+### 証跡ファイルのリンク（Blob URL）
+
+- [ ] Blob URL の方式を注入した画面で証跡ファイルのリンクを押すと、`/api/tasks/:id/evidences/:evidenceId/content` を `fetch` で取得し、その本文の `blob:` URL を新しいウィンドウで開く
+- [ ] Blob URL の方式で開いた `blob:` URL は、開いてから 60 秒後に失効させる（`URL.revokeObjectURL`）
+- [ ] Blob URL の方式で本文の取得が 2xx 以外で終わったとき、新しいウィンドウを開かず、証跡の欄にエラーを表示する
+- [ ] Blob URL の方式を注入しない画面（開発者用の版）では、証跡ファイルのリンクは現行どおり `href` が `/api/tasks/:id/evidences/:evidenceId/content` の `<a>` である
+
+### Tauri の器の権限と到達経路（Rust のテスト・設定の検査）
+
+- [ ] アプリの capability（`capabilities/`）が許可する権限は 0 件である
+- [ ] `tauri.conf.json` の `app.withGlobalTauri` は有効でない
+- [ ] `tauri.conf.json` の CSP の `default-src` は `'self'` だけである（CSP が未設定・`null` なら不合格）
+- [ ] CSP の `script-src` は `'unsafe-inline'`・`'unsafe-eval'` を含まない
+- [ ] CSP の `connect-src` は外部のオリジン（`http:`・`https:`・`ws:`・`wss:` のスキームやホストの指定）を含まない
+- [ ] CSP の `object-src` は `'none'` である
+- [ ] CSP の `frame-src` は `'none'` である
+- [ ] CSP の `base-uri` は `'none'` である
+- [ ] CSP の `form-action` は `'none'` である
+- [ ] CSP の `img-src` は `'self'`・`data:`・`blob:` 以外を含まない
+- [ ] `tauri.conf.json` の `app.security.dangerousDisableAssetCspModification` は有効でない
+- [ ] `tauri.conf.json` の `app.security.assetProtocol.enable` は有効でない
+- [ ] アプリのクレートの `tauri` の機能に `protocol-asset` を含まない
+- [ ] メインのウィンドウのナビゲーションの判定は、`tauri://localhost` のオリジンの URL だけを許し、それ以外（`https://example.com/`・`http://localhost:8787/`・`file:///etc/hosts`・`blob:tauri://localhost/<uuid>`・`data:text/html,x`）を拒否する
+- [ ] 新しいウィンドウの要求の判定は、`blob:tauri://localhost/<uuid>` だけを許し、それ以外（`https://example.com/`・`http://localhost:8787/`・`file:///etc/hosts`・`blob:https://example.com/<uuid>`・`data:text/html,x`・`about:blank`）を拒否する
+- [ ] アプリのクレートの依存に `tauri-plugin-shell` を含まない
+- [ ] `tauri.conf.json` に `bundle.externalBin`（サイドカー）が無い
+- [ ] `tauri.conf.json` に `build.devUrl` が無い（開発時も `localhost` の配信を読まない）
+- [ ] `tauri.conf.json` の `build.frontendDist` は製品版の web のビルドの出力を指す
+
+### 開発者用の版と品質ゲート
+
+- [ ] ADR 0002 に、製品版で永続状態と DB への副作用を受け持つ層は WebView 内の TS コア（Hono アプリ）である、という改訂が記録されている
+- [ ] `npm run lint`・`npm run typecheck`・`npm test`・`npm run test:tz`・`npm run test:rust`・`npm run test:tauri`（アプリのクレートの `cargo test`）が合格する
+- [ ] `npm run build:tauri` で macOS の `.app` が生成される
+- [ ] 生成された `.app` に `node` という名前のファイルが含まれない
+- [ ] 生成された `.app` に `node_modules` という名前のディレクトリが含まれない
+
+## 手動の確認手順（S2）
+
+人間が実機（macOS）で確かめる。`npm run build:tauri` の後に行う。
+
+1. 生成された `.app`（`native/tauri-app/target/release/bundle/macos/`）を起動する。Node サーバー（`npm run start`）は起動しない状態で行う。
+2. ウィンドウが開き、既存の画面（ダッシュボード等）の枠組みが表示されることを確かめる。DB が未接続のため、データを読む部分はエラーの表示になるのが正しい（#580 S2 まで）。
+3. 画面の接続状態の表示が「未接続」ではなく「接続 OK」になることを確かめる（`/api/health` がアプリ内で 200 を返すため。接続状態の表示は HTTP のステータスだけを見ており `db` を区別しない。DB 未接続の区別の表示は S2 では作らない）。
+4. `lsof -iTCP -sTCP:LISTEN -P | grep -i ai-boss` で、アプリが TCP のポートを待ち受けていないことを確かめる。
+5. オーナーの DB（`server/data/ai-boss.db`）の更新時刻がアプリの起動・操作で変わらないことを確かめる。
+6. ウィンドウを閉じるとアプリが終了することを確かめる（メニューバーへの常駐は S3）。
+
 ## 仮定（軽微・可逆）
 
 - A1: `server/` ディレクトリは S1 では動かさない（ワークスペースの再編は差分が大きく、S1 の目的に要らない）
 - A2: `task-fingerprint.ts` のハッシュは、同期のまま動く非 Node の実装に置き換える（キャッシュ用の指紋であり暗号強度は要件でない。値が変わるとダッシュボードのボスのコメントのキャッシュが 1 回無効になるだけ）
-- A3: 製品版のコアのエントリのファイル名・置き場所は実装で決める
+- A3: 製品版のコアのエントリのファイル名・置き場所は実装で決める（S1 で `server/src/core-entry.ts` に決まった）
+- A4（S2）: Tauri のアプリ本体のクレートは `native/tauri-app/` に置き、`native/secure-transport/` と同じく独立したクレート（Cargo のワークスペースにしない）とする。#581 S3 で通信層を配線するときは path 依存で足せる。ワークスペース化はそのとき必要なら行う
+- A5（S2）: 製品版の web のエントリは `web/` の中に別の HTML・エントリ・Vite の設定として置き、出力は `web/dist-app/` とする（`web/` の画面コンポーネントを流用するため。新しい npm ワークスペースは作らない）
+- A6（S2）: Blob URL の失効までの時間は 60 秒とする（新しいウィンドウが本文を読み終えるのに十分で、開きっぱなしの URL を残さない長さ。値は後で変えてよい）
+- A7（S2）: CSP の `style-src` は `'self' 'unsafe-inline'` とする（スタイルはスクリプトを実行しないため。画面のライブラリが実行時に `<style>` を差し込んでも崩れないようにする）
+- A8（S2）: アプリの識別子（bundle identifier）は `dev.aiboss.app`、製品名は `ai-boss` とする（署名・配布〔#587〕で見直してよい）
