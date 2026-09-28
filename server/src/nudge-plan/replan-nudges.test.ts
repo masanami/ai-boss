@@ -157,9 +157,13 @@ async function insertNudgeRow(
 }
 
 /** 書き込みの SQL が条件に合うときだけ失敗する DB（控えの更新・削除の失敗を起こす） */
-function failingWrites(db: DbPort, shouldFail: (sql: string) => boolean): DbPort {
+function failingWrites(
+  db: DbPort,
+  shouldFail: (sql: string, params: readonly unknown[] | undefined) => boolean,
+): DbPort {
   return {
-    run: (sql, params) => (shouldFail(sql) ? Promise.reject(new Error("db write failed")) : db.run(sql, params)),
+    run: (sql, params) =>
+      shouldFail(sql, params) ? Promise.reject(new Error("db write failed")) : db.run(sql, params),
     get: (sql, params) => db.get(sql, params),
     all: (sql, params) => db.all(sql, params),
     exec: (sql) => db.exec(sql),
@@ -169,6 +173,15 @@ function failingWrites(db: DbPort, shouldFail: (sql: string) => boolean): DbPort
 
 const UPDATE_BODY_SQL = "UPDATE nudge_reservations SET body";
 const DELETE_RESERVATION_SQL = "DELETE FROM nudge_reservations WHERE id";
+// `updateReservationBody`（`SET body = ?, body_source = ?`）とは書き出しが
+// 違う（`reactivateReservationWithNewBody` は `SET state = 'active', body = ?...`）
+// ため、この prefix は `setReservationState` の呼び出しだけに一致する。
+const SET_PENDING_CANCEL_SQL = "UPDATE nudge_reservations SET state = ?";
+
+/** 特定の行 ID への削除だけ失敗する DB（他の行の確定・取り消しは通す） */
+function failingDeleteForId(db: DbPort, id: number): DbPort {
+  return failingWrites(db, (sql, params) => sql.startsWith(DELETE_RESERVATION_SQL) && params?.[0] === id);
+}
 
 function insertEvidenceRow(raw: Database.Database, taskId: number): void {
   raw
@@ -380,6 +393,96 @@ describe("控えと確定", () => {
     h.clock.now = new Date(2026, 8, 14, 10, 20);
     await replan(h);
     await expect(calculateTodayMaxEscalationLevel(h.db, h.clock.now)).resolves.toBe(2);
+  });
+});
+
+describe("失敗の後始末が計画し直しの残りを止めない（仮定 A23）", () => {
+  it("continues registering later nudges and the report prompt when a failed registration's cleanup delete also fails", async () => {
+    const h = await setup();
+    h.port.failRegister = (request) => request.at.getTime() === new Date(at(10, 15)).getTime();
+    const replanner = createNudgeReplanner({
+      db: failingWrites(h.db, (sql) => sql.startsWith(DELETE_RESERVATION_SQL)),
+      env: {},
+      port: h.port,
+      clock: () => h.clock.now,
+    });
+    await replanner.requestReplan();
+    await replanner.whenIdle();
+    // 10:15 の登録は失敗し、後始末の削除も失敗する（行は active のまま残る。
+    // 次の計画し直しで取り消し対象になり〔OS には無い〕、削除をやり直す）。
+    expect(reservationRows(h.raw).find((r) => r.scheduled_at === at(10, 15))).toMatchObject({ state: "active" });
+    // それでも後続の予約や固定の通知の登録は止まらない
+    expect(reservationRows(h.raw).some((r) => r.scheduled_at === at(10, 25) && r.kind === "nudge")).toBe(true);
+    expect(reservationRows(h.raw).some((r) => r.kind === "report_prompt")).toBe(true);
+  });
+
+  it("continues cancelling, planning and the report prompt when re-registering a canceledInOs row fails and its cleanup delete also fails", async () => {
+    const h = await setup();
+    await replan(h);
+    const target = reservationRows(h.raw).find((r) => r.scheduled_at === at(10, 15))!;
+    h.port.failRegister = (request) => request.id === target.id;
+    const replanner = createNudgeReplanner({
+      db: failingDeleteForId(h.db, target.id),
+      env: {},
+      port: h.port,
+      clock: () => h.clock.now,
+    });
+    await replanner.requestReplan();
+    await replanner.whenIdle();
+    // target: 取り消しの削除も、登録し直しも、その削除も失敗するが、行は残り
+    // 例外は外へ出ない（次の計画し直しで取り消し・削除をやり直す）。
+    expect(reservationRows(h.raw).find((r) => r.id === target.id)).toMatchObject({ state: "active" });
+    // 残りの計画（別の予約の取り消し・登録し直し・固定の通知）は進む
+    expect(reservationRows(h.raw).some((r) => r.scheduled_at === at(10, 25) && r.kind === "nudge")).toBe(true);
+    expect(reservationRows(h.raw).some((r) => r.kind === "report_prompt")).toBe(true);
+  });
+
+  it("keeps a reservation active when marking it pending_cancel also fails, and still cancels and re-plans the rest", async () => {
+    const h = await setup();
+    const id1 = await insertNudgeRow(h, { scheduledAt: at(12, 0, 15), ruleKey: "a" });
+    const id2 = await insertNudgeRow(h, { scheduledAt: at(12, 5, 15), ruleKey: "b" });
+    h.port.failCancel = (cancelId) => cancelId === id1;
+    const replanner = createNudgeReplanner({
+      db: failingWrites(h.db, (sql) => sql.startsWith(SET_PENDING_CANCEL_SQL)),
+      env: {},
+      port: h.port,
+      clock: () => h.clock.now,
+    });
+    await replanner.requestReplan();
+    await replanner.whenIdle();
+    // id1: 取り消しにも、pending_cancel への更新にも失敗するが、例外は外へ出ない
+    expect(reservationRows(h.raw).find((r) => r.id === id1)?.state).toBe("active");
+    // id2: 取り消しは成功するので削除される
+    expect(reservationRows(h.raw).some((r) => r.id === id2)).toBe(false);
+    // 後続の処理（新しい催促の登録・固定の通知）は止まらない
+    expect(reservationRows(h.raw).some((r) => r.kind === "report_prompt")).toBe(true);
+    expect(reservationRows(h.raw).some((r) => r.kind === "nudge" && r.id !== id1)).toBe(true);
+  });
+
+  it("continues the remaining B/C enrichment when the delete of a reservation that failed to re-register also fails", async () => {
+    const h = await setup();
+    llmSucceeds();
+    const replanner = createNudgeReplanner({
+      db: failingWrites(h.db, (sql) => sql.startsWith(DELETE_RESERVATION_SQL)),
+      env: {},
+      port: h.port,
+      clock: () => h.clock.now,
+    });
+    await replanner.requestReplan();
+    const target = reservationRows(h.raw).find((r) => r.scheduled_at === at(10, 15))!;
+    // 10:15 の B の登録・元の文面への登録し直しの両方を失敗させる
+    h.port.failRegister = (request) => request.id === target.id;
+    await replanner.whenIdle();
+    // target: 取り消しは成功する（OS からは消える）が、控えの削除は失敗するので
+    // 行は DB に残る（次の計画し直しで取り消し・削除をやり直す）
+    expect(h.port.scheduled.has(target.id)).toBe(false);
+    expect(reservationRows(h.raw).some((r) => r.id === target.id)).toBe(true);
+    // それでも他の対象（10:25）の B の生成と、C の生成は続く
+    const bTimes = llmRequests()
+      .filter(isIndividualRequest)
+      .map((r) => /現在日時: \S+（.）(\d\d:\d\d)/.exec(String(r.system))?.[1]);
+    expect(bTimes).toContain("10:25");
+    expect(llmRequests().some((r) => !isIndividualRequest(r))).toBe(true);
   });
 });
 
@@ -657,6 +760,42 @@ describe("文面の順序", () => {
   });
 });
 
+describe("canceledInOs の行の登録し直し（仮定 A22）", () => {
+  it("re-registers with the new plan's body, body_source and content key, and a later B swap can proceed", async () => {
+    const h = await setup();
+    await replan(h);
+    const target = reservationRows(h.raw).find((r) => r.scheduled_at === at(10, 15))!;
+    const staleBody = "古い予約の文面";
+    h.raw.prepare("UPDATE nudge_reservations SET body = ? WHERE id = ?").run(staleBody, target.id);
+    insertEvidenceRow(h.raw, h.taskId); // 証跡件数が変わるので使い回しのキーも変わる
+    llmSucceeds();
+    const replanner = createNudgeReplanner({
+      db: failingDeleteForId(h.db, target.id),
+      env: {},
+      port: h.port,
+      clock: () => h.clock.now,
+    });
+    await replanner.requestReplan();
+    await replanner.whenIdle();
+
+    // 取り消せたが控えの削除だけ失敗した行（canceledInOs）を、古い控えの文面
+    // ではなく新しい計画の文面で登録し直している
+    const registerCalls = h.port.calls.filter((c) => c.op === "register" && c.id === target.id);
+    expect(registerCalls.some((c) => c.body === staleBody)).toBe(false);
+
+    const row = reservationRows(h.raw).find((r) => r.id === target.id)!;
+    expect(row.body).not.toBe(staleBody);
+    expect(row.content_key).not.toBe(target.content_key);
+    expect(row.state).toBe("active");
+
+    // 新しい使い回しのキーで B の生成・差し替えも進む（content_key の不一致で
+    // 止まらない）
+    expect(row.body).toBe("B:10:15");
+    expect(row.body_source).toBe("individual");
+    expect(h.port.scheduled.get(target.id)?.body).toBe("B:10:15");
+  });
+});
+
 describe("B（個別生成）", () => {
   it("targets up to the first 3 reservations of the plan that have no saved body", async () => {
     const h = await setup();
@@ -886,6 +1025,52 @@ describe("B（個別生成）", () => {
     ]);
     expect(reservationRows(h.raw).find((r) => r.id === row.id)).toMatchObject({ body: row.body, body_source: "fallback" });
     expect(h.port.scheduled.get(row.id)?.body).toBe(row.body);
+  });
+
+  it("with a non-replacing port, removes the row when recording fails and re-registering the previous body after cancelling B also fails", async () => {
+    const h = await setup({ replacesSameId: false });
+    llmSucceeds();
+    const replanner = createNudgeReplanner({
+      db: failingWrites(h.db, (sql) => sql.startsWith(UPDATE_BODY_SQL)),
+      env: {},
+      port: h.port,
+      clock: () => h.clock.now,
+    });
+    await replanner.requestReplan();
+    const row = reservationRows(h.raw).find((r) => r.scheduled_at === at(10, 15))!;
+    h.port.calls = [];
+    h.port.failRegister = (request) => request.id === row.id && request.body === row.body;
+    await replanner.whenIdle();
+    // B は取り消し済みで OS に何も無いため、「登録に失敗した予約」として控えから消す（仮定 A16）
+    expect(h.port.scheduled.has(row.id)).toBe(false);
+    expect(reservationRows(h.raw).some((r) => r.id === row.id)).toBe(false);
+  });
+
+  it("with a replacing port, keeps the B notification and the row when recording and restoring the previous body both fail", async () => {
+    const h = await setup({ replacesSameId: true });
+    llmSucceeds();
+    const replanner = createNudgeReplanner({
+      db: failingWrites(h.db, (sql) => sql.startsWith(UPDATE_BODY_SQL)),
+      env: {},
+      port: h.port,
+      clock: () => h.clock.now,
+    });
+    await replanner.requestReplan();
+    const row = reservationRows(h.raw).find((r) => r.scheduled_at === at(10, 15))!;
+    h.port.calls = [];
+    // B の登録（body="B:10:15"）は成功させ、元の文面（row.body）での登録し
+    // 直しだけを失敗させる
+    h.port.failRegister = (request) => request.id === row.id && request.body === row.body;
+    await replanner.whenIdle();
+    expect(h.port.calls.filter((c) => c.id === row.id)).toEqual([
+      { op: "register", id: row.id, body: "B:10:15" },
+      { op: "register", id: row.id, body: row.body },
+    ]);
+    // 置き換えるポートで B の登録が成功しているので、取り消しも控えの削除も
+    // しない（催促を失わない。仮定 A21）
+    expect(h.port.calls.some((c) => c.id === row.id && c.op === "cancel")).toBe(false);
+    expect(h.port.scheduled.get(row.id)?.body).toBe("B:10:15");
+    expect(reservationRows(h.raw).find((r) => r.id === row.id)).toMatchObject({ body: row.body, body_source: "fallback" });
   });
 
   it("with a non-replacing port, cancels the B notification before re-registering the row's body when only recording fails", async () => {
