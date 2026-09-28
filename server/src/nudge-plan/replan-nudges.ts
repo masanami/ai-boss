@@ -528,7 +528,15 @@ export function createNudgeReplanner(deps: NudgeReplannerDeps): NudgeReplanner {
         console.error("nudge message set: the response did not have the expected shape");
         return;
       }
-      await saveMessageSet(db, personaKey, messageSet, clock());
+      // 保存はセットを 1 件に入れ替える（仮定 A15）ため、生成の間に人格設定が
+      // 変わっていれば古い設定の結果を捨てる（遅れて終わった古い生成が、新しい
+      // 設定のセットを消して居座らないように）。設定の読みと保存は 1 つの
+      // トランザクションで行い、その間の設定の保存を割り込ませない。
+      await db.transaction(async (tx) => {
+        const current = resolveBossSettingsFrom(await readSettingsSnapshot(tx));
+        if ((await messageSetPersonaKey(current.persona)) !== personaKey) return;
+        await saveMessageSet(tx, personaKey, messageSet, clock());
+      });
     } finally {
       inFlightKeys.delete(key);
     }

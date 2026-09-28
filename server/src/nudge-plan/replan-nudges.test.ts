@@ -966,6 +966,34 @@ describe("C（文面セット）", () => {
     expect(h.raw.prepare("SELECT COUNT(*) AS c FROM nudge_message_sets").get()).toEqual({ c: 0 });
   });
 
+  it("keeps the new persona's set when a generation for the old persona finishes after the persona changed", async () => {
+    const h = await setup();
+    const NEW_INSTRUCTIONS = "語尾は「である」";
+    let finishOld: (() => void) | undefined;
+    streamBossMessageMock.mockImplementation(async (_c: unknown, request: ClaudeMessageRequest) => {
+      if (isIndividualRequest(request)) return textMessage("B");
+      if (requestText(request).includes(NEW_INSTRUCTIONS)) {
+        return textMessage(JSON.stringify(validMessageSetJson("新:{task}/{time}")));
+      }
+      await new Promise<void>((resolve) => (finishOld = resolve));
+      return textMessage(JSON.stringify(validMessageSetJson("旧:{task}/{time}")));
+    });
+    const replanner = replannerFor(h);
+    await replanner.requestReplan();
+    await vi.waitFor(() => expect(finishOld).toBeDefined());
+
+    putSettingRow(h.raw, "boss_custom_instructions", NEW_INSTRUCTIONS);
+    const newKey = await messageSetPersonaKey({ ...DEFAULT_PERSONA_SETTINGS, customInstructions: NEW_INSTRUCTIONS });
+    await replanner.requestReplan();
+    await vi.waitFor(() =>
+      expect(h.raw.prepare("SELECT persona_key FROM nudge_message_sets").all()).toEqual([{ persona_key: newKey }]),
+    );
+
+    finishOld!();
+    await replanner.whenIdle();
+    expect(h.raw.prepare("SELECT persona_key FROM nudge_message_sets").all()).toEqual([{ persona_key: newKey }]);
+  });
+
   it("stops generating after 3 attempts in the local day", async () => {
     const h = await setup();
     const stmt = h.raw.prepare("INSERT INTO nudge_generation_attempts (kind, attempted_at) VALUES ('message_set', ?)");
