@@ -315,6 +315,19 @@ describe("控えと確定", () => {
     });
   });
 
+  it("registers nothing (not even the report prompt) when 64 pending cancellations fill the OS limit", async () => {
+    const h = await setup();
+    const pendingIds: number[] = [];
+    for (let i = 0; i < 64; i++) {
+      pendingIds.push(await insertNudgeRow(h, { scheduledAt: at(20, i % 60, 15 + Math.floor(i / 60)), ruleKey: `p${i}` }));
+    }
+    for (const id of pendingIds) h.port.scheduled.set(id, { id, at: new Date(), title: "", body: "" });
+    h.port.failCancel = (id) => pendingIds.includes(id);
+    await replan(h);
+    expect(h.port.calls.filter((c) => c.op === "register")).toHaveLength(0);
+    expect(h.port.scheduled.size).toBe(64);
+  });
+
   it("does not count future reservations in today's dashboard escalation", async () => {
     const h = await setup();
     await replan(h);
@@ -435,6 +448,17 @@ describe("計画し直しの契機", () => {
     expect(h.port.calls).toContainEqual({ op: "cancel", id: futureId });
     expect(h.port.calls.filter((c) => c.op === "register").length).toBeGreaterThan(0);
     await replanner.whenIdle();
+  });
+
+  // 前の計画し直しが終わった後の要求が、終わった loop に吸われずに新しい計画し
+  // 直しを始めること（基本の契約）。runLoop の末尾と後始末の間の狭い隙間
+  // （PR のセルフレビューで直した競合）はこのテストでは再現しない。
+  it("starts a new replan for a request made after the previous one finished", async () => {
+    const h = await setup();
+    const replanner = replannerFor(h);
+    await replanner.requestReplan().then(() => replanner.requestReplan());
+    await replanner.whenIdle();
+    expect(h.port.calls.filter((c) => c.op === "register" && c.body === REPORT_PROMPT_BODY)).toHaveLength(2);
   });
 
   it("runs at most one replan at a time and exactly one more after it when called repeatedly meanwhile", async () => {
@@ -759,9 +783,13 @@ describe("B（個別生成）", () => {
     llmSucceeds();
     const replanner = replannerFor(h);
     await replanner.requestReplan();
+    const id = reservationRows(h.raw).find((r) => r.scheduled_at === at(10, 15))!.id;
     h.port.failRegister = (request) => request.at.getTime() === new Date(at(10, 15)).getTime();
     await replanner.whenIdle();
     expect(reservationRows(h.raw).some((r) => r.scheduled_at === at(10, 15))).toBe(false);
+    // 控えを消す前に取り消しを試み、取り消せない予約を OS に残さない（仮定 A16）
+    expect(h.port.calls).toContainEqual({ op: "cancel", id });
+    expect(h.port.scheduled.has(id)).toBe(false);
   });
 
   it("with a non-replacing port, does not swap when the cancellation fails", async () => {
@@ -796,6 +824,15 @@ describe("B（個別生成）", () => {
     expect(llmRequests().filter(isIndividualRequest)).toHaveLength(0);
   });
 
+  it("does not use an attempt when no LLM client can be created", async () => {
+    const h = await setup();
+    createClaudeClientMock.mockImplementation(() => {
+      throw new Error("not registered");
+    });
+    await replan(h);
+    expect(h.raw.prepare("SELECT COUNT(*) AS c FROM nudge_generation_attempts").get()).toEqual({ c: 0 });
+  });
+
   it("counts failed generations as attempts", async () => {
     const h = await setup();
     await replan(h);
@@ -803,16 +840,6 @@ describe("B（個別生成）", () => {
     expect(count).toBe(2);
   });
 
-  it("calls the LLM only once when two replanners compete for the last remaining attempt", async () => {
-    const h = await setup();
-    const stmt = h.raw.prepare("INSERT INTO nudge_generation_attempts (kind, attempted_at) VALUES ('individual', ?)");
-    for (let i = 0; i < 11; i++) stmt.run(at(9, 30));
-    const a = replannerFor(h);
-    const b = replannerFor(h);
-    await Promise.all([a.requestReplan(), b.requestReplan()]);
-    await Promise.all([a.whenIdle(), b.whenIdle()]);
-    expect(llmRequests().filter(isIndividualRequest)).toHaveLength(1);
-  });
 });
 
 describe("B の使い回しのキー", () => {

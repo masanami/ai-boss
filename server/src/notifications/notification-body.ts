@@ -111,7 +111,8 @@ function buildUserInstruction(request: NotificationBodyRequest): string {
   ].join("\n");
 }
 
-function extractText(message: BossLlmMessage): string {
+/** LLM の応答のテキストのブロックをつなげて前後の空白を落とす */
+export function extractText(message: BossLlmMessage): string {
   return message.content
     .filter((block): block is BossTextBlock => block.type === "text")
     .map((block) => block.text)

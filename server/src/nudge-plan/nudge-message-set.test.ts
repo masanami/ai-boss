@@ -58,6 +58,10 @@ describe("fillMessageTemplate / chooseVariantIndex", () => {
     );
   });
 
+  it("does not replace {time} inside the substituted task title", () => {
+    expect(fillMessageTemplate("{task}を{time}に", "{time}の資料", "10:30")).toBe("{time}の資料を10:30に");
+  });
+
   it("chooses the same variant for the same reservation key, within 0..2", () => {
     const key = "nudge|silence|1|2026-09-14T01:00:00.000Z";
     expect(chooseVariantIndex(key)).toBe(chooseVariantIndex(key));

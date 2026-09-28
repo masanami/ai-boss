@@ -237,6 +237,13 @@ describe("createCoreApp", () => {
       expect(calls).toEqual(["replan"]);
     });
 
+    it.each(["HEAD", "OPTIONS"])("is not called for a %s /api request", async (method) => {
+      const calls: string[] = [];
+      const app = createCoreApp(portFor(db), {}, { onStateChangingRequest: () => calls.push("replan") });
+      await app.request("/api/tasks", { method });
+      expect(calls).toEqual([]);
+    });
+
     it("is not called for a GET /api request", async () => {
       const calls: string[] = [];
       const app = createCoreApp(portFor(db), {}, { onStateChangingRequest: () => calls.push("replan") });

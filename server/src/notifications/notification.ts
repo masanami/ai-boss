@@ -22,7 +22,9 @@ export interface Notification {
    * Which channel the send ended on, stored verbatim from the notifier's
    * result: `"terminal-notifier"` / `"osascript"` = delivered via that
    * channel, `"none"` = neither channel delivered it (pairs with
-   * `delivered = 0`), `null` = unknown (see `delivered`). Kept as `string`
+   * `delivered = 0`), `"scheduled"` = an OS scheduled notification confirmed
+   * after its scheduled time (予約通知方式・#585 S2; whether the OS showed it
+   * is unknown, so `delivered` stays null), `null` = unknown (see `delivered`). Kept as `string`
    * like `type` above: the persisted vocabulary is the notifier's, and the
    * column carries no CHECK constraint, so the row type does not pretend to
    * a narrower union than the DB guarantees.

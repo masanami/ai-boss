@@ -28,6 +28,9 @@ import type { EvidenceStore } from "./tasks/evidence-store.js";
  * 呼ぶ。
  */
 
+/** 状態を変えない要求（計画し直しの契機にしない） */
+const READ_ONLY_METHODS = new Set(["GET", "HEAD", "OPTIONS"]);
+
 async function checkDatabaseConnection(db: DbPort): Promise<boolean> {
   try {
     await db.get("SELECT 1");
@@ -94,8 +97,9 @@ export interface CreateCoreAppOptions {
   /**
    * 催促の予約を計画し直す契機（機能仕様 docs/features/scheduled-nudges.md
    * 「S2 の設計」: 状態を変える API 要求〔`/api` の GET 以外〕の後）。
-   * 指定すると、`/api` の GET 以外の要求の応答の後に呼ぶ（応答を待たせない・
-   * 例外を応答へ漏らさない）。開発者用の版（`app.ts`）は渡さない——毎分方式の
+   * 指定すると、`/api` の GET・HEAD・OPTIONS 以外の要求の応答の後に呼ぶ
+   * （応答を待たせない・例外を応答へ漏らさない）。SSE の応答はストリームが
+   * 終わったときにもう 1 回呼ぶ。開発者用の版（`app.ts`）は渡さない——毎分方式の
    * まま（決定 5）。製品版の器（S3）が計画し直しの入口
    * （`createNudgeReplanner` の `requestReplan`）を渡す。
    */
@@ -129,13 +133,25 @@ export function createCoreApp(
   if (onStateChangingRequest) {
     api.use("*", async (c, next) => {
       await next();
-      if (c.req.method === "GET") return;
-      try {
-        onStateChangingRequest();
-      } catch (err) {
-        console.error(
-          "state-changing request hook failed:",
-          err instanceof Error ? (err.stack ?? err.message) : err,
+      if (READ_ONLY_METHODS.has(c.req.method)) return;
+      const notify = (): void => {
+        try {
+          onStateChangingRequest();
+        } catch (err) {
+          console.error(
+            "state-changing request hook failed:",
+            err instanceof Error ? (err.stack ?? err.message) : err,
+          );
+        }
+      };
+      notify();
+      // SSE（チャット）はボスのツールによる状態の変更が応答を返した後の
+      // ストリームの中で起きるため、ストリームが終わったとき（利用者が生成を
+      // 止めて接続を切ったときを含む）にもう 1 回呼ぶ。
+      if (c.res.headers.get("Content-Type")?.startsWith("text/event-stream") && c.res.body) {
+        c.res = new Response(
+          c.res.body.pipeThrough(new TransformStream({ flush: notify, cancel: notify })),
+          c.res,
         );
       }
     });

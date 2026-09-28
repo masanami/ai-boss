@@ -125,5 +125,8 @@ export function chooseVariantIndex(reservationKey: string): number {
 
 /** 差し込み（タスク名・約束の時刻）を置き換える */
 export function fillMessageTemplate(template: string, taskTitle: string, commitmentTime: string): string {
-  return template.split(TASK_PLACEHOLDER).join(taskTitle).split(TIME_PLACEHOLDER).join(commitmentTime);
+  // 1 回の走査で置き換える（タスク名に `{time}` が含まれていても置き換えない）
+  return template.replace(/\{task\}|\{time\}/g, (placeholder) =>
+    placeholder === TASK_PLACEHOLDER ? taskTitle : commitmentTime,
+  );
 }

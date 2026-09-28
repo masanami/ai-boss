@@ -18,8 +18,6 @@ export const GENERATION_LIMITS: Record<GenerationKind, GenerationLimit> = {
 };
 
 const HOUR_MS = 60 * 60 * 1000;
-/** これより古い試行の記録は枠に入りえないため消す（1 日の枠 ＋ 余裕） */
-const ATTEMPT_RETENTION_MS = 48 * HOUR_MS;
 
 async function countAttemptsSince(db: Db, kind: GenerationKind, sinceIso: string): Promise<number> {
   const row = await db.get<{ count: number }>(
@@ -39,6 +37,9 @@ async function countAttemptsSince(db: Db, kind: GenerationKind, sinceIso: string
  * - 枠は開始だけを区切り、終わりを区切らない（時計を戻しても、今より後の
  *   時刻の試行を数え続ける）。1 日の枠はローカル暦日の 0 時で区切る。
  * - DB に記録するため、アプリを再起動しても数え直さない。
+ * - 古い試行の記録は消さない（今の時計で消すと、時計を進めてから戻したとき
+ *   に当日の記録まで消えて枠が空く。1 日あたり最大 63 行で、数え上げは
+ *   `(kind, attempted_at)` の索引で引く）。
  */
 export async function tryReserveGenerationAttempt(
   db: Db,
@@ -56,9 +57,6 @@ export async function tryReserveGenerationAttempt(
     ) {
       return false;
     }
-    await tx.run("DELETE FROM nudge_generation_attempts WHERE attempted_at < ?", [
-      new Date(now.getTime() - ATTEMPT_RETENTION_MS).toISOString(),
-    ]);
     await tx.run("INSERT INTO nudge_generation_attempts (kind, attempted_at) VALUES (?, ?)", [
       kind,
       now.toISOString(),

@@ -17,11 +17,17 @@ import {
   buildFallbackBody,
   buildNotificationLlmRequest,
   extractNotificationBody,
+  extractText,
   DEFAULT_NOTIFICATION_TITLE,
   DEFAULT_TASK_TITLE,
   type NotificationBodyRequest,
 } from "../notifications/notification-body.js";
-import { createClaudeClient, streamBossMessage, type ClaudeMessageRequest } from "../llm/claude-client.js";
+import {
+  createClaudeClient,
+  streamBossMessage,
+  type BossLlmClient,
+  type ClaudeMessageRequest,
+} from "../llm/claude-client.js";
 import { compactPlanHistory } from "./compact-plan-history.js";
 import {
   enumerateDateKeysInRange,
@@ -96,7 +102,10 @@ export interface NudgeReplanner {
    * の生成）は待たない。例外を投げない（失敗はログに出す）。
    */
   requestReplan(): Promise<void>;
-  /** 計画し直しと、それが始めた文面の上乗せがすべて終わるまで待つ */
+  /**
+   * 計画し直しと、それが始めた文面の上乗せがすべて終わるまで待つ（器の終了
+   * 処理〔S3〕とテストが、走っている生成との合流に使う）。
+   */
   whenIdle(): Promise<void>;
 }
 
@@ -370,7 +379,14 @@ export function createNudgeReplanner(deps: NudgeReplannerDeps): NudgeReplanner {
       );
     }
 
-    // 固定の通知（決定 3）: 打ち切りの時刻、無ければ地平線の終わり
+    // 固定の通知（決定 3）: 打ち切りの時刻、無ければ地平線の終わり。取り消し
+    // 待ちだけで OS の枠（64 件）が埋まっているときは置けない（上限を守る側に
+    // 倒す。取り消しが成功した次の計画し直しで置かれる）。
+    if (pendingRows.length >= OS_RESERVATION_LIMIT) {
+      console.error("nudge replan: pending cancellations fill the OS limit; the report prompt was not placed");
+      startEnrichment(prepared.slice(0, INDIVIDUAL_GENERATION_TARGETS), bossSettings);
+      return prepared;
+    }
     const reportAt = plan.truncatedAt ?? new Date(now.getTime() + PLAN_HORIZON_MS);
     await placeReservation(
       {
@@ -431,18 +447,33 @@ export function createNudgeReplanner(deps: NudgeReplannerDeps): NudgeReplanner {
       try {
         await port.register(request(row.body));
       } catch (err) {
-        // 元の文面でも登録できなければ「登録に失敗した予約」（決定 2・4）:
-        // 控えに残さず確定しない。次の計画し直しで登録し直される。
-        await deleteReservation(db, row.id);
         console.error(`nudge swap: failed to restore the previous body (id=${row.id}):`, describeError(err));
+        // 元の文面でも登録できなければ「登録に失敗した予約」（決定 2・4）:
+        // 控えに残さず確定しない。次の計画し直しで登録し直される。置き換えの
+        // 失敗では元の予約が OS に残りうる（控えを消すと取り消す手がかりを
+        // 失う）ため、消す前に取り消しを 1 回試す（仮定 A16）。
+        try {
+          await port.cancel(row.id);
+        } catch (cancelErr) {
+          console.error(`nudge swap: failed to cancel before dropping (id=${row.id}):`, describeError(cancelErr));
+        }
+        await deleteReservation(db, row.id);
       }
     });
   }
 
-  async function generate(request: ClaudeMessageRequest): Promise<string | null> {
-    const client = createClaudeClient(env, resolveLlmBackend(env));
-    const message = await streamBossMessage(client, request);
-    return extractNotificationBody(message);
+  /**
+   * LLM のクライアントを作る。作れない（バックエンドが未登録・API キーが無い
+   * 等）なら null——試行の枠を使わずに生成をやめる。製品版の送信先の解決は
+   * #582 S2 が呼び出し元ごとに置き換える（ここも対象）。
+   */
+  function tryCreateClient(): BossLlmClient | null {
+    try {
+      return createClaudeClient(env, resolveLlmBackend(env));
+    } catch (err) {
+      console.error("nudge generation: no LLM client is available:", describeError(err));
+      return null;
+    }
   }
 
   async function enrichIndividual(prepared: PreparedNudge): Promise<void> {
@@ -451,12 +482,15 @@ export function createNudgeReplanner(deps: NudgeReplannerDeps): NudgeReplanner {
     if (prepared.nudge.scheduledAt.getTime() - clock().getTime() < INDIVIDUAL_GENERATION_MIN_LEAD_MS) return;
     if ((await findIndividualBody(db, prepared.contentKey)) !== undefined) return;
 
+    const client = tryCreateClient();
+    if (!client) return;
+
     inFlightKeys.add(key);
     try {
       if (!(await tryReserveGenerationAttempt(db, "individual", clock()))) return;
       let body: string | null;
       try {
-        body = await generate(prepared.llmRequest);
+        body = extractNotificationBody(await streamBossMessage(client, prepared.llmRequest));
       } catch (err) {
         console.error("nudge individual body: generation failed:", describeError(err));
         return;
@@ -475,17 +509,17 @@ export function createNudgeReplanner(deps: NudgeReplannerDeps): NudgeReplanner {
     if (inFlightKeys.has(key)) return;
     if ((await findMessageSet(db, personaKey)) !== undefined) return;
 
+    const client = tryCreateClient();
+    if (!client) return;
+
     inFlightKeys.add(key);
     try {
       if (!(await tryReserveGenerationAttempt(db, "message_set", clock()))) return;
       let text: string;
       try {
-        const client = createClaudeClient(env, resolveLlmBackend(env));
-        const message = await streamBossMessage(
-          client,
-          buildMessageSetLlmRequest(bossSettings.model, bossSettings.persona),
+        text = extractText(
+          await streamBossMessage(client, buildMessageSetLlmRequest(bossSettings.model, bossSettings.persona)),
         );
-        text = message.content.map((block) => (block.type === "text" ? block.text : "")).join("");
       } catch (err) {
         console.error("nudge message set: generation failed:", describeError(err));
         return;
@@ -523,6 +557,9 @@ export function createNudgeReplanner(deps: NudgeReplannerDeps): NudgeReplanner {
         console.error("nudge replan failed:", err instanceof Error ? (err.stack ?? err.message) : err);
       }
     } while (rerunRequested);
+    // 再実行の要否の判定と同じ同期の区間で解除する（`.finally` で後から
+    // 解除すると、その間に来た要求が終わりかけの loop に吸われて失われる）。
+    loop = null;
   }
 
   return {
@@ -531,10 +568,11 @@ export function createNudgeReplanner(deps: NudgeReplannerDeps): NudgeReplanner {
         rerunRequested = true;
         return loop;
       }
-      loop = runLoop().finally(() => {
-        loop = null;
-      });
-      return loop;
+      const started = runLoop();
+      // runLoop が同期的に終わることは無い（最初の await で戻る）ため、
+      // 解除（runLoop の末尾）より先にここで代入される。
+      loop = started;
+      return started;
     },
     async whenIdle(): Promise<void> {
       while (loop || enrichments.size > 0) {
