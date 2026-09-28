@@ -62,3 +62,21 @@ export {
   type SecureTransportResponse,
   type SecureTransportResponseHeaders,
 } from "./llm/secure-transport-port.js";
+
+/**
+ * 催促の予約を計画し直す処理（機能仕様 docs/features/scheduled-nudges.md
+ * 「S2 の設計」）も**呼ばずに re-export する**。S3 で器が通知の予約ポートの
+ * 実装を渡して作り、起動・前面への復帰などの契機と `createCoreApp` の
+ * `onStateChangingRequest` へつなぐ。re-export により、この処理（と LLM の
+ * 文面生成を含む依存グラフ）が `core-entry.bundle.test.ts` のバンドル検査の
+ * 対象になる。
+ */
+export {
+  createNudgeReplanner,
+  type NudgeReplanner,
+  type NudgeReplannerDeps,
+} from "./nudge-plan/replan-nudges.js";
+export type {
+  NudgeSchedulerPort,
+  ScheduledNotificationRequest,
+} from "./nudge-plan/nudge-scheduler-port.js";

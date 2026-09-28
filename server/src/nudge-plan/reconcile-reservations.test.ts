@@ -125,4 +125,38 @@ describe("reconcileReservations", () => {
     // ジェネリクスにより呼び出し側の追加フィールドが保たれる
     expect(toCancel[0]?.reservationId).toBe("res-future");
   });
+
+  describe("report-prompt reservations (S2)", () => {
+    const now = new Date(2026, 8, 14, 10, 0);
+    const report = (scheduledAt: Date, state: "active" | "pending_cancel" = "active") => ({
+      kind: "report_prompt" as const,
+      scheduledAt: scheduledAt.toISOString(),
+      state,
+    });
+
+    it("discards a past report prompt without confirming it", () => {
+      const past = report(new Date(2026, 8, 14, 9, 0));
+      const result = reconcileReservations([past], now);
+      expect(result.toConfirm).toEqual([]);
+      expect(result.toDiscard).toEqual([past]);
+      expect(result.toCancel).toEqual([]);
+    });
+
+    it("cancels a future report prompt (active or pending_cancel)", () => {
+      const future = report(new Date(2026, 8, 14, 11, 0));
+      const pending = report(new Date(2026, 8, 14, 12, 0), "pending_cancel");
+      const result = reconcileReservations([future, pending], now);
+      expect(result.toCancel).toEqual([future, pending]);
+      expect(result.toDiscard).toEqual([]);
+    });
+
+    it("returns the source reservation of each confirmed entry in the same order", () => {
+      const a = makeReservation({ scheduledAt: new Date(2026, 8, 14, 9, 0).toISOString(), ruleKey: "a" });
+      const b = makeReservation({ scheduledAt: new Date(2026, 8, 14, 9, 30).toISOString(), ruleKey: "b" });
+      const result = reconcileReservations([a, report(new Date(2026, 8, 14, 9, 10)), b], now);
+      expect(result.confirmedReservations).toEqual([a, b]);
+      expect(result.toConfirm.map((c) => c.ruleKey)).toEqual(["a", "b"]);
+    });
+  });
 });
+

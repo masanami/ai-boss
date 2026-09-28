@@ -14,7 +14,7 @@ describe("createTestDb", () => {
     expect(result.changes).toBe(1);
 
     const version = raw.pragma("user_version", { simple: true });
-    expect(version).toBe(10);
+    expect(version).toBe(11);
 
     raw.close();
   });

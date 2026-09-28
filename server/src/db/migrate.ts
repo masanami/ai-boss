@@ -375,6 +375,70 @@ const MIGRATIONS: Record<number, MigrationEntry> = {
       UNIQUE (date, meeting_type)
     );
   `,
+  // 催促の予約通知方式（#585 S2 / docs/features/scheduled-nudges.md 決定 2・4）:
+  // モバイルで OS に登録した予約の控えと、予約の文面（個別生成 B・文面
+  // セット C）の保存、生成の試行の記録（上限の数え上げ）。開発者用の版は
+  // これらのテーブルを読み書きしない（毎分方式のまま。決定 5）。
+  //
+  // - `nudge_reservations`: 登録した予約の控え。`id` は OS へ渡す予約の ID を
+  //   兼ねる（AUTOINCREMENT で、消した行の ID を再利用しない）。
+  //   `reservation_key` は同じ予約（仮定 A9: rule_key・段階・予約時刻）を
+  //   見分ける一意のキー。`kind` は催促（`nudge`）か固定の「アプリを開いて
+  //   報告しろ」通知（`report_prompt`。決定 3）で、固定の通知は送信履歴へ
+  //   確定しないため `rule_type`〜`task_id`・`content_key` を持たない。
+  //   `state` は有効（`active`）か OS での取り消し待ち（`pending_cancel`）。
+  // - `nudge_individual_bodies`: B の文面。`content_key` は LLM への入力全体の
+  //   ハッシュ（使い回しのキー）。
+  // - `nudge_message_sets`: C の文面セット（`messages` は JSON）。
+  //   `persona_key` は人格設定のハッシュ。
+  // - `nudge_generation_attempts`: B・C の生成の試行（1 行 ＝ 1 回）。
+  //
+  // 外部キーを持たない（tasks の行を消す経路は無く、控えは計画し直しの
+  // たびに作り直される）ため、文字列エントリのまま「version 単位の単一
+  // トランザクション」で原子適用できる。既存 version は書き換えず新しい
+  // version として追加する（docs/adr/0005-sqlite-schema-policy.md 決定 4）。
+  11: `
+    CREATE TABLE IF NOT EXISTS nudge_reservations (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      reservation_key TEXT NOT NULL UNIQUE,
+      kind TEXT NOT NULL CHECK (kind IN ('nudge', 'report_prompt')),
+      state TEXT NOT NULL CHECK (state IN ('active', 'pending_cancel')),
+      scheduled_at TEXT NOT NULL,
+      rule_type TEXT,
+      rule_key TEXT,
+      escalation_level INTEGER,
+      task_id INTEGER,
+      body TEXT NOT NULL,
+      body_source TEXT NOT NULL
+        CHECK (body_source IN ('individual', 'message_set', 'fallback', 'report_prompt')),
+      content_key TEXT,
+      registered_at TEXT NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS nudge_individual_bodies (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      content_key TEXT NOT NULL UNIQUE,
+      body TEXT NOT NULL,
+      scheduled_at TEXT NOT NULL,
+      created_at TEXT NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS nudge_message_sets (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      persona_key TEXT NOT NULL UNIQUE,
+      messages TEXT NOT NULL,
+      created_at TEXT NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS nudge_generation_attempts (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      kind TEXT NOT NULL CHECK (kind IN ('individual', 'message_set')),
+      attempted_at TEXT NOT NULL
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_nudge_generation_attempts_kind_time
+      ON nudge_generation_attempts (kind, attempted_at);
+  `,
 };
 
 /**

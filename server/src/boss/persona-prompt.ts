@@ -904,6 +904,20 @@ function resolveSessionFlowInstruction(
 }
 
 /**
+ * 人格設定（名前・口調・厳しさ）だけから作る人格の記述。タスク・時刻・
+ * 履歴を一切含まない。{@link buildPersonaPrompt} の冒頭と、予約方式の
+ * 文面セット（機能仕様 docs/features/scheduled-nudges.md 決定 4 の C。
+ * LLM へ送るのは人格設定とルール・段階の名前だけ）が共有する。
+ */
+export function buildPersonaCharacterSections(settings: PersonaSettings): string[] {
+  return [
+    `あなたは「${settings.name}」という名前のAIボス。ユーザーのセルフマネジメントを支援する上司役を演じる。`,
+    TONE_DESCRIPTIONS[settings.tone],
+    resolveStrictnessDescription(settings.strictness),
+  ];
+}
+
+/**
  * ボスの人格設定と現在のコンテキストから、Claude API に渡すシステムプロンプトを
  * 組み立てる純粋関数。チャット応答・通知文面生成の両方から共用される。
  */
@@ -915,9 +929,7 @@ export function buildPersonaPrompt(
   const timeOfDay = resolveTimeOfDay(context.now);
 
   const sections: string[] = [
-    `あなたは「${settings.name}」という名前のAIボス。ユーザーのセルフマネジメントを支援する上司役を演じる。`,
-    TONE_DESCRIPTIONS[settings.tone],
-    resolveStrictnessDescription(settings.strictness),
+    ...buildPersonaCharacterSections(settings),
     "応答の規律: ボスは決定の形で断言する。「〜すべきか迷う」ではなく「〜しろ」「〜で行く」のように言い切る。" +
       "優先順位・ノルマ・締切・持ち越し等の重要な裁定を下したときは record_decision ツールで記録すること。",
     TIME_OF_DAY_HINTS[timeOfDay],

@@ -174,8 +174,8 @@ describe("runMigrations", () => {
     expect(tableNames(db)).not.toContain("appeals");
   });
 
-  it("advances user_version to the latest known version (10: meeting_time_overrides added)", () => {
-    expect(db.pragma("user_version", { simple: true })).toBe(10);
+  it("advances user_version to the latest known version (11: nudge reservation tables added)", () => {
+    expect(db.pragma("user_version", { simple: true })).toBe(11);
   });
 
   it("creates the settings table", () => {
@@ -230,6 +230,10 @@ describe("runMigrations", () => {
         "daily_reports",
         "task_evidences",
         "meeting_time_overrides",
+        "nudge_reservations",
+        "nudge_individual_bodies",
+        "nudge_message_sets",
+        "nudge_generation_attempts",
         "sqlite_sequence",
       ].sort(),
     );
@@ -391,7 +395,7 @@ describe("runMigrations", () => {
     expect(tableNames(v2Db)).toContain("daily_reports");
     // runMigrations always advances to the latest known version (v3 adds
     // daily_reports on the way; later versions add further schema changes).
-    expect(v2Db.pragma("user_version", { simple: true })).toBe(10);
+    expect(v2Db.pragma("user_version", { simple: true })).toBe(11);
     // existing tables/rows are untouched
     expect(tableNames(v2Db)).toContain("tasks");
 
@@ -418,7 +422,7 @@ describe("runMigrations", () => {
 
     await runMigrations(portFor(v3Db));
 
-    expect(v3Db.pragma("user_version", { simple: true })).toBe(10);
+    expect(v3Db.pragma("user_version", { simple: true })).toBe(11);
     expect(tableNames(v3Db)).toContain("tasks");
     expect(tableNames(v3Db)).toContain("activity_events");
 
@@ -593,7 +597,7 @@ describe("runMigrations", () => {
 
     await runMigrations(portFor(v4Db));
 
-    expect(v4Db.pragma("user_version", { simple: true })).toBe(10);
+    expect(v4Db.pragma("user_version", { simple: true })).toBe(11);
     const message = v4Db
       .prepare("SELECT role, content, interrupted FROM messages WHERE id = ?")
       .get(messageId) as { role: string; content: string; interrupted: number };
@@ -650,7 +654,7 @@ describe("runMigrations", () => {
 
     await runMigrations(portFor(v5Db));
 
-    expect(v5Db.pragma("user_version", { simple: true })).toBe(10);
+    expect(v5Db.pragma("user_version", { simple: true })).toBe(11);
     const notification = v5Db
       .prepare(
         "SELECT type, rule_key, escalation_level, body, sent_at, delivered, channel FROM notifications WHERE id = ?",
@@ -775,7 +779,7 @@ describe("runMigrations", () => {
 
       await runMigrations(portFor(v6Db));
 
-      expect(v6Db.pragma("user_version", { simple: true })).toBe(10);
+      expect(v6Db.pragma("user_version", { simple: true })).toBe(11);
       expect(tableNames(v6Db)).toContain("task_evidences");
       expect(columnNames(v6Db, "tasks")).toContain("evidence_required");
 
@@ -877,7 +881,7 @@ describe("runMigrations", () => {
 
       await runMigrations(portFor(preV8Db));
 
-      expect(preV8Db.pragma("user_version", { simple: true })).toBe(10);
+      expect(preV8Db.pragma("user_version", { simple: true })).toBe(11);
       const row = preV8Db
         .prepare("SELECT kind FROM decisions WHERE id = ?")
         .get(decisionId) as { kind: string };
@@ -922,7 +926,7 @@ describe("runMigrations", () => {
       await expect(runMigrations(portFor(preV8Db))).resolves.toBeUndefined();
 
       expect(tableNames(preV8Db)).not.toContain("appeals");
-      expect(preV8Db.pragma("user_version", { simple: true })).toBe(10);
+      expect(preV8Db.pragma("user_version", { simple: true })).toBe(11);
 
       preV8Db.close();
     });
@@ -976,7 +980,7 @@ describe("runMigrations", () => {
 
       await runMigrations(portFor(v8Db));
 
-      expect(v8Db.pragma("user_version", { simple: true })).toBe(10);
+      expect(v8Db.pragma("user_version", { simple: true })).toBe(11);
       expect(columnNames(v8Db, "tasks")).toEqual(
         expect.arrayContaining(["committed_start_at", "committed_at"]),
       );
@@ -1066,7 +1070,7 @@ describe("runMigrations", () => {
 
       await runMigrations(portFor(v9Db));
 
-      expect(v9Db.pragma("user_version", { simple: true })).toBe(10);
+      expect(v9Db.pragma("user_version", { simple: true })).toBe(11);
       expect(tableNames(v9Db)).toContain("meeting_time_overrides");
       const task = v9Db
         .prepare("SELECT title FROM tasks WHERE id = ?")
@@ -1187,4 +1191,84 @@ describe("runMigrations", () => {
       ).toThrow();
     });
   });
+
+  describe("nudge reservation tables (v11, #585 S2)", () => {
+    const NOW_ISO = "2026-09-14T01:00:00.000Z";
+
+    function insertReservationRow(overrides: Record<string, unknown> = {}): void {
+      const row = {
+        reservation_key: "nudge|silence|1|" + NOW_ISO,
+        kind: "nudge",
+        state: "active",
+        body_source: "fallback",
+        ...overrides,
+      };
+      db.prepare(
+        `INSERT INTO nudge_reservations (reservation_key, kind, state, scheduled_at, body, body_source, registered_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?)`,
+      ).run(row.reservation_key, row.kind, row.state, NOW_ISO, "文面", row.body_source, NOW_ISO);
+    }
+
+    it("creates the four tables", () => {
+      expect(tableNames(db)).toEqual(
+        expect.arrayContaining([
+          "nudge_reservations",
+          "nudge_individual_bodies",
+          "nudge_message_sets",
+          "nudge_generation_attempts",
+        ]),
+      );
+    });
+
+    it("gives nudge_reservations the expected columns", () => {
+      expect(columnNames(db, "nudge_reservations").sort()).toEqual(
+        [
+          "id",
+          "reservation_key",
+          "kind",
+          "state",
+          "scheduled_at",
+          "rule_type",
+          "rule_key",
+          "escalation_level",
+          "task_id",
+          "body",
+          "body_source",
+          "content_key",
+          "registered_at",
+        ].sort(),
+      );
+    });
+
+    it("rejects a duplicate reservation_key", () => {
+      insertReservationRow();
+      expect(() => insertReservationRow()).toThrow();
+    });
+
+    it.each([
+      ["kind", { kind: "other" }],
+      ["state", { state: "cancelled" }],
+      ["body_source", { body_source: "llm" }],
+    ])("rejects an unknown %s", (_column, overrides) => {
+      expect(() => insertReservationRow({ reservation_key: "k", ...overrides })).toThrow();
+    });
+
+    it("rejects an unknown generation attempt kind", () => {
+      expect(() =>
+        db.prepare("INSERT INTO nudge_generation_attempts (kind, attempted_at) VALUES (?, ?)").run("other", NOW_ISO),
+      ).toThrow();
+    });
+
+    it("rejects a duplicate content_key / persona_key", () => {
+      const body = db.prepare(
+        "INSERT INTO nudge_individual_bodies (content_key, body, scheduled_at, created_at) VALUES (?, ?, ?, ?)",
+      );
+      body.run("k", "b", NOW_ISO, NOW_ISO);
+      expect(() => body.run("k", "b", NOW_ISO, NOW_ISO)).toThrow();
+      const set = db.prepare("INSERT INTO nudge_message_sets (persona_key, messages, created_at) VALUES (?, ?, ?)");
+      set.run("p", "{}", NOW_ISO);
+      expect(() => set.run("p", "{}", NOW_ISO)).toThrow();
+    });
+  });
 });
+

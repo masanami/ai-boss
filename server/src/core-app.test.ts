@@ -223,4 +223,46 @@ describe("createCoreApp", () => {
       expect(res.status).toBe(204);
     });
   });
+
+  describe("onStateChangingRequest (#585 S2)", () => {
+    it("is called after a non-GET /api request", async () => {
+      const calls: string[] = [];
+      const app = createCoreApp(portFor(db), {}, { onStateChangingRequest: () => calls.push("replan") });
+      const res = await app.request("/api/tasks", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ title: "資料作成" }),
+      });
+      expect(res.status).toBe(201);
+      expect(calls).toEqual(["replan"]);
+    });
+
+    it("is not called for a GET /api request", async () => {
+      const calls: string[] = [];
+      const app = createCoreApp(portFor(db), {}, { onStateChangingRequest: () => calls.push("replan") });
+      const res = await app.request("/api/tasks");
+      expect(res.status).toBe(200);
+      expect(calls).toEqual([]);
+    });
+
+    it("does not turn a throwing hook into a failed response", async () => {
+      const app = createCoreApp(portFor(db), {}, {
+        onStateChangingRequest: () => {
+          throw new Error("hook failed");
+        },
+      });
+      const original = console.error;
+      console.error = () => undefined;
+      try {
+        const res = await app.request("/api/tasks", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ title: "資料作成" }),
+        });
+        expect(res.status).toBe(201);
+      } finally {
+        console.error = original;
+      }
+    });
+  });
 });
