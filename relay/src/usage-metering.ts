@@ -90,17 +90,35 @@ function isTokenCount(value: unknown): value is number {
 }
 
 /**
- * 上流の `usage` からトークン数の項目を拾う。項目があるのに値が壊れている
- * （負の数・小数・文字列、必須の項目の `null`）ときは `malformed` にする——
- * 壊れた項目を黙って落とすと、前のイベントの値が残ったまま確定してしまう
- * （PR #638 の Codex の指摘）。キャッシュの項目の `null` は「無い」として扱う。
+ * `usage` を運ぶ場所ごとに、無ければ壊れた値とみなす項目。`message_start` と
+ * 非ストリーミングの `usage` は入力と出力の両方、`message_delta` の `usage` は
+ * 出力を必ず持つ（欠けた項目を前のイベントの値で埋めて確定しない。PR #638 の
+ * Codex の 3 巡目の指摘）。
  */
-function readUsageFields(raw: unknown): { fields: PartialUsage; malformed: boolean } {
+const REQUIRED_PRESENT = {
+  message: ["input_tokens", "output_tokens"],
+  delta: ["output_tokens"],
+} as const;
+
+/**
+ * 上流の `usage` からトークン数の項目を拾う。項目があるのに値が壊れている
+ * （負の数・小数・文字列、必須の項目の `null`）とき、`requiredPresent` の項目が
+ * 無いときは `malformed` にする——壊れた項目を黙って落とすと、前のイベントの値が
+ * 残ったまま確定してしまう（PR #638 の Codex の指摘）。キャッシュの項目の `null` は
+ * 「無い」として扱う。
+ */
+function readUsageFields(
+  raw: unknown,
+  requiredPresent: readonly string[],
+): { fields: PartialUsage; malformed: boolean } {
   const fields: PartialUsage = {};
   if (typeof raw !== "object" || raw === null || Array.isArray(raw)) {
     return { fields, malformed: true };
   }
   const record = raw as Record<string, unknown>;
+  if (requiredPresent.some((wire) => !(wire in record))) {
+    return { fields, malformed: true };
+  }
   for (const [wire, name, required] of USAGE_FIELDS) {
     if (!(wire in record) || (!required && record[wire] === null)) {
       continue;
@@ -142,7 +160,9 @@ export interface UsageMeter {
  * ストリーミング（SSE）の計測器。`message_start` の `message.usage` を土台に、
  * 最後に届いた `message_delta` の `usage` の項目で上書きする。実額に使うのは
  * **終端（`message_stop`）まで受け取ったとき**だけ（PR #634 の 3 巡目の指摘。
- * 途中までの `usage` はその後に生成・課金された分を含まない）。
+ * 途中までの `usage` はその後に生成・課金された分を含まない）。`message_start` が
+ * 2 度届く・`usage` のある `message_delta` が `message_start` より先に届くときは、
+ * 後の `message_start` が出力の値を巻き戻しうるため実額に使わない。
  */
 export function createSseUsageMeter(): UsageMeter {
   const decoder = new TextDecoder();
@@ -150,6 +170,7 @@ export function createSseUsageMeter(): UsageMeter {
   let dataLines: string[] = [];
   let usage: PartialUsage = {};
   let malformed = false;
+  let sawMessageStart = false;
   let sawMessageStop = false;
 
   function dispatch(): void {
@@ -174,13 +195,14 @@ export function createSseUsageMeter(): UsageMeter {
     const record = event as Record<string, unknown>;
     if (record.type === "message_start") {
       const message = record.message as Record<string, unknown> | undefined;
-      const read = readUsageFields(message?.usage);
+      const read = readUsageFields(message?.usage, REQUIRED_PRESENT.message);
       usage = read.fields;
-      malformed ||= read.malformed;
+      malformed ||= read.malformed || sawMessageStart;
+      sawMessageStart = true;
     } else if (record.type === "message_delta" && record.usage !== undefined) {
-      const read = readUsageFields(record.usage);
+      const read = readUsageFields(record.usage, REQUIRED_PRESENT.delta);
       usage = { ...usage, ...read.fields };
-      malformed ||= read.malformed;
+      malformed ||= read.malformed || !sawMessageStart;
     } else if (record.type === "message_stop") {
       sawMessageStop = true;
     }
@@ -239,7 +261,7 @@ export function createJsonUsageMeter(): UsageMeter {
       if (typeof body !== "object" || body === null) {
         return null;
       }
-      const read = readUsageFields((body as Record<string, unknown>).usage);
+      const read = readUsageFields((body as Record<string, unknown>).usage, REQUIRED_PRESENT.message);
       return read.malformed ? null : completeUsage(read.fields);
     },
   };

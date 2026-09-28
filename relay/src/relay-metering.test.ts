@@ -467,6 +467,68 @@ describe("PR #638 のレビュー対応", () => {
     });
   });
 
+  describe("欠けた usage・イベントの順序（Codex 3 巡目 P2）", () => {
+    async function expectReserved(events: string[]): Promise<void> {
+      const h = createHarness({ upstream: () => sseResponse(events.join("")) });
+      const body = streamingBody();
+      await drain(await h.send(body));
+      expect(h.store.dump().records).toEqual([
+        expect.objectContaining({ units: expectedReservedUnits(JSON.stringify(body), 1000), ...ZERO_TOKENS }),
+      ]);
+    }
+
+    it.each([
+      ["空", {}],
+      ["キャッシュの項目だけ", { cache_read_input_tokens: 10 }],
+    ])("最後の message_delta の usage が%sで output_tokens を欠くなら、前の値を残さず予約額で確定する", async (_label, deltaUsage) => {
+      await expectReserved([
+        sseEvent({ type: "message_start", message: { usage: { input_tokens: 1000, output_tokens: 1 } } }),
+        sseEvent({ type: "message_delta", delta: {}, usage: { output_tokens: 50 } }),
+        sseEvent({ type: "message_delta", delta: {}, usage: deltaUsage }),
+        sseEvent({ type: "message_stop" }),
+      ]);
+    });
+
+    it.each([
+      ["input_tokens", { output_tokens: 1 }],
+      ["output_tokens", { input_tokens: 1000 }],
+    ])("message_start の usage が%sを欠くなら、後の message_delta で埋めず予約額で確定する", async (_label, startUsage) => {
+      await expectReserved([
+        sseEvent({ type: "message_start", message: { usage: startUsage } }),
+        sseEvent({ type: "message_delta", delta: {}, usage: { input_tokens: 1000, output_tokens: 200 } }),
+        sseEvent({ type: "message_stop" }),
+      ]);
+    });
+
+    it("message_start が 2 度届いたら（出力の値が巻き戻りうるため）予約額で確定する", async () => {
+      await expectReserved([
+        sseEvent({ type: "message_start", message: { usage: { input_tokens: 1000, output_tokens: 1 } } }),
+        sseEvent({ type: "message_delta", delta: {}, usage: { output_tokens: 200 } }),
+        sseEvent({ type: "message_start", message: { usage: { input_tokens: 1000, output_tokens: 1 } } }),
+        sseEvent({ type: "message_stop" }),
+      ]);
+    });
+
+    it("usage のある message_delta が message_start より先に届いたら予約額で確定する", async () => {
+      await expectReserved([
+        sseEvent({ type: "message_delta", delta: {}, usage: { output_tokens: 200 } }),
+        sseEvent({ type: "message_start", message: { usage: { input_tokens: 1000, output_tokens: 1 } } }),
+        sseEvent({ type: "message_stop" }),
+      ]);
+    });
+
+    it("message_delta の usage が input_tokens を欠いても、output_tokens があれば実額で確定する", async () => {
+      const events = [
+        sseEvent({ type: "message_start", message: { usage: { input_tokens: 1000, output_tokens: 1 } } }),
+        sseEvent({ type: "message_delta", delta: {}, usage: { output_tokens: 200 } }),
+        sseEvent({ type: "message_stop" }),
+      ];
+      const h = createHarness({ upstream: () => sseResponse(events.join("")) });
+      await drain(await h.send(streamingBody()));
+      expect(h.store.dump().records[0]).toMatchObject({ inputTokens: 1000, outputTokens: 200 });
+    });
+  });
+
   describe("上流のリダイレクト（指摘 3）", () => {
     it.each([301, 302, 307, 308])("上流が %s を返すと、location を通さず 502 にし、予約を解放して記録しない", async (status) => {
       const h = createHarness({
