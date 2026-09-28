@@ -18,6 +18,7 @@ import {
   type SecureTransportResponse,
 } from "../secure-transport-port.js";
 import { parseRetryAfterMs } from "./retry-after.js";
+import { iterateSseDataPayloadTexts } from "./sse-data-payloads.js";
 import { ByokModelNotAllowedError, assertByokModelAllowed } from "../model-catalog.js";
 
 /**
@@ -154,20 +155,6 @@ async function readAllText(body: AsyncIterable<Uint8Array>): Promise<string> {
 // SSE の解釈
 // ---------------------------------------------------------------------------
 
-/** `rawEvent`（`\n\n` で区切られた1イベント分のテキスト）から `data:` 行の
- * 値を取り出す（複数の `data:` 行は `\n` で連結する——SSE の仕様どおり。
- * Anthropic は通常1イベント1行だが、将来の拡張にも耐える）。`data:` 行が
- * 無ければ `undefined`（例: 空行のみのイベント）。 */
-function extractSseDataPayload(rawEvent: string): string | undefined {
-  const dataLines: string[] = [];
-  for (const line of rawEvent.split("\n")) {
-    if (line.startsWith("data:")) {
-      dataLines.push(line.slice(5).replace(/^ /, ""));
-    }
-  }
-  return dataLines.length > 0 ? dataLines.join("\n") : undefined;
-}
-
 /**
  * `JSON.parse` を、失敗時に本文の断片を漏らさない形でラップする
  * （self-review: code-reviewer/design-reviewer 双方が独立に指摘・
@@ -185,32 +172,10 @@ function parseJsonWithoutLeakingPayload(text: string): unknown {
 }
 
 /** 本文のバイト列の非同期の列から、SSE の `data:` ペイロード（JSON として
- * 解釈した値）を順に生成する。断片の区切りが SSE イベントの途中・多バイト
- * 文字の途中にあっても、`\n\n` の境界が揃うまでバッファへ溜めるので壊れ
- * ない。 */
+ * 解釈した値）を順に生成する（区切り処理は `sse-data-payloads.ts` と共有）。 */
 async function* iterateSseDataPayloads(body: AsyncIterable<Uint8Array>): AsyncGenerator<unknown> {
-  const decoder = new TextDecoder();
-  let buffer = "";
-  for await (const chunk of body) {
-    buffer += decoder.decode(chunk, { stream: true });
-    let boundary = buffer.indexOf("\n\n");
-    while (boundary !== -1) {
-      const rawEvent = buffer.slice(0, boundary);
-      buffer = buffer.slice(boundary + 2);
-      const payload = extractSseDataPayload(rawEvent);
-      if (payload !== undefined) {
-        yield parseJsonWithoutLeakingPayload(payload);
-      }
-      boundary = buffer.indexOf("\n\n");
-    }
-  }
-  buffer += decoder.decode();
-  const trimmed = buffer.trim();
-  if (trimmed !== "") {
-    const payload = extractSseDataPayload(trimmed);
-    if (payload !== undefined) {
-      yield parseJsonWithoutLeakingPayload(payload);
-    }
+  for await (const payload of iterateSseDataPayloadTexts(body)) {
+    yield parseJsonWithoutLeakingPayload(payload);
   }
 }
 
