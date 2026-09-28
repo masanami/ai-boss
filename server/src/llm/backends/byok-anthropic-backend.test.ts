@@ -664,6 +664,19 @@ describe("エラーの分類", () => {
     expect(decision.retryable).toBe(true);
   });
 
+  // Issue #643: 出力上限で打ち切られた tool_use（truncated-tool-use）は、
+  // 同じ要求を再送しても同じ上限で再び打ち切られるだけなので、再試行不可
+  // として扱う（#637 の OpenAI 側と同じ方針）。
+  it("打ち切られた tool_use（truncated-tool-use）は、分類が再試行不可である", () => {
+    const decision = classifyByokAnthropicError(new AnthropicMessagesStreamError("truncated-tool-use"));
+    expect(decision.retryable).toBe(false);
+  });
+
+  it("壊れた JSON（malformed-payload）は、従来どおり分類が再試行可のままである", () => {
+    const decision = classifyByokAnthropicError(new AnthropicMessagesStreamError("malformed-payload"));
+    expect(decision.retryable).toBe(true);
+  });
+
   it.each([
     "unknown-destination",
     "key-not-registered",
@@ -807,6 +820,218 @@ describe("エラーの分類", () => {
     expect(caught).toBeInstanceOf(AnthropicMessagesStreamError);
     expect((caught as Error).message).not.toContain("LEAK");
     expect((caught as Error).message).not.toContain("not-json");
+  });
+});
+
+// Issue #643: stop_reason: "max_tokens" で tool_use の生成が途中で止まると、
+// 途中までの partialJson／input をそのまま解釈すると (a) malformed-payload
+// （再試行可）に誤分類されるか、(b) 入力が不完全なまま正常な tool_use として
+// 返ってしまう。どちらも #637（BYOK OpenAI）と同じ型の欠陥であり、同じ方針
+// （再試行不可として扱う）で直す。「打ち切り」の定義: stop_reason が
+// "max_tokens" で、応答に tool_use のブロックが1つ以上ある。
+describe("打ち切られた tool_use（Issue #643）", () => {
+  it("ストリーミングで stop_reason が max_tokens、tool_use の partialJson が途中までの JSON だと、失敗し、分類は再試行不可である", async () => {
+    const events = [
+      { type: "content_block_start", index: 0, content_block: { type: "tool_use", id: "t1", name: "do_it" } },
+      { type: "content_block_delta", index: 0, delta: { type: "input_json_delta", partial_json: '{"title":"ok' } },
+      { type: "content_block_stop", index: 0 },
+      { type: "message_delta", delta: { stop_reason: "max_tokens" } },
+      { type: "message_stop" },
+    ];
+    const { transport } = singleResponseTransport(okResponse(textBody(buildSseText(events))));
+    const { impl, client } = registerAndGetImpl(transport);
+    let caught: unknown;
+    try {
+      await impl.streamRound(client, baseRequest(), {}, new AbortController().signal);
+    } catch (err) {
+      caught = err;
+    }
+    expect(caught).toBeInstanceOf(AnthropicMessagesStreamError);
+    expect((caught as AnthropicMessagesStreamError).reason).toBe("truncated-tool-use");
+    expect(classifyByokAnthropicError(caught).retryable).toBe(false);
+  });
+
+  it("ストリーミングで stop_reason が max_tokens、tool_use に input_json_delta が1回も無い（partialJson が空）と、失敗し、分類は再試行不可である（空を {} として黙って返さない）", async () => {
+    const events = [
+      { type: "content_block_start", index: 0, content_block: { type: "tool_use", id: "t1", name: "do_it" } },
+      { type: "content_block_stop", index: 0 },
+      { type: "message_delta", delta: { stop_reason: "max_tokens" } },
+      { type: "message_stop" },
+    ];
+    const { transport } = singleResponseTransport(okResponse(textBody(buildSseText(events))));
+    const { impl, client } = registerAndGetImpl(transport);
+    let caught: unknown;
+    try {
+      await impl.streamRound(client, baseRequest(), {}, new AbortController().signal);
+    } catch (err) {
+      caught = err;
+    }
+    expect(caught).toBeInstanceOf(AnthropicMessagesStreamError);
+    expect((caught as AnthropicMessagesStreamError).reason).toBe("truncated-tool-use");
+    expect(classifyByokAnthropicError(caught).retryable).toBe(false);
+  });
+
+  it("回帰防止: stop_reason が max_tokens でも、tool_use を含まない（テキストのみの）応答は正常に解釈される", async () => {
+    const events = [
+      { type: "content_block_start", index: 0, content_block: { type: "text", text: "" } },
+      { type: "content_block_delta", index: 0, delta: { type: "text_delta", text: "cut off here" } },
+      { type: "content_block_stop", index: 0 },
+      { type: "message_delta", delta: { stop_reason: "max_tokens" } },
+      { type: "message_stop" },
+    ];
+    const { transport } = singleResponseTransport(okResponse(textBody(buildSseText(events))));
+    const { impl, client } = registerAndGetImpl(transport);
+    const message = await impl.streamRound(client, baseRequest(), {}, new AbortController().signal);
+    expect(message.content).toEqual([{ type: "text", text: "cut off here" }]);
+  });
+
+  it("回帰防止: stop_reason が tool_use（完了した tool_use）は、従来どおり tool_use に正規化される", async () => {
+    const events = [
+      { type: "content_block_start", index: 0, content_block: { type: "tool_use", id: "t1", name: "do_it" } },
+      { type: "content_block_delta", index: 0, delta: { type: "input_json_delta", partial_json: '{"a":1}' } },
+      { type: "content_block_stop", index: 0 },
+      { type: "message_delta", delta: { stop_reason: "tool_use" } },
+      { type: "message_stop" },
+    ];
+    const { transport } = singleResponseTransport(okResponse(textBody(buildSseText(events))));
+    const { impl, client } = registerAndGetImpl(transport);
+    const message = await impl.streamRound(client, baseRequest(), {}, new AbortController().signal);
+    expect(message.content).toEqual([{ type: "tool_use", id: "t1", name: "do_it", input: { a: 1 } }]);
+  });
+
+  it("ストリーミングで、投げる失敗の message と console.warn/console.error に、途中までの partialJson の断片が含まれない", async () => {
+    const leakMarker = "LEAK_MARKER_truncated_tool_use_stream";
+    const events = [
+      { type: "content_block_start", index: 0, content_block: { type: "tool_use", id: "t1", name: "do_it" } },
+      {
+        type: "content_block_delta",
+        index: 0,
+        delta: { type: "input_json_delta", partial_json: `{"title":"${leakMarker}` },
+      },
+      { type: "content_block_stop", index: 0 },
+      { type: "message_delta", delta: { stop_reason: "max_tokens" } },
+      { type: "message_stop" },
+    ];
+    const { transport } = singleResponseTransport(okResponse(textBody(buildSseText(events))));
+    const { impl, client } = registerAndGetImpl(transport);
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      let caught: unknown;
+      try {
+        await impl.streamRound(client, baseRequest(), {}, new AbortController().signal);
+      } catch (err) {
+        caught = err;
+      }
+      expect((caught as Error).message).not.toContain(leakMarker);
+      for (const call of [...warnSpy.mock.calls, ...errorSpy.mock.calls]) {
+        expect(JSON.stringify(call)).not.toContain(leakMarker);
+      }
+    } finally {
+      warnSpy.mockRestore();
+      errorSpy.mockRestore();
+    }
+  });
+
+  it("非ストリーミングで stop_reason が max_tokens、tool_use の input が不完全だと、失敗し、分類は再試行不可である", async () => {
+    const responseBody = JSON.stringify({
+      stop_reason: "max_tokens",
+      content: [{ type: "tool_use", id: "t1", name: "do_it", input: { title: "partial" } }],
+    });
+    const { transport } = singleResponseTransport(okResponse(textBody(responseBody)));
+    const { impl, client } = registerAndGetImpl(transport);
+    let caught: unknown;
+    try {
+      await impl.createRound(client, baseRequest(), new AbortController().signal);
+    } catch (err) {
+      caught = err;
+    }
+    expect(caught).toBeInstanceOf(AnthropicMessagesStreamError);
+    expect((caught as AnthropicMessagesStreamError).reason).toBe("truncated-tool-use");
+    expect(classifyByokAnthropicError(caught).retryable).toBe(false);
+  });
+
+  it("回帰防止（非ストリーミング）: stop_reason が max_tokens でも、tool_use を含まない（テキストのみの）応答は正常に解釈される", async () => {
+    const responseBody = JSON.stringify({
+      stop_reason: "max_tokens",
+      content: [{ type: "text", text: "cut off here" }],
+    });
+    const { transport } = singleResponseTransport(okResponse(textBody(responseBody)));
+    const { impl, client } = registerAndGetImpl(transport);
+    const message = await impl.createRound(client, baseRequest(), new AbortController().signal);
+    expect(message.content).toEqual([{ type: "text", text: "cut off here" }]);
+  });
+
+  it("回帰防止（非ストリーミング）: stop_reason が tool_use（完了した tool_use）は、従来どおり tool_use に正規化される", async () => {
+    const responseBody = JSON.stringify({
+      stop_reason: "tool_use",
+      content: [{ type: "tool_use", id: "t1", name: "do_it", input: { a: 1 } }],
+    });
+    const { transport } = singleResponseTransport(okResponse(textBody(responseBody)));
+    const { impl, client } = registerAndGetImpl(transport);
+    const message = await impl.createRound(client, baseRequest(), new AbortController().signal);
+    expect(message.content).toEqual([{ type: "tool_use", id: "t1", name: "do_it", input: { a: 1 } }]);
+  });
+
+  it("ストリーミング（streamBossMessage 経由）: 打ち切られた tool_use を含む max_tokens の応答を受けると、転送のポートは1回しか呼ばれず、失敗し、executeTool は呼ばれない", async () => {
+    vi.useFakeTimers();
+    try {
+      const events = [
+        { type: "content_block_start", index: 0, content_block: { type: "tool_use", id: "t1", name: "create_task" } },
+        { type: "content_block_delta", index: 0, delta: { type: "input_json_delta", partial_json: '{"title":"途中' } },
+        { type: "content_block_stop", index: 0 },
+        { type: "message_delta", delta: { stop_reason: "max_tokens" } },
+        { type: "message_stop" },
+      ];
+      const { transport, calls } = makeTransport(() => okResponse(textBody(buildSseText(events))));
+      registerByokAnthropicBackend(transport);
+      const client = createClaudeClient({}, "byok-anthropic");
+      const executeTool = vi.fn().mockResolvedValue({ content: "ok", isError: false });
+
+      const promise = streamBossMessage(
+        client,
+        { model: "claude-sonnet-5", messages: [{ role: "user", content: "go" }] },
+        { executeTool },
+      );
+      const expectation = expect(promise).rejects.toThrow(AnthropicMessagesStreamError);
+      await vi.advanceTimersByTimeAsync(1_000 + 2_000 + 1);
+      await expectation;
+
+      expect(calls).toHaveLength(1);
+      expect(executeTool).not.toHaveBeenCalled();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("非ストリーミング（requestVerdict 経由）: 打ち切られた tool_use を含む stop_reason:max_tokens の応答を受けると、転送のポートは1回しか呼ばれず、失敗する", async () => {
+    const responseBody = JSON.stringify({
+      stop_reason: "max_tokens",
+      content: [{ type: "tool_use", id: "t1", name: "submit_evening_summary", input: { report_summary: "途中" } }],
+    });
+    const { transport, calls } = singleResponseTransport(okResponse(textBody(responseBody)));
+    registerByokAnthropicBackend(transport);
+    const client = createClaudeClient({}, "byok-anthropic");
+
+    let caught: unknown;
+    try {
+      await requestVerdict(
+        client,
+        {
+          model: "claude-sonnet-5",
+          messages: [{ role: "user", content: "summarize" }],
+          tools: [{ name: "submit_evening_summary", description: "d", input_schema: { type: "object" } }],
+          toolChoice: { type: "tool", name: "submit_evening_summary" },
+        },
+        "submit_evening_summary",
+        (input) => ({ valid: true, data: input }),
+      );
+    } catch (err) {
+      caught = err;
+    }
+
+    expect(calls).toHaveLength(1);
+    expect(caught).toBeInstanceOf(AnthropicMessagesStreamError);
   });
 });
 

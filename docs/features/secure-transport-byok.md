@@ -181,7 +181,7 @@ S2 の設計はこの実測に拠る。上の表と食い違う点はこちら�
   - **BYOK（Anthropic）のバックエンド**（仮に `byok-anthropic`）は、ポートを引数に取る登録関数でレジストリへ登録する。`createClient(env)` は `env` を読まない（`ANTHROPIC_API_KEY` を含め、キーを受け取る場所を TS 側に作らない）
   - 要求本文は、`api` の `streamApiMessage`／`createApiMessage` が SDK に渡す項目と同じ名前・同じ値の JSON（`model`・`max_tokens`・`system`・`messages`・`tools`・`tool_choice`・`thinking`・`output_config`）に `stream` を足したもの。ヘッダは付けない（`x-api-key`・`anthropic-version`・`content-type` は Rust が付ける）
   - 応答の解釈: ストリーミングは SSE（`message_start`・`content_block_start`・`content_block_delta`〔`text_delta`・`input_json_delta`・`thinking_delta`・`signature_delta`〕・`content_block_stop`・`message_delta`・`message_stop`・`ping`・`error`）を組み立て、非ストリーミングは JSON を読む。どちらも `normalizeMessage` と同じく `text`・`tool_use` を `content` に、組み立てたブロック全体（`thinking` と署名・`redacted_thinking` を含む）を `rawContent` にする。バイト列の復号は多バイト文字の途中で断片が切れても壊れない形で行う（`TextDecoder` の逐次復号。`Buffer` はバンドル検査で使えない）
-  - エラーの分類は `classifyApiError` と同じ規則を SDK なしで持つ（HTTP のステータスと `retry-after`）。ポートの失敗は、接続失敗だけを再試行可、他（宛先不明・キー未登録・キーの保管の失敗・不正なヘッダ・要求 ID の重複・リダイレクト拒否）を再試行不可とする。応答の途中の SSE の `error` イベントと、`message_stop` の前に本文が終わった場合は再試行可とする（SDK の経路で `status` を持たない失敗が再試行可になる現行の規則に揃える）
+  - エラーの分類は `classifyApiError` と同じ規則を SDK なしで持つ（HTTP のステータスと `retry-after`）。ポートの失敗は、接続失敗だけを再試行可、他（宛先不明・キー未登録・キーの保管の失敗・不正なヘッダ・要求 ID の重複・リダイレクト拒否）を再試行不可とする。応答の途中の SSE の `error` イベントと、`message_stop` の前に本文が終わった場合は再試行可とする（SDK の経路で `status` を持たない失敗が再試行可になる現行の規則に揃える）。**ただし打ち切られた `tool_use`（`stop_reason: "max_tokens"` かつ tool_use のブロックが1つ以上ある応答。2026-09-28 追記・Issue #643）は、`status` を持たない失敗の既定から外れ、無条件に再試行不可とする**（「打ち切られた `tool_use`」節参照）
 - **S2 のモジュールをバンドル検査の対象にする方法（2026-09-27 親の決定）**: 製品版のエントリへの登録は S3 の範囲で、そのままでは S2 の時点で `core-entry.ts` から BYOK（Anthropic）のモジュールへ到達せず、`core-entry.bundle.test.ts` が S2 のコードを検査しない（「実コードの実測」）。このため `core-entry.ts` が登録関数を**呼ばずに re-export** する（案 (A)。選択肢は「IF / API（S2）」の後に記す）
 - **理由**: ポートが `AbortSignal` を受け取る形にすると、ファサードの中止（`runWithTimeoutAndRetry` の `signal`・生成停止）がそのままポートへ届き、`requestId` の管理が TS のクライアントと模擬のポートのテストに漏れない。要求本文を `api` と同じ項目にすると、開発者用の版で確かめた要求の形（Issue #117 の thinking の既定など）を製品版でもそのまま使える
 - **影響範囲**: 新規のポートの型・BYOK（Anthropic）のバックエンド、`retry-after` の解釈を SDK なしで共有する場合は `backends/api-backend.ts`（振る舞いは変えない）（**クリティカル箇所: Claude API 連携・API キーの取り扱い。変更時は人間レビュー必須**）
@@ -217,6 +217,7 @@ S2 の設計はこの実測に拠る。上の表と食い違う点はこちら�
 - **要求本文**: `model`・`max_tokens`・`messages` と、呼び出し元が指定したときだけ `system`・`tools`・`tool_choice`・`output_config`。`thinking` は常に含める（ファサードの既定の `{ type: "disabled" }` を含む）。ストリーミングは `stream: true`、非ストリーミングは `stream: false`
 - **HTTP のエラー**: 応答のステータスが 2xx でなければ、本文を `text`・`tool_use` として解釈せず、ステータスと `retry-after` を持つ例外で失敗する（`onTextDelta` は呼ばない）
 - **ログ**: 応答に `text`・`tool_use` が 1 つも無いときは `normalizeMessage` と同じくメタ情報（停止理由・ブロックの種類・モデル・トークン数）だけを `console.warn` に出す。本文・thinking・ツールの入力は出さない
+- **打ち切られた `tool_use`**（2026-09-28 追記・Issue #643）: `stop_reason: "max_tokens"` の応答に `tool_use` のブロックが1つ以上あれば、`input`（ストリーミングは `partial_json` の連結）を解釈せず、再試行不可の失敗として扱う（#637 の OpenAI 側と同じ方針。打ち切りは同じ要求の再送で直らない）。ストリーミングは `message_stop` 確認後、`partialJson` の解釈より前に判定する
 
 ### S2 のモジュールをバンドル検査の対象にする方法（2026-09-27 親の決定: (A)）
 
