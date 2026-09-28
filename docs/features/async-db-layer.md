@@ -343,4 +343,4 @@ S1 の契約（トランザクションの原子性・直列化・`user_version`
 - A8（S2）: IPC の中継は器のクレートの `examples/sql-ipc-bridge.rs` に置き、`tauri` の `test` 機能は dev-dependencies でだけ有効にする（製品のバイナリには入らない）
 - A9（S2）: 契約スイートは `server/src/db/test-support/db-port-contract.ts` に置き、S1 の既存のテスト（`serialized-db.test.ts`・`migrate.test.ts`）は動かさず残す（S1 の担保を変えない。契約スイートは両版で同じ本体を回すための追加）
 - A10（S2）: 製品版の plugin-sql 実装の `run` の `lastInsertRowid` は、`lastInsertId` が返らないとき 0 とする（SQLite の実装では常に返る）
-- A11（S2・実装のセルフレビューで追加）: 製品版の DB の準備の最初に `ROLLBACK` を 1 回送り、失敗は無視する。Rust 側の接続はプロセスが続く限り残るが直列化層の状態はページの読み込みごとに作り直されるため、`BEGIN IMMEDIATE` の途中でページが読み込み直されると、残ったトランザクションに以後の書き込みが黙って混ざる。これを閉じておく（担保は `web/tauri-db/plugin-sql.tauri-db.test.ts`）
+- A11（S2・実装のセルフレビューで追加）: 製品版の DB の準備の最初に `ROLLBACK` を 1 回送り、SQLite の「開いたトランザクションが無い」の失敗だけを無視する（それ以外の失敗〔IPC の失敗など〕はトランザクションが閉じたか分からないため DB の準備の失敗とし、A7 の「DB 未接続」へ倒す。担保は `web/src/app-entry/product-db.test.ts`。PR #652 の Codex レビューで修正）。Rust 側の接続はプロセスが続く限り残るが直列化層の状態はページの読み込みごとに作り直されるため、`BEGIN IMMEDIATE` の途中でページが読み込み直されると、残ったトランザクションに以後の書き込みが黙って混ざる。これを閉じておく（担保は `web/tauri-db/plugin-sql.tauri-db.test.ts`）
