@@ -2,7 +2,10 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { act, renderHook, waitFor } from "@testing-library/react";
 import { useTaskEvidences } from "./use-task-evidences";
 import type { TaskEvidence } from "./task-evidence";
-import { EvidenceContentOpenerContext } from "./evidence-content-opener-context";
+import {
+  EvidenceContentOpenerContext,
+  EvidenceNotOpenableError,
+} from "./evidence-content-opener-context";
 import type { EvidenceContentOpener } from "./evidence-content-opener-context";
 
 function makeEvidence(
@@ -246,6 +249,30 @@ describe("useTaskEvidences", () => {
       });
 
       expect(result.current.actionError).toBe("証跡の取得に失敗しました");
+    });
+
+    // PR #646 の Codex 指摘 P2: 画像・PDF 以外（attachment）を開かなかった
+    // ときは、取得の失敗と区別した案内を出す。
+    it("shows the not-openable message (not the fetch-failure message) when the opener rejects with EvidenceNotOpenableError", async () => {
+      const fetchMock = vi.fn(() =>
+        Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve([]) }),
+      );
+      vi.stubGlobal("fetch", fetchMock);
+      const opener = vi.fn(async () => {
+        throw new EvidenceNotOpenableError();
+      });
+
+      const { result } = renderWithOpener(opener);
+      await waitFor(() => expect(result.current.status).toBe("ready"));
+
+      await act(async () => {
+        const succeeded = await result.current.openContent!(2);
+        expect(succeeded).toBe(false);
+      });
+
+      expect(result.current.actionError).toBe(
+        "この形式の証跡はアプリ内では開けません（画像・PDF のみ）",
+      );
     });
   });
 });

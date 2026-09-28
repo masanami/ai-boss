@@ -8,7 +8,10 @@ import {
   fetchTaskEvidences,
 } from "./tasks-api";
 import type { TaskEvidence } from "./task-evidence";
-import { EvidenceContentOpenerContext } from "./evidence-content-opener-context";
+import {
+  EvidenceContentOpenerContext,
+  EvidenceNotOpenableError,
+} from "./evidence-content-opener-context";
 
 export type EvidenceListStatus = "idle" | "loading" | "ready" | "error";
 
@@ -200,8 +203,10 @@ export function useTaskEvidences(
       try {
         await contentOpener(contentUrl(evidenceId));
         return true;
-      } catch {
-        setActionError("証跡の取得に失敗しました");
+      } catch (error) {
+        setActionError(
+          error instanceof EvidenceNotOpenableError ? error.message : "証跡の取得に失敗しました",
+        );
         return false;
       }
     },
