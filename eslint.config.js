@@ -17,6 +17,16 @@ export default tseslint.config(
     },
   },
   {
+    // LLM 中継サーバー（docs/features/llm-relay-server.md）。中継の本体は
+    // Web 標準の API だけで書く（Node のグローバルを使わないことは
+    // relay/src/relay-bundle.test.ts の AST 検査が担保する）が、テストは
+    // Node で動くため server と同じ globals.node を割り当てる。
+    files: ["relay/**/*.ts"],
+    languageOptions: {
+      globals: globals.node,
+    },
+  },
+  {
     // エージェント用ハーネス（run-ai-boss スキルのドライバ）。Node で直接実行する
     // スクリプトなので node グローバルを許可する。プロダクトコードではないが、
     // `eslint .` の対象からは外さず lint は通す。

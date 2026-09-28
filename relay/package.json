@@ -1,0 +1,22 @@
+{
+  "name": "@ai-boss/relay",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "description": "ai-boss の LLM 中継サーバーのコア（実行基盤に依存しない。docs/features/llm-relay-server.md）",
+  "scripts": {
+    "lint": "cd .. && eslint relay",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:tz": "TZ=Asia/Tokyo vitest run"
+  },
+  "dependencies": {
+    "hono": "^4.12.27"
+  },
+  "devDependencies": {
+    "@types/node": "^22.9.0",
+    "esbuild": "^0.28.1",
+    "typescript": "^5.6.3",
+    "vitest": "^2.1.4"
+  }
+}
