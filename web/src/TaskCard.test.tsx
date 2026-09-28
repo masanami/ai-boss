@@ -10,6 +10,7 @@ import TaskCard from "./TaskCard";
 import type { Task } from "./task";
 import type { TaskEvidence } from "./task-evidence";
 import { TASK_DRAG_DATA_TYPE } from "./task-dnd";
+import { EvidenceContentOpenerContext } from "./evidence-content-opener-context";
 
 // jsdom は DataTransfer を実装しないため、setData/getData を持つ簡易スタブを
 // 自前で用意する（Issue #122）。
@@ -774,6 +775,42 @@ describe("TaskCard", () => {
         "href",
         "/api/tasks/1/evidences/7/content",
       ),
+    );
+  });
+
+  // 機能仕様 docs/features/tauri-in-app-runtime.md クリティカル設計決定1・
+  // S2「証跡ファイルの <a href>」— 製品版（Blob URL の方式が注入されている）
+  // では、クリックが Blob URL の方式（開く関数）を呼び、既定のナビゲーション
+  // は起こらない。
+  it("calls the injected content opener (and prevents default navigation) instead of navigating when Blob URL 方式 is injected", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValueOnce({
+        ok: true,
+        status: 200,
+        json: () =>
+          Promise.resolve([
+            makeEvidence({ id: 7, kind: "file", original_filename: "a.png" }),
+          ]),
+      }),
+    );
+    const opener = vi.fn().mockResolvedValue(undefined);
+
+    render(
+      <EvidenceContentOpenerContext.Provider value={opener}>
+        <TaskCard task={BASE_TASK} onStatusChange={vi.fn()} onEdit={vi.fn()} />
+      </EvidenceContentOpenerContext.Provider>,
+    );
+    fireEvent.click(screen.getByRole("button", { name: "編集" }));
+
+    const link = await waitFor(() => screen.getByText("a.png").closest("a")!);
+    const clickEvent = fireEvent.click(link);
+
+    // fireEvent.click は既定動作（ナビゲーション）が preventDefault されたかを
+    // 戻り値で返す（false = preventDefault された）。
+    expect(clickEvent).toBe(false);
+    await waitFor(() =>
+      expect(opener).toHaveBeenCalledWith("/api/tasks/1/evidences/7/content"),
     );
   });
 

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useContext, useEffect, useRef, useState } from "react";
 import {
   addFileEvidence,
   addLinkEvidence,
@@ -8,6 +8,10 @@ import {
   fetchTaskEvidences,
 } from "./tasks-api";
 import type { TaskEvidence } from "./task-evidence";
+import {
+  EvidenceContentOpenerContext,
+  EvidenceNotOpenableError,
+} from "./evidence-content-opener-context";
 
 export type EvidenceListStatus = "idle" | "loading" | "ready" | "error";
 
@@ -31,6 +35,16 @@ export interface UseTaskEvidencesResult {
    * 独自ビューアは作らない（明示的な仮定 9）ため、fetch はしない。
    */
   contentUrl: (evidenceId: number) => string;
+  /**
+   * Blob URL の方式（機能仕様 docs/features/tauri-in-app-runtime.md
+   * クリティカル設計決定1・S2）が注入されている（製品版）ときだけ定義される。
+   * `TaskCard` はこれが定義されている間だけ `<a>` の onClick で
+   * `preventDefault` してこれを呼ぶ。注入されていない（開発者用の版）間は
+   * `undefined` — `TaskCard` は現行どおり `<a href>` のナビゲーションに委ねる。
+   * 成功したら true、取得が2xx以外で失敗したら `actionError` を設定して
+   * false を返す（他の追加・削除と同じ規約）。
+   */
+  openContent?: (evidenceId: number) => Promise<boolean>;
 }
 
 /**
@@ -51,6 +65,10 @@ export function useTaskEvidences(
   const [status, setStatus] = useState<EvidenceListStatus>("idle");
   const [actionError, setActionError] = useState<string | null>(null);
   const [isMutating, setIsMutating] = useState(false);
+
+  // 製品版のエントリだけがこのコンテキストへ値を注入する（機能仕様
+  // クリティカル設計決定1・S2）。開発者用の版では常に null。
+  const contentOpener = useContext(EvidenceContentOpenerContext);
 
   // 一覧取得の世代番号。**追加・削除が成功するたびにも進める**ことで、
   // 「取得の応答が届く前に追加が成功した」競合で、先行する取得の古い一覧が
@@ -173,6 +191,28 @@ export function useTaskEvidences(
     [taskId],
   );
 
+  // Hooks は条件分岐で呼び分けない（rules-of-hooks）。`contentOpener` が
+  // null の間はこの関数自体が呼ばれない前提（`TaskCard` は `openContent`
+  // が `undefined` の間、下の return で公開しない）。
+  const openContentImpl = useCallback(
+    async (evidenceId: number): Promise<boolean> => {
+      if (!contentOpener) {
+        return false;
+      }
+      setActionError(null);
+      try {
+        await contentOpener(contentUrl(evidenceId));
+        return true;
+      } catch (error) {
+        setActionError(
+          error instanceof EvidenceNotOpenableError ? error.message : "証跡の取得に失敗しました",
+        );
+        return false;
+      }
+    },
+    [contentOpener, contentUrl],
+  );
+
   return {
     evidences,
     status,
@@ -182,5 +222,6 @@ export function useTaskEvidences(
     addLink,
     remove,
     contentUrl,
+    openContent: contentOpener ? openContentImpl : undefined,
   };
 }

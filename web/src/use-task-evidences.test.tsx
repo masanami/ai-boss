@@ -2,6 +2,11 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { act, renderHook, waitFor } from "@testing-library/react";
 import { useTaskEvidences } from "./use-task-evidences";
 import type { TaskEvidence } from "./task-evidence";
+import {
+  EvidenceContentOpenerContext,
+  EvidenceNotOpenableError,
+} from "./evidence-content-opener-context";
+import type { EvidenceContentOpener } from "./evidence-content-opener-context";
 
 function makeEvidence(
   overrides: Partial<TaskEvidence> & { id: number; kind: "file" | "link" },
@@ -177,5 +182,97 @@ describe("useTaskEvidences", () => {
     );
     // 追加は失敗したので一覧は取り直されない（GET は初回の 1 回だけ）
     expect(fetchMock.mock.calls.filter(isGet)).toHaveLength(1);
+  });
+
+  // Blob URL 方式（機能仕様 クリティカル設計決定1・S2「証跡ファイルの
+  // <a href>」）の注入口。開発者用の版（Provider 無し）では openContent は
+  // 公開されない — 既存テスト（Provider 無しで renderHook している上の
+  // すべて）が変更なしで合格していることが、その現行動作の担保になる。
+  describe("Blob URL の方式（EvidenceContentOpenerContext の注入）", () => {
+    function renderWithOpener(opener: EvidenceContentOpener | null) {
+      return renderHook(() => useTaskEvidences(1, true), {
+        wrapper: ({ children }) => (
+          <EvidenceContentOpenerContext.Provider value={opener}>
+            {children}
+          </EvidenceContentOpenerContext.Provider>
+        ),
+      });
+    }
+
+    it("does not expose openContent when no opener is injected (開発者用の版)", async () => {
+      const fetchMock = vi.fn(() =>
+        Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve([]) }),
+      );
+      vi.stubGlobal("fetch", fetchMock);
+
+      const { result } = renderWithOpener(null);
+      await waitFor(() => expect(result.current.status).toBe("ready"));
+
+      expect(result.current.openContent).toBeUndefined();
+    });
+
+    it("exposes openContent and calls the injected opener with the content URL when injected (製品版)", async () => {
+      const fetchMock = vi.fn(() =>
+        Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve([]) }),
+      );
+      vi.stubGlobal("fetch", fetchMock);
+      const opener = vi.fn(async () => {});
+
+      const { result } = renderWithOpener(opener);
+      await waitFor(() => expect(result.current.status).toBe("ready"));
+      expect(result.current.openContent).toBeDefined();
+
+      await act(async () => {
+        const succeeded = await result.current.openContent!(2);
+        expect(succeeded).toBe(true);
+      });
+
+      expect(opener).toHaveBeenCalledWith("/api/tasks/1/evidences/2/content");
+      expect(result.current.actionError).toBeNull();
+    });
+
+    it("sets actionError and returns false when the injected opener rejects", async () => {
+      const fetchMock = vi.fn(() =>
+        Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve([]) }),
+      );
+      vi.stubGlobal("fetch", fetchMock);
+      const opener = vi.fn(async () => {
+        throw new Error("証跡の取得に失敗しました（status 404）");
+      });
+
+      const { result } = renderWithOpener(opener);
+      await waitFor(() => expect(result.current.status).toBe("ready"));
+
+      await act(async () => {
+        const succeeded = await result.current.openContent!(2);
+        expect(succeeded).toBe(false);
+      });
+
+      expect(result.current.actionError).toBe("証跡の取得に失敗しました");
+    });
+
+    // PR #646 の Codex 指摘 P2: 画像・PDF 以外（attachment）を開かなかった
+    // ときは、取得の失敗と区別した案内を出す。
+    it("shows the not-openable message (not the fetch-failure message) when the opener rejects with EvidenceNotOpenableError", async () => {
+      const fetchMock = vi.fn(() =>
+        Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve([]) }),
+      );
+      vi.stubGlobal("fetch", fetchMock);
+      const opener = vi.fn(async () => {
+        throw new EvidenceNotOpenableError();
+      });
+
+      const { result } = renderWithOpener(opener);
+      await waitFor(() => expect(result.current.status).toBe("ready"));
+
+      await act(async () => {
+        const succeeded = await result.current.openContent!(2);
+        expect(succeeded).toBe(false);
+      });
+
+      expect(result.current.actionError).toBe(
+        "この形式の証跡はアプリ内では開けません（画像・PDF のみ）",
+      );
+    });
   });
 });

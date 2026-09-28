@@ -6,7 +6,14 @@ import globals from "globals";
 
 export default tseslint.config(
   {
-    ignores: ["**/dist/**", "**/node_modules/**", "**/coverage/**"],
+    ignores: [
+      "**/dist/**",
+      "**/node_modules/**",
+      "**/coverage/**",
+      "web/dist-app/**",
+      "native/tauri-app/gen/**",
+      "native/tauri-app/target/**",
+    ],
   },
   js.configs.recommended,
   ...tseslint.configs.recommended,
@@ -31,6 +38,14 @@ export default tseslint.config(
     // スクリプトなので node グローバルを許可する。プロダクトコードではないが、
     // `eslint .` の対象からは外さず lint は通す。
     files: [".claude/skills/**/*.mjs"],
+    languageOptions: {
+      globals: globals.node,
+    },
+  },
+  {
+    // Tauri の器（機能仕様 docs/features/tauri-in-app-runtime.md S2）の
+    // 補助スクリプト。Node で直接実行するので node グローバルを許可する。
+    files: ["scripts/**/*.mjs"],
     languageOptions: {
       globals: globals.node,
     },

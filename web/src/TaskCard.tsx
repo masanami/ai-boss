@@ -1,5 +1,5 @@
 import { useState } from "react";
-import type { ChangeEvent, DragEvent, FormEvent, KeyboardEvent } from "react";
+import type { ChangeEvent, DragEvent, FormEvent, KeyboardEvent, MouseEvent } from "react";
 import { TASK_STATUSES } from "./task";
 import type { Task, TaskPatchInput, TaskPriority, TaskStatus } from "./task";
 import { TASK_DRAG_DATA_TYPE } from "./task-dnd";
@@ -144,6 +144,7 @@ function TaskCard({
     addLink,
     remove: removeEvidence,
     contentUrl,
+    openContent,
   } = useTaskEvidences(task.id, isEditing);
 
   const startEditing = () => {
@@ -237,6 +238,18 @@ function TaskCard({
     void removeEvidence(evidenceId);
   };
 
+  // Blob URL の方式（機能仕様 クリティカル設計決定1・S2「証跡ファイルの
+  // <a href>」）が注入されている（製品版）ときだけ、`<a>` のクリックを奪って
+  // 開く。注入されていない（開発者用の版・`openContent` が undefined）間は
+  // `undefined` を渡し、既存の `<a href>` のナビゲーションをそのまま使う
+  // （現行動作を変えない）。
+  const handleOpenContent = openContent
+    ? (event: MouseEvent<HTMLAnchorElement>, evidenceId: number) => {
+        event.preventDefault();
+        void openContent(evidenceId);
+      }
+    : undefined;
+
   if (isEditing) {
     return (
       <form
@@ -303,6 +316,11 @@ function TaskCard({
                   {evidence.kind === "file" ? (
                     <a
                       href={contentUrl(evidence.id)}
+                      onClick={
+                        handleOpenContent
+                          ? (event) => handleOpenContent(event, evidence.id)
+                          : undefined
+                      }
                       target="_blank"
                       rel="noreferrer"
                     >

@@ -1,0 +1,28 @@
+[package]
+name = "ai-boss-tauri-app"
+version = "0.1.0"
+edition = "2021"
+publish = false
+description = "ai-boss 製品版の Tauri 2（macOS）の器（機能仕様 docs/features/tauri-in-app-runtime.md S2）"
+
+# 仮定 A4（機能仕様 S2）: `native/secure-transport/` と同じく独立したクレート
+# として置く（Cargo ワークスペースにしない）。#581 S3 で通信層を配線すると
+# きは path 依存で足せる。
+
+[lib]
+name = "app_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2.6", features = [] }
+
+[dependencies]
+# tauri-plugin-* は一切入れない（機能仕様 S2「器の構成」）。capability も
+# 1つも置かず、権限は使うスライスがそのとき最小の単位で足す。
+tauri = { version = "2.12", features = [] }
+
+[dev-dependencies]
+# 設定の検査テスト（tauri.conf.json・capabilities/・Cargo.toml の読み込み）用。
+# 本体（lib.rs/main.rs）は serde_json/toml を使わないため dev-dependencies のみ。
+serde_json = "1"
+toml = "0.8"

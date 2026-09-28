@@ -22,10 +22,15 @@
     "test:tz": "npm run test:tz --workspaces --if-present",
     "test:rust": "cargo test --manifest-path native/secure-transport/Cargo.toml",
     "test:rust:keychain": "cargo test --manifest-path native/secure-transport/Cargo.toml --lib -- --ignored --test-threads=1",
-    "build": "npm run build --workspaces --if-present"
+    "pretest:tauri": "npm run build:app --workspace web",
+    "test:tauri": "cargo test --manifest-path native/tauri-app/Cargo.toml",
+    "build": "npm run build --workspaces --if-present",
+    "build:tauri": "cd native/tauri-app && npx @tauri-apps/cli build --bundles app",
+    "verify:tauri-bundle": "node scripts/verify-tauri-bundle.mjs"
   },
   "devDependencies": {
     "@eslint/js": "^9.15.0",
+    "@tauri-apps/cli": "^2.12.0",
     "concurrently": "^9.1.0",
     "eslint": "^9.15.0",
     "eslint-plugin-react-hooks": "^5.0.0",
