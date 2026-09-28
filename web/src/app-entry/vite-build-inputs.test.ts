@@ -75,6 +75,21 @@ describe("製品版の web のビルド（vite.app.config.ts）の入力モジ�
     BUILD_TIMEOUT_MS,
   );
 
+  // #580 S2（docs/features/async-db-layer.md AC-S2-26）: 製品版の DB 実装
+  // （plugin-sql・S1 の直列化層・migrate.ts）がアプリ内に載る。
+  it.each([
+    "@tauri-apps/plugin-sql",
+    "web/src/app-entry/plugin-sql-driver.ts",
+    "server/src/db/serialized-db.ts",
+    "server/src/db/migrate.ts",
+  ])(
+    "includes %s (製品版の DB 実装)",
+    (substring) => {
+      expect(includesAnyInput(productModuleIds, substring)).toBe(true);
+    },
+    BUILD_TIMEOUT_MS,
+  );
+
   it.each([
     "@anthropic-ai/claude-agent-sdk",
     "server/src/llm/backends/claude-code-backend.ts",

@@ -5,16 +5,16 @@
 // re-export された `createCoreApp` を使う（値 import はこれだけ。`Hono` の
 // 戻り値の型は `createCoreApp` の宣言から推論させ、`hono` を明示的に
 // import しない — web/package.json に `hono` を宣言していないため）。
-import { createCoreApp } from "../../../server/src/core-entry.js";
-import { createDisconnectedDbPort } from "./disconnected-db-port.js";
+import { createCoreApp, type DbPort } from "../../../server/src/core-entry.js";
 
 /**
  * 製品版の web のエントリが組み立てる Hono アプリ（機能仕様
- * docs/features/tauri-in-app-runtime.md S2「DB 未接続の間の振る舞い」・
- * 「LLM」）。
+ * docs/features/tauri-in-app-runtime.md S2「LLM」・
+ * docs/features/async-db-layer.md「S2 の設計」）。
  *
- * - DB は S2 の「DB 未接続」ポート（`createDisconnectedDbPort`）を渡す
- *   （#580 S2 でこのポートを製品版の DB 実装に差し替える）。
+ * - DB は、製品版の DB 実装（plugin-sql・`product-db.ts`）か、その準備に
+ *   失敗したときの「DB 未接続」ポート（`disconnected-db-port.ts`）を受け取る
+ *   （選ぶのは `boot-product-app.ts`）。
  * - `env` は空（`process.env` を読まない。このモジュールから到達可能な
  *   コードは Node 組み込みを参照しない — `core-app.ts` 自身が
  *   `core-entry.bundle.test.ts` でバンドル検査済み）。
@@ -23,6 +23,8 @@ import { createDisconnectedDbPort } from "./disconnected-db-port.js";
  *   （`llm/llm-backend-registry.ts`）を参照するだけなので、このモジュールを
  *   呼ぶだけではどのバックエンドも登録されない。
  */
-export function createProductCoreApp() {
-  return createCoreApp(createDisconnectedDbPort(), {});
+export function createProductCoreApp(db: DbPort) {
+  return createCoreApp(db, {});
 }
+
+export type ProductCoreApp = ReturnType<typeof createProductCoreApp>;

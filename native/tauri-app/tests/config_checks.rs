@@ -51,12 +51,17 @@ fn csp_directive(conf: &serde_json::Value, directive: &str) -> Vec<String> {
 // ---------------------------------------------------------------------------
 
 #[test]
-fn capabilities_directory_grants_zero_permissions() {
+fn capabilities_grant_only_sql_execute_and_select_to_the_main_window() {
+    // #580 S2（docs/features/async-db-layer.md AC-S2-5）: #579 S2 の「0 件」を、
+    // DB に要る最小の単位（`sql:allow-execute`・`sql:allow-select`）へ置き
+    // 換えた。`load`（任意のパスの DB を開ける）・`close`・`sql:default` は
+    // 許可しない。
+    //
     // 「By default (not set or empty list), all capability files from
     // ./capabilities/ are included」（tauri-utils の SecurityConfig::capabilities
-    // のドキュメント）— したがって、この検査は「ディレクトリが無い、または
-    // ファイルが 0 件である」ことを固定すれば十分（`app.security.capabilities`
-    // で個別指定して絞る形は使っていない）。
+    // のドキュメント）— したがって、ディレクトリ配下のファイルの全件を検査
+    // すれば足りる（`app.security.capabilities` で個別指定して絞る形は使って
+    // いない。インラインの経路は下の別テストが塞ぐ）。
     //
     // self-review（code-reviewer, CONFIRMED）: tauri-build（`acl.rs`）は
     // `./capabilities/**/*`（サブディレクトリを含めて再帰的）を対象にし、
@@ -64,15 +69,117 @@ fn capabilities_directory_grants_zero_permissions() {
     // トップレベルの `.json`/`.toml` だけを見ていたため、サブディレクトリへ
     // 置かれたファイルや `.json5` 拡張子のファイルが検査を素通りしていた。
     let dir = manifest_dir().join("capabilities");
-    if !dir.exists() {
-        return;
-    }
     let entries = find_capability_files_recursively(&dir);
-    assert!(
-        entries.is_empty(),
-        "capabilities/ 配下（サブディレクトリ含む）に {} 件のファイルがある（0件であること）: {:?}",
-        entries.len(),
+    assert_eq!(
         entries,
+        vec![dir.join("default.json")],
+        "capabilities/ 配下（サブディレクトリ含む）の capability は default.json の 1 件だけであること"
+    );
+    let text = fs::read_to_string(&entries[0]).unwrap();
+    let capability: serde_json::Value = serde_json::from_str(&text).unwrap();
+    assert_eq!(capability["windows"], serde_json::json!(["main"]));
+    assert!(
+        capability.get("webviews").is_none() && capability.get("remote").is_none(),
+        "対象は main のウィンドウだけ（webviews・remote を指定しない）: {capability}"
+    );
+    assert_eq!(
+        capability["permissions"],
+        serde_json::json!(["sql:allow-execute", "sql:allow-select"])
+    );
+}
+
+// ---------------------------------------------------------------------------
+// #580 S2: plugin-sql の fork と DB ファイル（docs/features/async-db-layer.md
+// 受入基準（S2）AC-S2-1・AC-S2-3・AC-S2-4・AC-S2-7）
+// ---------------------------------------------------------------------------
+
+fn fork_dir() -> PathBuf {
+    manifest_dir().join("../tauri-plugin-sql")
+}
+
+#[test]
+fn fork_keeps_upstream_license_files() {
+    for name in ["LICENSE_MIT", "LICENSE_APACHE-2.0"] {
+        assert!(
+            fork_dir().join(name).is_file(),
+            "fork に上流の {name} が無い"
+        );
+    }
+}
+
+#[test]
+fn fork_md_records_the_upstream_version_and_commit() {
+    let text = fs::read_to_string(fork_dir().join("FORK.md")).expect("FORK.md が無い");
+    assert!(text.contains("2.4.1"), "FORK.md に由来の版（2.4.1）が無い");
+    assert!(
+        text.contains("6aa2854f314481a459be1189b02c65a2450789ab"),
+        "FORK.md に上流のコミットが無い"
+    );
+}
+
+#[test]
+fn tauri_plugin_sql_is_the_in_repo_fork_via_path_dependency() {
+    let cargo = load_cargo_toml();
+    let dep = &cargo["dependencies"]["tauri-plugin-sql"];
+    assert_eq!(dep["path"].as_str(), Some("../tauri-plugin-sql"));
+    let features: Vec<&str> = dep["features"]
+        .as_array()
+        .expect("features が無い")
+        .iter()
+        .filter_map(|f| f.as_str())
+        .collect();
+    assert_eq!(features, vec!["sqlite"]);
+}
+
+#[test]
+fn cargo_lock_has_no_crates_io_tauri_plugin_sql() {
+    let text = fs::read_to_string(manifest_dir().join("Cargo.lock")).unwrap();
+    let lock: toml::Value = toml::from_str(&text).unwrap();
+    let packages = lock["package"].as_array().unwrap();
+    let sql: Vec<_> = packages
+        .iter()
+        .filter(|p| p["name"].as_str() == Some("tauri-plugin-sql"))
+        .collect();
+    assert_eq!(
+        sql.len(),
+        1,
+        "tauri-plugin-sql は fork の 1 件だけ: {sql:?}"
+    );
+    assert!(
+        sql[0].get("source").is_none(),
+        "tauri-plugin-sql が crates.io 等の外部の source から来ている: {:?}",
+        sql[0]
+    );
+}
+
+#[test]
+fn web_plugin_sql_matches_the_fork_major_minor() {
+    let web: serde_json::Value = serde_json::from_str(
+        &fs::read_to_string(manifest_dir().join("../../web/package.json")).unwrap(),
+    )
+    .unwrap();
+    let spec = web["dependencies"]["@tauri-apps/plugin-sql"]
+        .as_str()
+        .expect("web の dependencies に @tauri-apps/plugin-sql が無い");
+    let fork: toml::Value =
+        toml::from_str(&fs::read_to_string(fork_dir().join("Cargo.toml")).unwrap()).unwrap();
+    let fork_version = fork["package"]["version"].as_str().unwrap();
+    let major_minor = |v: &str| {
+        v.trim_start_matches(['^', '~', '='])
+            .split('.')
+            .take(2)
+            .collect::<Vec<_>>()
+            .join(".")
+    };
+    assert_eq!(major_minor(spec), major_minor(fork_version));
+}
+
+#[test]
+fn sql_plugin_preloads_only_the_app_db() {
+    let conf = load_tauri_conf();
+    assert_eq!(
+        conf["plugins"]["sql"]["preload"],
+        serde_json::json!(["sqlite:ai-boss.db"])
     );
 }
 

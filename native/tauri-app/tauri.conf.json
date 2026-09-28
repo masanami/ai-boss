@@ -1,6 +1,11 @@
 {
   "productName": "ai-boss",
   "identifier": "dev.aiboss.app",
+  "plugins": {
+    "sql": {
+      "preload": ["sqlite:ai-boss.db"]
+    }
+  },
   "build": {
     "frontendDist": "../../web/dist-app",
     "beforeBuildCommand": {

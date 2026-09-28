@@ -1,5 +1,7 @@
 # DB 層を非同期 API へ移す（better-sqlite3 → plugin-sql・ADR 0005 改訂）
 
+> 2026-09-29: S1（#597・PR #615）と #579 S2（#645・PR #646）のマージ後、S2 を実装対象にするため改訂した（「S2 の設計」・受入基準（S2）・手動の確認手順（S2）・仮定 A4〜A10 の追加）。確定済みの設計（クリティカル設計決定 1〜7・スライス表・オーナー・親の決定）と受入基準（S1）は変えていない。
+
 ## 概要
 
 リポジトリ層が受け取る DB を**非同期の DB ポート**に統一し、開発者用の版（Node・better-sqlite3）と製品版（Tauri 2・`@tauri-apps/plugin-sql`）の両方で同じ TS コードが動くようにする。接続プール越しでは同一接続が保証されないため、単一ライターの前提（ADR 0005 決定 5）を「**接続 1 本＋TS 側の直列化層**」で保ち直す。
@@ -164,6 +166,60 @@
 3. リポジトリ層とルートの非同期化（領域ごと。T2 と T3 は入れ子のため同じチケット）
 4. 決定 2 の全数監査: 非同期化で await を挟むことになる読み出し→判定→書き込みの流れを全数洗い出し、競合しうるものをトランザクションの中へ移す（または競合しない理由を記録する）。決定 2 の表の例（T1・T2・T3・T4・T6・E1・S-END）はこの中で必ず扱う。監査の結果は S1 の PR に記載する
 
+### S2 の設計（2026-09-29・S2 の着手時に確定済みの設計から導いた形）
+
+#### 実測（2026-09-29・`main` f1e9b4f・`tauri-plugin-sql` 2.4.1〔crates.io の配布物。上流 `tauri-apps/plugins-workspace` のコミット `6aa2854f314481a459be1189b02c65a2450789ab` の `plugins/sql`〕・sqlx 0.8.6）
+
+| 観点 | 実測 |
+|---|---|
+| 接続 | `wrapper.rs` の `DbPool::connect` が SQLite を `Pool::connect(conn_url)`（sqlx の既定のプール）で開く。既定は最大 10 接続・**接続の寿命 30 分**（`max_lifetime`）・**アイドルの期限 10 分**（`idle_timeout`）。sqlx は接続をプールへ返すときに寿命を過ぎた接続を閉じる（`sqlx-core` の `pool/connection.rs` `return_to_pool`） |
+| 1 文ごとの接続 | `execute`／`select` は 1 回ごとにプールから接続を取り、終われば返す。`BEGIN` を別の `execute` で送ると、トランザクションは「プールに返された接続」の上で開いたままになる |
+| DB ファイルの場所 | `sqlite:<名前>` を `app_config_dir()`（macOS では `~/Library/Application Support/<identifier>/`）の下へ解決する（`path_mapper`）。`<名前>` が絶対パスだと `PathBuf::push` がアプリのディレクトリを捨て、そのパスを開く。ファイルが無ければ作る |
+| DB を開く経路 | (i) コマンド `load`（WebView から任意の接続文字列で開ける）(ii) プラグインの設定 `plugins.sql.preload`（起動時に Rust 側が開く）。JS の `Database.get(path)` は `load` を呼ばず、`execute`／`select` にその名前を渡すだけ |
+| 権限 | コマンドは `load`・`execute`・`select`・`close` の 4 つ。`sql:default` は `allow-close`・`allow-load`・`allow-select`（`execute` を含まない） |
+| 値の束縛・復号 | 数値は `f64` で束縛する（better-sqlite3 も JS の数値を REAL で束縛し、TEXT の列へ入れた `5` が `'5.0'` になる点まで同じ〔ローカルで実測〕）。行は列の値の型（`INTEGER`・`REAL`・`TEXT`・`NULL` 等）で JSON に復号する。スキーマ（`migrate.ts`）は `INTEGER`・`TEXT` だけを使う |
+| 複数文 | `execute` は sqlx の `query(...)` をそのまま実行し、SQLite では文字列の中の複数文を順に実行する |
+| `foreign_keys` | sqlx が接続ごとに `ON` にする（既定） |
+| ジャーナル | DB ファイルが無いとき、sqlx の `create_database` が WAL モードで作る（`-wal`・`-shm` ができる。IPC の中継で実測）。開発者用の版（`openDatabase`）は既定のロールバックジャーナル。接続 1 本なので振る舞いの差は無い |
+| JS の API | `@tauri-apps/plugin-sql` の `execute` は `{ rowsAffected, lastInsertId }`、`select` は行の配列を返す。中身は `invoke("plugin:sql|execute", { db, query, values })` 等の薄い呼び出し |
+
+#### fork（決定 1 の具体化）
+
+- **置き場所**: ai-boss リポジトリ内の `native/tauri-plugin-sql/`（親の決定。別の GitHub リポジトリは作らない）。上流の配布物（2.4.1）の Rust クレートをそのまま置き、上流のライセンス表記（`LICENSE_MIT`・`LICENSE_APACHE-2.0`・`LICENSE.spdx`）を残す。由来（版・上流のコミット・パス）と上流からの差分の一覧は `native/tauri-plugin-sql/FORK.md` に書く。器のクレート（`native/tauri-app/`）は path 依存（`features = ["sqlite"]`）で使い、crates.io の `tauri-plugin-sql` には依存しない。
+- **差分 1**: SQLite の接続を `Pool::connect` から `SqlitePoolOptions::new().max_connections(1).max_lifetime(None).idle_timeout(None).connect(...)` に替える。**寿命とアイドルの期限も外す**のは、sqlx が寿命（既定 30 分）を過ぎた接続をプールへ返す時点で閉じ、次の文を新しい接続で実行するため——直列化層の `BEGIN IMMEDIATE` の後で接続が入れ替わると、それ以降の文はトランザクションの外（オートコミット）で確定してしまう。決定 1 の「接続を 1 本に固定」は、1 本であり続けることまでを含む。
+- **差分 2（2026-09-29・実装のセルフレビューで追加）**: 接続を開くたびに `sqlite3_limit(SQLITE_LIMIT_ATTACHED, 0)` で別の DB ファイルを付け足せないようにする。`execute` は任意の SQL を通すため、上流のままだと `ATTACH DATABASE '<任意のパス>'`・`VACUUM INTO '<任意のパス>'` でアプリのデータディレクトリの外の DB（オーナーの DB を含む）を読み書きできる（実測: 既にあるファイルは ATTACH で開ける）。下の「DB ファイルと権限」の到達経路の境界を保つための差分で、ai-boss のスキーマとマイグレーションは ATTACH を使わない。
+- **JS 側**: `@tauri-apps/plugin-sql` を**そのまま**使う（決定 1）。版の minor は fork の版にそろえる（2.4）。
+- **成り立たなかったときの切り替え**: 決定 1 のとおり (C) 自前の Rust コマンドへ切り替える（直列化層とポートの契約は変えない）。切り替えたときは経緯を「仮定」と PR に書く。
+
+#### DB ファイルと権限（#579 S2「権限と到達経路の境界」の延長）
+
+- **DB を開くのは Rust 側だけ**: `tauri.conf.json` の `plugins.sql.preload` を `["sqlite:ai-boss.db"]` にし、起動時にアプリのデータディレクトリ（`app_config_dir`。macOS では `~/Library/Application Support/dev.aiboss.app/`）の `ai-boss.db` を開く（無ければ作る）。製品版の web のエントリは `Database.get("sqlite:ai-boss.db")` で参照するだけで `load` を呼ばない。
+- **capability は DB に要る最小の単位**: `capabilities/` にメインのウィンドウ（`main`）だけを対象とする capability を 1 つ置き、許可は `sql:allow-execute`・`sql:allow-select` の 2 つに限る。`sql:allow-load`（WebView から任意のパスの DB を開ける。上の実測のとおり絶対パスならアプリのディレクトリの外も開ける）・`sql:allow-close`・`sql:default` は許可しない。
+- この 2 つと fork の差分 2（ATTACH・`VACUUM INTO` の禁止）で、WebView からオーナーの DB（`server/data/ai-boss.db`）を含むアプリのディレクトリの外の DB を開く経路が無くなる（Rust の結合テスト `native/tauri-app/tests/sql_plugin.rs` で、`load` の拒否と ATTACH・`VACUUM INTO` の失敗を固定する）。
+
+#### 製品版のエントリ（#579 S2「DB 未接続の間の振る舞い」の差し替え）
+
+- 製品版の web のエントリは、描画と `/api` の振り向けの前に DB を準備する: plugin-sql 実装のドライバ（`DbDriver`）→ S1 の直列化層（`createSerializedDb`）→ `runMigrations`（`migrate.ts`・`user_version`。決定 4）の順に組み、そのポートを `createCoreApp` に渡す。
+- DB の準備（最初の文の実行・マイグレーション）が失敗したときは、#579 S2 の「DB 未接続」ポートでアプリを組み立て、失敗を `console.error` に出す（画面は #579 S2 と同じく DB を使う部分がエラーの表示になる。起動そのものは止めない）。
+- plugin-sql 実装のドライバは製品版の web のエントリの側（`web/src/app-entry/`）に置く（`@tauri-apps/plugin-sql` に依存するのは製品版だけ。#579 の「実行環境に依存しないコア」には置かない）。直列化層と `runMigrations` は、製品版のコアの公開面（`server/src/core-entry.ts`）から re-export して使う。
+
+#### 契約テストを器の上で通す仕組み
+
+S1 の契約（トランザクションの原子性・直列化・`user_version` のマイグレーション・`foreign_keys`）を、**両版で同じテスト本体**で固定する。
+
+- **両版共通の契約スイート**: ドライバを引数に取る契約テストの本体を `server/src/db/test-support/` に置き、開発者用の版は better-sqlite3 実装（`:memory:`）で `npm test` の中で、製品版は下の中継で `npm run test:tauri-db` の中で、同じ本体を走らせる。
+- **製品版の通し方（IPC の中継）**: 器のクレートに例（`examples/`。製品のバイナリには入らない）として、器と同じプラグインの登録・同じ `tauri.conf.json`・同じ capability（`generate_context!` の ACL）を Tauri のテスト用の実行環境（`MockRuntime`）の上に組み、標準入出力で受けた IPC の要求（コマンド名と引数）をそのウィンドウの IPC に渡して結果を返す中継を置く。web のテスト（vitest）がこれを子プロセスで起動し、`@tauri-apps/api/mocks` の `mockIPC` で `@tauri-apps/plugin-sql`（JS）の `invoke` を中継へ流す。**置き換わるのは WebView と Rust の間の転送だけ**で、JS のプラグイン・製品版のドライバ・直列化層・`migrate.ts`・Rust のプラグイン（fork）・ACL・プールはすべて製品版と同じものが動く。中継の子プロセスは `HOME` を一時ディレクトリにして起動し、利用者のアプリのデータディレクトリに触れない。
+- **Rust の結合テスト**（`npm run test:tauri`）: 器の ACL の上で、接続が 1 本であること（並行の要求で TEMP 表が見える）・別々の `execute` の `BEGIN`／`ROLLBACK` が効くこと・`foreign_keys`・許可されないコマンドの拒否・DB ファイルの場所を、TS を介さずに確かめる。
+- **比較した代替案**:
+  - WebView（WKWebView）の中で vitest を走らせる — macOS の WKWebView には WebDriver が無く（`tauri-driver` は macOS 非対応）、品質ゲートとして自動で回せない。却下。
+  - Rust の結合テストだけで確かめる — 直列化層と `migrate.ts`（TS）を通らず、「両版で同じ契約」を同じ本体で確かめられない。補助としてだけ採る。
+  - 手動の確認手順に回す — 自動のテストで固定できない。却下。
+- **未検証として残るもの**: WKWebView の実際の IPC の転送（`ipc:` スキーム）と、実機のアプリのデータディレクトリ。「手動の確認手順（S2）」で確かめる。
+
+#### ADR 0005 の改訂（決定 6）
+
+- 決定 1・5・帰結「複数プロセス・複数端末からの同時書き込みは前提外」を決定 6 の方向で書き換える。ドライバは版ごと（開発者用: better-sqlite3／製品版: plugin-sql の fork）。接続は 1 本で、製品版はプールの最大接続数 1・寿命とアイドルの期限なし。単一ライターは接続 1 本＋TS の直列化層で保つ。端末間の衝突解決は #595 で決める（2026-09-29 時点で未決のため、ADR には「#595 の結論に従って改訂する」と書く）。
+
 ## スライス（出荷の単位）
 
 | スライス | 内容 | 触るファイル数（概算） | 出荷条件 |
@@ -171,7 +227,7 @@
 | S1（最小） | #594 の後に着手する。非同期の DB ポート・直列化層・better-sqlite3 実装を入れ、開発者用の版のリポジトリ層・ルート・スケジューラ・マイグレーション・DB テストをすべてポート経由にする。トランザクション 9 箇所と、全数監査で見つけた読み出し→判定→書き込みの流れ（例: 証跡の削除 E1・セッションの終了 S-END）の原子性をポート経由でテストに固定する | 100-130 | これだけで価値が出る（TS コアが DB のドライバに依存しなくなり、#579 S1 の「コアの Node 依存の切り離し」の DB 分が片付く。トランザクションの意味が両版共通のテストで固定される） |
 | S2 | 製品版の plugin-sql 実装（Rust 側の fork で接続 1 本。fork のビルド・動作を受入基準で確かめ、成り立たなければ自前の Rust コマンドへ切り替える）と、S1 の契約テストを #579 S2 の器の上で通す仕組み。ADR 0005 の改訂 | 10-20 | S1 がマージされ、#579 S2 の器ができてから（決定 7） |
 
-実装対象: S1
+実装対象: S2
 
 ## やらないこと
 
@@ -213,8 +269,78 @@
 - [ ] AC-24: 同じ夕会の終了（S-END）を 2 件並行に送ると、日報の LLM による生成は 1 回だけ行われる（2 回目の生成と UPSERT は行われない）
 - [ ] AC-25: S1 の PR に、決定 2 の全数監査の結果（非同期化で await を挟むことになる読み出し→判定→書き込みの流れの一覧と、各々をトランザクションへ移した／移さない理由）が記載されている（要人間判定: PR のレビューで確かめる）
 
+## 受入基準（S2）
+
+> S2 は、製品版の DB 実装（plugin-sql の fork で接続 1 本）と、S1 の契約を器の上で通す仕組みと、ADR 0005 の改訂を受入基準にする。実機でアプリを起動して確かめるものは「手動の確認手順（S2）」に分ける。「両版」は、開発者用の版（better-sqlite3 実装・`:memory:`・`npm test`）と製品版（plugin-sql 実装・器の IPC の中継・`npm run test:tauri-db`）の両方で、同じ契約スイートの本体が合格することを指す。
+
+### fork（`native/tauri-plugin-sql/`）
+
+- [ ] AC-S2-1: `native/tauri-plugin-sql/` に上流のライセンス表記（`LICENSE_MIT`・`LICENSE_APACHE-2.0`）があり、`FORK.md` に由来（版 `2.4.1`・上流のコミット `6aa2854f314481a459be1189b02c65a2450789ab`）と上流からの差分の一覧がある
+- [ ] AC-S2-2: fork が SQLite を開くときのプールの設定は、最大接続数 1・接続の寿命なし・アイドルの期限なしである（fork の単体テスト）
+- [ ] AC-S2-3: 器のクレートは `tauri-plugin-sql` を `native/tauri-plugin-sql/` への path 依存で使い、`Cargo.lock` に crates.io 由来の `tauri-plugin-sql` が無い
+- [ ] AC-S2-4: web の `@tauri-apps/plugin-sql` の版の major・minor は、fork の版（2.4）と一致する
+
+### 権限と DB ファイルの場所（Rust のテスト・設定の検査）
+
+- [ ] AC-S2-5: アプリの capability は 1 件で、対象のウィンドウは `main` だけ、許可する権限は `sql:allow-execute`・`sql:allow-select` の 2 つだけである
+- [ ] AC-S2-6: 器の ACL の上で、`main` のウィンドウからの `plugin:sql|execute`・`plugin:sql|select` は実行され、`plugin:sql|load`・`plugin:sql|close` は拒否される
+- [ ] AC-S2-7: `tauri.conf.json` の `plugins.sql.preload` は `["sqlite:ai-boss.db"]` だけである
+- [ ] AC-S2-8: 器を起動すると、DB ファイルはアプリのデータディレクトリ（`app_config_dir`）の直下の `ai-boss.db` に作られる（テストは `HOME` を一時ディレクトリにして確かめる）
+- [ ] AC-S2-9: 製品版の web のエントリは、DB を `sqlite:ai-boss.db` の名前で参照し、`plugin:sql|load` を呼ばない
+
+### 接続 1 本（Rust の結合テスト。器の ACL の上で IPC を通す）
+
+- [ ] AC-S2-10: 1 つの `execute` で作った TEMP 表を、並行に発行した 8 件の `select` がすべて読める（TEMP 表は接続ごとのため、接続が 2 本以上あると読めない要求が出る）
+- [ ] AC-S2-11: 別々の `execute` で `BEGIN IMMEDIATE`→`INSERT`→`ROLLBACK` を送ると、その `INSERT` の行は残らない
+- [ ] AC-S2-12: `select` で読んだ `PRAGMA foreign_keys` は 1 である
+
+### 両版で同じ契約（契約スイート）
+
+- [ ] AC-S2-13: 両版で、`run` は挿入で `{ changes: 1, lastInsertRowid: <挿入した行の ID> }` を返し、`get` は該当が無いとき `undefined`、`all` は該当が無いとき空配列を返す
+- [ ] AC-S2-14: 両版で、整数・小数・文字列・`null` を束縛して書いた値を読み出すと、同じ値に戻る
+- [ ] AC-S2-15: 両版で、`exec` に渡した複数の文はすべて実行される
+- [ ] AC-S2-16: 両版で、`transaction` の中で例外が投げられると、その中の書き込みはすべて残らず、その例外は同じオブジェクトのまま呼び出し元へ伝わる（S1 の AC-2・AC-2b）
+- [ ] AC-S2-17: 両版で、`transaction` の実行中（中で DB 以外の await をしている間）に別の流れが発行した書き込みは、トランザクションに入らず、ロールバックしても残る（S1 の AC-3）
+- [ ] AC-S2-18: 両版で、入れ子の `transaction` の内側が例外を投げ、外側がそれを捕まえて続けると、内側の書き込みだけが戻り外側の書き込みはコミットされる（S1 の AC-4）
+- [ ] AC-S2-19: 両版で、空の DB に `runMigrations` を行うと `PRAGMA user_version` は `migrate.ts` の最新の版（11）になり、もう一度行っても 11 のままで失敗しない
+- [ ] AC-S2-20: 両版で、ある版のマイグレーションが失敗すると、その版の変更は残らず `user_version` は直前の版のまま残る（S1 の AC-14）
+- [ ] AC-S2-21: 両版で、マイグレーション後の DB に、存在しない親を参照する行（存在しない `session_id` の `messages`）を挿入すると拒否される（`foreign_keys` が有効。v4 の `foreign_keys` の切り替えの後も ON に戻っている）
+
+### 製品版のエントリ
+
+- [ ] AC-S2-22: 製品版の web のエントリが plugin-sql 実装で組み立てたアプリ（器の IPC の中継の上）で、`/api/health` はステータス 200・本文 `{"status":"ok","db":true}` を返す
+- [ ] AC-S2-23: 製品版の web のエントリが plugin-sql 実装で組み立てたアプリ（器の IPC の中継の上）で、`POST /api/tasks` で作ったタスクが `GET /api/tasks` で返る
+- [ ] AC-S2-24: 製品版の web のエントリは、DB の準備（マイグレーション）が終わってから `fetch` を包み画面を描画する（準備が終わる前には `fetch` を包まない）
+- [ ] AC-S2-25: DB の準備が失敗したとき、製品版の web のエントリは「DB 未接続」ポートでアプリを組み立て（`/api/health` は `db: false`）、失敗を `console.error` に出す
+- [ ] AC-S2-26: 製品版の web のビルドの入力モジュールに `@tauri-apps/plugin-sql` と `server/src/db/serialized-db.ts`・`server/src/db/migrate.ts` が含まれ、`better-sqlite3`・`server/src/db/connection.ts` は含まれない（#579 S2 の検査を保つ）
+
+### ADR・開発者用の版・品質ゲート
+
+- [ ] AC-S2-27: ADR 0005 の決定 1・5 と帰結が、クリティカル設計決定 6 の方向で改訂されている（要人間判定: PR のレビューで確かめる）
+- [ ] AC-S2-28: S2 はマイグレーションの版を足さず（最新は 11 のまま。S1 の時点の 10 に #647 が v11 を足した）、better-sqlite3 実装・`openDatabase` の振る舞いを変えない（`migrate.test.ts` と、S1 の AC-16 のテストが変更なしで合格する）
+- [ ] AC-S2-29: `npm run lint`・`npm run typecheck`・`npm test`・`npm run test:tz`・`npm run test:rust`・`npm run test:tauri`・`npm run test:tauri-db` が合格する
+- [ ] AC-S2-30: `npm run build:tauri` で macOS の `.app` が生成され、`npm run verify:tauri-bundle` が合格する
+
+## 手動の確認手順（S2）
+
+人間が実機（macOS）で確かめる。`npm run build:tauri` の後に行う。Node サーバー（`npm run start`）は起動しない状態で行う。
+
+1. オーナーの DB（`server/data/ai-boss.db`）の更新時刻を控える。
+2. 生成された `.app`（`native/tauri-app/target/release/bundle/macos/`）を起動し、ダッシュボード等がエラーの表示にならず空の状態で表示されることを確かめる。
+3. タスクを 1 件作り、アプリを終了して起動し直し、タスクが残っていることを確かめる。
+4. `~/Library/Application Support/dev.aiboss.app/ai-boss.db` があり、`sqlite3 <そのファイル> 'PRAGMA user_version'` が 11 を返すことを確かめる。
+5. オーナーの DB の更新時刻が手順 1 から変わっていないことを確かめる。
+
 ## 仮定（軽微・可逆）
 
 - A1: テストから DB を直に触る 24 ファイル・69 箇所は、better-sqlite3 実装が持つテスト用の生の接続を使ってよい。製品コード（`*.test.ts` とテスト専用の補助モジュール以外）からは使わない
 - A2: `BEGIN IMMEDIATE` を使う（接続 1 本では DEFERRED と差は無いが、将来の複数接続で書き込みロックの取り損ねを避ける）
 - A3: 仕様のファイル名は `async-db-layer.md` とする
+- A4（S2）: fork の由来は crates.io の `tauri-plugin-sql` 2.4.1 の配布物（ローカルの cargo のキャッシュ）とする。2026-09-26 に 2.5.0 が出ているが、仕様の実測（2.4.1）と同じ版から始め、上流への追従は必要になったときに行う
+- A5（S2）: fork の置き場所は `native/tauri-plugin-sql/`、クレート名は上流と同じ `tauri-plugin-sql` とする（`native/secure-transport/`・`native/tauri-app/` と同じく独立したクレート。Cargo のワークスペースにしない）。fork の単体テスト用に fork 自身の `Cargo.lock` をコミットする
+- A6（S2）: DB ファイルの名前は `ai-boss.db` とする（開発者用の版と同じ名前。場所がアプリのデータディレクトリなので取り違えない）
+- A7（S2）: DB の準備が失敗したときは起動を止めず「DB 未接続」ポートにフォールバックする（#579 S2 の器と同じ見え方に戻すだけで、データに触れない。失敗の画面表示は作らない）。**フォールバックの範囲は TS 側の準備（最初の文・マイグレーション）の失敗に限る**。Rust 側の preload が DB を開けない（ファイルが壊れている・読めない）ときは、上流の plugin-sql の setup が失敗してアプリは起動しない（fork の差分を増やさないため手当てしない。必要になったら別 Issue）
+- A8（S2）: IPC の中継は器のクレートの `examples/sql-ipc-bridge.rs` に置き、`tauri` の `test` 機能は dev-dependencies でだけ有効にする（製品のバイナリには入らない）
+- A9（S2）: 契約スイートは `server/src/db/test-support/db-port-contract.ts` に置き、S1 の既存のテスト（`serialized-db.test.ts`・`migrate.test.ts`）は動かさず残す（S1 の担保を変えない。契約スイートは両版で同じ本体を回すための追加）
+- A10（S2）: 製品版の plugin-sql 実装の `run` の `lastInsertRowid` は、`lastInsertId` が返らないとき 0 とする（SQLite の実装では常に返る）
+- A11（S2・実装のセルフレビューで追加）: 製品版の DB の準備の最初に `ROLLBACK` を 1 回送り、SQLite の「開いたトランザクションが無い」の失敗だけを無視する（それ以外の失敗〔IPC の失敗など〕はトランザクションが閉じたか分からないため DB の準備の失敗とし、A7 の「DB 未接続」へ倒す。担保は `web/src/app-entry/product-db.test.ts`。PR #652 の Codex レビューで修正）。Rust 側の接続はプロセスが続く限り残るが直列化層の状態はページの読み込みごとに作り直されるため、`BEGIN IMMEDIATE` の途中でページが読み込み直されると、残ったトランザクションに以後の書き込みが黙って混ざる。これを閉じておく（担保は `web/tauri-db/plugin-sql.tauri-db.test.ts`）

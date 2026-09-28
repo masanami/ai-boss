@@ -13,6 +13,9 @@ export default tseslint.config(
       "web/dist-app/**",
       "native/tauri-app/gen/**",
       "native/tauri-app/target/**",
+      // plugin-sql の Rust 側のリポジトリ内 fork（#580 S2）。上流の配布物を
+      // そのまま置いており、同梱の `api-iife.js` は上流のビルド成果物。
+      "native/tauri-plugin-sql/**",
     ],
   },
   js.configs.recommended,

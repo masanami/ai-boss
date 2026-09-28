@@ -17,12 +17,21 @@ crate-type = ["staticlib", "cdylib", "rlib"]
 tauri-build = { version = "2.6", features = [] }
 
 [dependencies]
-# tauri-plugin-* は一切入れない（機能仕様 S2「器の構成」）。capability も
-# 1つも置かず、権限は使うスライスがそのとき最小の単位で足す。
+# プラグインと権限は、使うスライスがそのとき最小の単位で足す（機能仕様
+# docs/features/tauri-in-app-runtime.md S2「器の構成」）。
 tauri = { version = "2.12", features = [] }
+# #580 S2（docs/features/async-db-layer.md「S2 の設計」）: plugin-sql の
+# リポジトリ内 fork（接続 1 本）。crates.io の tauri-plugin-sql は使わない。
+tauri-plugin-sql = { path = "../tauri-plugin-sql", features = ["sqlite"] }
+# `tauri.conf.json` に `plugins`（plugin-sql の preload）を置くと、
+# `generate_context!` の展開が `serde_json` をクレートの依存として参照する。
+serde_json = "1"
 
 [dev-dependencies]
+# #580 S2: 結合テスト（tests/sql_plugin.rs）と IPC の中継（examples/
+# sql-ipc-bridge.rs）が MockRuntime の上で器を組むため、`test` 機能は
+# dev-dependencies でだけ有効にする（製品のバイナリには入らない。仮定 A8）。
+tauri = { version = "2.12", features = ["test"] }
+tempfile = "3"
 # 設定の検査テスト（tauri.conf.json・capabilities/・Cargo.toml の読み込み）用。
-# 本体（lib.rs/main.rs）は serde_json/toml を使わないため dev-dependencies のみ。
-serde_json = "1"
 toml = "0.8"
