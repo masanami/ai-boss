@@ -156,6 +156,26 @@ async function insertNudgeRow(
   return id;
 }
 
+/** 書き込みの SQL が条件に合うときだけ失敗する DB（控えの更新・削除の失敗を起こす） */
+function failingWrites(db: DbPort, shouldFail: (sql: string) => boolean): DbPort {
+  return {
+    run: (sql, params) => (shouldFail(sql) ? Promise.reject(new Error("db write failed")) : db.run(sql, params)),
+    get: (sql, params) => db.get(sql, params),
+    all: (sql, params) => db.all(sql, params),
+    exec: (sql) => db.exec(sql),
+    transaction: (fn) => db.transaction(fn),
+  };
+}
+
+const UPDATE_BODY_SQL = "UPDATE nudge_reservations SET body";
+const DELETE_RESERVATION_SQL = "DELETE FROM nudge_reservations WHERE id";
+
+function insertEvidenceRow(raw: Database.Database, taskId: number): void {
+  raw
+    .prepare("INSERT INTO task_evidences (task_id, kind, url, created_at) VALUES (?, 'link', 'https://example.com/e', ?)")
+    .run(taskId, at(9, 30));
+}
+
 beforeEach(() => {
   createClaudeClientMock.mockReset();
   streamBossMessageMock.mockReset();
@@ -271,6 +291,25 @@ describe("控えと確定", () => {
     expect(after).toHaveLength(1);
     expect(after[0]).toMatchObject({ id: target!.id, state: "active" });
     expect(h.port.calls.filter((c) => c.op === "register" && c.id === target!.id)).toHaveLength(0);
+  });
+
+  it("re-registers a reservation that was cancelled in the OS but whose row could not be removed, when the new plan contains it", async () => {
+    const h = await setup();
+    await replan(h);
+    const replanner = createNudgeReplanner({
+      db: failingWrites(h.db, (sql) => sql.startsWith(DELETE_RESERVATION_SQL)),
+      env: {},
+      port: h.port,
+      clock: () => h.clock.now,
+    });
+    await replanner.requestReplan();
+    await replanner.whenIdle();
+    const rows = reservationRows(h.raw);
+    expect(rows.length).toBeGreaterThan(0);
+    for (const row of rows) {
+      expect(row.state).toBe("active");
+      expect(h.port.scheduled.get(row.id)).toMatchObject({ body: row.body, at: new Date(row.scheduled_at) });
+    }
   });
 
   it("does not keep a reservation whose OS registration failed", async () => {
@@ -683,6 +722,29 @@ describe("B（個別生成）", () => {
     for (const r of bRequests) expect(requestText(r)).not.toContain("別件の機密タスク");
   });
 
+  it("sends the target task's evidence count", async () => {
+    const h = await setup();
+    insertEvidenceRow(h.raw, h.taskId);
+    insertEvidenceRow(h.raw, h.taskId);
+    await replan(h);
+    const bRequest = llmRequests().find((r) => isIndividualRequest(r) && String(r.system).includes("10:15"))!;
+    expect(String(bRequest.system)).toContain("添付2件");
+  });
+
+  it("does not reuse the B body after an evidence is attached (the content key changes)", async () => {
+    const h = await setup();
+    llmSucceeds();
+    await replan(h);
+    const before = reservationRows(h.raw).find((r) => r.scheduled_at === at(10, 15))!;
+    expect(before.body_source).toBe("individual");
+    insertEvidenceRow(h.raw, h.taskId);
+    streamBossMessageMock.mockImplementation(async () => textMessage("B:after"));
+    await replan(h);
+    const after = reservationRows(h.raw).find((r) => r.scheduled_at === at(10, 15))!;
+    expect(after.content_key).not.toBe(before.content_key);
+    expect(after.body).toBe("B:after");
+  });
+
   it("swaps the reservation to the B body (OS and reservation row)", async () => {
     const h = await setup();
     llmSucceeds();
@@ -805,6 +867,68 @@ describe("B（個別生成）", () => {
     expect(reservationRows(h.raw).find((r) => r.id === id)?.body_source).toBe("fallback");
   });
 
+  it("with a replacing port, re-registers the row's body when only recording the B body fails", async () => {
+    const h = await setup({ replacesSameId: true });
+    llmSucceeds();
+    const replanner = createNudgeReplanner({
+      db: failingWrites(h.db, (sql) => sql.startsWith(UPDATE_BODY_SQL)),
+      env: {},
+      port: h.port,
+      clock: () => h.clock.now,
+    });
+    await replanner.requestReplan();
+    const row = reservationRows(h.raw).find((r) => r.scheduled_at === at(10, 15))!;
+    h.port.calls = [];
+    await replanner.whenIdle();
+    expect(h.port.calls.filter((c) => c.id === row.id)).toEqual([
+      { op: "register", id: row.id, body: "B:10:15" },
+      { op: "register", id: row.id, body: row.body },
+    ]);
+    expect(reservationRows(h.raw).find((r) => r.id === row.id)).toMatchObject({ body: row.body, body_source: "fallback" });
+    expect(h.port.scheduled.get(row.id)?.body).toBe(row.body);
+  });
+
+  it("with a non-replacing port, cancels the B notification before re-registering the row's body when only recording fails", async () => {
+    const h = await setup({ replacesSameId: false });
+    llmSucceeds();
+    const replanner = createNudgeReplanner({
+      db: failingWrites(h.db, (sql) => sql.startsWith(UPDATE_BODY_SQL)),
+      env: {},
+      port: h.port,
+      clock: () => h.clock.now,
+    });
+    await replanner.requestReplan();
+    const row = reservationRows(h.raw).find((r) => r.scheduled_at === at(10, 15))!;
+    h.port.calls = [];
+    await replanner.whenIdle();
+    expect(h.port.calls.filter((c) => c.id === row.id)).toEqual([
+      { op: "cancel", id: row.id },
+      { op: "register", id: row.id, body: "B:10:15" },
+      { op: "cancel", id: row.id },
+      { op: "register", id: row.id, body: row.body },
+    ]);
+    expect(reservationRows(h.raw).find((r) => r.id === row.id)).toMatchObject({ body: row.body, body_source: "fallback" });
+    expect(h.port.scheduled.get(row.id)?.body).toBe(row.body);
+  });
+
+  it("with a non-replacing port, keeps the B notification and the row when recording and cancelling the B body both fail", async () => {
+    const h = await setup({ replacesSameId: false });
+    llmSucceeds();
+    const replanner = createNudgeReplanner({
+      db: failingWrites(h.db, (sql) => sql.startsWith(UPDATE_BODY_SQL)),
+      env: {},
+      port: h.port,
+      clock: () => h.clock.now,
+    });
+    await replanner.requestReplan();
+    const row = reservationRows(h.raw).find((r) => r.scheduled_at === at(10, 15))!;
+    let cancels = 0;
+    h.port.failCancel = (id) => id === row.id && ++cancels > 1;
+    await replanner.whenIdle();
+    expect(h.port.scheduled.get(row.id)?.body).toBe("B:10:15");
+    expect(reservationRows(h.raw).some((r) => r.id === row.id)).toBe(true);
+  });
+
   it.each([
     ["an exception", () => streamBossMessageMock.mockRejectedValue(new Error("x"))],
     ["an empty response", () => streamBossMessageMock.mockResolvedValue(textMessage(""))],
@@ -880,6 +1004,7 @@ describe("B の使い回しのキー", () => {
     ["the task status", baseSettings, { ...base, task: { ...baseTask, status: "paused" as const } }],
     ["the task priority", baseSettings, { ...base, task: { ...baseTask, priority: "low" as const } }],
     ["whether evidence is required", baseSettings, { ...base, task: { ...baseTask, evidence_required: true } }],
+    ["the evidence count", baseSettings, { ...base, taskEvidenceCount: 1 }],
     ["the deadline", baseSettings, { ...base, task: { ...baseTask, due_at: "2026-09-20" } }],
     ["the commitment time", baseSettings, { ...base, task: { ...baseTask, committed_start_at: at(11, 0) } }],
     ["the scheduled time", baseSettings, { ...base, now: new Date(2026, 8, 14, 10, 55) }],

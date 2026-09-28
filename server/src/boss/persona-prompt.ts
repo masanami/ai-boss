@@ -99,8 +99,8 @@ export interface PersonaPromptContext {
    * タスクごとの添付エビデンス件数（`task.id` → 件数。機能仕様
    * docs/features/completion-evidence-enforcement.md 決定 3-a: ボスが自分の
    * 裁定（要否）と現状（添付件数）を次のターンで参照できるよう、タスク行に
-   * 載せる）。未指定・キー欠落時は 0 件として扱う（後方互換 — 既存の呼び出し
-   * 元〔通知文面・日報抽出〕はこれを渡さない）。
+   * 載せる）。未指定・キー欠落時は 0 件として扱う（後方互換 — 日報抽出は
+   * これを渡さず、通知文面は予約方式の個別生成だけが実件数を渡す）。
    */
   taskEvidenceCounts?: Record<number, number>;
   /** 直近の決定（新しい順を想定） */

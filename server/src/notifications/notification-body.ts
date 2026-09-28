@@ -53,6 +53,13 @@ export interface NotificationBodyRequest {
   task: Task | null;
   /** 現在時刻（プロンプトの時間帯ヒントに使う。呼び出し側が注入する） */
   now: Date;
+  /**
+   * 対象タスクに添付された証跡の件数（プロンプトのタスクの行に出る）。
+   * 予約方式の個別生成（B）は実件数を渡す（機能仕様
+   * docs/features/scheduled-nudges.md 決定 4「証跡の要否と件数」）。未指定は
+   * 0 件として扱う（現行の送信時生成〔`scheduler-tick.ts`〕は渡さない）。
+   */
+  taskEvidenceCount?: number;
 }
 
 /** 1通知あたりのコスト最小化のための小さめの max_tokens（明示的な仮定）。 */
@@ -209,6 +216,7 @@ export function buildNotificationLlmRequest(
 ): ClaudeMessageRequest {
   const system = buildPersonaPrompt(persona, {
     tasks: request.task ? [request.task] : [],
+    taskEvidenceCounts: request.task ? { [request.task.id]: request.taskEvidenceCount ?? 0 } : {},
     recentDecisions: [],
     now: request.now,
     purpose: "notification",

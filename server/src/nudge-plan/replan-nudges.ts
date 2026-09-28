@@ -7,6 +7,7 @@ import { listTodaysSessionTypes } from "../scheduler/todays-sessions.js";
 import { toNotificationHistory } from "../scheduler/notification-history.js";
 import { mapToNotificationRuleType, toEscalationLevel } from "../scheduler/rule-type-mapping.js";
 import { listTasks } from "../tasks/tasks-repository.js";
+import { countTaskEvidencesByTaskIds } from "../tasks/task-evidences-repository.js";
 import type { Task } from "../tasks/task.js";
 import { listEventsSince } from "../activity/activity-events-repository.js";
 import { listNotificationsSince } from "../notifications/notifications-repository.js";
@@ -157,6 +158,8 @@ interface PreparedNudge {
 interface PlanSnapshot {
   plan: ReturnType<typeof planNudges>;
   tasks: Task[];
+  /** 計画に現れるタスクの証跡の件数（B の LLM へ送る。決定 4） */
+  taskEvidenceCounts: Record<number, number>;
   bossSettings: BossSettings;
 }
 
@@ -208,7 +211,15 @@ async function readPlanSnapshot(db: DbPort, now: Date, maxCount: number): Promis
       settings,
       dailyValues,
     });
-    return { plan, tasks, bossSettings: resolveBossSettingsFrom(settingsSnapshot) };
+    const plannedTaskIds = [
+      ...new Set(plan.nudges.flatMap((nudge) => (nudge.taskId === null ? [] : [nudge.taskId]))),
+    ];
+    return {
+      plan,
+      tasks,
+      taskEvidenceCounts: await countTaskEvidencesByTaskIds(tx, plannedTaskIds),
+      bossSettings: resolveBossSettingsFrom(settingsSnapshot),
+    };
   });
 }
 
@@ -297,31 +308,72 @@ export function createNudgeReplanner(deps: NudgeReplannerDeps): NudgeReplanner {
     }
   }
 
-  /** 取り消し待ちの行に同じ予約があれば有効に戻し、無ければ新しく登録する */
+  /**
+   * 取り消し待ちの行に同じ予約があれば有効に戻し、無ければ新しく登録する。
+   * OS からは取り消せたが控えを消せなかった行（`canceledInOs`）は OS に予約が
+   * 無いため、控えの文面で登録し直してから有効に戻す（登録できなければ
+   * 「登録に失敗した予約」として控えから消す。決定 2）。
+   */
   async function placeReservation(
     reservation: NewReservation,
     pendingByKey: Map<string, NudgeReservationRow>,
+    canceledInOs: ReadonlySet<number>,
   ): Promise<void> {
     const pending = pendingByKey.get(reservation.reservationKey);
     if (pending) {
-      await setReservationState(db, pending.id, "active");
       pendingByKey.delete(reservation.reservationKey);
+      if (canceledInOs.has(pending.id)) {
+        try {
+          await port.register({
+            id: pending.id,
+            at: new Date(pending.scheduled_at),
+            title: DEFAULT_NOTIFICATION_TITLE,
+            body: pending.body,
+          });
+        } catch (err) {
+          await deleteReservation(db, pending.id);
+          console.error(
+            `nudge replan: failed to re-register a reservation (key=${reservation.reservationKey}):`,
+            describeError(err),
+          );
+          return;
+        }
+      }
+      await setReservationState(db, pending.id, "active");
       return;
     }
     await registerNew(reservation);
   }
 
-  async function cancelFuture(reservations: StoredReservation[]): Promise<void> {
+  /**
+   * 未来の予約を取り消す。返すのは、OS からは取り消せたが控えを消せなかった
+   * 行の ID（OS に予約が無いのに控えに残っている行。{@link placeReservation}
+   * が有効に戻すときに登録し直す）。
+   */
+  async function cancelFuture(reservations: StoredReservation[]): Promise<Set<number>> {
+    const canceledInOs = new Set<number>();
     for (const { row } of reservations) {
       try {
         await port.cancel(row.id);
-        await deleteReservation(db, row.id);
       } catch (err) {
         // 行を先に消すと、OS に残った古い催促を取り消す手がかりが無くなる（決定 2）
         await setReservationState(db, row.id, "pending_cancel");
         console.error(`nudge replan: failed to cancel a reservation (id=${row.id}):`, describeError(err));
+        continue;
+      }
+      try {
+        await deleteReservation(db, row.id);
+      } catch (err) {
+        // 取り消しは成功している。取り消し待ちとして扱うと、同じ予約を計画した
+        // ときに OS へ登録しないまま有効に戻してしまう（催促を失う）。
+        canceledInOs.add(row.id);
+        console.error(
+          `nudge replan: canceled a reservation but failed to remove it (id=${row.id}):`,
+          describeError(err),
+        );
       }
     }
+    return canceledInOs;
   }
 
   async function replanOnce(): Promise<PreparedNudge[] | null> {
@@ -336,13 +388,13 @@ export function createNudgeReplanner(deps: NudgeReplannerDeps): NudgeReplanner {
     );
 
     // 2. 未来の予約の取り消し（失敗した行は取り消し待ちとして残る）
-    await cancelFuture(reconciled.toCancel);
+    const canceledInOs = await cancelFuture(reconciled.toCancel);
     const pendingRows = (await listReservations(db)).map(({ row }) => row);
     const pendingByKey = new Map(pendingRows.map((row) => [row.reservation_key, row]));
 
     // 3. 計画（取り消し待ちも OS の枠を使うため、その件数だけ上限を減らす）
     const maxCount = Math.max(0, NUDGE_RESERVATION_LIMIT - pendingRows.length);
-    const { plan, tasks, bossSettings } = await readPlanSnapshot(db, now, maxCount);
+    const { plan, tasks, taskEvidenceCounts, bossSettings } = await readPlanSnapshot(db, now, maxCount);
     const taskById = new Map(tasks.map((task) => [task.id, task]));
     const messageSet = await findMessageSet(db, await messageSetPersonaKey(bossSettings.persona));
     await pruneIndividualBodies(db, now);
@@ -351,7 +403,10 @@ export function createNudgeReplanner(deps: NudgeReplannerDeps): NudgeReplanner {
     const prepared: PreparedNudge[] = [];
     for (const nudge of plan.nudges) {
       const task = nudge.taskId !== null ? (taskById.get(nudge.taskId) ?? null) : null;
-      const llmRequest = buildNotificationLlmRequest(bossSettings, toBodyRequest(nudge, task));
+      const llmRequest = buildNotificationLlmRequest(bossSettings, {
+        ...toBodyRequest(nudge, task),
+        taskEvidenceCount: task ? (taskEvidenceCounts[task.id] ?? 0) : 0,
+      });
       const item: PreparedNudge = {
         nudge,
         reservationKey: nudgeReservationKey(nudge, nudge.scheduledAt),
@@ -376,6 +431,7 @@ export function createNudgeReplanner(deps: NudgeReplannerDeps): NudgeReplanner {
           registeredAt: now.toISOString(),
         },
         pendingByKey,
+        canceledInOs,
       );
     }
 
@@ -403,6 +459,7 @@ export function createNudgeReplanner(deps: NudgeReplannerDeps): NudgeReplanner {
         registeredAt: now.toISOString(),
       },
       pendingByKey,
+      canceledInOs,
     );
 
     startEnrichment(prepared.slice(0, INDIVIDUAL_GENERATION_TARGETS), bossSettings);
@@ -437,12 +494,28 @@ export function createNudgeReplanner(deps: NudgeReplannerDeps): NudgeReplanner {
           return;
         }
       }
+      let registered = false;
       try {
         await port.register(request(body));
+        registered = true;
         await updateReservationBody(db, row.id, body, "individual");
         return;
       } catch (err) {
-        console.error(`nudge swap: failed to register the individual body (id=${row.id}):`, describeError(err));
+        const step = registered ? "record" : "register";
+        console.error(`nudge swap: failed to ${step} the individual body (id=${row.id}):`, describeError(err));
+      }
+      // 控えの文面は登録が成功した文面に合わせる（決定 4）。B の登録の後に控えの
+      // 更新だけが失敗したときは、OS の予約を控えの文面へ戻す。置き換えない
+      // 実装では B の予約が同じ ID で残っていると登録し直しが重複になるため、
+      // 先に B の予約を取り消す。取り消せなければ B の予約を残す（催促は失わ
+      // ない。控えの文面は B と食い違ったまま残る。仮定 A21）。
+      if (registered && !port.replacesSameId) {
+        try {
+          await port.cancel(row.id);
+        } catch (err) {
+          console.error(`nudge swap: failed to cancel the individual body (id=${row.id}):`, describeError(err));
+          return;
+        }
       }
       try {
         await port.register(request(row.body));

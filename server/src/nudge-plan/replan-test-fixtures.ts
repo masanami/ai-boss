@@ -126,6 +126,7 @@ export interface ReservationRowView {
   escalation_level: number | null;
   body: string;
   body_source: string;
+  content_key: string | null;
 }
 
 export function reservationRows(raw: RawConnection): ReservationRowView[] {
