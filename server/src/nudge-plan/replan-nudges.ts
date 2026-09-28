@@ -477,16 +477,16 @@ export function createNudgeReplanner(deps: NudgeReplannerDeps): NudgeReplanner {
   }
 
   async function enrichIndividual(prepared: PreparedNudge): Promise<void> {
-    const key = `individual:${prepared.contentKey}`;
-    if (inFlightKeys.has(key)) return;
     if (prepared.nudge.scheduledAt.getTime() - clock().getTime() < INDIVIDUAL_GENERATION_MIN_LEAD_MS) return;
-    if ((await findIndividualBody(db, prepared.contentKey)) !== undefined) return;
-
-    const client = tryCreateClient();
-    if (!client) return;
-
+    const key = `individual:${prepared.contentKey}`;
+    // 確かめてから確保するまでの間に await を挟まない（挟むと、並走する上乗せが
+    // 両方とも未確保を観測し、同じ予約の生成と試行の枠を二重に使う）。
+    if (inFlightKeys.has(key)) return;
     inFlightKeys.add(key);
     try {
+      if ((await findIndividualBody(db, prepared.contentKey)) !== undefined) return;
+      const client = tryCreateClient();
+      if (!client) return;
       if (!(await tryReserveGenerationAttempt(db, "individual", clock()))) return;
       let body: string | null;
       try {
@@ -506,14 +506,13 @@ export function createNudgeReplanner(deps: NudgeReplannerDeps): NudgeReplanner {
   async function enrichMessageSet(bossSettings: BossSettings): Promise<void> {
     const personaKey = await messageSetPersonaKey(bossSettings.persona);
     const key = `message_set:${personaKey}`;
+    // B と同じく、確かめてから確保するまでの間に await を挟まない
     if (inFlightKeys.has(key)) return;
-    if ((await findMessageSet(db, personaKey)) !== undefined) return;
-
-    const client = tryCreateClient();
-    if (!client) return;
-
     inFlightKeys.add(key);
     try {
+      if ((await findMessageSet(db, personaKey)) !== undefined) return;
+      const client = tryCreateClient();
+      if (!client) return;
       if (!(await tryReserveGenerationAttempt(db, "message_set", clock()))) return;
       let text: string;
       try {

@@ -976,6 +976,112 @@ describe("C（文面セット）", () => {
   });
 });
 
+describe("並走する上乗せ", () => {
+  /**
+   * 1 回目の上乗せが保存済みの文面を読んでいる途中（`table` を読む最初の
+   * `get` が結果を返す前）で止め、その間に 2 回目の計画し直しを走らせるための DB。止めるのは
+   * 固定の通知の登録（計画し直しの最後の書き込み）より後に来た 1 回だけ。
+   */
+  function gatedDb(h: Harness, table: string) {
+    let armed = false;
+    let release: (() => void) | undefined;
+    const db: DbPort = {
+      run: (sql, params) => h.db.run(sql, params),
+      all: (sql, params) => h.db.all(sql, params),
+      exec: (sql) => h.db.exec(sql),
+      transaction: (fn) => h.db.transaction(fn),
+      async get<T>(sql: string, params?: Parameters<DbPort["get"]>[1]): Promise<T | undefined> {
+        const row = await h.db.get<T>(sql, params);
+        if (armed && sql.includes(`FROM ${table}`)) {
+          // 読んだ結果（まだ無い）を返すのを止める＝参照が終わっていない状態
+          armed = false;
+          await new Promise<void>((resolve) => (release = resolve));
+        }
+        return row;
+      },
+    };
+    let armedOnce = false;
+    h.port.beforeRegister = async (request) => {
+      if (!armedOnce && request.body === REPORT_PROMPT_BODY) {
+        armedOnce = true;
+        armed = true;
+      }
+    };
+    return { db, released: () => release !== undefined, release: () => release!() };
+  }
+
+  function attemptCount(h: Harness, kind: "individual" | "message_set"): number {
+    return (
+      h.raw.prepare("SELECT COUNT(*) AS c FROM nudge_generation_attempts WHERE kind = ?").get(kind) as { c: number }
+    ).c;
+  }
+
+  /** B を生成した予約の時刻（重複があればそのまま並ぶ） */
+  function individualTargetTimes(): string[] {
+    return llmRequests()
+      .filter(isIndividualRequest)
+      .map((r) => /現在日時: \S+（.）(\d\d:\d\d)/.exec(String(r.system))?.[1] ?? "?");
+  }
+
+  /** マイクロタスクと crypto.subtle の完了を流しきる */
+  async function settle(): Promise<void> {
+    for (let i = 0; i < 20; i++) await new Promise((resolve) => setTimeout(resolve, 0));
+  }
+
+  it("generates B once and uses one attempt per reservation when a replan starts while the cache lookup is pending", async () => {
+    const h = await setup();
+    llmSucceeds();
+    const gate = gatedDb(h, "nudge_individual_bodies");
+    const replanner = createNudgeReplanner({ db: gate.db, env: {}, port: h.port, clock: () => h.clock.now });
+    await replanner.requestReplan();
+    await vi.waitFor(() => expect(gate.released()).toBe(true));
+
+    await replanner.requestReplan();
+    await settle();
+    gate.release();
+    await replanner.whenIdle();
+
+    // 2 回目は 10:00 が送信履歴へ確定し、対象は 10:15・10:25・10:35 になる
+    expect(individualTargetTimes().sort()).toEqual(["10:15", "10:25", "10:35"]);
+    expect(attemptCount(h, "individual")).toBe(3);
+  });
+
+  it("generates C once and uses one attempt when a replan starts while the cache lookup is pending", async () => {
+    const h = await setup();
+    llmSucceeds();
+    const gate = gatedDb(h, "nudge_message_sets");
+    const replanner = createNudgeReplanner({ db: gate.db, env: {}, port: h.port, clock: () => h.clock.now });
+    await replanner.requestReplan();
+    await vi.waitFor(() => expect(gate.released()).toBe(true));
+
+    await replanner.requestReplan();
+    await settle();
+    gate.release();
+    await replanner.whenIdle();
+
+    expect(llmRequests().filter((r) => !isIndividualRequest(r))).toHaveLength(1);
+    expect(attemptCount(h, "message_set")).toBe(1);
+  });
+
+  it("releases the claim when it stops before generating, so a later replan generates B and C", async () => {
+    const h = await setup();
+    llmSucceeds();
+    createClaudeClientMock.mockImplementation(() => {
+      throw new Error("not registered");
+    });
+    const replanner = replannerFor(h);
+    await replanner.requestReplan();
+    await replanner.whenIdle();
+    expect(llmRequests()).toHaveLength(0);
+
+    createClaudeClientMock.mockReturnValue({});
+    await replanner.requestReplan();
+    await replanner.whenIdle();
+    expect(individualTargetTimes().sort()).toEqual(["10:15", "10:25", "10:35"]);
+    expect(llmRequests().filter((r) => !isIndividualRequest(r))).toHaveLength(1);
+  });
+});
+
 describe("固定文へのフォールバックの内容", () => {
   it("uses buildFallbackBody for the rule and level", async () => {
     const h = await setup();
