@@ -54,6 +54,41 @@ export async function insertNotification(
 }
 
 /**
+ * `channel` の値: OS の予約通知として登録し、予約時刻を過ぎたことで確定した
+ * 行（機能仕様 docs/features/scheduled-nudges.md 決定 2）。OS が表示したかは
+ * アプリから分からないため `delivered` は NULL（不明）のまま。
+ */
+export const SCHEDULED_NOTIFICATION_CHANNEL = "scheduled";
+
+export interface ScheduledNotificationRecord extends NewNotificationRecord {
+  /** 予約時刻（ISO8601）。`sent_at` にそのまま書く */
+  sent_at: string;
+}
+
+/**
+ * 予約通知方式で予約時刻を過ぎた予約を、送信履歴として確定する（決定 2）。
+ * `sent_at` は予約時刻、`delivered` は NULL（不明）、`channel` は
+ * {@link SCHEDULED_NOTIFICATION_CHANNEL}。
+ */
+export async function insertScheduledNotification(
+  db: Db,
+  record: ScheduledNotificationRecord,
+): Promise<void> {
+  await db.run(
+    `INSERT INTO notifications (type, rule_key, escalation_level, body, sent_at, delivered, channel)
+       VALUES (?, ?, ?, ?, ?, NULL, ?)`,
+    [
+      record.type,
+      record.rule_key ?? null,
+      record.escalation_level ?? null,
+      record.body,
+      record.sent_at,
+      SCHEDULED_NOTIFICATION_CHANNEL,
+    ],
+  );
+}
+
+/**
  * Writes the delivery outcome of `sendNotification` back onto an already
  * recorded notification (#321). The record itself is inserted *before* the
  * send (Issue #221), so `delivered`/`channel` start out NULL ("unknown") and

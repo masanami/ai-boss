@@ -1,5 +1,5 @@
 import type { Db } from "../db/db-port.js";
-import { resolveBossSettings } from "../boss/boss-settings.js";
+import { resolveBossSettings, type BossSettings } from "../boss/boss-settings.js";
 import { buildPersonaPrompt } from "../boss/persona-prompt.js";
 import { resolveLlmBackend } from "../config.js";
 import { stripHtmlTags } from "../lib/strip-html-tags.js";
@@ -9,6 +9,7 @@ import {
   type BossLlmClient,
   type BossLlmMessage,
   type BossTextBlock,
+  type ClaudeMessageRequest,
 } from "../llm/claude-client.js";
 import type { Task } from "../tasks/task.js";
 import { toLocalDateTimeKey } from "../detection/time-utils.js";
@@ -52,14 +53,28 @@ export interface NotificationBodyRequest {
   task: Task | null;
   /** 現在時刻（プロンプトの時間帯ヒントに使う。呼び出し側が注入する） */
   now: Date;
+  /**
+   * 対象タスクに添付された証跡の件数（プロンプトのタスクの行に出る）。
+   * 予約方式の個別生成（B）は実件数を渡す（機能仕様
+   * docs/features/scheduled-nudges.md 決定 4「証跡の要否と件数」）。未指定は
+   * 0 件として扱う（現行の送信時生成〔`scheduler-tick.ts`〕は渡さない）。
+   */
+  taskEvidenceCount?: number;
 }
 
 /** 1通知あたりのコスト最小化のための小さめの max_tokens（明示的な仮定）。 */
 const NOTIFICATION_MAX_TOKENS = 150;
 
-const DEFAULT_TASK_TITLE = "対象のタスク";
+export const DEFAULT_TASK_TITLE = "対象のタスク";
 
-const RULE_TYPE_LABELS: Record<RuleType, string> = {
+/**
+ * 催促の通知の題名。人格設定によらない固定の題名（文面は人格設定が形作る。
+ * #38 の明示的な仮定）。毎分方式（`scheduler-tick.ts`）と予約方式
+ * （`nudge-plan/replan-nudges.ts`）が共有する。
+ */
+export const DEFAULT_NOTIFICATION_TITLE = "AIボス";
+
+export const RULE_TYPE_LABELS: Record<RuleType, string> = {
   todo_stall: "未着手",
   avoidance: "回避",
   break_overrun: "休憩延伸",
@@ -70,7 +85,7 @@ const RULE_TYPE_LABELS: Record<RuleType, string> = {
   commitment_missed: "約束の時刻を過ぎても未着手",
 };
 
-const ESCALATION_LEVEL_LABELS: Record<EscalationLevel, string> = {
+export const ESCALATION_LEVEL_LABELS: Record<EscalationLevel, string> = {
   1: "穏やかな声かけ",
   2: "念押し",
   3: "強い催促",
@@ -103,7 +118,8 @@ function buildUserInstruction(request: NotificationBodyRequest): string {
   ].join("\n");
 }
 
-function extractText(message: BossLlmMessage): string {
+/** LLM の応答のテキストのブロックをつなげて前後の空白を落とす */
+export function extractText(message: BossLlmMessage): string {
   return message.content
     .filter((block): block is BossTextBlock => block.type === "text")
     .map((block) => block.text)
@@ -187,6 +203,70 @@ export function buildFallbackBody(request: NotificationBodyRequest): string {
 }
 
 /**
+ * 催促の文面を生成する LLM への要求を組み立てる。送信時生成
+ * （{@link generateNotificationBody}）と、予約方式の個別生成（機能仕様
+ * docs/features/scheduled-nudges.md 決定 4 の B。「現在日時」に予約時刻を
+ * 渡す）が同じ組み立てを使う——B が LLM へ送る範囲を送信時生成と同じに
+ * 留めるため（説明文を含まない対象タスクの 1 行・約束の時刻は
+ * `commitment_missed` のみ）。
+ */
+export function buildNotificationLlmRequest(
+  { model, persona }: BossSettings,
+  request: NotificationBodyRequest,
+): ClaudeMessageRequest {
+  const system = buildPersonaPrompt(persona, {
+    tasks: request.task ? [request.task] : [],
+    taskEvidenceCounts: request.task ? { [request.task.id]: request.taskEvidenceCount ?? 0 } : {},
+    recentDecisions: [],
+    now: request.now,
+    purpose: "notification",
+    // 催促（締切超過・休憩延伸）はまさに「今」が要る（Issue #288）。
+    // 同じ purpose の boss-comment.ts とは逆の値になる — 出力可否を
+    // purpose から導いていないのはこのため。
+    includeCurrentDateTime: true,
+  });
+
+  return {
+    model,
+    system,
+    messages: [{ role: "user", content: buildUserInstruction(request) }],
+    maxTokens: NOTIFICATION_MAX_TOKENS,
+    // Issue #117: same rationale as boss-comment.ts — this route's small
+    // `maxTokens` (150) is sized for the notification body alone, so
+    // thinking must stay off. Set explicitly (matching the facade's
+    // default) so it's part of this route's own pinned contract rather
+    // than an implicit dependency on that default.
+    thinking: { type: "disabled" },
+  };
+}
+
+/**
+ * LLM の応答から通知文面を取り出す。文面にならない応答（テキストが無い・
+ * 正規化後に空白だけ）は `null`（呼び出し側がフォールバックへ落とす）。
+ */
+export function extractNotificationBody(message: BossLlmMessage): string | null {
+  const text = extractText(message);
+  if (text === "") {
+    return null;
+  }
+  // Issue #461（親 #446 S1）: docs/features/boss-reply-plain-text-output.md
+  // クリティカル設計決定「適用面」— LLM 由来のテキストに stripHtmlTags を
+  // 適用する。フォールバック定型文（buildFallbackBody）は LLM 由来ではない
+  // ため適用しない。
+  //
+  // 応答が許可リストのタグだけで構成される場合（例: `<p></p>`）、上の
+  // `text === ""` ガードはすり抜けるが正規化後は空白・改行しか残らない。
+  // 素通しすると空白だけの通知が配送されるため、**正規化後にも**空判定を
+  // 行いフォールバックへ落とす（上の空応答ガードと同じ意図を、正規化を
+  // 挟んだ後でも保つ）。
+  const normalized = stripHtmlTags(text);
+  if (normalized.trim() === "") {
+    return null;
+  }
+  return normalized;
+}
+
+/**
  * 通知文面を生成する。Claude API が使えない・失敗した場合も必ず文字列を返す
  * （フォールバック定型文）。
  */
@@ -200,50 +280,11 @@ export async function generateNotificationBody(
   // （resolveBossSettings は db.prepare を呼ぶため DB 例外もここで保護する）。
   try {
     const client: BossLlmClient = createClaudeClient(env, resolveLlmBackend(env));
-    const { model, persona } = await resolveBossSettings(db);
-    const system = buildPersonaPrompt(persona, {
-      tasks: request.task ? [request.task] : [],
-      recentDecisions: [],
-      now: request.now,
-      purpose: "notification",
-      // 催促（締切超過・休憩延伸）はまさに「今」が要る（Issue #288）。
-      // 同じ purpose の boss-comment.ts とは逆の値になる — 出力可否を
-      // purpose から導いていないのはこのため。
-      includeCurrentDateTime: true,
-    });
-
-    const message = await streamBossMessage(client, {
-      model,
-      system,
-      messages: [{ role: "user", content: buildUserInstruction(request) }],
-      maxTokens: NOTIFICATION_MAX_TOKENS,
-      // Issue #117: same rationale as boss-comment.ts — this route's small
-      // `maxTokens` (150) is sized for the notification body alone, so
-      // thinking must stay off. Set explicitly (matching the facade's
-      // default) so it's part of this route's own pinned contract rather
-      // than an implicit dependency on that default.
-      thinking: { type: "disabled" },
-    });
-
-    const text = extractText(message);
-    if (text === "") {
-      return buildFallbackBody(request);
-    }
-    // Issue #461（親 #446 S1）: docs/features/boss-reply-plain-text-output.md
-    // クリティカル設計決定「適用面」— LLM 由来のテキストに stripHtmlTags を
-    // 適用する。フォールバック定型文（buildFallbackBody）は LLM 由来ではない
-    // ため適用しない。
-    //
-    // 応答が許可リストのタグだけで構成される場合（例: `<p></p>`）、上の
-    // `text === ""` ガードはすり抜けるが正規化後は空白・改行しか残らない。
-    // 素通しすると空白だけの通知が配送されるため、**正規化後にも**空判定を
-    // 行いフォールバックへ落とす（上の空応答ガードと同じ意図を、正規化を
-    // 挟んだ後でも保つ）。
-    const normalized = stripHtmlTags(text);
-    if (normalized.trim() === "") {
-      return buildFallbackBody(request);
-    }
-    return normalized;
+    const message = await streamBossMessage(
+      client,
+      buildNotificationLlmRequest(await resolveBossSettings(db), request),
+    );
+    return extractNotificationBody(message) ?? buildFallbackBody(request);
   } catch (err) {
     // Claude API errors may embed request internals in `message` — only log
     // the error's class name (same convention as chat-messages-route.ts).

@@ -37,6 +37,7 @@ import {
 import { validateChatMessageInput } from "./sessions-validation.js";
 import type { Message } from "./message.js";
 import type { SessionType } from "./session.js";
+import { deferStateChangeNotice } from "../state-change-notice.js";
 
 /** Sanitized message surfaced to the client; never includes raw error details
  * (which may contain request internals) per the critical API-key/error
@@ -443,6 +444,16 @@ export function registerChatMessageRoute(
     // apart from a genuine failure.
     const requestSignal = c.req.raw.signal;
 
+    // #585 S2: ボスのツールはこのストリームの中で状態を変えるため、計画し直しの
+    // 契機（`createCoreApp` の `onStateChangingRequest`）にはストリームの後始末が
+    // 終わったことを伝える（state-change-notice.ts）。生成を止められたとき、
+    // 中断メッセージの保存と、止められた時点で実行中だったツールの完了
+    // （claude-code バックエンドでは生成の中止がツールの完了を待たない）の後に
+    // 解決する。
+    let finishStateChanges!: () => void;
+    deferStateChangeNotice(c.req.raw, new Promise<void>((resolve) => (finishStateChanges = resolve)));
+    const runningTools = new Set<Promise<unknown>>();
+
     return streamSSE(c, async (stream) => {
       let fullText = "";
       // Issue #462（親 #446 S1）: 正規化済みテキストのうち、既に `text` イベント
@@ -486,8 +497,11 @@ export function registerChatMessageRoute(
 
         // Issue #469（親 #444 決定5）: 対象タスクを record_mentoring の
         // task_id 補完へ結線する。
-        const executeTool: BossToolExecutor = (name, input) =>
-          executeBossTool(db, id, name, input, mentoringTaskIdForTurn);
+        const executeTool: BossToolExecutor = (name, input) => {
+          const running = executeBossTool(db, id, name, input, mentoringTaskIdForTurn);
+          runningTools.add(running);
+          return running;
+        };
 
         // The tool loop (MAX_TOOL_ROUNDS · execute · continue) now lives
         // inside streamBossMessage (Issue #78, "ツール実行主体の一本化").
@@ -660,6 +674,9 @@ export function registerChatMessageRoute(
             data: JSON.stringify({ error: GENERIC_STREAM_ERROR_MESSAGE }),
           });
         }
+      } finally {
+        await Promise.allSettled(runningTools);
+        finishStateChanges();
       }
     });
   });

@@ -70,7 +70,7 @@ function nextMinuteBoundary(after: Date): Date {
  * 刻みを進める前に、暦日ごとの入力（`dailyValues`）の過不足を検証するために使う
  * （「計算前に例外を投げる」機能仕様 仮定 A4）。
  */
-function enumerateDateKeysInRange(start: Date, endExclusive: Date): string[] {
+export function enumerateDateKeysInRange(start: Date, endExclusive: Date): string[] {
   if (endExclusive <= start) return [];
   const keys: string[] = [];
   let cursor = new Date(start.getFullYear(), start.getMonth(), start.getDate());

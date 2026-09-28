@@ -15,6 +15,7 @@ import {
 import {
   generateNotificationBody,
   buildFallbackBody,
+  DEFAULT_NOTIFICATION_TITLE,
   type NotificationBodyRequest,
 } from "../notifications/notification-body.js";
 import { sendNotification, type ExecFileFn } from "../notifications/notifier.js";
@@ -36,8 +37,6 @@ import { resolveEffectiveMeetingTimes } from "../meeting-schedule/meeting-schedu
  * concern.
  */
 const EPOCH_ISO = "1970-01-01T00:00:00.000Z";
-
-const DEFAULT_NOTIFICATION_TITLE = "AIボス";
 
 export interface TickDeps {
   db: Db;
