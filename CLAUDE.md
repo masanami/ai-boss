@@ -32,7 +32,8 @@ AI が「上司（ボス）」を演じるセルフマネジメント支援ア�
 | DB | SQLite（better-sqlite3、完全ローカル保存） |
 | LLM | 既定: Claude Code（`@anthropic-ai/claude-agent-sdk`、サブスクリプション認証・`ANTHROPIC_API_KEY` 不要）。`LLM_BACKEND=api` で Claude API（`@anthropic-ai/sdk`、従量課金）へ切替可（既定モデル claude-sonnet-5・設定で変更可、両バックエンド共通） |
 | Native（製品版の通信層） | Rust（`native/secure-transport/`。BYOK キーのキーチェーン保管とキーを付与する HTTP 転送。Tauri 非依存のライブラリ） |
-| Test | Vitest（unit / integration）、Rust は `cargo test`（`npm run test:rust`） |
+| Native（製品版の器） | Tauri 2（macOS。`native/tauri-app/`。WebView 内で `server/src/core-app.ts` の Hono アプリを動かす。DB・LLM・通知は S2 では未配線。機能仕様 `docs/features/tauri-in-app-runtime.md`） |
+| Test | Vitest（unit / integration）、Rust は `cargo test`（`npm run test:rust`・`npm run test:tauri`） |
 | Infra | macOS ローカル実行のみ。通知は terminal-notifier 優先 / osascript フォールバック |
 | Package | npm（workspaces: `server/` + `web/`） |
 
@@ -100,7 +101,7 @@ AI が「上司（ボス）」を演じるセルフマネジメント支援ア�
 ## 品質方針
 
 ```text
-- 必須ゲート: lint / typecheck / test / test:rust の全通過（/quality-check が機械可読で pass を返すこと）。`npm test` は `cargo` を呼ばない（Rust のツールチェーンが無くても動く）ため、`npm run test:rust` は別に実行する
+- 必須ゲート: lint / typecheck / test / test:rust / test:tauri の全通過（/quality-check が機械可読で pass を返すこと）。`npm test` は `cargo` を呼ばない（Rust のツールチェーンが無くても動く）ため、`npm run test:rust`・`npm run test:tauri` は別に実行する。`test:tauri` は `native/tauri-app/`（Tauri 2 の器。機能仕様 docs/features/tauri-in-app-runtime.md S2）の `cargo test` で、実行前に製品版の web（`web/dist-app/`）のビルドを要する（`pretest:tauri` が自動で行う）
 - クリティカル箇所（変更時は人間レビュー必須）: Claude API 連携・DB スキーマ・API キーの取り扱い・通知の実行系
 - サボり検知の閾値・エスカレーションはユニットテストが仕様の正本（[ADR 0004](docs/adr/0004-deterministic-detection-engine.md)）。閾値を変える PR はテストを同時に変える
 ```
@@ -131,6 +132,15 @@ npm run test:rust
 # 実キーチェーンの結合テスト（手動。native/secure-transport/README.md）
 npm run test:rust:keychain
 
+# Tauri の器（native/tauri-app/）のテスト（必須ゲート。web/dist-app/ のビルドを自動で先に行う）
+npm run test:tauri
+
 # ビルド
 npm run build
+
+# 製品版（Tauri アプリ・macOS）の .app をビルド（未署名。手動確認手順は機能仕様参照）
+npm run build:tauri
+
+# 生成された .app に node / node_modules が含まれないことを検査（build:tauri の後）
+npm run verify:tauri-bundle
 ```
