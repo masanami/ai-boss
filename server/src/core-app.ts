@@ -12,6 +12,7 @@ import { createSettingsRouter } from "./settings/settings-routes.js";
 import { createMeetingScheduleRouter } from "./meeting-schedule/meeting-schedule-routes.js";
 import { resolveLlmBackend, type LlmBackend, type AppEnv } from "./config.js";
 import type { EvidenceStore } from "./tasks/evidence-store.js";
+import { takeDeferredStateChange } from "./state-change-notice.js";
 
 /**
  * `server/src` を「実行環境に依存しないコア」と「Node の周辺」に分ける
@@ -98,8 +99,9 @@ export interface CreateCoreAppOptions {
    * 催促の予約を計画し直す契機（機能仕様 docs/features/scheduled-nudges.md
    * 「S2 の設計」: 状態を変える API 要求〔`/api` の GET 以外〕の後）。
    * 指定すると、`/api` の GET・HEAD・OPTIONS 以外の要求の応答の後に呼ぶ
-   * （応答を待たせない・例外を応答へ漏らさない）。SSE の応答はストリームが
-   * 終わったときにもう 1 回呼ぶ。開発者用の版（`app.ts`）は渡さない——毎分方式の
+   * （応答を待たせない・例外を応答へ漏らさない）。SSE の応答は、ルートが
+   * 預けたストリームの後始末（`deferStateChangeNotice`）が終わったときに
+   * もう 1 回呼ぶ。開発者用の版（`app.ts`）は渡さない——毎分方式の
    * まま（決定 5）。製品版の器（S3）が計画し直しの入口
    * （`createNudgeReplanner` の `requestReplan`）を渡す。
    */
@@ -146,13 +148,12 @@ export function createCoreApp(
       };
       notify();
       // SSE（チャット）はボスのツールによる状態の変更が応答を返した後の
-      // ストリームの中で起きるため、ストリームが終わったとき（利用者が生成を
-      // 止めて接続を切ったときを含む）にもう 1 回呼ぶ。
-      if (c.res.headers.get("Content-Type")?.startsWith("text/event-stream") && c.res.body) {
-        c.res = new Response(
-          c.res.body.pipeThrough(new TransformStream({ flush: notify, cancel: notify })),
-          c.res,
-        );
+      // ストリームの中で起きるため、ルートが預けた後始末（利用者が生成を
+      // 止めたときの中断メッセージの保存・実行中のツールの完了を含む）が
+      // 終わったときにもう 1 回呼ぶ（state-change-notice.ts）。
+      const deferred = takeDeferredStateChange(c.req.raw);
+      if (deferred) {
+        void deferred.then(notify, notify);
       }
     });
   }
