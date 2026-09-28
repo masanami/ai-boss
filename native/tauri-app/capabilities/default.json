@@ -1,0 +1,6 @@
+{
+  "identifier": "default",
+  "description": "#580 S2: 製品版の DB（起動時に Rust 側が preload で開く ai-boss.db）に要る最小の権限。load・close は許可しない（docs/features/async-db-layer.md「S2 の設計」）",
+  "windows": ["main"],
+  "permissions": ["sql:allow-execute", "sql:allow-select"]
+}

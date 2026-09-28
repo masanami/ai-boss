@@ -23,7 +23,9 @@
     "test:rust": "cargo test --manifest-path native/secure-transport/Cargo.toml",
     "test:rust:keychain": "cargo test --manifest-path native/secure-transport/Cargo.toml --lib -- --ignored --test-threads=1",
     "pretest:tauri": "npm run build:app --workspace web",
-    "test:tauri": "cargo test --manifest-path native/tauri-app/Cargo.toml",
+    "test:tauri": "cargo test --manifest-path native/tauri-app/Cargo.toml && cargo test --manifest-path native/tauri-plugin-sql/Cargo.toml --features sqlite",
+    "pretest:tauri-db": "npm run build:app --workspace web && cargo build --manifest-path native/tauri-app/Cargo.toml --example sql-ipc-bridge",
+    "test:tauri-db": "npm run test:tauri-db --workspace web",
     "build": "npm run build --workspaces --if-present",
     "build:tauri": "cd native/tauri-app && npx @tauri-apps/cli build --bundles app",
     "verify:tauri-bundle": "node scripts/verify-tauri-bundle.mjs"

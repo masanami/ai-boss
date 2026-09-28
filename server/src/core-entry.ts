@@ -17,6 +17,19 @@
  * （受入基準1〜7・12）と TypeScript コンパイラ API による静的検査で固定する。
  */
 export { createCoreApp, type CreateCoreAppOptions } from "./core-app.js";
+
+/**
+ * 非同期の DB ポートの直列化層とマイグレーション（#580 S2・機能仕様
+ * docs/features/async-db-layer.md「S2 の設計」）。製品版の web のエントリが、
+ * plugin-sql 実装のドライバ（`web/src/app-entry/plugin-sql-driver.ts`）の上に
+ * S1 と同じ直列化層でポートを組み、`migrate.ts`（`user_version`）で
+ * マイグレーションしてから `createCoreApp` に渡す。どちらも import を持たない
+ * コア（`node:*`・better-sqlite3 に依存しない）で、このモジュールの公開面に
+ * 置くことで `core-entry.bundle.test.ts` のバンドル検査の対象になる。
+ */
+export { createSerializedDb } from "./db/serialized-db.js";
+export { runMigrations } from "./db/migrate.js";
+export type { DbDriver, DbPort, RunResult, SqlValue } from "./db/db-port.js";
 export { registeredLlmBackendNames as registeredCoreLlmBackendNames } from "./llm/llm-backend-registry.js";
 
 /**

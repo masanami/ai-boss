@@ -6,13 +6,15 @@
   "scripts": {
     "dev": "vite",
     "lint": "cd .. && eslint web",
-    "typecheck": "tsc --noEmit",
+    "typecheck": "tsc --noEmit && tsc --noEmit -p tsconfig.tauri-db.json",
     "test": "vitest run",
     "test:tz": "TZ=America/New_York vitest run",
     "build": "tsc --noEmit && vite build",
-    "build:app": "tsc --noEmit && vite build --config vite.app.config.ts"
+    "build:app": "tsc --noEmit && vite build --config vite.app.config.ts",
+    "test:tauri-db": "vitest run --config vitest.tauri-db.config.ts"
   },
   "dependencies": {
+    "@tauri-apps/plugin-sql": "~2.4.1",
     "react": "^18.3.1",
     "react-dom": "^18.3.1"
   },

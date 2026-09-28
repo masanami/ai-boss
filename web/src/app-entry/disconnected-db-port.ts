@@ -1,19 +1,19 @@
 import type { Db, DbPort, RunResult } from "../../../server/src/db/db-port.js";
 
 /**
- * S2 の製品版のエントリが `createCoreApp` に渡す DB ポート（機能仕様
- * docs/features/tauri-in-app-runtime.md クリティカル設計決定4・S2「DB 未接続の
- * 間の振る舞い」）。
+ * 製品版の DB を準備できなかったときに `createCoreApp` に渡す DB ポート
+ * （#579 S2 で「DB 未接続の間」の DB として入り、#580 S2 で製品版の DB
+ * 〔plugin-sql〕の準備に失敗したときのフォールバックになった。
+ * `boot-product-app.ts`・機能仕様 docs/features/async-db-layer.md 仮定 A7）。
  *
- * #580 の S2（plugin-sql の実装）が済むまで、Tauri アプリは DB に接続しない
- * — このポートはすべての操作を「DB 未接続」のエラーで拒否し、SQL を一切
+ * このポートはすべての操作を「DB 未接続」のエラーで拒否し、SQL を一切
  * 実行しない。`transaction` は渡された関数 `fn` を**呼ばずに**拒否する
  * （`fn` の中の DB 操作もすべて拒否される必要が無い設計であることの確認 —
  * `fn` 自体が呼ばれないので、その中の判定・書き込みは実行されない）。
  */
 export class DbNotConnectedError extends Error {
   constructor() {
-    super("DB未接続です（製品版のTauriアプリはS2の時点でDBに接続しません）");
+    super("DB未接続です（製品版のDBを準備できませんでした）");
     this.name = "DbNotConnectedError";
   }
 }

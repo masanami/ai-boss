@@ -102,13 +102,34 @@ fn build_main_window<R: Runtime, M: tauri::Manager<R>>(
 
 /// アプリのエントリポイント（`main.rs` の `app_lib::run()`）。
 pub fn run() {
-    tauri::Builder::default()
+    configure(tauri::Builder::default())
+        .run(context())
+        .expect("error while running tauri application");
+}
+
+/// `tauri.conf.json`・capability（ACL）・アセットを埋め込んだコンテキスト。
+/// 結合テストと IPC の中継も製品版と同じものを使えるよう、ここで 1 度だけ
+/// 生成する（`generate_context!` を別のターゲットでも展開すると、埋め込みの
+/// Info.plist のシンボルがリンク時に重複する）。
+pub fn context<R: Runtime>() -> tauri::Context<R> {
+    tauri::generate_context!()
+}
+
+/// 器の組み立て（プラグインの登録とメインウィンドウ）。`run` と、MockRuntime
+/// の上で同じ器を組む結合テスト（`tests/sql_plugin.rs`）・IPC の中継
+/// （`examples/sql-ipc-bridge.rs`）が共有する（#580 S2。機能仕様
+/// docs/features/async-db-layer.md「契約テストを器の上で通す仕組み」）。
+///
+/// plugin-sql（リポジトリ内 fork。接続 1 本）は `tauri.conf.json` の
+/// `plugins.sql.preload` の DB を起動時に開く。WebView には `load` を許可
+/// しない（`capabilities/default.json`）。
+pub fn configure<R: Runtime>(builder: tauri::Builder<R>) -> tauri::Builder<R> {
+    builder
+        .plugin(tauri_plugin_sql::Builder::new().build())
         .setup(|app| {
             build_main_window(app)?;
             Ok(())
         })
-        .run(tauri::generate_context!())
-        .expect("error while running tauri application");
 }
 
 #[cfg(test)]
