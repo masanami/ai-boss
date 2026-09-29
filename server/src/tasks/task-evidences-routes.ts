@@ -233,7 +233,7 @@ export function createTaskEvidencesRouter(db: Db, evidenceStore?: EvidenceStore)
     // kind === "file" evidences always have stored_filename/mime_type set
     // (task-evidences-repository.ts's insert contract).
     const mimeType = evidence.mime_type as string;
-    const data = evidenceStore.read(evidence.stored_filename as string);
+    const data = await evidenceStore.read(evidence.stored_filename as string);
     if (!data) {
       return respondEvidenceNotFound(c, evidenceId);
     }
@@ -301,7 +301,7 @@ export function createTaskEvidencesRouter(db: Db, evidenceStore?: EvidenceStore)
       }
     }
 
-    removeEvidenceFile(evidenceStore ?? UNAVAILABLE_EVIDENCE_STORE, outcome.evidence);
+    await removeEvidenceFile(evidenceStore ?? UNAVAILABLE_EVIDENCE_STORE, outcome.evidence);
     return c.body(null, 204);
   });
 

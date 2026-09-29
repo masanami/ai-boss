@@ -26,6 +26,10 @@ tauri-plugin-sql = { path = "../tauri-plugin-sql", features = ["sqlite"] }
 # `tauri.conf.json` に `plugins`（plugin-sql の preload）を置くと、
 # `generate_context!` の展開が `serde_json` をクレートの依存として参照する。
 serde_json = "1"
+# #579 S4（docs/features/tauri-in-app-runtime.md「S4 の設計」・仮定 A9）: 証跡ファイルの
+# 保存。fork せず上流のまま使う。権限は `capabilities/default.json` で保存先の直下
+# （`$APPCONFIG/evidence/*`）に限った 4 つだけを足す。
+tauri-plugin-fs = "~2.6"
 
 [dev-dependencies]
 # #580 S2: 結合テスト（tests/sql_plugin.rs）と IPC の中継（examples/
@@ -33,5 +37,7 @@ serde_json = "1"
 # dev-dependencies でだけ有効にする（製品のバイナリには入らない。仮定 A8）。
 tauri = { version = "2.12", features = ["test"] }
 tempfile = "3"
+# #579 S4: IPC の中継（examples/sql-ipc-bridge.rs）が raw の本文・応答を JSON の行に載せる。
+base64 = "0.22"
 # 設定の検査テスト（tauri.conf.json・capabilities/・Cargo.toml の読み込み）用。
 toml = "0.8"

@@ -14,6 +14,7 @@
     "test:tauri-db": "vitest run --config vitest.tauri-db.config.ts"
   },
   "dependencies": {
+    "@tauri-apps/plugin-fs": "~2.6.0",
     "@tauri-apps/plugin-sql": "~2.4.1",
     "react": "^18.3.1",
     "react-dom": "^18.3.1"

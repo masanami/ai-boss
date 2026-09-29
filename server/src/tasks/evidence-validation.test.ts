@@ -4,9 +4,14 @@ import {
   isAllowedEvidenceUrlScheme,
   isEvidenceCountUnderLimit,
   isEvidenceFileSizeAllowed,
+  isValidStoredEvidenceFilename,
   resolveEvidenceMimeType,
 } from "./evidence-validation.js";
-import { MAX_EVIDENCES_PER_TASK, MAX_EVIDENCE_FILE_BYTES } from "./task-evidence.js";
+import {
+  ALLOWED_EVIDENCE_EXTENSIONS,
+  MAX_EVIDENCES_PER_TASK,
+  MAX_EVIDENCE_FILE_BYTES,
+} from "./task-evidence.js";
 
 describe("isAllowedEvidenceExtension", () => {
   it("allows a whitelisted extension", () => {
@@ -110,5 +115,50 @@ describe("isAllowedEvidenceUrlScheme", () => {
 
   it("rejects a malformed URL string without throwing", () => {
     expect(isAllowedEvidenceUrlScheme("not a url")).toBe(false);
+  });
+});
+
+describe("isValidStoredEvidenceFilename (#579 S4: 製品版の保存名の形の検査)", () => {
+  const UUID = "0b8f3c1e-52a4-4f7d-9d3e-1a2b3c4d5e6f";
+
+  it.each(ALLOWED_EVIDENCE_EXTENSIONS)(
+    "accepts <lowercase UUID>%s for every whitelisted extension",
+    (extension) => {
+      expect(isValidStoredEvidenceFilename(`${UUID}${extension}`)).toBe(true);
+    },
+  );
+
+  it.each([
+    ["path traversal", "../x.png"],
+    ["absolute path", "/etc/hosts"],
+    ["nested path", "a/b.png"],
+    ["backslash", "a\\b.png"],
+    ["uppercase extension", `${UUID}.PNG`],
+    ["uppercase UUID", `${UUID.toUpperCase()}.png`],
+    ["non-whitelisted extension", `${UUID}.exe`],
+    ["no extension", UUID],
+    ["empty", ""],
+    ["extension only", ".png"],
+    ["UUID too short", `${UUID.slice(1)}.png`],
+    ["UUID too long", `0${UUID}.png`],
+    ["non-hex UUID", `${UUID.replace("0b8f", "zzzz")}.png`],
+    ["trailing newline", `${UUID}.png\n`],
+    ["trailing dot segment", `${UUID}.png.`],
+    ["double extension", `${UUID}.png.png`],
+    ["dotfile prefix", `.${UUID}.png`],
+    ["prototype key as extension", `${UUID}.constructor`],
+    ["prototype key without dot", `${UUID}constructor`],
+    ["leading space", ` ${UUID}.png`],
+  ])("rejects %s", (_label, name) => {
+    expect(isValidStoredEvidenceFilename(name)).toBe(false);
+  });
+
+  it.each([0, 1, 2, 3, 4])("rejects a UUID with only group %i in uppercase (the form must be entirely lowercase)", (index) => {
+    const groups = UUID.split("-");
+    groups[index] = groups[index]!.toUpperCase();
+    // 大文字にして変わる文字が無い（数字だけの）グループでは、このテストは意味を持たない。
+    expect(groups[index]).not.toBe(UUID.split("-")[index]);
+
+    expect(isValidStoredEvidenceFilename(`${groups.join("-")}.png`)).toBe(false);
   });
 });

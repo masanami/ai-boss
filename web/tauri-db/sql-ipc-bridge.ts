@@ -10,6 +10,11 @@ import { fileURLToPath } from "node:url";
  * 起動し、IPC の要求を送る（#580 S2・機能仕様 docs/features/async-db-layer.md
  * 「契約テストを器の上で通す仕組み」）。テスト専用。
  *
+ * #579 S4（仮定 A14）: 名前は変えずに、raw の本文（plugin-fs の `writeFile`）・
+ * ヘッダ・raw の応答（`readFile`）の受け渡しを足した。本文が `Uint8Array` なら
+ * base64 で `raw` に載せ、応答が `raw` なら `ArrayBuffer` で返す（実際の
+ * `__TAURI_INTERNALS__.invoke` と同じ）。
+ *
  * 中継は起動のたびに新しい一時ディレクトリを `HOME` にして器を組むため、
  * 起動ごとに空の DB（アプリのデータディレクトリの `ai-boss.db`）で始まり、
  * 利用者のアプリのデータディレクトリには触れない。中継のバイナリは
@@ -23,16 +28,25 @@ const BRIDGE_BINARY = fileURLToPath(
 /** `close()` が中継の終了を待つ上限。過ぎたら強制終了する。 */
 const CLOSE_TIMEOUT_MS = 5_000;
 
+/** `invoke` の第 3 引数のうち、中継が運ぶもの（`writeFile` は `path`・`options` をヘッダで送る） */
+export interface SqlIpcInvokeOptions {
+  headers?: Record<string, string>;
+}
+
 export interface SqlIpcBridge {
-  /** IPC の要求を送り、戻り値（エラーなら拒否）を返す */
-  invoke(cmd: string, args: unknown): Promise<unknown>;
+  /** IPC の要求を送り、戻り値（エラーなら拒否）を返す。raw の応答は `ArrayBuffer` */
+  invoke(cmd: string, args: unknown, options?: SqlIpcInvokeOptions): Promise<unknown>;
   /** 中継の `HOME`（一時ディレクトリ） */
   home: string;
   /** 中継を終わらせ、一時ディレクトリを消す */
   close(): Promise<void>;
 }
 
-type BridgeMessage = { ready: true } | { id: number; ok: unknown } | { id: number; err: unknown };
+type BridgeMessage =
+  | { ready: true }
+  | { id: number; ok: unknown }
+  | { id: number; raw: string }
+  | { id: number; err: unknown };
 
 export async function startSqlIpcBridge(): Promise<SqlIpcBridge> {
   if (!existsSync(BRIDGE_BINARY)) {
@@ -84,6 +98,9 @@ export async function startSqlIpcBridge(): Promise<SqlIpcBridge> {
       pending.delete(message.id);
       if ("ok" in message) {
         entry?.resolve(message.ok);
+      } else if ("raw" in message) {
+        const bytes = Buffer.from(message.raw, "base64");
+        entry?.resolve(bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength));
       } else {
         entry?.reject(message.err);
       }
@@ -114,16 +131,48 @@ export async function startSqlIpcBridge(): Promise<SqlIpcBridge> {
 
   return {
     home,
-    invoke(cmd, args) {
+    invoke(cmd, args, options) {
       if (stopped) {
         return Promise.reject(stopped);
       }
       const id = nextId++;
+      // 本文が バイト列なら raw で、そうでなければ JSON の引数で送る。
+      const body =
+        args instanceof ArrayBuffer || ArrayBuffer.isView(args)
+          ? { raw: Buffer.from(args instanceof ArrayBuffer ? args : args.buffer.slice(args.byteOffset, args.byteOffset + args.byteLength)).toString("base64") }
+          : { args };
       return new Promise((resolve, reject) => {
         pending.set(id, { resolve, reject });
-        child.stdin.write(`${JSON.stringify({ id, cmd, args })}\n`);
+        child.stdin.write(`${JSON.stringify({ id, cmd, ...body, headers: options?.headers })}\n`);
       });
     },
     close,
+  };
+}
+
+/**
+ * `window.__TAURI_INTERNALS__.invoke` を中継へ差し替える（`@tauri-apps/api/mocks`
+ * の `mockIPC` は `invoke` の第 3 引数〔ヘッダ〕を捨てるため、`writeFile` は
+ * 通せない）。JS のプラグイン（`@tauri-apps/plugin-fs` ほか）は本物のまま動き、
+ * 置き換わるのは WebView と Rust の間の転送だけ。流れた要求の記録を返す。
+ * node の環境では `window` が無いので、グローバルを `window` として見せる。
+ */
+export function installBridgeInternals(
+  bridge: SqlIpcBridge,
+  stubGlobal: (name: string, value: unknown) => void,
+): { commands: { cmd: string; args: unknown }[]; uninstall(): void } {
+  const commands: { cmd: string; args: unknown }[] = [];
+  stubGlobal("window", globalThis);
+  (globalThis as { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__ = {
+    invoke: (cmd: string, args: unknown, options?: SqlIpcInvokeOptions) => {
+      commands.push({ cmd, args });
+      return bridge.invoke(cmd, args ?? {}, options);
+    },
+  };
+  return {
+    commands,
+    uninstall() {
+      delete (globalThis as { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__;
+    },
   };
 }
