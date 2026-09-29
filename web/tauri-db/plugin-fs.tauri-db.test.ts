@@ -1,5 +1,5 @@
 // @vitest-environment node
-import { existsSync, readFileSync, readdirSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { describeEvidenceStoreContract, newStoredFilename } from "../../server/src/tasks/test-support/evidence-store-contract.js";
@@ -90,6 +90,23 @@ describe("製品版の証跡の保存（plugin-fs 実装・器の IPC の中継�
       Promise.resolve().then(() => createPluginFsEvidenceStore().write(newStoredFilename(), new Uint8Array([1]))),
     ).rejects.toBeDefined();
   });
+
+  // `read`・`remove` は先に `exists` を呼ぶため、`exists` は true になり本体の IPC だけが
+  // 失敗する状態を作る: 保存名の位置に中身のあるディレクトリを置く（`read_file` は
+  // ディレクトリを読めず、再帰でない `remove` は中身のあるディレクトリを消せない）。
+  it.each([
+    ["read", "plugin:fs|read_file", (name: string) => createPluginFsEvidenceStore().read(name)],
+    ["remove", "plugin:fs|remove", (name: string) => createPluginFsEvidenceStore().remove(name)],
+  ])("形の検査を通った保存名での %s の本体の IPC（%s）の失敗は握りつぶさず伝える (A12)", async (_name, failingCmd, run) => {
+    const storedFilename = newStoredFilename();
+    const blocker = join(connection.evidenceDir, storedFilename);
+    mkdirSync(blocker);
+    writeFileSync(join(blocker, "keep"), "x");
+
+    await expect(Promise.resolve().then(() => run(storedFilename))).rejects.toBeDefined();
+    expect(connection.commands.map((c) => c.cmd)).toEqual(["plugin:fs|exists", failingCmd]);
+    expect(existsSync(join(blocker, "keep"))).toBe(true);
+  });
 });
 
 describe("製品版のエントリ（plugin-sql ＋ plugin-fs 実装・器の IPC の中継）", () => {
@@ -160,6 +177,8 @@ describe("製品版のエントリ（plugin-sql ＋ plugin-fs 実装・器の IP
       [taskId, "../ai-boss.db", "2026-09-29T00:00:00.000Z"],
     );
     const row = (await db.select<{ id: number }[]>("SELECT id FROM task_evidences WHERE stored_filename = ?", ["../ai-boss.db"]))[0];
+    // 行が取れていないと `/evidences/undefined/content` になり、保存名の検査に届かないまま 404 で通る。
+    expect(row).toBeDefined();
 
     const content = await app.request(`/api/tasks/${taskId}/evidences/${row?.id}/content`);
 

@@ -147,15 +147,35 @@ describe("createPluginFsEvidenceStore: plugin-fs の呼び方 (AC-S4-24)", () =>
 });
 
 describe("createPluginFsEvidenceStore: 検査を通った保存名での IPC の失敗は伝える (A12)", () => {
+  type Store = ReturnType<typeof createPluginFsEvidenceStore>;
+
   it.each([
-    ["write", (s: ReturnType<typeof createPluginFsEvidenceStore>) => s.write(VALID_NAME, new Uint8Array([1]))],
-    ["read", (s: ReturnType<typeof createPluginFsEvidenceStore>) => s.read(VALID_NAME)],
-    ["remove", (s: ReturnType<typeof createPluginFsEvidenceStore>) => s.remove(VALID_NAME)],
-  ])("%s は IPC が拒否されたら同じ理由で失敗する（握りつぶさない）", async (_name, run) => {
+    ["write", "plugin:fs|write_file", (s: Store) => s.write(VALID_NAME, new Uint8Array([1]))],
+    ["read", "plugin:fs|exists", (s: Store) => s.read(VALID_NAME)],
+    ["remove", "plugin:fs|exists", (s: Store) => s.remove(VALID_NAME)],
+  ])("%s は最初の IPC（%s）が拒否されたら同じ理由で失敗する（握りつぶさない）", async (_name, firstCmd, run) => {
     respond = () => {
       throw "forbidden path";
     };
 
     await expect(Promise.resolve().then(() => run(createPluginFsEvidenceStore()))).rejects.toBe("forbidden path");
+    expect(calls.map((c) => c.cmd)).toEqual([firstCmd]);
+  });
+
+  // `read`・`remove` は先に `exists` を呼ぶ。`exists` は通し、その後の本体の IPC だけを
+  // 失敗させる（一律に失敗させると `exists` で止まり、本体の失敗の扱いを確かめられない）。
+  it.each([
+    ["read", "plugin:fs|read_file", (s: Store) => s.read(VALID_NAME)],
+    ["remove", "plugin:fs|remove", (s: Store) => s.remove(VALID_NAME)],
+  ])("%s は exists が true の後の %s が拒否されたら同じ理由で失敗する（undefined・成功に変えない）", async (_name, failingCmd, run) => {
+    respond = ({ cmd }) => {
+      if (cmd === "plugin:fs|exists") {
+        return true;
+      }
+      throw "forbidden path";
+    };
+
+    await expect(Promise.resolve().then(() => run(createPluginFsEvidenceStore()))).rejects.toBe("forbidden path");
+    expect(calls.map((c) => c.cmd)).toEqual(["plugin:fs|exists", failingCmd]);
   });
 });

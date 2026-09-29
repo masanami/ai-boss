@@ -191,6 +191,9 @@ describe("EvidenceStore が Promise を返す実装でも、コアは効果の�
       const formData = new FormData();
       formData.set("file", new File([new Uint8Array(bytes)], "shot.png", { type: "image/png" }));
       const res = await app.request(`/api/tasks/${taskId}/evidences`, { method: "POST", body: formData });
+      // 失敗した POST の応答を行として使うと `evidence.id` が undefined になり、後続の
+      // GET・DELETE がどの行にも届かないまま 404 などで通ってしまう。
+      expect(res.status).toBe(201);
       return { res, evidence: (await res.json()) as { id: number; stored_filename: string } };
     }
 
