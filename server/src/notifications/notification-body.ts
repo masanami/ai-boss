@@ -1,7 +1,8 @@
 import type { Db } from "../db/db-port.js";
-import { resolveBossSettings, type BossSettings } from "../boss/boss-settings.js";
+import { resolveBossSettingsFrom, type BossSettings } from "../boss/boss-settings.js";
+import { resolveLlmSelection } from "../llm/llm-selection.js";
+import { readSettingsSnapshot } from "../settings/settings-repository.js";
 import { buildPersonaPrompt } from "../boss/persona-prompt.js";
-import { resolveLlmBackend } from "../config.js";
 import { stripHtmlTags } from "../lib/strip-html-tags.js";
 import {
   createClaudeClient,
@@ -277,12 +278,17 @@ export async function generateNotificationBody(
 ): Promise<string> {
   // クライアント生成（API キー）・設定読み取り（DB）・Claude 呼び出しの
   // いずれで失敗しても、フォールバック定型文で必ず文面を返す
-  // （resolveBossSettings は db.prepare を呼ぶため DB 例外もここで保護する）。
+  // （設定のスナップショットの読み取りは DB を読むため DB 例外もここで保護する）。
   try {
-    const client: BossLlmClient = createClaudeClient(env, resolveLlmBackend(env));
+    // 機能仕様 docs/features/secure-transport-byok.md クリティカル設計決定 7:
+    // バックエンドとモデルは、人格と同じ 1 つの設定のスナップショットから
+    // 選択の解決関数で決める。
+    const settings = await readSettingsSnapshot(db);
+    const { backend, model } = resolveLlmSelection(env, settings);
+    const client: BossLlmClient = createClaudeClient(env, backend);
     const message = await streamBossMessage(
       client,
-      buildNotificationLlmRequest(await resolveBossSettings(db), request),
+      buildNotificationLlmRequest({ ...resolveBossSettingsFrom(settings), model }, request),
     );
     return extractNotificationBody(message) ?? buildFallbackBody(request);
   } catch (err) {

@@ -206,7 +206,9 @@ describe("POST /api/sessions/:id/messages", () => {
   it("passes the configured llmBackend (loadConfig 由来) through to createClaudeClient", async () => {
     const session = await createSession();
     streamBossMessageMock.mockResolvedValue(fakeTextMessage("了解した"));
-    const app = createApp(portFor(db), env, { llmBackend: "claude-code" });
+    // #581 S3: `llmBackend` の引数は削除した。`env` に `LLM_BACKEND` が無いので、
+    // 選択の解決関数（開発者用）が `claude-code` を返す。
+    const app = createApp(portFor(db), env);
 
     const res = await app.request(`/api/sessions/${session.id}/messages`, {
       method: "POST",

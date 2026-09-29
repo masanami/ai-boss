@@ -77,6 +77,21 @@ export {
 } from "./llm/secure-transport-port.js";
 
 /**
+ * 選択の解決関数（#581 S3・機能仕様 docs/features/secure-transport-byok.md
+ * クリティカル設計決定 7）。製品版の web のエントリが、BYOK（Anthropic）の
+ * 登録と同時に製品版の解決関数を `setLlmSelectionResolver` で登録する——この
+ * モジュール自身は登録しない（読み込んだだけでは開発者用の解決関数のまま）。
+ * re-export により `core-entry.bundle.test.ts` のバンドル検査の対象になる。
+ */
+export {
+  productLlmSelectionResolver,
+  setLlmSelectionResolver,
+  resolveLlmSelection,
+  type LlmSelection,
+  type LlmSelectionResolver,
+} from "./llm/llm-selection.js";
+
+/**
  * 催促の予約を計画し直す処理（機能仕様 docs/features/scheduled-nudges.md
  * 「S2 の設計」）も**呼ばずに re-export する**。S3 で器が通知の予約ポートの
  * 実装を渡して作り、起動・前面への復帰などの契機と `createCoreApp` の

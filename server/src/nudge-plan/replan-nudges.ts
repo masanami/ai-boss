@@ -1,5 +1,6 @@
 import type { DbPort } from "../db/db-port.js";
-import { resolveLlmBackend, type AppEnv } from "../config.js";
+import type { AppEnv } from "../config.js";
+import { resolveLlmSelection, type LlmSelection } from "../llm/llm-selection.js";
 import { resolveBossSettingsFrom, type BossSettings } from "../boss/boss-settings.js";
 import { readSettingsSnapshot } from "../settings/settings-repository.js";
 import { resolveDetectionSettings } from "../scheduler/detection-settings.js";
@@ -162,6 +163,21 @@ interface PlanSnapshot {
   /** 計画に現れるタスクの証跡の件数（B の LLM へ送る。決定 4） */
   taskEvidenceCounts: Record<number, number>;
   bossSettings: BossSettings;
+  /** 同じ設定のスナップショットから解決した LLM の選択（機能仕様
+   * docs/features/secure-transport-byok.md クリティカル設計決定 7）。解決に
+   * 失敗したとき（開発者用の版の `LLM_BACKEND` が許容外）は、その失敗を持ち、
+   * 文面の生成の時点で「クライアントを作れない」として扱う（従来どおり）。 */
+  llm: LlmResolution;
+}
+
+type LlmResolution = { ok: true; selection: LlmSelection } | { ok: false; error: unknown };
+
+function tryResolveLlmSelection(env: AppEnv, settings: Parameters<typeof resolveLlmSelection>[1]): LlmResolution {
+  try {
+    return { ok: true, selection: resolveLlmSelection(env, settings) };
+  } catch (error) {
+    return { ok: false, error };
+  }
 }
 
 /**
@@ -170,7 +186,7 @@ interface PlanSnapshot {
  * 計画に渡しうる）。地平線に含まれる暦日ごとに、会の実効時刻（当日の上書きを
  * 合成）とその日のセッション種別を解決する（決定 1「暦日ごとの入力」）。
  */
-async function readPlanSnapshot(db: DbPort, now: Date, maxCount: number): Promise<PlanSnapshot> {
+async function readPlanSnapshot(db: DbPort, env: AppEnv, now: Date, maxCount: number): Promise<PlanSnapshot> {
   const horizonEnd = new Date(now.getTime() + PLAN_HORIZON_MS);
   return db.transaction(async (tx) => {
     const settingsSnapshot = await readSettingsSnapshot(tx);
@@ -219,9 +235,14 @@ async function readPlanSnapshot(db: DbPort, now: Date, maxCount: number): Promis
       plan,
       tasks,
       taskEvidenceCounts: await countTaskEvidencesByTaskIds(tx, plannedTaskIds),
-      bossSettings: resolveBossSettingsFrom(settingsSnapshot),
+      ...withLlmSelection(resolveBossSettingsFrom(settingsSnapshot), tryResolveLlmSelection(env, settingsSnapshot)),
     };
   });
+}
+
+/** 人格は設定から、モデルは選択の解決関数から（解決できたとき）。 */
+function withLlmSelection(settings: BossSettings, llm: LlmResolution): { bossSettings: BossSettings; llm: LlmResolution } {
+  return { bossSettings: llm.ok ? { ...settings, model: llm.selection.model } : settings, llm };
 }
 
 function toBodyRequest(nudge: PlannedNudge, task: Task | null): NotificationBodyRequest {
@@ -431,7 +452,7 @@ export function createNudgeReplanner(deps: NudgeReplannerDeps): NudgeReplanner {
 
     // 3. 計画（取り消し待ちも OS の枠を使うため、その件数だけ上限を減らす）
     const maxCount = Math.max(0, NUDGE_RESERVATION_LIMIT - pendingRows.length);
-    const { plan, tasks, taskEvidenceCounts, bossSettings } = await readPlanSnapshot(db, now, maxCount);
+    const { plan, tasks, taskEvidenceCounts, bossSettings, llm } = await readPlanSnapshot(db, env, now, maxCount);
     const taskById = new Map(tasks.map((task) => [task.id, task]));
     const messageSet = await findMessageSet(db, await messageSetPersonaKey(bossSettings.persona));
     await pruneIndividualBodies(db, now);
@@ -477,7 +498,7 @@ export function createNudgeReplanner(deps: NudgeReplannerDeps): NudgeReplanner {
     // 倒す。取り消しが成功した次の計画し直しで置かれる）。
     if (pendingRows.length >= OS_RESERVATION_LIMIT) {
       console.error("nudge replan: pending cancellations fill the OS limit; the report prompt was not placed");
-      startEnrichment(prepared.slice(0, INDIVIDUAL_GENERATION_TARGETS), bossSettings);
+      startEnrichment(prepared.slice(0, INDIVIDUAL_GENERATION_TARGETS), bossSettings, llm);
       return prepared;
     }
     const reportAt = plan.truncatedAt ?? new Date(now.getTime() + PLAN_HORIZON_MS);
@@ -499,7 +520,7 @@ export function createNudgeReplanner(deps: NudgeReplannerDeps): NudgeReplanner {
       canceledInOs,
     );
 
-    startEnrichment(prepared.slice(0, INDIVIDUAL_GENERATION_TARGETS), bossSettings);
+    startEnrichment(prepared.slice(0, INDIVIDUAL_GENERATION_TARGETS), bossSettings, llm);
     return prepared;
   }
 
@@ -588,20 +609,23 @@ export function createNudgeReplanner(deps: NudgeReplannerDeps): NudgeReplanner {
   }
 
   /**
-   * LLM のクライアントを作る。作れない（バックエンドが未登録・API キーが無い
-   * 等）なら null——試行の枠を使わずに生成をやめる。製品版の送信先の解決は
-   * #582 S2 が呼び出し元ごとに置き換える（ここも対象）。
+   * LLM のクライアントを作る。作れない（選択を解決できない・バックエンドが
+   * 未登録・API キーが無い等）なら null——試行の枠を使わずに生成をやめる。
+   * バックエンドは計画の入力と同じ設定のスナップショットから選択の解決関数で
+   * 決めたもの（機能仕様 docs/features/secure-transport-byok.md クリティカル
+   * 設計決定 7）。
    */
-  function tryCreateClient(): BossLlmClient | null {
+  function tryCreateClient(llm: LlmResolution): BossLlmClient | null {
     try {
-      return createClaudeClient(env, resolveLlmBackend(env));
+      if (!llm.ok) throw llm.error;
+      return createClaudeClient(env, llm.selection.backend);
     } catch (err) {
       console.error("nudge generation: no LLM client is available:", describeError(err));
       return null;
     }
   }
 
-  async function enrichIndividual(prepared: PreparedNudge): Promise<void> {
+  async function enrichIndividual(prepared: PreparedNudge, llm: LlmResolution): Promise<void> {
     if (prepared.nudge.scheduledAt.getTime() - clock().getTime() < INDIVIDUAL_GENERATION_MIN_LEAD_MS) return;
     const key = `individual:${prepared.contentKey}`;
     // 確かめてから確保するまでの間に await を挟まない（挟むと、並走する上乗せが
@@ -610,7 +634,7 @@ export function createNudgeReplanner(deps: NudgeReplannerDeps): NudgeReplanner {
     inFlightKeys.add(key);
     try {
       if ((await findIndividualBody(db, prepared.contentKey)) !== undefined) return;
-      const client = tryCreateClient();
+      const client = tryCreateClient(llm);
       if (!client) return;
       if (!(await tryReserveGenerationAttempt(db, "individual", clock()))) return;
       let body: string | null;
@@ -628,7 +652,7 @@ export function createNudgeReplanner(deps: NudgeReplannerDeps): NudgeReplanner {
     }
   }
 
-  async function enrichMessageSet(bossSettings: BossSettings): Promise<void> {
+  async function enrichMessageSet(bossSettings: BossSettings, llm: LlmResolution): Promise<void> {
     const personaKey = await messageSetPersonaKey(bossSettings.persona);
     const key = `message_set:${personaKey}`;
     // B と同じく、確かめてから確保するまでの間に await を挟まない
@@ -636,7 +660,7 @@ export function createNudgeReplanner(deps: NudgeReplannerDeps): NudgeReplanner {
     inFlightKeys.add(key);
     try {
       if ((await findMessageSet(db, personaKey)) !== undefined) return;
-      const client = tryCreateClient();
+      const client = tryCreateClient(llm);
       if (!client) return;
       if (!(await tryReserveGenerationAttempt(db, "message_set", clock()))) return;
       let text: string;
@@ -667,12 +691,12 @@ export function createNudgeReplanner(deps: NudgeReplannerDeps): NudgeReplanner {
     }
   }
 
-  function startEnrichment(targets: PreparedNudge[], bossSettings: BossSettings): void {
+  function startEnrichment(targets: PreparedNudge[], bossSettings: BossSettings, llm: LlmResolution): void {
     const task = (async () => {
       for (const target of targets) {
-        await enrichIndividual(target);
+        await enrichIndividual(target, llm);
       }
-      await enrichMessageSet(bossSettings);
+      await enrichMessageSet(bossSettings, llm);
     })().catch((err: unknown) => {
       console.error("nudge enrichment failed:", err instanceof Error ? (err.stack ?? err.message) : err);
     });

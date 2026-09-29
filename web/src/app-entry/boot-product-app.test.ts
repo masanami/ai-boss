@@ -39,7 +39,7 @@ describe("bootProductApp", () => {
       calls.push("render");
     });
 
-    const booting = bootProductApp({ openDb: () => opened.promise, logError: vi.fn(), installApi, render });
+    const booting = bootProductApp({ installLlm: vi.fn(), openDb: () => opened.promise, logError: vi.fn(), installApi, render });
     await new Promise((resolve) => setTimeout(resolve, 0));
     expect(installApi).not.toHaveBeenCalled();
     expect(render).not.toHaveBeenCalled();
@@ -58,11 +58,26 @@ describe("bootProductApp", () => {
     const installApi = vi.fn<(app: ProductCoreApp) => void>();
     const render = vi.fn();
 
-    await bootProductApp({ openDb: () => Promise.reject(failure), logError, installApi, render });
+    await bootProductApp({ installLlm: vi.fn(), openDb: () => Promise.reject(failure), logError, installApi, render });
 
     expect(logError).toHaveBeenCalledWith(PRODUCT_DB_OPEN_FAILED_MESSAGE, failure);
     const app = installApi.mock.calls[0]![0];
     expect(await (await app.request("/api/health")).json()).toEqual({ status: "ok", db: false });
     expect(render).toHaveBeenCalledTimes(1);
+  });
+
+  it("S3-E4（#581 S3）: 製品版の LLM の準備は /api の振り向けより前に行う", async () => {
+    const calls: string[] = [];
+    await bootProductApp({
+      installLlm: () => calls.push("installLlm"),
+      openDb: async () => {
+        calls.push("openDb");
+        return portAnsweringSelectOne();
+      },
+      logError: vi.fn(),
+      installApi: () => calls.push("installApi"),
+      render: () => calls.push("render"),
+    });
+    expect(calls).toEqual(["installLlm", "openDb", "installApi", "render"]);
   });
 });

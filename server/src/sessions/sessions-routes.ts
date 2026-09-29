@@ -21,7 +21,6 @@ import {
 import { registerChatMessageRoute } from "./chat-messages-route.js";
 import { generateSessionSummary } from "./session-summary.js";
 import { generateMeetingOpening, shouldGenerateMeetingOpening } from "./meeting-opening.js";
-import type { LlmBackend } from "../config.js";
 import { generateDailyReport } from "../reports/generate-daily-report.js";
 import { countMentoringDecisionsBySessionId } from "../decisions/decisions-repository.js";
 import { isMentoringComplete } from "./mentoring-gate.js";
@@ -175,18 +174,15 @@ type EndSessionOutcome =
 
 /**
  * Creates the sessions sub-router, mounted under `/api/sessions` by the
- * caller. `env`/`llmBackend` have no defaults here — the only caller,
- * `core-app.ts`'s `createCoreApp`, always resolves and passes both
- * explicitly (see `CreateCoreAppOptions.llmBackend`'s doc comment for where
- * the default lives — self-review correction, 2周目: this comment named
- * `app.ts`/`CreateAppOptions`, which was true before 機能仕様
- * docs/features/tauri-in-app-runtime.md 実装計画③ split the router
- * assembly out of `app.ts` into `core-app.ts`).
+ * caller. `env` has no default here — the only caller, `core-app.ts`'s
+ * `createCoreApp`, always passes it explicitly. The LLM backend and model of
+ * the chat and the session summary are resolved per request by the
+ * selection resolver (機能仕様 docs/features/secure-transport-byok.md
+ * クリティカル設計決定 7・`llm/llm-selection.ts`), not threaded through here.
  */
 export function createSessionsRouter(
   db: Db,
   env: NodeJS.ProcessEnv,
-  llmBackend: LlmBackend,
 ): Hono {
   const sessions = new Hono();
 
@@ -328,7 +324,7 @@ export function createSessionsRouter(
     // compare-and-set inside `updateSessionSummary`, whose returned row is
     // the stored one whether this call won or lost the race.
     if (session.type !== "adhoc" && session.summary === null) {
-      const summary = await generateSessionSummary(db, env, llmBackend, id);
+      const summary = await generateSessionSummary(db, env, id);
       if (summary !== null) {
         const updated = await updateSessionSummary(db, id, summary);
         if (updated) {
@@ -371,7 +367,7 @@ export function createSessionsRouter(
     return c.json(normalizeMessagesForResponse(await listMessagesBySessionId(db, id)));
   });
 
-  registerChatMessageRoute(sessions, db, env, llmBackend);
+  registerChatMessageRoute(sessions, db, env);
 
   return sessions;
 }

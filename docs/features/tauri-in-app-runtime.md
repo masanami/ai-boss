@@ -205,6 +205,7 @@
 - [ ] 製品版の web のエントリが `createCoreApp` に渡す DB ポートの `exec` は、呼ぶと拒否する（SQL を実行しない）
 - [ ] 製品版の web のエントリが `createCoreApp` に渡す DB ポートの `transaction` は、呼ぶと渡した関数を実行せずに拒否する
 - [ ] 製品版の web のエントリを読み込んだ後も、登録済みの LLM バックエンドは 0 件である
+  - 2026-09-29（#581 S3）: この項は #581 S3 で置き換えた。製品版の web のエントリは、LLM の準備で BYOK（Anthropic）を登録する（登録済みは `byok-anthropic` だけ。`docs/features/secure-transport-byok.md` の受入基準（S3）S3-E1）。コアのエントリ（`core-entry.ts`）を読み込んだだけでは何も登録しないことは変わらない
 
 ### 製品版に開発者用の経路が混入しないこと（ビルドの検査）
 
