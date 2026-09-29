@@ -701,6 +701,51 @@ describe("エラーの分類", () => {
     expect(onTextDelta).not.toHaveBeenCalled();
   });
 
+  // PR #653 の指摘: 2xx 以外の応答の本文は読まないが、捨てる（本文の反復子の
+  // return を呼ぶ）。転送の実装はそこで送信を中止し、未読の断片を解放する。
+  function unreadBody() {
+    const next = vi.fn(async (): Promise<IteratorResult<Uint8Array>> => ({ done: true, value: undefined }));
+    const returned = vi.fn(async (): Promise<IteratorResult<Uint8Array>> => ({ done: true, value: undefined }));
+    const iterator: AsyncIterator<Uint8Array> = { next, return: returned };
+    const body: AsyncIterable<Uint8Array> = { [Symbol.asyncIterator]: () => iterator };
+    return { body, next, returned };
+  }
+
+  it.each(["streamRound", "createRound"] as const)(
+    "%s: 応答のステータスが2xxでないとき、本文を読まずに捨ててから失敗する",
+    async (round) => {
+      const { body, next, returned } = unreadBody();
+      const { transport } = singleResponseTransport({ status: 401, headers: {}, body });
+      const { impl, client } = registerAndGetImpl(transport);
+      const signal = new AbortController().signal;
+      const running =
+        round === "streamRound"
+          ? impl.streamRound(client, baseRequest(), {}, signal)
+          : impl.createRound(client, baseRequest(), signal);
+      await expect(running).rejects.toThrow(AnthropicMessagesHttpError);
+      expect(returned).toHaveBeenCalledTimes(1);
+      expect(next).not.toHaveBeenCalled();
+    },
+  );
+
+  it("本文の破棄が失敗しても、2xx でない応答の失敗（AnthropicMessagesHttpError）がそのまま届く", async () => {
+    const iterator: AsyncIterator<Uint8Array> = {
+      next: async () => ({ done: true, value: undefined }),
+      return: async () => {
+        throw new Error("discard failed");
+      },
+    };
+    const { transport } = singleResponseTransport({
+      status: 401,
+      headers: {},
+      body: { [Symbol.asyncIterator]: () => iterator },
+    });
+    const { impl, client } = registerAndGetImpl(transport);
+    await expect(impl.streamRound(client, baseRequest(), {}, new AbortController().signal)).rejects.toThrow(
+      AnthropicMessagesHttpError,
+    );
+  });
+
   it("SSE の error イベントがあると、そのラウンドは失敗し、分類は再試行可である", async () => {
     const events = [
       { type: "content_block_start", index: 0, content_block: { type: "text", text: "" } },

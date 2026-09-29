@@ -1,6 +1,7 @@
 // @vitest-environment node
 import { describe, expect, it } from "vitest";
 import { SecureTransportError, type SecureTransportErrorKind } from "../../../server/src/core-entry.js";
+import { discardSecureTransportBody } from "../../../server/src/llm/secure-transport-port.js";
 import {
   createTauriSecureTransport,
   type SecureEventChannel,
@@ -197,5 +198,46 @@ describe("createTauriSecureTransport", () => {
     }
     const requestId = tauri.commands("secure_send")[0]!.args.requestId;
     expect(tauri.commands("secure_cancel").map((call) => call.args)).toEqual([{ requestId }]);
+  });
+
+  // PR #653 の指摘: 本文を読み始めずに捨てる呼び出し元（2xx 以外で即座に失敗する
+  // BYOK〔Anthropic〕）でも、Rust の中継を止め、未読の断片を溜めない。
+  it("読み始めずに本文を捨てると、同じ requestId で secure_cancel を呼び、捨てた後に届いた断片を読ませない", async () => {
+    const tauri = fakeTauri({ respond: async () => ({ status: 401, headers: {} }) });
+    const response = await tauri.transport(request, new AbortController().signal);
+    tauri.emit({ event: "chunk", data: [1] });
+
+    await discardSecureTransportBody(response.body);
+    tauri.emit({ event: "chunk", data: [2] });
+    tauri.emit({ event: "end" });
+
+    const requestId = tauri.commands("secure_send")[0]!.args.requestId;
+    expect(tauri.commands("secure_cancel").map((call) => call.args)).toEqual([{ requestId }]);
+    expect(await readAll(response.body)).toEqual([]);
+  });
+
+  it("読み始める前に中止すると、同じ requestId で secure_cancel を呼び、溜まっていた断片を読ませずに cancelled で失敗する", async () => {
+    const tauri = fakeTauri();
+    const controller = new AbortController();
+    const response = await tauri.transport(request, controller.signal);
+    tauri.emit({ event: "chunk", data: [1] });
+
+    controller.abort();
+    tauri.emit({ event: "chunk", data: [2] });
+
+    const requestId = tauri.commands("secure_send")[0]!.args.requestId;
+    expect(tauri.commands("secure_cancel").map((call) => call.args)).toContainEqual({ requestId });
+    await expect(readAll(response.body)).rejects.toMatchObject({ name: "SecureTransportError", kind: "cancelled" });
+  });
+
+  it("最後まで読んだ後に本文を捨てても secure_cancel を呼ばない", async () => {
+    const tauri = fakeTauri();
+    const response = await tauri.transport(request, new AbortController().signal);
+    tauri.emit({ event: "chunk", data: [1] });
+    tauri.emit({ event: "end" });
+    expect(await readAll(response.body)).toEqual([new Uint8Array([1])]);
+
+    await discardSecureTransportBody(response.body);
+    expect(tauri.commands("secure_cancel")).toEqual([]);
   });
 });

@@ -16,7 +16,9 @@ import {
  * - `signal` が中止されたら `secure_cancel` を呼ぶ。Rust が要求を登録する前に
  *   中止が届いた場合に送信が続かないよう、`secure_send` が戻った時点で中止
  *   済みならもう一度 `secure_cancel` を呼び「中止」で失敗する（迂回経路 B6）。
- *   本文を最後まで読まずに読み出しをやめた場合も `secure_cancel` を呼ぶ
+ *   本文を最後まで読まずに読み出しをやめた場合・読み始めずに本文を捨てた場合
+ *   （本文の反復子の `return`。`discardSecureTransportBody`）も `secure_cancel`
+ *   を呼び、未読の断片を捨てる
  *
  * キーはこのモジュールを通らない（キーを付与するのは Rust）。
  */
@@ -69,21 +71,24 @@ export function toSecureTransportError(error: unknown): SecureTransportError {
 
 const ABORTED = Symbol("aborted");
 
-/** `Channel` の出来事を順に受け取る列（届いた順・読み手が遅れても落とさない）。 */
+/**
+ * `Channel` の出来事を順に受け取る列（届いた順・読み手が遅れても落とさない）。
+ * 中止・`close` の後に届いた出来事は溜めない（読み手がもういないため）。
+ */
 function createEventQueue(signal: AbortSignal) {
   const items: SecureStreamEvent[] = [];
   let waiter: ((value: SecureStreamEvent | typeof ABORTED) => void) | undefined;
-  signal.addEventListener(
-    "abort",
-    () => {
-      const resolve = waiter;
-      waiter = undefined;
-      resolve?.(ABORTED);
-    },
-    { once: true },
-  );
+  let closed = false;
+  const onAbort = (): void => {
+    items.length = 0;
+    const resolve = waiter;
+    waiter = undefined;
+    resolve?.(ABORTED);
+  };
+  signal.addEventListener("abort", onAbort, { once: true });
   return {
     push(event: SecureStreamEvent): void {
+      if (closed || signal.aborted) return;
       const resolve = waiter;
       if (resolve) {
         waiter = undefined;
@@ -99,6 +104,12 @@ function createEventQueue(signal: AbortSignal) {
       return new Promise((resolve) => {
         waiter = resolve;
       });
+    },
+    /** 溜まった出来事を捨て、以後の出来事を受け取らない。 */
+    close(): void {
+      closed = true;
+      items.length = 0;
+      signal.removeEventListener("abort", onAbort);
     },
   };
 }
@@ -147,36 +158,50 @@ export function createTauriSecureTransport(deps: TauriSecureTransportDeps): Secu
       throw new SecureTransportError("cancelled");
     }
 
+    // 本文は非同期ジェネレーターにしない: ジェネレーターは一度も `next` を
+    // 呼ばれないまま `return` されると `finally` を走らせないため、本文を読まずに
+    // 捨てる呼び出し元（2xx 以外の応答）で Rust の中継が止まらず、未読の断片が
+    // 列に溜まり続ける。ここでは `return` が読み出しの開始の有無によらず後始末を
+    // 行う反復子を自前で持つ（呼び出し元は `discardSecureTransportBody` で捨てる）。
+    let settled = false;
+    const settle = (finished: boolean): void => {
+      if (settled) return;
+      settled = true;
+      signal.removeEventListener("abort", cancel);
+      queue.close();
+      // 中止・読み出しの打ち切りで終わったときは、Rust 側の送信も止める。
+      if (!finished) cancel();
+    };
+    const done = (): IteratorReturnResult<undefined> => ({ done: true, value: undefined });
+    const body: AsyncIterableIterator<Uint8Array> = {
+      [Symbol.asyncIterator]() {
+        return body;
+      },
+      async next() {
+        if (settled) return done();
+        const event = await queue.next();
+        if (event === ABORTED) {
+          settle(false);
+          throw new SecureTransportError("cancelled");
+        }
+        if (event.event === "chunk") {
+          return { done: false, value: Uint8Array.from(event.data) };
+        }
+        settle(true);
+        if (event.event === "end") return done();
+        throw toSecureTransportError(event.error);
+      },
+      async return() {
+        settle(false);
+        return done();
+      },
+    };
+
     const { status, headers } = (head ?? {}) as { status?: unknown; headers?: unknown };
     return {
       status: typeof status === "number" ? status : 0,
       headers: toHeaders(headers),
-      body: readBody(),
+      body,
     };
-
-    async function* readBody(): AsyncGenerator<Uint8Array> {
-      let finished = false;
-      try {
-        for (;;) {
-          const event = await queue.next();
-          if (event === ABORTED) {
-            throw new SecureTransportError("cancelled");
-          }
-          if (event.event === "chunk") {
-            yield Uint8Array.from(event.data);
-          } else if (event.event === "end") {
-            finished = true;
-            return;
-          } else {
-            finished = true;
-            throw toSecureTransportError(event.error);
-          }
-        }
-      } finally {
-        signal.removeEventListener("abort", cancel);
-        // 中止・読み出しの打ち切りで終わったときは、Rust 側の送信も止める。
-        if (!finished) cancel();
-      }
-    }
   };
 }

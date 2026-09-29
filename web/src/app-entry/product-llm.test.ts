@@ -57,4 +57,29 @@ describe("installProductLlm", () => {
     expect(sends[0]!.args.destination).toBe("anthropic-messages");
     expect(JSON.parse(String(sends[0]!.args.body)).model).toBe("claude-sonnet-5");
   });
+
+  // PR #653 の指摘: BYOK（Anthropic）は 2xx 以外の応答の本文を読まずに失敗する。
+  // 器の Tauri 実装の上でも、そのとき Rust の中継を止める（secure_cancel）。
+  it("2xx 以外の応答で streamBossMessage が失敗すると、同じ requestId で secure_cancel が呼ばれる", async () => {
+    const calls: Array<{ command: string; args: Record<string, unknown> }> = [];
+    const transport = createTauriSecureTransport({
+      invoke: async (command, args) => {
+        calls.push({ command, args });
+        // 401 は再試行不可（再試行の待ちが入らない）。
+        return command === "secure_send" ? { status: 401, headers: {} } : true;
+      },
+      createChannel: (): SecureEventChannel => ({ onmessage: () => undefined }),
+      newRequestId: () => "req-401",
+    });
+    installProductLlm(transport);
+    const { backend, model } = resolveLlmSelection({}, new Map());
+
+    await expect(
+      streamBossMessage(createClaudeClient({}, backend), { model, messages: [{ role: "user", content: "こんにちは" }] }),
+    ).rejects.toThrow();
+
+    expect(calls.filter((call) => call.command === "secure_cancel").map((call) => call.args)).toEqual([
+      { requestId: "req-401" },
+    ]);
+  });
 });
