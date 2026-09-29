@@ -21,7 +21,10 @@ export interface Notification {
   /**
    * Which channel the send ended on, stored verbatim from the notifier's
    * result: `"terminal-notifier"` / `"osascript"` = delivered via that
-   * channel, `"none"` = neither channel delivered it (pairs with
+   * channel, `"tauri-notification"` = the product build's notification
+   * plugin accepted it (#579 S3; the desktop plugin discards the OS's display
+   * result, so `delivered = 1` here means "accepted by the plugin", not "shown
+   * by the OS"), `"none"` = no channel delivered it (pairs with
    * `delivered = 0`), `"scheduled"` = an OS scheduled notification confirmed
    * after its scheduled time (予約通知方式・#585 S2; whether the OS showed it
    * is unknown, so `delivered` stays null), `null` = unknown (see `delivered`). Kept as `string`

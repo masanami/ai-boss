@@ -9,6 +9,7 @@
 //! `MockRuntime` は `hide`・`show` を観測できず、終了の要求は未実装のため）。
 
 use std::ops::ControlFlow;
+use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -248,31 +249,85 @@ pub fn emit_minute_tick<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<()> {
     )
 }
 
+/// 製品の待ち: 次の分の境界まで `sleep` で眠り（境界の後に `TICK_MARGIN` を
+/// 足す）、刻みを続ける（`Continue`）。製品では `sleep` は `std::thread::sleep`。
+/// 眠り方を引数で受け取り、マージンの加算と `Continue` を返すことをユニット
+/// テストで固定する。
+pub fn wait_for_next_tick(
+    duration: Duration,
+    sleep: &mut impl FnMut(Duration),
+) -> ControlFlow<()> {
+    sleep(duration + TICK_MARGIN);
+    ControlFlow::Continue(())
+}
+
 /// 起動した刻みの送り手。`setup` で `manage` し、起動したことを器の状態として
 /// 観測できるようにする（AC-S3-13。仮定 S3-A8）。
 pub struct MinuteTicker {
-    _thread: JoinHandle<()>,
+    thread: JoinHandle<()>,
+    stopped: Arc<Mutex<bool>>,
+}
+
+impl MinuteTicker {
+    /// 送り手のスレッドが動いている（終わっていない）か。
+    pub fn is_running(&self) -> bool {
+        !self.thread.is_finished()
+    }
+
+    /// 以後の刻みを送らないようにする。戻った後に刻みは 1 回も送られない
+    /// （送っている途中なら、その送信の完了を待って戻る）。眠っている途中の
+    /// スレッドは、起きたところで終わる。製品は呼ばない — テストが `setup` の
+    /// 起こした本物の送り手を止め、刻みの回数を正確に数えるため。
+    pub fn stop(&self) {
+        *self.stopped.lock().unwrap_or_else(|e| e.into_inner()) = true;
+    }
 }
 
 /// 刻みの送り手を別スレッドで起動する。次の分の境界まで眠っては刻みを送る。
 pub fn spawn_minute_ticker<R: Runtime>(app: AppHandle<R>) -> std::io::Result<MinuteTicker> {
+    spawn_minute_ticker_with(app, SystemTime::now, std::thread::sleep)
+}
+
+/// [`spawn_minute_ticker`] の本体。時計（`now`）と眠り方（`sleep`）だけを受け取り、
+/// 待ち（[`wait_for_next_tick`]）・送り（[`emit_minute_tick`]）・スレッドの起動は
+/// 製品と同じ組み立てを使う（テストは眠り方を差し替えて、起動したスレッドが
+/// 実際に刻みを送ることを数える）。
+pub fn spawn_minute_ticker_with<R: Runtime>(
+    app: AppHandle<R>,
+    now: impl FnMut() -> SystemTime + Send + 'static,
+    mut sleep: impl FnMut(Duration) + Send + 'static,
+) -> std::io::Result<MinuteTicker> {
+    let stopped = Arc::new(Mutex::new(false));
+    let thread_stopped = stopped.clone();
+    let is_stopped = move || *thread_stopped.lock().unwrap_or_else(|e| e.into_inner());
+    let emit_stopped = stopped.clone();
     let thread = std::thread::Builder::new()
         .name("minute-ticker".into())
         .spawn(move || {
             run_minute_ticker(
-                SystemTime::now,
+                now,
                 |duration| {
-                    std::thread::sleep(duration + TICK_MARGIN);
-                    ControlFlow::Continue(())
+                    let flow = wait_for_next_tick(duration, &mut sleep);
+                    if is_stopped() {
+                        ControlFlow::Break(())
+                    } else {
+                        flow
+                    }
                 },
                 || {
+                    // 止める要求（`stop`）と競合しないよう、確かめてから送り終えるまで
+                    // 錠を持つ。
+                    let stopped = emit_stopped.lock().unwrap_or_else(|e| e.into_inner());
+                    if *stopped {
+                        return;
+                    }
                     if let Err(error) = emit_minute_tick(&app) {
                         eprintln!("failed to emit {MINUTE_TICK_EVENT}: {error}");
                     }
                 },
             );
         })?;
-    Ok(MinuteTicker { _thread: thread })
+    Ok(MinuteTicker { thread, stopped })
 }
 
 #[cfg(test)]
@@ -421,6 +476,25 @@ mod tests {
         assert_eq!(
             duration_until_next_minute(UNIX_EPOCH - Duration::from_secs(5)),
             Duration::from_secs(60)
+        );
+    }
+
+    // --- wait_for_next_tick (AC-S3-10・AC-S3-11) ---------------------------------
+
+    #[test]
+    fn the_product_wait_sleeps_past_the_boundary_by_the_margin() {
+        let mut slept = Vec::new();
+
+        let _ = wait_for_next_tick(Duration::from_secs(30), &mut |d| slept.push(d));
+
+        assert_eq!(slept, [Duration::from_millis(30_100)]);
+    }
+
+    #[test]
+    fn the_product_wait_keeps_ticking() {
+        assert_eq!(
+            wait_for_next_tick(Duration::from_secs(60), &mut |_| {}),
+            ControlFlow::Continue(())
         );
     }
 

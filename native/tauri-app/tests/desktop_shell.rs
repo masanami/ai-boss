@@ -16,7 +16,8 @@
 
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::{Arc, OnceLock};
+use std::sync::{mpsc, Arc, Mutex, OnceLock};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use serde_json::{json, Value};
 use tauri::ipc::{CallbackFn, InvokeBody};
@@ -25,7 +26,7 @@ use tauri::webview::InvokeRequest;
 use tauri::{App, AppHandle, Listener, Manager, RunEvent, WebviewWindow, WindowEvent};
 
 use app_lib::desktop_shell::{
-    emit_minute_tick, handle_run_event, run_minute_ticker, MinuteTicker, MINUTE_TICK_EVENT,
+    handle_run_event, spawn_minute_ticker_with, MinuteTicker, MINUTE_TICK_EVENT,
 };
 
 /// `sql_plugin.rs` とは別のディレクトリ（並列に走る別のテストバイナリと、
@@ -42,7 +43,19 @@ fn test_home() -> &'static Path {
 }
 
 /// 器を組む。`label` ごとに identifier を変え、テスト間で DB を共有しない。
+///
+/// `setup` が起こした本物の刻みの送り手は、返す前に止める（`MinuteTicker::stop`）。
+/// 止めないと実際の分の境界でテストのアプリへ刻みを送り続け、刻みの回数を
+/// 正確に数えられない（止めた後は 1 回も送らない。止める前の刻みは、テストが
+/// 購読を登録する前なので数えられない）。
 fn build_app(label: &str) -> (App<MockRuntime>, WebviewWindow<MockRuntime>) {
+    let (app, window) = build_app_with_live_ticker(label);
+    app.state::<MinuteTicker>().stop();
+    (app, window)
+}
+
+/// 器を組み、`setup` が起こした本物の刻みの送り手を動かしたまま返す。
+fn build_app_with_live_ticker(label: &str) -> (App<MockRuntime>, WebviewWindow<MockRuntime>) {
     test_home();
     let mut context = app_lib::context();
     context.config_mut().identifier = format!("dev.aiboss.app.desktop-shell-{label}");
@@ -125,6 +138,54 @@ fn close_main_then(
     });
 }
 
+const TICKER_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// 分の境界から 30 秒過ぎた固定の時刻（1_700_000_040 は分の境界）。
+fn thirty_seconds_into_a_minute() -> SystemTime {
+    UNIX_EPOCH + Duration::from_secs(1_700_000_040 + 30)
+}
+
+/// 製品と同じ組み立て（`spawn_minute_ticker_with`: 製品の待ち・製品の送り・
+/// 別スレッド）で送り手を起こし、眠り方だけを差し替えて待ちを `rounds` 回だけ
+/// 終わらせる。`rounds + 1` 回目の待ちに入った時点で、それまでの刻みは送り
+/// 終えている。送り手を止め、スレッドが終わるのを確かめてから、各回の眠りの
+/// 長さを返す。
+///
+/// 失敗は panic ではなく `Err` で返す（イベントループのコールバックの中からも
+/// 呼ぶため）。
+fn tick_n_times(handle: &AppHandle<MockRuntime>, rounds: usize) -> Result<Vec<Duration>, String> {
+    let (started_tx, started_rx) = mpsc::channel::<Duration>();
+    let (permit_tx, permit_rx) = mpsc::channel::<()>();
+    let ticker = spawn_minute_ticker_with(handle.clone(), thirty_seconds_into_a_minute, move |d| {
+        let _ = started_tx.send(d);
+        let _ = permit_rx.recv();
+    })
+    .map_err(|e| format!("failed to spawn the ticker: {e}"))?;
+
+    let mut slept = Vec::new();
+    for round in 0..=rounds {
+        let duration = started_rx
+            .recv_timeout(TICKER_TIMEOUT)
+            .map_err(|e| format!("the ticker did not start wait #{} ({e})", round + 1))?;
+        if round == rounds {
+            break;
+        }
+        slept.push(duration);
+        permit_tx.send(()).map_err(|e| e.to_string())?;
+    }
+
+    ticker.stop();
+    drop(permit_tx);
+    let deadline = Instant::now() + TICKER_TIMEOUT;
+    while ticker.is_running() {
+        if Instant::now() > deadline {
+            return Err("the ticker thread did not finish after stop".into());
+        }
+        std::thread::yield_now();
+    }
+    Ok(slept)
+}
+
 // ---------------------------------------------------------------------------
 // AC-S3-2: 閉じる要求の後もメインのウィンドウは残る
 // ---------------------------------------------------------------------------
@@ -164,29 +225,26 @@ fn minute_ticks_still_reach_the_main_window_after_a_close_request() {
         counter.fetch_add(1, Ordering::SeqCst);
     });
 
-    close_main_then(app, |handle| {
-        // 本物の送り手（`emit_minute_tick`）を、待ちを即時に返すループで 3 回回す。
-        let mut waits_left = 3;
-        run_minute_ticker(
-            std::time::SystemTime::now,
-            |_| {
-                if waits_left == 0 {
-                    std::ops::ControlFlow::Break(())
-                } else {
-                    waits_left -= 1;
-                    std::ops::ControlFlow::Continue(())
-                }
-            },
-            || emit_minute_tick(handle).unwrap(),
-        );
+    let outcome = Arc::new(Mutex::new(None));
+    let observed = outcome.clone();
+    close_main_then(app, move |handle| {
+        // 製品の組み立ての送り手に、閉じる要求の後で 3 回の待ちを終わらせる。
+        *observed.lock().unwrap() = Some(tick_n_times(handle, 3));
     });
 
-    // `setup` が起動した本物の送り手も分の境界で送りうるため、ちょうど 3 では
-    // なく 3 以上で確かめる。
-    assert!(
-        received.load(Ordering::SeqCst) >= 3,
-        "the main window should receive every tick emitted after the close request, got {}",
-        received.load(Ordering::SeqCst)
+    let slept = outcome
+        .lock()
+        .unwrap()
+        .take()
+        .expect("the ticker ran after the close request")
+        .unwrap_or_else(|e| panic!("{e}"));
+    // 製品の待ち: 境界まで（30 秒）＋マージン（100 ms）を、毎回眠る。
+    assert_eq!(slept, [Duration::from_millis(30_100); 3]);
+    // 1 回の待ちで 1 回ずつ、閉じる要求の後もメインのウィンドウへ届く。
+    assert_eq!(
+        received.load(Ordering::SeqCst),
+        3,
+        "the main window should receive exactly one tick per finished wait after the close request"
     );
 }
 
@@ -211,10 +269,9 @@ fn a_tick_is_addressed_to_the_main_window_only() {
         other_counter.fetch_add(1, Ordering::SeqCst);
     });
 
-    emit_minute_tick(app.handle()).unwrap();
+    tick_n_times(app.handle(), 1).unwrap_or_else(|e| panic!("{e}"));
 
-    // `setup` が起動した本物の送り手も分の境界で送りうるため、メインには 1 以上。
-    assert!(on_main.load(Ordering::SeqCst) >= 1);
+    assert_eq!(on_main.load(Ordering::SeqCst), 1);
     assert_eq!(on_other.load(Ordering::SeqCst), 0);
 }
 
@@ -224,12 +281,21 @@ fn a_tick_is_addressed_to_the_main_window_only() {
 
 #[test]
 fn setup_starts_the_minute_ticker() {
-    let (app, _window) = build_app("ticker-started");
+    let (app, _window) = build_app_with_live_ticker("ticker-started");
 
-    assert!(
-        app.try_state::<MinuteTicker>().is_some(),
-        "setup should start the minute ticker and manage its handle"
-    );
+    let ticker = app
+        .try_state::<MinuteTicker>()
+        .expect("setup should start the minute ticker and manage its handle");
+    // 起動したスレッドが（次の分の境界まで眠っていて）しばらく経っても終わって
+    // いないこと。送り手が起動直後に終わる退行を検出する（起動した直後の 1 回
+    // だけ見ると、終わる前のスレッドを見て通ってしまう）。起動したスレッドが
+    // 待ち・送りを製品の組み立てで行うことは `tick_n_times` を使うテストが確かめる。
+    let watch_until = Instant::now() + Duration::from_millis(300);
+    while Instant::now() < watch_until {
+        assert!(ticker.is_running(), "the minute ticker thread should keep running");
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    ticker.stop();
 }
 
 // ---------------------------------------------------------------------------
