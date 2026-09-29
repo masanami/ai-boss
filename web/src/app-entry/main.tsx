@@ -1,4 +1,5 @@
 import { StrictMode } from "react";
+import { Channel, invoke } from "@tauri-apps/api/core";
 import { createRoot } from "react-dom/client";
 import App from "../App";
 import "../index.css";
@@ -7,6 +8,10 @@ import { createBlobEvidenceContentOpener } from "./open-evidence-content-as-blob
 import { EvidenceContentOpenerContext } from "../evidence-content-opener-context";
 import { bootProductApp } from "./boot-product-app";
 import { getProductDatabase, openProductDb } from "./product-db";
+import { ByokKeyManagerContext } from "../byok-key-manager-context";
+import { createTauriSecureTransport, type SecureStreamEvent } from "./tauri-secure-transport";
+import { createTauriByokKeyManager } from "./tauri-byok-key-manager";
+import { installProductLlm } from "./product-llm";
 
 /**
  * 製品版（Tauri アプリ）の web のエントリ（機能仕様
@@ -21,7 +26,17 @@ import { getProductDatabase, openProductDb } from "./product-db";
  *    `createCoreApp` へ振り向ける（決定1「/api の振り向け」）。
  * 3. Blob URL の方式（証跡ファイルのリンク）を組み立て、コンテキストで注入
  *    する。
+ * 4. （#581 S3）製品版の LLM（BYOK〔Anthropic〕と製品版の解決関数）を DB と
+ *    `/api` より前に登録し、キーの操作（設定画面のキーの欄）をコンテキストで
+ *    注入する。どちらも器のコマンド（`secure_*`・`byok_key_*`）を呼ぶ。
  */
+
+const secureTransport = createTauriSecureTransport({
+  invoke: (command, args) => invoke(command, args),
+  createChannel: () => new Channel<SecureStreamEvent>(),
+  newRequestId: () => crypto.randomUUID(),
+});
+const byokKeyManager = createTauriByokKeyManager((command, args) => invoke(command, args));
 
 const evidenceContentOpener = createBlobEvidenceContentOpener({
   // 呼ばれる時点の `window.fetch`（描画より前に包んだ後の参照）— `/api` 配下の
@@ -41,6 +56,7 @@ if (!rootElement) {
 }
 
 void bootProductApp({
+  installLlm: () => installProductLlm(secureTransport),
   openDb: () => openProductDb(getProductDatabase()),
   logError: (message, error) => console.error(message, error),
   installApi: (app) => {
@@ -51,7 +67,9 @@ void bootProductApp({
     createRoot(rootElement).render(
       <StrictMode>
         <EvidenceContentOpenerContext.Provider value={evidenceContentOpener}>
-          <App />
+          <ByokKeyManagerContext.Provider value={byokKeyManager}>
+            <App />
+          </ByokKeyManagerContext.Provider>
         </EvidenceContentOpenerContext.Provider>
       </StrictMode>,
     );

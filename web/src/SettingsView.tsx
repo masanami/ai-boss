@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useContext, useEffect, useState } from "react";
 import type { FormEvent } from "react";
 import { useSettings } from "./use-settings";
 import {
@@ -9,6 +9,8 @@ import {
   TONE_PRESET_LABELS,
 } from "./settings";
 import type { Settings, TonePreset } from "./settings";
+import { ByokKeyManagerContext } from "./byok-key-manager-context";
+import ByokKeySection from "./ByokKeySection";
 import "./SettingsView.css";
 
 const STRICTNESS_OPTIONS = Array.from(
@@ -50,6 +52,8 @@ function SettingsView() {
     useSettings();
   const [form, setForm] = useState<FormState | null>(null);
   const [saveSuccess, setSaveSuccess] = useState(false);
+  // 製品版だけが注入する（#581 S3）。開発者用の版では null でキーの欄を出さない。
+  const byokKeyManager = useContext(ByokKeyManagerContext);
 
   useEffect(() => {
     if (settings) {
@@ -376,6 +380,7 @@ function SettingsView() {
           保存
         </button>
       </form>
+      {byokKeyManager !== null && <ByokKeySection manager={byokKeyManager} />}
     </section>
   );
 }

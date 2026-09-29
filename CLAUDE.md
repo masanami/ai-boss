@@ -143,4 +143,9 @@ npm run build:tauri
 
 # 生成された .app に node / node_modules が含まれないことを検査（build:tauri の後）
 npm run verify:tauri-bundle
+
+# 署名つきの .app をビルド（BYOK のキーをデータ保護キーチェーンへ登録する手動確認用。
+# 値は環境変数で渡し、リポジトリに書かない。未署名の build:tauri ではキーの登録が OSStatus -34018 になる。
+# 手順は docs/features/secure-transport-byok.md「手動の確認手順（S3）」）
+APPLE_SIGNING_IDENTITY="Apple Development: <名前> (<ID>)" APPLE_TEAM_ID=<チーム ID> npm run build:tauri:signed
 ```

@@ -51,7 +51,15 @@ fn csp_directive(conf: &serde_json::Value, directive: &str) -> Vec<String> {
 // ---------------------------------------------------------------------------
 
 #[test]
-fn capabilities_grant_only_the_sql_and_evidence_fs_permissions_to_the_main_window() {
+fn capabilities_grant_only_sql_the_five_secure_commands_and_the_evidence_fs_to_the_main_window() {
+    // #581 S3（docs/features/secure-transport-byok.md S3-C3・S3-C5）: 通信層の
+    // コマンド 5 つの `allow-*` を足した（使うスライスが最小の単位で足す——
+    // #579 の仕様「権限と到達経路の境界」）。`core:default` 等は足さない。
+    //
+    // #579 S4（docs/features/tauri-in-app-runtime.md AC-S4-4〜7）: 証跡ファイルに
+    // 要る fs の 4 つ（スコープは保存先の直下だけ）を足した。fs の内訳は下の
+    // AC-S4-4〜7 のテストも個別に固定する。
+    //
     // #580 S2（docs/features/async-db-layer.md AC-S2-5）: #579 S2 の「0 件」を、
     // DB に要る最小の単位（`sql:allow-execute`・`sql:allow-select`）へ置き
     // 換えた。`load`（任意のパスの DB を開ける）・`close`・`sql:default` は
@@ -82,10 +90,24 @@ fn capabilities_grant_only_the_sql_and_evidence_fs_permissions_to_the_main_windo
         capability.get("webviews").is_none() && capability.get("remote").is_none(),
         "対象は main のウィンドウだけ（webviews・remote を指定しない）: {capability}"
     );
-    // 権限の全体は、sql の 2 件（文字列）と fs の 4 件（スコープ付きのオブジェクト）
-    // だけ。個別の内訳は下の AC-S4-4〜7 のテストが固定する。
-    let permissions = capability["permissions"].as_array().expect("permissions が配列でない");
-    assert_eq!(permissions.len(), 6, "権限は sql 2 件 + fs 4 件だけ: {permissions:?}");
+    // 権限の全体は、sql の 2 件・通信層のコマンドの 5 件（文字列）と fs の 4 件
+    // （スコープ付きのオブジェクト）だけ。
+    assert_eq!(
+        capability["permissions"],
+        serde_json::json!([
+            "sql:allow-execute",
+            "sql:allow-select",
+            "allow-secure-send",
+            "allow-secure-cancel",
+            "allow-byok-key-set",
+            "allow-byok-key-delete",
+            "allow-byok-key-status",
+            { "identifier": "fs:allow-read-file", "allow": [{ "path": "$APPCONFIG/evidence/*" }] },
+            { "identifier": "fs:allow-write-file", "allow": [{ "path": "$APPCONFIG/evidence/*" }] },
+            { "identifier": "fs:allow-remove", "allow": [{ "path": "$APPCONFIG/evidence/*" }] },
+            { "identifier": "fs:allow-exists", "allow": [{ "path": "$APPCONFIG/evidence/*" }] }
+        ])
+    );
 }
 
 /// capability の `permissions` のうち、スコープを付けたオブジェクトの形の
@@ -138,6 +160,7 @@ fn ac_s4_5_capability_keeps_the_two_sql_permissions_as_plain_strings() {
         .unwrap()
         .iter()
         .filter_map(|p| p.as_str())
+        .filter(|p| p.starts_with("sql:"))
         .collect();
     assert_eq!(sql, vec!["sql:allow-execute", "sql:allow-select"]);
 }

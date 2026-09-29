@@ -90,6 +90,21 @@ describe("製品版の web のビルド（vite.app.config.ts）の入力モジ�
     BUILD_TIMEOUT_MS,
   );
 
+  // #581 S3（docs/features/secure-transport-byok.md S3-E5）: 転送のポートと
+  // キーの操作の Tauri 実装・BYOK（Anthropic）・選択の解決関数がアプリ内に載る。
+  it.each([
+    "web/src/app-entry/tauri-secure-transport.ts",
+    "web/src/app-entry/tauri-byok-key-manager.ts",
+    "server/src/llm/backends/byok-anthropic-backend.ts",
+    "server/src/llm/llm-selection.ts",
+  ])(
+    "includes %s (製品版の LLM の配線)",
+    (substring) => {
+      expect(includesAnyInput(productModuleIds, substring)).toBe(true);
+    },
+    BUILD_TIMEOUT_MS,
+  );
+
   // #579 S4（docs/features/tauri-in-app-runtime.md AC-S4-33）: 製品版の証跡の
   // 保存の実装（plugin-fs）がアプリ内に載る。
   it.each(["@tauri-apps/plugin-fs", "web/src/app-entry/plugin-fs-evidence-store.ts"])(
