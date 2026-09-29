@@ -51,7 +51,7 @@ fn csp_directive(conf: &serde_json::Value, directive: &str) -> Vec<String> {
 // ---------------------------------------------------------------------------
 
 #[test]
-fn capabilities_grant_only_sql_the_five_secure_commands_and_the_evidence_fs_to_the_main_window() {
+fn capabilities_grant_only_sql_the_five_secure_commands_the_evidence_fs_and_the_s3_desktop_permissions_to_the_main_window() {
     // #581 S3（docs/features/secure-transport-byok.md S3-C3・S3-C5）: 通信層の
     // コマンド 5 つの `allow-*` を足した（使うスライスが最小の単位で足す——
     // #579 の仕様「権限と到達経路の境界」）。`core:default` 等は足さない。
@@ -64,6 +64,11 @@ fn capabilities_grant_only_sql_the_five_secure_commands_and_the_evidence_fs_to_t
     // DB に要る最小の単位（`sql:allow-execute`・`sql:allow-select`）へ置き
     // 換えた。`load`（任意のパスの DB を開ける）・`close`・`sql:default` は
     // 許可しない。
+    //
+    // #579 S3（機能仕様 docs/features/tauri-in-app-runtime.md AC-S3-14）: さらに
+    // 通知の送信（`notification:allow-notify`）と刻みのイベントの購読
+    // （`core:event:allow-listen`）の 2 件を足した。`notification:default`・
+    // 許可の問い合わせ・`core:event:allow-emit` 等は足さない。
     //
     // 「By default (not set or empty list), all capability files from
     // ./capabilities/ are included」（tauri-utils の SecurityConfig::capabilities
@@ -91,7 +96,7 @@ fn capabilities_grant_only_sql_the_five_secure_commands_and_the_evidence_fs_to_t
         "対象は main のウィンドウだけ（webviews・remote を指定しない）: {capability}"
     );
     // 権限の全体は、sql の 2 件・通信層のコマンドの 5 件（文字列）と fs の 4 件
-    // （スコープ付きのオブジェクト）だけ。
+    // （スコープ付きのオブジェクト）・S3 の通知と刻みの購読の 2 件（文字列）だけ。
     assert_eq!(
         capability["permissions"],
         serde_json::json!([
@@ -105,7 +110,9 @@ fn capabilities_grant_only_sql_the_five_secure_commands_and_the_evidence_fs_to_t
             { "identifier": "fs:allow-read-file", "allow": [{ "path": "$APPCONFIG/evidence/*" }] },
             { "identifier": "fs:allow-write-file", "allow": [{ "path": "$APPCONFIG/evidence/*" }] },
             { "identifier": "fs:allow-remove", "allow": [{ "path": "$APPCONFIG/evidence/*" }] },
-            { "identifier": "fs:allow-exists", "allow": [{ "path": "$APPCONFIG/evidence/*" }] }
+            { "identifier": "fs:allow-exists", "allow": [{ "path": "$APPCONFIG/evidence/*" }] },
+            "notification:allow-notify",
+            "core:event:allow-listen"
         ])
     );
 }

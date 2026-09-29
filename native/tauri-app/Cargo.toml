@@ -19,7 +19,9 @@ tauri-build = { version = "2.6", features = [] }
 [dependencies]
 # プラグインと権限は、使うスライスがそのとき最小の単位で足す（機能仕様
 # docs/features/tauri-in-app-runtime.md S2「器の構成」）。
-tauri = { version = "2.12", features = [] }
+# #579 S3（docs/features/tauri-in-app-runtime.md「S3 の設計」）: メニューバー
+# 常駐のトレイ（`tray-icon`）。
+tauri = { version = "2.12", features = ["tray-icon"] }
 # #580 S2（docs/features/async-db-layer.md「S2 の設計」）: plugin-sql の
 # リポジトリ内 fork（接続 1 本）。crates.io の tauri-plugin-sql は使わない。
 tauri-plugin-sql = { path = "../tauri-plugin-sql", features = ["sqlite"] }
@@ -35,6 +37,10 @@ serde = { version = "1", features = ["derive"] }
 # 保存。fork せず上流のまま使う。権限は `capabilities/default.json` で保存先の直下
 # （`$APPCONFIG/evidence/*`）に限った 4 つだけを足す。
 tauri-plugin-fs = "~2.6"
+# #579 S3: 通知の送信（`plugin:notification|notify`）。2.5.0 の実測（デスクトップは
+# 表示の結果を捨てる・許可を問い合わせない）に拠るため `~2.5` に固定する
+# （仮定 S3-A6）。JS のパッケージ（`@tauri-apps/plugin-notification`）は入れない。
+tauri-plugin-notification = "~2.5"
 
 [dev-dependencies]
 # #580 S2: 結合テスト（tests/sql_plugin.rs）と IPC の中継（examples/

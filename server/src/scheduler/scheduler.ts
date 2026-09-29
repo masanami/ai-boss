@@ -1,7 +1,7 @@
 import cron from "node-cron";
 import type { Db } from "../db/db-port.js";
 import { createTicker, type TickDeps } from "./scheduler-tick.js";
-import { nodeSystemExecFile } from "../notifications/notifier.js";
+import { nodeSystemExecFile, sendNotification } from "../notifications/notifier.js";
 
 /** Every minute — Issue #7's critical design decision ("スケジューラは毎分
  * チェック方式"), reaffirmed by Issue #38's explicit assumptions. */
@@ -31,7 +31,7 @@ export function startScheduler(deps: SchedulerDeps): SchedulerHandle {
   const tickDeps: TickDeps = {
     db: deps.db,
     env: deps.env,
-    execFile: nodeSystemExecFile,
+    sendNotification: (payload) => sendNotification(payload, { execFile: nodeSystemExecFile }),
     notificationUrl: deps.notificationUrl,
   };
   const ticker = createTicker(tickDeps);

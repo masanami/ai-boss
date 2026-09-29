@@ -497,6 +497,23 @@ describe("core-entry bundle — S1（#582。BYOK〔OpenAI〕の登録関数を�
   });
 });
 
+describe("core-entry bundle — #579 S3（毎分の検知 createTicker を呼ばずに re-export する。機能仕様 docs/features/tauri-in-app-runtime.md AC-S3-39・AC-S3-40）", () => {
+  it("AC-S3-39: exports createTicker as a function", () => {
+    const context = createSandboxContext();
+    vm.runInContext(bundleCode, context);
+    const exported = (context as Record<string, unknown>).AiBossCore as Record<string, unknown>;
+    expect(typeof exported.createTicker).toBe("function");
+  });
+
+  it("AC-S3-40: bundles scheduler-tick.ts but not notifier.ts or scheduler.ts (Node の周辺は載らない)", () => {
+    const inputs = metafileInputPaths(buildResult!.metafile!);
+    expect(includesAnyInput(inputs, "scheduler/scheduler-tick.ts")).toBe(true);
+    expect(includesAnyInput(inputs, "notifications/notifier.ts")).toBe(false);
+    expect(includesAnyInput(inputs, "scheduler/scheduler.ts")).toBe(false);
+    expect(includesAnyInput(inputs, "node-cron")).toBe(false);
+  });
+});
+
 describe("core-entry bundle — AC2〜5 (バンドルの入力に禁止パッケージが含まれない)", () => {
   it.each(FORBIDDEN_PACKAGE_SUBSTRINGS)("does not include %s among the bundle inputs", (substring) => {
     const inputs = metafileInputPaths(buildResult!.metafile!);

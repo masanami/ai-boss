@@ -2,8 +2,9 @@
 //! `docs/features/tauri-in-app-runtime.md` クリティカル設計決定・S2 の器の設計）。
 //!
 //! この crate は WebView 内の TS コア（`server/src/core-app.ts`）を Hono の
-//! ルートごと動かすための「器」に徹する — 通知・スケジューラはまだ配線しない
-//! （#579 S3 の範囲）。LLM の送信は #581 S3 で配線した: 秘密情報を扱う通信層
+//! ルートごと動かすための「器」に徹する。
+//! 通知・毎分の刻み・メニューバー常駐は #579 S3 で足した（[`desktop_shell`]）。
+//! LLM の送信は #581 S3 で配線した: 秘密情報を扱う通信層
 //! （`native/secure-transport/`）をコマンド 5 つ（[`APP_COMMANDS`]・
 //! [`secure_commands`]）で公開する。キーの値を返すコマンドは無い。DB は #580 S2 で配線した: plugin-sql の
 //! リポジトリ内 fork（`native/tauri-plugin-sql/`。接続 1 本・ATTACH 不可）を
@@ -17,6 +18,7 @@
 //! （`app_config_dir` の直下の `evidence/`。[`prepare_evidence_dir`] が起動時に
 //! 作る）の直下のファイルに限って許可する（機能仕様
 //! `docs/features/tauri-in-app-runtime.md`「S4 の設計」）。
+//! #579 S3 の `notification:allow-notify`・`core:event:allow-listen` も許可する。
 //!
 //! メインウィンドウのナビゲーション・新規ウィンドウ・ダウンロードの許可判定は、
 //! [`is_allowed_navigation`]・[`is_allowed_new_window`] という URL を受け取る
@@ -28,7 +30,9 @@ use std::io;
 use std::path::{Path, PathBuf};
 
 use tauri::webview::{NewWindowFeatures, NewWindowResponse};
-use tauri::{Manager, Runtime, Url, WebviewUrl, WebviewWindowBuilder};
+use tauri::{Manager, Runtime, Url, WebviewWindowBuilder};
+
+pub mod desktop_shell;
 
 /// 証跡ファイルの保存先のディレクトリ名（`app_config_dir` の直下。
 /// capability の fs のスコープ `$APPCONFIG/evidence/*` と web の実装の `evidence/`
@@ -116,8 +120,11 @@ fn build_main_window<R: Runtime, M: tauri::Manager<R>>(
     // `index.html` の順に試し、最後まで見つからず `AssetNotFound`）が失敗し、
     // ウィンドウは開いても中身が表示されない（手動の確認手順でしか発覚しない
     // 欠陥だった）。
-    WebviewWindowBuilder::new(manager, "main", WebviewUrl::App("app.html".into()))
-        .title("ai-boss")
+    //
+    // #579 S3（仮定 S3-A4）: 設定値（`background_throttling: Disabled`・`app.html`）を
+    // テストで検査できるよう、`WebviewWindowBuilder::new` ではなくコードで組んだ
+    // `WindowConfig` から作る（`desktop_shell::main_window_config`）。
+    WebviewWindowBuilder::from_config(manager, &desktop_shell::main_window_config())?
         .on_navigation(is_allowed_navigation)
         // self-review（code-reviewer、PLAUSIBLE）: `NewWindowResponse::Allow`
         // は wry の既定実装に任せる形で、生成される新規ウィンドウ（証跡の
@@ -152,10 +159,22 @@ fn build_main_window<R: Runtime, M: tauri::Manager<R>>(
 }
 
 /// アプリのエントリポイント（`main.rs` の `app_lib::run()`）。
+///
+/// #579 S3: メニューバーのアイコンは `RunEvent::Ready` で作り、閉じる要求（メインの
+/// ウィンドウは隠す）・Dock の再表示の要求もここで処理する
+/// （`desktop_shell::handle_run_event`）。`configure` では作らない。
 pub fn run() {
     configure(tauri::Builder::default())
-        .run(context())
-        .expect("error while running tauri application");
+        .build(context())
+        .expect("error while building tauri application")
+        .run(|app, event| {
+            if let tauri::RunEvent::Ready = event {
+                if let Err(error) = desktop_shell::create_tray(app) {
+                    eprintln!("failed to create the menu bar icon: {error}");
+                }
+            }
+            desktop_shell::handle_run_event(app, event);
+        });
 }
 
 /// `tauri.conf.json`・capability（ACL）・アセットを埋め込んだコンテキスト。
@@ -190,6 +209,9 @@ pub fn configure_with<R: Runtime>(builder: tauri::Builder<R>, secure_state: Secu
     builder
         .plugin(tauri_plugin_sql::Builder::new().build())
         .plugin(tauri_plugin_fs::init())
+        // #579 S3: 通知の送信（`plugin:notification|notify`。WebView には
+        // `notification:allow-notify` だけを許可する）。
+        .plugin(tauri_plugin_notification::init())
         .manage(secure_state)
         // 公開するコマンドは `APP_COMMANDS` の 5 つだけ（`build.rs` が同じ一覧を
         // `AppManifest` に渡す。一覧との一致は tests/secure_commands.rs が IPC で
@@ -204,6 +226,8 @@ pub fn configure_with<R: Runtime>(builder: tauri::Builder<R>, secure_state: Secu
         .setup(|app| {
             prepare_evidence_dir(&app.path().app_config_dir()?)?;
             build_main_window(app)?;
+            // #579 S3: 毎分の刻みを WebView へ送る（ウィンドウを隠しても続く）。
+            app.manage(desktop_shell::spawn_minute_ticker(app.handle().clone())?);
             Ok(())
         })
 }

@@ -1,4 +1,13 @@
 import { execFile as nodeExecFile } from "node:child_process";
+import type {
+  NotificationChannel,
+  NotificationPayload,
+  SendNotificationResult,
+} from "./notification-port.js";
+
+// 型は Node 組み込みに依存しない `notification-port.ts` が持つ。既存の import
+// 先（このモジュール）を保つため re-export する。
+export type { NotificationChannel, NotificationPayload, SendNotificationResult };
 
 /**
  * macOS 通知アダプタ。`terminal-notifier` が利用可能ならそれを使い（クリックで
@@ -10,13 +19,6 @@ import { execFile as nodeExecFile } from "node:child_process";
  * テストは必ずこれをモックし、実際の通知コマンドを起動しない。
  */
 
-export interface NotificationPayload {
-  title: string;
-  body: string;
-  /** クリック時に開く URL。terminal-notifier 経由のときのみクリックで開ける。 */
-  url?: string;
-}
-
 export type ExecFileFn = (
   file: string,
   args: string[],
@@ -24,13 +26,6 @@ export type ExecFileFn = (
 
 export interface NotifierDeps {
   execFile: ExecFileFn;
-}
-
-export type NotificationChannel = "terminal-notifier" | "osascript" | "none";
-
-export interface SendNotificationResult {
-  delivered: boolean;
-  channel: NotificationChannel;
 }
 
 /**

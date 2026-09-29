@@ -18,7 +18,7 @@ import {
   DEFAULT_NOTIFICATION_TITLE,
   type NotificationBodyRequest,
 } from "../notifications/notification-body.js";
-import { sendNotification, type ExecFileFn } from "../notifications/notifier.js";
+import type { NotificationSender } from "../notifications/notification-port.js";
 import { loadDetectionSettings } from "./detection-settings.js";
 import { listTodaysSessionTypes } from "./todays-sessions.js";
 import { toNotificationHistory } from "./notification-history.js";
@@ -41,7 +41,15 @@ const EPOCH_ISO = "1970-01-01T00:00:00.000Z";
 export interface TickDeps {
   db: Db;
   env: NodeJS.ProcessEnv;
-  execFile: ExecFileFn;
+  /**
+   * 通知の送信（通知ポート。#579 S3・機能仕様
+   * docs/features/tauri-in-app-runtime.md「通知ポート」）。開発者用の版は
+   * `notifier.ts` の `sendNotification`（terminal-notifier → osascript）、製品版は
+   * Tauri の通知プラグインを注入する。このモジュールは `notifier.ts`
+   * （`node:child_process`）を import しない — 製品版のコアのバンドルに載るため。
+   * 失敗は例外ではなく戻り値（`delivered: false`）で返す契約。
+   */
+  sendNotification: NotificationSender;
   /**
    * Notification title. Fixed default (not persona-driven): the persona
    * already shapes the notification *body* via `generateNotificationBody`,
@@ -170,8 +178,8 @@ async function processFiring(
   //
   // This ordering does not change the success path, and it keeps Issue #38's
   // existing contract: the notification is recorded regardless of delivery
-  // success (`sendNotification` never throws — it reports delivery failure
-  // via its return value instead, see notifier.ts), a failed send is not
+  // success (the notification port never throws — it reports delivery failure
+  // via its return value instead, see notification-port.ts), a failed send is not
   // retried, and if the underlying condition still holds the next tick's
   // escalation interval naturally triggers a re-send. What it changes is the
   // *failure* path: a failed record now means nothing was sent either, so
@@ -184,16 +192,13 @@ async function processFiring(
     body,
   });
 
-  const result = await sendNotification(
-    { title, body, url: deps.notificationUrl },
-    { execFile: deps.execFile },
-  );
+  const result = await deps.sendNotification({ title, body, url: deps.notificationUrl });
 
   // Issue #321. `sendNotification` never throws; a total delivery failure
-  // (both terminal-notifier and osascript failed) only shows up in its return
+  // (e.g. both terminal-notifier and osascript failed in the dev build) only shows up in its return
   // value. Discarding it made "the user never saw this" indistinguishable
   // from a successful send — in the DB (record-before-send above already
-  // wrote `sent_at`) and to this caller (notifier.ts's own console.error
+  // wrote `sent_at`) and to this caller (the dev notifier's own console.error
   // names no rule). So: log it here with the identifiers needed to
   // cross-reference the row, then write the outcome back onto that row.
   //
