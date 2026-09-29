@@ -2,6 +2,7 @@
 
 > Issue #579。2026-09-26 に論点 Q1〜Q5 を確定した（親の回答とオーナーの回答。オーナーの回答は「オーナーの決定」節に原文のまま引用する）。
 > 2026-09-28: S1（#594・PR #598）と #580 S1（#597・PR #615）のマージ後、S2 を実装対象にするため改訂した（「S2 の器の設計」・受入基準（S2）・手動の確認手順（S2）・やらないことと仮定の追加）。確定済みの設計（クリティカル設計決定 1〜4・スライス表・オーナーの決定）は変えていない。
+> 2026-09-29: S2（#645・PR #646）と #580 S2（#651・PR #652）のマージ後、S3 を実装対象にするため改訂した（「S3 の設計」・受入基準（S3）・手動の確認手順（S3）・やらないことと仮定の追加）。確定済みの設計（クリティカル設計決定 1〜4・S2 の器の設計・スライス表・オーナーの決定）と S1・S2 の受入基準は変えていない。
 
 ## 概要
 
@@ -75,6 +76,7 @@
 
 - **採用案**: 毎分の検知（`scheduler-tick.ts` の `createTicker`）はアプリ内（WebView）で回し、node-cron を置き換える。**ウィンドウを閉じてもアプリは終了せずメニューバーに残り**、検知と催促を続ける（現行版で「ブラウザのタブを閉じてもサーバーが動いていれば催促が届く」振る舞いの維持）。通知の送信は `notifier.ts` の `execFile` 依存を通知ポートに置き換え、製品版は `@tauri-apps/plugin-notification`（デスクトップ）を使う。デスクトップは毎分方式のまま（送信時の LLM 文面生成を維持）とし、**予約通知方式への一本化は #585 で決める**。
 - **タイマーの間引き**: WKWebView がウィンドウ非表示時にタイマーを間引くかは未実測。**S3 で確かめ、間引く場合は Rust 側のタイマーから WebView へ毎分の刻みを送る案へ切り替える**。
+  - （2026-09-29・S3 の注記）S3 の着手時に、親の決定（間引きの有無に左右されない形を既定にする）により、確かめる前から Rust 側の刻みを既定にした（「S3 の設計」・仮定 S3-A1）。通知は Rust の `tauri-plugin-notification`（プラグイン本体）を使い、JS のパッケージは入れずに `invoke` で直接呼ぶ（仮定 S3-A6）。`notifier.ts` は開発者用の版の通知ポートの実装として残る。
 - **理由**: ADR 0011 決定 12 の予約通知方式は「iOS では」の決定であり、ADR 0004 帰結の毎分方式はデスクトップでは否定されていない。メニューバー常駐は ADR 0011 決定 6 が OS 連携の部品として想定済み。
 - **代替案**: (a) ウィンドウを閉じたら終了し、開いている間だけ検知する — 現行の体験から後退する。(b) デスクトップも最初から予約通知方式にする — #585 の完了待ちになる。
 - **影響範囲**: `scheduler/scheduler.ts`・`notifications/notifier.ts`（**クリティカル箇所: 通知の実行系。変更時は人間レビュー必須**）、Tauri の Rust 側（トレイ・ウィンドウの閉じる挙動）。
@@ -130,6 +132,58 @@
 - **製品版に開発者用の経路が混入しないことの検査（決定 3 の延長）**: S1 はコアのエントリ（`server/src/core-entry.ts`）のバンドルを検査した。S2 では、器に実際に載る**製品版の web のビルド**（Vite）の入力モジュール（Vite の `build()` が返す Rollup の出力の各チャンクの `moduleIds` の和集合。S1 のメタファイルに当たる）を検査し、`claude-code`・`@anthropic-ai/sdk`・Node の周辺（`@hono/node-server`・`better-sqlite3`・`server/src/app.ts`・`server/src/index.ts`・開発者用の LLM バックエンドの登録）が含まれないことを固定する。逆に開発者用の web のビルドにはコア（`server/src`）が入らないことも固定する。
 - **ADR 0002 の改訂**: 決定 4 のとおり、製品版で永続状態と DB への副作用を受け持つ層を「WebView 内の TS コア（Hono アプリ）」と ADR 0002 に記録する。
 
+### S3 の設計（2026-09-29・S3 の着手時に確定済みの設計から導いた形）
+
+#### 実測（2026-09-29・`main` c4af1ba・`tauri` 2.12.0・`tauri-plugin-notification` 2.5.0〔crates.io の配布物。`~2.5` で解決される版〕・`wry` 0.57.0）
+
+| 観点 | 実測 |
+|---|---|
+| 通知の送信（デスクトップ） | コマンド `plugin:notification\|notify` は `NotificationData`（`title`・`body` 等）を `options` で受け、デスクトップの実装（`src/desktop.rs`）は OS への表示（`notify_rust::Notification::show`）を `tauri::async_runtime::spawn` の中で呼んで**結果を捨て**（`let _ = notification.show()`）、コマンド自体は `Ok(())` を返す。したがってデスクトップで `invoke` が失敗を返すのは、IPC・権限（ACL）・引数の失敗だけで、**OS が表示に失敗したことは呼び出し側から分からない**。#585 の「`invoke` なら失敗が返る」は iOS（`mobile.rs`）での実測で、デスクトップには当てはまらない |
+| 通知の許可（デスクトップ） | デスクトップで登録されるコマンドは `notify`・`request_permission`・`is_permission_granted` の 3 つ。許可の状態は常に `Granted`（`is_permission_granted` は真）で、利用者に問い合わせない（2.5.0 のドキュメントコメント「Desktop applications do not need to ask for this permission」）。macOS では開発時（`tauri::is_dev()`）は Terminal の名前で、ビルドした `.app` は `identifier`（`dev.aiboss.app`）の名前で通知が出る |
+| JS の通知 API | プラグインは初期化スクリプトで `window.Notification` を差し替え、JS の `sendNotification` は結果を返さない（#585 の実測のまま） |
+| 非表示の WebView | WKWebView は非表示の間の処理を `WKPreferences.inactiveSchedulingPolicy` で決め、Tauri 2.12 は `WebviewWindowBuilder::background_throttling`（`WindowConfig.background_throttling`）でこれを設定できる（macOS 14 以上。wry が `inactiveSchedulingPolicy` へ `None`/`Suspend`/`Throttle` を書く）。Tauri のドキュメントコメントは、既定では「最小化・非表示になって約 5 分後にタイマーを間引き、ビュー全体を止めうる（すべての処理が止まる）」としている。**停止されると、WebView のタイマーだけでなく Rust から送った刻みの処理も止まる** |
+| ウィンドウを閉じる | `WindowEvent::CloseRequested { api }` の `api.prevent_close()` で閉じる処理を取り消せる。`MockRuntime` は `Window::close()` で `CloseRequested` を発し、取り消されなければウィンドウを取り除く（最後の 1 枚なら終了の要求へ進む）。`MockRuntime` の `hide`・`show` は何もせず `is_visible` は常に真、終了の要求（`request_exit`）は未実装（`unimplemented!`） |
+| メニューバー（トレイ） | `tauri` の機能 `tray-icon` で `TrayIconBuilder` が使える。トレイとメニューは Rust 側だけで組み、WebView の権限（capability）を要さない |
+| Rust → WebView のイベント | WebView 側の `listen`（`@tauri-apps/api/event`）は `plugin:event\|listen` を呼び、権限 `core:event:allow-listen` を要する |
+
+#### 毎分の刻みの供給元（クリティカル設計決定 2「タイマーの間引き」）
+
+- **Rust 側のタイマーから WebView へ毎分の刻みを送る案（決定 2 の切り替え先）を最初から採る**。器の Rust 側のスレッドが次の分の境界（秒 0）まで待ってはメインのウィンドウへ刻みのイベントを送り、製品版の web のエントリはそのイベントを受けるたびに `createTicker` の `tick` を呼ぶ（node-cron の `* * * * *` の置き換え。刻みの粒度は現行と同じ）。
+- **刻みの送り手の形**: 待ち（次の刻みまで待つ関数）と送り先（刻みのイベントを送る関数）を引数に取るループとし、テストは待ちを即時に返す関数に差し替えて回数を数える。器は `setup` で送り手を起動し、起動したことを器の状態（`manage` した値）で観測できるようにする。
+- **あわせて、メインのウィンドウの `background_throttling` を `Disabled` にする**（上の実測: 既定の方針では非表示の WebView が止まりうり、止まると Rust から送った刻みも処理されない）。
+- **理由**: 親の決定「間引きの有無に左右されない形を既定にする」「ウィンドウを閉じた状態で止まらないことを自動テストで固定できる方を選ぶ」。WebView のタイマー（`setInterval`）のままでは、非表示で間引かれないことを自動テストで固定できない（jsdom・`MockRuntime` に WKWebView の方針は無い）。Rust 側の刻みは、ウィンドウを閉じる要求の後も送られ続けることを `MockRuntime` の上で固定でき、非表示の WebView が刻みを処理するかどうかは `background_throttling` の設定値を検査で固定したうえで、実機の確認を手動の確認手順に置く。
+- **残るリスク（手動の確認）**: `background_throttling` の効果・macOS の App Nap（アプリ全体が非表示のときのタイマーの合体）で刻みが遅れないかは、実機でしか確かめられない。手動の確認手順（S3）の 5〜6 で確かめ、遅れる・止まる場合は別 Issue にする。
+
+#### 通知ポート（決定 2「`execFile` 依存を通知ポートに置き換え」）
+
+- 毎分の検知（`createTicker`）は、通知の送信を**通知ポート**（`NotificationPayload`〔`title`・`body`・`url?`〕を受け、`SendNotificationResult`〔`delivered`・`channel`〕を返す非同期の関数）として受け取る。`TickDeps` の `execFile` を通知ポートの引数に置き換える（`notificationUrl` は残し、`url` として通知ポートへ渡す）。
+- 通知ポートの型と `NotificationPayload`・`SendNotificationResult`・`NotificationChannel`（`"tauri-notification"` を足す）は、Node 組み込みに依存しない新しいモジュール（`server/src/notifications/notification-port.ts`）に置く。`notifier.ts` はそこから型を読み（既存の import 先を保つため re-export する）、`scheduler-tick.ts` は `notifier.ts` を import しない。これにより `scheduler-tick.ts` は Node 組み込みに依存せず、コアのエントリ（`createTicker` を re-export する）から製品版へ載る。
+- **開発者用の版**: `scheduler.ts` が `notifier.ts` の `sendNotification`（`terminal-notifier` → `osascript`・`execFile`）を通知ポートとして渡す。振る舞いは変えない（node-cron も残す）。
+- **製品版**: 通知ポートは `invoke("plugin:notification|notify", { options: { title, body } })` を呼ぶ（JS の `sendNotification` は使わない〔#585 の実測〕）。解決したら `delivered: true`・`channel: "tauri-notification"`、拒否したら例外にせず `delivered: false`・`channel: "none"` を返し、失敗をログに出す。**失敗は呼び出し側（`scheduler-tick.ts`）へ戻り値で返り、既存の #321 の書き戻しで送信履歴に `delivered = 0` として残る**（握りつぶさない）。上の実測のとおり、OS が表示に失敗したことはデスクトップのプラグインが捨てるため分からない（`delivered: true` は「プラグインが受け付けた」の意味になる。「やらないこと（S3）」）。
+- 製品版の通知ポートは `url` を使わない（通知のクリックは現行も未配線）。
+
+#### 通知の許可
+
+- デスクトップのプラグインは許可を問い合わせない（上の実測）ため、製品版は初回の権限要求を行わない。利用者が macOS の設定で通知を切っているときは、上の実測のとおりアプリからは分からない（手動の確認手順（S3）の 8）。
+
+#### ウィンドウを閉じる挙動・メニューバー・終了の経路（決定 2「ウィンドウを閉じてもアプリは終了せずメニューバーに残る」）
+
+- **メインのウィンドウを閉じる要求**（閉じるボタン・⌘W）は取り消し、ウィンドウを**隠す**（破棄しない）。WebView とその中のコア・毎分の検知は動き続ける。証跡の新しいウィンドウ（`blob:`）を閉じる要求は取り消さない。
+- **メニューバーのアイコン**（トレイ）を置き、メニューの項目は「ウィンドウを開く」「終了」の 2 つだけにする。「ウィンドウを開く」はメインのウィンドウを表示して前面に出す。「終了」はアプリを終了する。
+- Dock のアイコンを押したとき（macOS の再表示の要求 `RunEvent::Reopen`）に見えているウィンドウが無ければ、メインのウィンドウを表示する（隠したウィンドウを Dock から戻せないと、閉じた後に画面へ戻る経路がメニューバーだけになるため）。
+- **終了の経路**は、メニューバーの「終了」と、アプリのメニューの「終了」（⌘Q。Tauri の既定のメニュー）の 2 つ。どちらも止めない。
+- 判定（閉じる要求を取り消すか・メニューの項目から何をするか・再表示の要求で何をするか）は、ウィンドウのラベル・項目の ID・見えているウィンドウの有無を受け取る純粋な関数にして `cargo test` で固定し、Tauri の API を呼ぶ部分は薄く保つ（S2 の `is_allowed_navigation` と同じ形）。
+
+#### 起動の順序（製品版の web のエントリ）
+
+- 製品版の毎分の検知を始める関数は `web/src/app-entry/` に置き、DB のポート・購読の関数（`listen`）・`invoke`・ログを引数で受ける（テストで差し替えるため）。毎分の検知は、DB の準備に成功した後に、そのポートと製品版の通知ポートで組み立て、刻みのイベントの購読を始める。**「DB 未接続」で起動したときは始めない**（DB を読めない刻みはすべて失敗するため）。購読の開始に失敗しても画面の描画は止めず、失敗を記録する（#580 S2 の DB の準備の失敗と同じ扱い）。
+- `env` は空、LLM バックエンドは製品版のエントリが登録したものを使う（S3 の時点では 0 件のため、`generateNotificationBody` は既存のフォールバックの定型文を返す。#581 S3 が BYOK を登録すれば、送信時の LLM 文面生成がそのまま働く＝決定 2「送信時の LLM 文面生成を維持」）。
+- 催促の予約の計画し直し（#585 S2 の `createNudgeReplanner`・`createCoreApp` の `onStateChangingRequest`）はデスクトップでは配線しない（#585 決定 5: デスクトップは毎分方式）。
+
+#### 権限（capability）
+
+- S3 で足す権限は、通知の送信（`notification:allow-notify`）と刻みのイベントの購読（`core:event:allow-listen`）の 2 つだけ。`notification:default`・許可の問い合わせ・予約・取り消し・`core:event:allow-emit` 等は足さない。トレイ・ウィンドウの操作は Rust 側だけで行うため、ウィンドウ・トレイの権限は足さない。
+
 ### 実装計画（S1 のチケット分解の見通し）
 
 1. LLM バックエンドの注入化と、`claude-code`・`api` の開発者用エントリへの分離
@@ -145,7 +199,7 @@
 | S3 | デスクトップのスケジューラ・通知・メニューバー常駐（node-cron と `execFile` の置き換え）。WKWebView のタイマー間引きの確認 | 8-15 | S2 がマージされてから |
 | S4 | 証跡ファイルの保存をアプリのデータディレクトリへ（plugin-fs） | 5-10 | S2 がマージされてから |
 
-実装対象: S2
+実装対象: S3
 
 ## やらないこと
 
@@ -161,9 +215,16 @@
 - 署名・公証・配布・自動更新（理由: #587 の範囲）
 - 端末間同期（理由: ADR 0011 決定 18〔#590・PR #591 で追加。本仕様の作成時点で未マージ〕の実装は別 Issue）
 - Windows 対応（理由: ADR 0011 決定 19〔同上〕で後続リリース）
-- ログイン時の自動起動（理由: 現行版にも無い。必要なら別 Issue）
+- ログイン時の自動起動（理由: 現行版にも無い。必要なら別 Issue。S3 でも範囲外〔2026-09-29・親の決定。ログイン項目の登録は利用者の端末の設定を変えるため〕）
 - （S2 で追加）製品版で外部の URL（リンクの証跡など）を既定のブラウザや新しいウィンドウで開くこと（理由: 外部 URL を開くには opener 等の権限と、開いてよい URL の範囲の決定が要る。S2 は安全側に倒し、アプリの外へのナビゲーションと新しいウィンドウを `blob:` 以外すべて拒否する。必要になったら別 Issue で範囲を決める）
 - （S2 で追加）製品版で証跡ファイルをダウンロード（端末へ保存）すること（理由: 保存先の扱いは S4〔plugin-fs〕と併せて決める。S2 では WebView のダウンロード要求をすべて拒否する。画像・PDF 以外の証跡は S2 の器では開けない）
+- （S3 で追加）メニューバーのメニューの「ウィンドウを開く」「終了」以外の項目（今日の状況の表示・一時停止等）（理由: 決定 2 の常駐に要る最小限に留める。必要なら別 Issue）
+- （S3 で追加）通知のクリックで画面を開く・遷移すること（理由: 現行版も未配線〔`notificationUrl` 未設定〕）
+- （S3 で追加）OS が通知の表示に失敗したこと・利用者が通知を切っていることの検知と、そのためのプラグインの fork・自前の通知のコマンド（理由: デスクトップのプラグインが表示の結果を捨てる〔S3 の設計の実測〕。決定 2 は通知プラグイン（`tauri-plugin-notification`）を使うとしており、fork は差分に見合わない。製品版の `delivered` は「プラグインが受け付けた」の意味になる）
+- （S3 で追加）デスクトップでの通知の許可の問い合わせ・許可を促す画面（理由: デスクトップのプラグインは許可を問い合わせない〔常に許可〕）
+- （S3 で追加）App Nap の抑止（`NSProcessInfo` の activity）等、手動の確認で刻みの遅れが見つかる前の追加の手当て（理由: 実機でしか確かめられない。遅れ・停止が見つかったら別 Issue）
+- （S3 で追加）デスクトップへの催促の予約の計画し直しの配線・予約通知方式（理由: #585 決定 5。デスクトップは毎分方式）
+- （S3 で追加）Dock のアイコンを隠す（メニューバーだけのアプリにする）こと（理由: 決定 2 は「メニューバーに残る」ことだけを求めている。Dock からもウィンドウを戻せる現行の形を保つ）
 - （S2 で追加）製品版の DB の実装・DB を使う画面の動作確認（理由: #580 S2。S2 の器は DB に接続せず、DB を使うルートは失敗の応答になる）
 
 ## 受入基準（S1）
@@ -186,6 +247,8 @@
 ## 受入基準（S2）
 
 > 2026-09-29（#580 S2）: 下の「DB 未接続」の項（`/api/health` の `db:false`・DB を使うルートが 2xx を返さない・DB ポートの 5 つの口の拒否）は、製品版の DB の準備に失敗したときのフォールバックの振る舞いとして残り、通常の起動では製品版の DB（plugin-sql）に接続する。「capability が許可する権限は 0 件」は、#580 S2 で DB に要る最小の単位（`sql:allow-execute`・`sql:allow-select`）に置き換えた（`docs/features/async-db-layer.md` の受入基準（S2）AC-S2-5）。
+>
+> 2026-09-29（#579 S3）: さらに、通知の送信（`notification:allow-notify`）と刻みのイベントの購読（`core:event:allow-listen`）を足した。capability の権限は受入基準（S3）の AC-S3-14 を正とする。手動の確認手順（S2）の 6（ウィンドウを閉じるとアプリが終了する）は S3 で置き換わる（手動の確認手順（S3）の 3・9）。
 >
 > S2 は DB と LLM を使わずに確かめられるものだけを受入基準にする（スライス表）。ウィンドウが開き画面が表示されることなど、人間が実機で見るしかないものは「手動の確認手順（S2）」に分ける。
 
@@ -268,6 +331,92 @@
 5. オーナーの DB（`server/data/ai-boss.db`）の更新時刻がアプリの起動・操作で変わらないことを確かめる。
 6. ウィンドウを閉じるとアプリが終了することを確かめる（メニューバーへの常駐は S3）。
 
+## 受入基準（S3）
+
+> S3 は自動テストで固定できるものを受入基準にし、非表示の WebView が実機で刻みを処理し続けること・OS の通知が実際に表示されること・メニューバーのアイコンの見え方など、人間が実機で見るしかないものは「手動の確認手順（S3）」に分ける。**テストでは OS の通知を実際に送らない**（Rust の結合テストで `plugin:notification|notify` を許可された形で呼ばない。呼ぶと開発機で通知が出るため）。時刻はローカル日付で組む（ADR 0007）。
+
+### ウィンドウを閉じる挙動・メニューバー（Rust のテスト）
+
+- [ ] AC-S3-1: 閉じる要求の判定は、メインのウィンドウ（ラベル `main`）では「閉じずに隠す」を返し、それ以外のウィンドウ（例: 証跡の新しいウィンドウのラベル）では「閉じる」を返す
+- [ ] AC-S3-2: 器（`MockRuntime`）でメインのウィンドウに閉じる要求（`close`）を送った後も、メインのウィンドウは破棄されずに残る
+- [ ] AC-S3-3: メニューバーのメニューの項目は「ウィンドウを開く」「終了」の 2 つだけで、この順に並ぶ
+- [ ] AC-S3-4: メニューの「ウィンドウを開く」の項目の ID から操作を引くと、メインのウィンドウを表示する操作（操作を表す列挙の値）が返る
+- [ ] AC-S3-5: メニューの「終了」の項目の ID から操作を引くと、アプリを終了する操作が返る
+- [ ] AC-S3-6: メニューの項目に無い ID から操作を引くと、操作は返らない
+- [ ] AC-S3-7: 再表示の要求（Dock のアイコン）の判定は、見えているウィンドウが無いときはメインのウィンドウを表示する操作を返し、あるときは何もしない
+- [ ] AC-S3-8: メインのウィンドウの設定の `background_throttling` は `Disabled` である
+- [ ] AC-S3-9: メインのウィンドウの設定の URL は製品版の web のエントリ（`app.html`）である（S2 の器のまま）
+
+### 毎分の刻み（Rust のテスト）
+
+- [ ] AC-S3-10: 次の刻みまでの待ち時間は、今から次の分の境界（秒 0）までである。例: 分の境界ちょうど → 60 秒、境界の 1 ミリ秒後 → 59.999 秒、30 秒 → 30 秒、59.999 秒 → 1 ミリ秒
+- [ ] AC-S3-11: 刻みの送り手は、待ちが終わるたびに、刻みのイベント（`minute-tick`）をメインのウィンドウへ 1 回送る（即時に返す待ちに差し替えて、待ちを 3 回終えると 3 回送る）
+- [ ] AC-S3-12: 器（`MockRuntime`）でメインのウィンドウに閉じる要求を送った後も、刻みの送り手はメインのウィンドウへ刻みのイベントを送り続ける
+- [ ] AC-S3-13: 器を組み立てると（`setup` の後）、刻みの送り手が起動したことを示す器の状態が取得できる
+
+### 権限（Rust のテスト・設定の検査）
+
+- [ ] AC-S3-14: S3 の時点で、アプリの capability が許可する権限は、`sql:allow-execute`・`sql:allow-select`・`notification:allow-notify`・`core:event:allow-listen` の 4 つだけである
+- [ ] AC-S3-15: メインのウィンドウから `plugin:notification|request_permission` を呼ぶと、権限の不足で拒否される
+- [ ] AC-S3-16: メインのウィンドウから `plugin:notification|is_permission_granted` を呼ぶと、権限の不足で拒否される
+- [ ] AC-S3-17: メインのウィンドウからイベントを送るコマンド（`plugin:event|emit`）を呼ぶと、権限の不足で拒否される
+
+### 通知ポート（TypeScript のテスト）
+
+- [ ] AC-S3-18: 毎分の検知（`createTicker`）で発火が 1 件あるとき、渡した通知ポートがその発火のタイトルと本文で 1 回呼ばれる
+- [ ] AC-S3-19: 毎分の検知で発火が 0 件のとき、通知ポートは呼ばれない
+- [ ] AC-S3-20: 毎分の検知で通知ポートが `delivered: false` を返したとき、その送信履歴の行の `delivered` は 0、`channel` は通知ポートが返した値になる
+- [ ] AC-S3-21: 開発者用の版の `startScheduler` が毎分の検知に渡す通知ポートは、`notifier.ts` の `sendNotification` に `nodeSystemExecFile` を渡して送る
+- [ ] AC-S3-22: 製品版の通知ポートは、`invoke` を `plugin:notification|notify` と `{ options: { title, body } }` で 1 回呼ぶ
+- [ ] AC-S3-23: 製品版の通知ポートは、`invoke` が解決したとき `{ delivered: true, channel: "tauri-notification" }` を返す
+- [ ] AC-S3-24: 製品版の通知ポートは、`invoke` が拒否したとき例外にせず `{ delivered: false, channel: "none" }` を返す
+- [ ] AC-S3-25: 製品版の通知ポートは、`invoke` が拒否したとき、その失敗をログに出す
+
+### 製品版の毎分の検知の起動（TypeScript のテスト）
+
+- [ ] AC-S3-26: 製品版の毎分の検知を始めると、刻みのイベント（`minute-tick`）の購読を 1 回始める
+- [ ] AC-S3-27: 製品版の毎分の検知は、刻みのイベントを 1 回受けるたびに検知（`tick`）を 1 回走らせる
+- [ ] AC-S3-28: 製品版の毎分の検知で発火が 1 件あるとき、その送信履歴の行は開始時に渡した DB のポートに書かれる（送信の形は AC-S3-22 で確かめる）
+- [ ] AC-S3-29: 製品版の毎分の検知は、`env` を空のオブジェクトにして組み立てられる（`createTicker` に渡る `env` にキーが無い）
+- [ ] AC-S3-30: 製品版の web のエントリの起動で、DB の準備に成功したときは、そのポートで毎分の検知を始める
+- [ ] AC-S3-31: 製品版の web のエントリの起動で、DB の準備に失敗して「DB 未接続」で起動したときは、毎分の検知を始めない
+- [ ] AC-S3-32: 製品版の web のエントリの起動で、毎分の検知の開始が失敗しても、画面を描画する
+- [ ] AC-S3-33: 製品版の web のエントリの起動で、毎分の検知の開始が失敗したとき、その失敗をログに出す
+
+### ビルドの検査
+
+- [ ] AC-S3-34: 製品版の web のビルドの入力モジュールに `node-cron` が含まれない
+- [ ] AC-S3-35: 製品版の web のビルドの入力モジュールに `server/src/scheduler/scheduler.ts` が含まれない
+- [ ] AC-S3-36: 製品版の web のビルドの入力モジュールに `server/src/notifications/notifier.ts` が含まれない
+- [ ] AC-S3-37: 製品版の web のビルドの入力モジュールに `server/src/scheduler/scheduler-tick.ts` が含まれる
+- [ ] AC-S3-38: 製品版の web のビルドの入力モジュールに `@tauri-apps/plugin-notification`（JS の通知 API）が含まれない
+- [ ] AC-S3-39: コアのエントリ（`core-entry.ts`）から `createTicker` を import できる
+- [ ] AC-S3-40: `createTicker` を re-export した状態で、コアのバンドル検査（`core-entry.bundle.test.ts`）に合格する
+
+### 開発者用の版と品質ゲート
+
+- [ ] AC-S3-41: `scheduler.test.ts` の既存のテスト（node-cron の `* * * * *`・`tick` の呼び出し・`stop`）が変更なしで合格する（`startScheduler` の引数〔`db`・`env`・`notificationUrl`〕は変えず、内部で通知ポートを組む）
+- [ ] AC-S3-42: `notifier.test.ts` の既存のテストが変更なしで合格する
+- [ ] AC-S3-43: `scheduler-tick.test.ts` の既存のテストが期待値を変えずに合格する（変えるのは `createTicker` に渡す依存の組み立てだけ。`execFile` のモックは `notifier.ts` の `sendNotification` で包んだ通知ポートとして渡す）
+- [ ] AC-S3-44: `npm run lint`・`npm run typecheck`・`npm test`・`npm run test:tz`・`npm run test:rust`・`npm run test:tauri`・`npm run test:tauri-db` が合格する
+- [ ] AC-S3-45: `npm run build:tauri` で macOS の `.app` が生成される（macOS の開発機で実行する）
+- [ ] AC-S3-46: `npm run build:tauri` の後、`npm run verify:tauri-bundle` が合格する
+
+## 手動の確認手順（S3）
+
+人間（オーナー）が実機（macOS 14 以上）で確かめる。`npm run build:tauri` の後に行う。最初に `stat -f %Sm server/data/ai-boss.db` でオーナーの DB の更新時刻を控える。Node サーバー（`npm run start`）は起動しない状態で行う。S3 の時点では製品版の LLM バックエンドが 0 件のため、通知の本文は定型文になる（#581 S3 のマージ後は LLM の文面になる）。製品版の DB は `~/Library/Application Support/dev.aiboss.app/ai-boss.db`。
+
+1. 生成された `.app`（`native/tauri-app/target/release/bundle/macos/`）を起動し、メニューバーに ai-boss のアイコンが出て、押すと「ウィンドウを開く」「終了」の 2 項目のメニューが出ることを確かめる。
+2. 今日の朝会の時刻を今から 3 分後（以下 T）に変える（朝会は実施しない。朝会の通知は勤務時間の判定の対象外）。催促の間隔の設定は既定（L1→L2 15 分・L2→L3 10 分・L3 の繰り返し 10 分）のままにする。
+3. ウィンドウの閉じるボタンでウィンドウを閉じ、メニューバーのアイコンと Dock のアイコンが残ることを確かめる。
+4. 朝会の時刻に朝会のリマインドの通知（アプリ名 ai-boss）が表示されることを確かめる。
+5. **（タイマーの間引き・停止の確認）** ウィンドウを閉じたまま T+36 分まで待ち（非表示の WebView が止まりうる約 5 分を大きく越える）、朝会のリマインドが T+15 分（L2）・T+25 分（L3）・T+35 分（L3 の繰り返し）に届くことを確かめる（各 ±1 分）。
+6. 手順 5 の後、`sqlite3 ~/Library/Application\ Support/dev.aiboss.app/ai-boss.db "select sent_at, rule_key, escalation_level, delivered, channel from notifications where rule_key like 'morning_meeting%' order by id"` で、段階 1・2・3・3 の 4 行の `sent_at`（UTC）がローカル時刻で T・T+15・T+25・T+35 分（各 ±1 分）に並び（ウィンドウを開き直した時刻にまとめて書かれていない）、`channel` が `tauri-notification`・`delivered` が 1 であることを確かめる。まとめて書かれている・届かない場合は、その見え方を記録して別 Issue にする。
+7. メニューバーの「ウィンドウを開く」でウィンドウが表示されることを確かめる。もう一度閉じ、Dock のアイコンを押してウィンドウが表示されることを確かめる。
+8. システム設定の「通知」に ai-boss があり、通知が許可されていることを確かめる（デスクトップのプラグインは許可を問い合わせないため、表示されない場合はここを確かめる。切っている場合、アプリは送信の失敗として記録しない〔「やらないこと（S3）」〕）。
+9. メニューバーの「終了」でアプリが終了し（メニューバー・Dock のアイコンが消える）、`pgrep -fl ai-boss` にアプリのプロセスが残らないことを確かめる。もう一度起動し、⌘Q でも終了することを確かめる。
+10. `stat -f %Sm server/data/ai-boss.db` の更新時刻が、最初に控えた値から変わっていないことを確かめる。
+
 ## 仮定（軽微・可逆）
 
 - A1: `server/` ディレクトリは S1 では動かさない（ワークスペースの再編は差分が大きく、S1 の目的に要らない）
@@ -278,3 +427,11 @@
 - A6（S2）: Blob URL の失効までの時間は 60 秒とする（新しいウィンドウが本文を読み終えるのに十分で、開きっぱなしの URL を残さない長さ。値は後で変えてよい）
 - A7（S2）: CSP の `style-src` は `'self' 'unsafe-inline'` とする（スタイルはスクリプトを実行しないため。画面のライブラリが実行時に `<style>` を差し込んでも崩れないようにする）
 - A8（S2）: アプリの識別子（bundle identifier）は `dev.aiboss.app`、製品名は `ai-boss` とする（署名・配布〔#587〕で見直してよい）
+- S3-A1（S3）: 毎分の刻みは Rust 側のタイマーから送り、メインのウィンドウの `background_throttling` を `Disabled` にする（理由は「S3 の設計」の「毎分の刻みの供給元」。可逆で、実機の確認で WebView のタイマーで足りると分かれば戻してよい）。仮定の番号は、並行する S4（PR #656）の A9〜A14 と衝突しないよう `S3-` を付ける
+- S3-A2（S3）: 刻みのイベントの名前は `minute-tick` とし、宛先はメインのウィンドウだけにする。刻みは次の分の境界まで毎回計算し直して待つ（遅れても次の刻みで境界へ戻り、ずれが積み上がらない）
+- S3-A3（S3）: 製品版の送信の `channel` の値は `tauri-notification` とする（`notifications.channel` は CHECK 制約の無い文字列で、スキーマは変えない）
+- S3-A4（S3）: メインのウィンドウは、S2 の `WebviewWindowBuilder::new` を、コードで組んだ `WindowConfig` からの `WebviewWindowBuilder::from_config` に置き換えて作る（`background_throttling` の設定値をテストで検査できる形にするため。`tauri.conf.json` の `app.windows` は空のまま）
+- S3-A5（S3）: メニューバーのアイコンはアプリの既定のアイコン（`bundle.icon`）を使う（テンプレート画像〔単色〕は用意しない。見え方は後で変えてよい）
+- S3-A6（S3）: `tauri-plugin-notification` は `~2.5` に固定し（2.5.0 の実測に拠るため）、JS のパッケージ `@tauri-apps/plugin-notification` は入れない（`@tauri-apps/api` の `invoke` で直接呼ぶ）
+- S3-A7（S3）: Tauri の API を呼ぶ部分（トレイ・メニューの組み立て・ウィンドウの表示・`exit`）は薄く保ち、判定だけを純粋な関数としてテストする（`MockRuntime` は `hide`・`show` を観測できず、終了の要求は未実装のため）
+- S3-A8（S3）: 刻みの送り手が起動したことを示す器の状態の型・名前は実装で決める。AC-S3-14 の権限の一覧は、並行する #581 S3（PR #653）・#579 S4（PR #656）が先にマージされたら、その権限を足した一覧に読み替える（S3 が足すのは `notification:allow-notify`・`core:event:allow-listen` の 2 つ）
