@@ -2,6 +2,7 @@
 
 > Issue #579。2026-09-26 に論点 Q1〜Q5 を確定した（親の回答とオーナーの回答。オーナーの回答は「オーナーの決定」節に原文のまま引用する）。
 > 2026-09-28: S1（#594・PR #598）と #580 S1（#597・PR #615）のマージ後、S2 を実装対象にするため改訂した（「S2 の器の設計」・受入基準（S2）・手動の確認手順（S2）・やらないことと仮定の追加）。確定済みの設計（クリティカル設計決定 1〜4・スライス表・オーナーの決定）は変えていない。
+> 2026-09-29: S2（#645・PR #646）と #580 S2（#651・PR #652）のマージ後、S4 を実装対象にするため改訂した（「S4 の設計」・受入基準（S4）・手動の確認手順（S4）・やらないことと仮定の追加）。確定済みの設計（クリティカル設計決定 1〜4・S2 の器の設計・スライス表・オーナーの決定）と S1・S2 の受入基準は変えていない。
 
 ## 概要
 
@@ -49,6 +50,7 @@
 - [ ] 製品版のビルドに `claude-code` バックエンド（`@anthropic-ai/claude-agent-sdk`・`claude-code-backend.ts`）が含まれない（S1 で検証）
 - [ ] 各スライスのマージ時点で、開発者用の版（現行の Node サーバー版・`npm run start`）の既存テストが合格し、現行どおり起動する（各スライスの受入基準で検証）
 - [ ] デスクトップの製品版で、ウィンドウを閉じた後もアプリがメニューバーに残り、毎分のサボり検知と催促通知を続ける（S3 で検証）
+- [ ] 製品版の証跡ファイルはアプリのデータディレクトリに保存され、オーナーの開発者用の版の証跡ファイル（`server/data/evidence/`）を開かず・書かない（S4 で検証。自動の検査は受入基準（S4）のスコープの外への到達の拒否〔AC-S4-11〜AC-S4-15〕とビルドの入力の検査〔AC-S4-32〕、オーナーのディレクトリそのものは手動の確認手順（S4）で確かめる）
 - [ ] 製品版の朝会・夕会（LLM を使う流れ）が Tauri アプリで動く（**確認は #581 が済んでから行う**。オーナーの決定 Q4-c）
 - [ ] 製品版のチャットで、WKWebView 上で応答が SSE で逐次表示され、生成停止で中止できる（**確認は #580 の S2 と #581 が済んでから行う**。クリティカル設計決定 1「未検証点の扱い」）
 
@@ -130,6 +132,65 @@
 - **製品版に開発者用の経路が混入しないことの検査（決定 3 の延長）**: S1 はコアのエントリ（`server/src/core-entry.ts`）のバンドルを検査した。S2 では、器に実際に載る**製品版の web のビルド**（Vite）の入力モジュール（Vite の `build()` が返す Rollup の出力の各チャンクの `moduleIds` の和集合。S1 のメタファイルに当たる）を検査し、`claude-code`・`@anthropic-ai/sdk`・Node の周辺（`@hono/node-server`・`better-sqlite3`・`server/src/app.ts`・`server/src/index.ts`・開発者用の LLM バックエンドの登録）が含まれないことを固定する。逆に開発者用の web のビルドにはコア（`server/src`）が入らないことも固定する。
 - **ADR 0002 の改訂**: 決定 4 のとおり、製品版で永続状態と DB への副作用を受け持つ層を「WebView 内の TS コア（Hono アプリ）」と ADR 0002 に記録する。
 
+### S4 の設計（2026-09-29・S4 の着手時に確定済みの設計から導いた形）
+
+#### 実測（2026-09-29・`main` c4af1ba・`tauri-plugin-fs` 2.6.0〔crates.io の配布物〕・`tauri` 2.12.0）
+
+| 観点 | 実測 |
+|---|---|
+| 証跡の保存ポート | `EvidenceStore`（`server/src/tasks/evidence-store.ts`）の `write`・`read`・`remove` は**同期**で、`Uint8Array` を受け渡す。plugin-fs は IPC 越しで**非同期**のため、そのままでは実装できない |
+| 製品版のエントリ | `createProductCoreApp`（`web/src/app-entry/create-product-core-app.ts`）は `evidenceStore` を渡さない。製品版では証跡ファイルのアップロード・本文の取得・ファイル証跡の削除は 500（`evidence store is not configured`）になる |
+| 開発者用の版の保存先 | `resolveEvidenceDir(config.dbPath)`（`config.ts`）＝**DB と同じディレクトリの `evidence/`**（既定 `server/data/evidence/`）。保存名は `<UUID>.<小文字の拡張子>`（`evidence-store.ts` の `generateStoredFilename`。拡張子はホワイトリスト〔`EVIDENCE_EXTENSION_MIME_TYPES`〕に当たったものだけ） |
+| 製品版の DB の場所 | plugin-sql が `app_config_dir()`（macOS では `~/Library/Application Support/dev.aiboss.app/`）の下に `ai-boss.db` を作る（#580 S2） |
+| plugin-fs のパス | 各コマンドは `path`（文字列。`file:` 等の URL も受け付ける）と `baseDir` を受け、`baseDir` があれば Tauri の `path().resolve(path, baseDir)` で連結する。`path` が絶対パスなら連結の結果はその絶対パスになる。**`..` の要素を含むパスは、スコープの判定より前に拒否される**（`SafeFilePath`） |
+| plugin-fs のスコープ | 許可の判定は、パスがシンボリックリンクならリンク先（1 段）を読み、**存在するパスは `canonicalize` した後**で、許可のパターン（glob）と照合する。照合は `require_literal_separator`（`*` は `/` をまたがない）・`require_literal_leading_dot`（`*` は先頭の `.` に当たらない）・大文字小文字を区別する。許可のパターン自体も、`canonicalize` した親の形を併せて登録する（`/var` → `/private/var` のような違いを吸収する） |
+| 権限 | コマンドごとに `fs:allow-<コマンド>` があり、capability で `{ "identifier": "fs:allow-read-file", "allow": [{ "path": "$APPCONFIG/evidence/*" }] }` の形で**コマンドごとのスコープ**を付けられる。`fs:default` はアプリのディレクトリの読み取り等をまとめて許す |
+| JS の API | `@tauri-apps/plugin-fs` の `writeFile` は本文をそのまま（raw）送り、`path`・`options` を**ヘッダ**で送る。`@tauri-apps/api/mocks` の `mockIPC` はヘッダ（`invoke` の第 3 引数）を捨てる |
+| 存在しないパスとシンボリックリンク | 書き込み先がまだ無いパスは `canonicalize` されない。したがって**保存先のディレクトリそのもの**（`evidence`）がアプリの外を指すシンボリックリンクだと、まだ無いファイルへの書き込みは許可のパターンに当たり、リンク先（アプリの外）に書かれる |
+
+#### 保存先（オーナーの決定 Q3-b・「移行の順序と並行運用」・#580 S2 の DB の置き場所から導出）
+
+- 製品版の証跡ファイルの保存先は **`app_config_dir()` の直下の `evidence/`**（macOS では `~/Library/Application Support/dev.aiboss.app/evidence/`）。開発者用の版の「DB と同じディレクトリの `evidence/`」と同じ決め方を、製品版の DB の場所（#580 S2 の `app_config_dir`）に当てはめたもの。オーナーの開発者用の版の証跡ファイル（`server/data/evidence/`）は開かず・書かない（データは移さない。Q3-b）。
+- 保存先のディレクトリは **Rust 側が起動時（`setup`）に作る**（準備は `app_config_dir` を受け取る関数に切り出し、`setup` はそれを呼んで失敗を伝える。テストはこの関数の単体と、`HOME` を一時ディレクトリにした MockRuntime の器の組み立ての両方で確かめる）（WebView に `mkdir` を許可しない）。起動時に `evidence` が既にあって**実ディレクトリでない**（シンボリックリンク〔リンク先がディレクトリでも〕・通常のファイル）ときは、`setup` を失敗させて起動しない（上の実測の「存在しないパスとシンボリックリンク」の経路を塞ぐ。#580 S2 の仮定 A7 の「preload が DB を開けないときは起動しない」と同じ扱い）。
+
+#### 権限（「S2 の器の設計」の「使うスライスが最小の単位で足す」）
+
+- `tauri-plugin-fs` を器に登録し、capability（`capabilities/default.json`・`main` のウィンドウだけ）に、**`fs:allow-read-file`・`fs:allow-write-file`・`fs:allow-remove`・`fs:allow-exists` の 4 つだけ**を、それぞれ**スコープ `$APPCONFIG/evidence/*` の 1 件だけ**を付けて足す。`fs:default`・スコープを持たない `fs:allow-*`・全コマンド共通の `fs:scope`・それ以外のすべての fs のコマンド（例: `mkdir`・`read_dir`・`rename`・`copy_file`・`open`・`stat`）は許可しない。
+- `$APPCONFIG/evidence/*` はワイルドカードを保存先の直下の 1 要素だけに限る（`**` を使わない。上の実測のとおり `*` は `/` をまたがず、先頭の `.` に当たらない）。
+- path API（`core:path`）の権限は足さない。JS からは `baseDir: BaseDirectory.AppConfig` と相対パス `evidence/<保存名>` で呼ぶ（絶対パスを JS で組み立てない）。
+
+#### 製品版の証跡の保存の実装
+
+- 製品版の `EvidenceStore` の実装（plugin-fs 実装）は、製品版の web のエントリの側（`web/src/app-entry/`）に置く（`@tauri-apps/plugin-fs` に依存するのは製品版だけ。#580 S2 の plugin-sql 実装のドライバと同じ置き方）。`@tauri-apps/plugin-fs`（JS）は上流のまま使う。
+- **証跡の保存ポートの口は変えず、戻り値に `Promise` を許す**（`write`・`read`・`remove` の引数・`Uint8Array` の受け渡しは S1 のまま。開発者用の版の Node fs 実装は同期のまま変えない）。コアはポートを呼ぶすべての箇所で戻り値を `await` する（`saveFileEvidenceIfAllowed` の `write` と拒否時の `remove`・`removeEvidenceFile`〔`Promise<void>` にする〕とその呼び出し元〔`deleteEvidence`・`task-evidences-routes.ts` の `DELETE`〕・本文の取得の `read`）。
+- 保存名の検査（多層防御。境界の本体は上の capability のスコープ）: plugin-fs 実装は、保存名が **`<小文字の UUID>` ＋ ホワイトリストの拡張子（小文字）** の形（コアの `generateStoredFilename` が作る形）でないとき、plugin-fs を呼ばない。`write` は拒否し、`read` は「無い」（`undefined`。本文の取得は既存の 404）を返し、`remove` は何もしない（行の削除はコアで確定済みで、検査に通らない名前の実体はこの実装が書いたものではない）。検査の関数は、保存名を作る側と同じ定義を共有するため**コアの `evidence-validation.ts` に置き**（ホワイトリスト `EVIDENCE_EXTENSION_MIME_TYPES` を参照する）、製品版のコアの公開面（`core-entry.ts`）から re-export して使う（web 側に複製しない）。
+- 検査を通った保存名で IPC が失敗したとき（I/O の失敗・スコープの拒否）は、失敗をそのまま伝える（開発者用の版の Node fs 実装〔`writeFileSync`・`unlinkSync` の例外〕と同じ振る舞い。握りつぶさない）。
+- `read`・`remove` は、`exists` で有無を確かめてから読む・消す（開発者用の版の Node fs 実装〔`existsSync`〕と同じ振る舞い。無いファイルの `read` は `undefined`、`remove` は何もしない）。
+- 製品版のエントリは、plugin-fs 実装を `createCoreApp` の `evidenceStore` に渡す（DB の準備に失敗して「DB 未接続」で起動する場合も同じ）。
+
+#### パスが保存先の外へ出る経路と扱い
+
+保存名は DB の `stored_filename` から来る。WebView の JS は SQL の `execute` を許可されているため、行の値は任意の文字列になりうる。したがって**境界は Rust 側のスコープ**に置き、TS の検査は多層防御とする。
+
+| 経路 | 例 | 扱い |
+|---|---|---|
+| `..` | `evidence/../ai-boss.db`・`evidence/../../../x` | 塞ぐ。plugin-fs が拒否（`SafeFilePath`）。TS の検査も拒否（受入基準で固定） |
+| 絶対パス | `/etc/hosts`・`<HOME>/outside.txt`（`baseDir` あり・なし） | 塞ぐ。連結の結果が絶対パスになり、スコープに当たらず拒否。TS の検査も拒否（受入基準で固定） |
+| `file:` の URL | `file:///etc/hosts` | 塞ぐ。スコープに当たらず拒否（受入基準で固定） |
+| 保存先の外を指すシンボリックリンク（ファイル） | `evidence/<名前>.png` → アプリの外のファイル（実在・リンク切れ） | 塞ぐ。スコープの判定はリンク先で行われ、外なら拒否（受入基準で固定） |
+| 保存先のディレクトリ自体がシンボリックリンク | `evidence` → アプリの外のディレクトリ | 塞ぐ。起動時の `setup` が失敗し起動しない（受入基準で固定） |
+| 区切り文字の混入・サブディレクトリ | `evidence/sub/x.png`・`evidence/a\b.png`（`\` は macOS ではファイル名の文字） | `/`: 塞ぐ（`*` が `/` をまたがない。受入基準で固定）。`\`: 保存先の直下の 1 ファイル名になるだけで外へは出ない。TS の検査は両方を拒否（受入基準で固定） |
+| 保存先の兄弟・親 | `ai-boss.db`（`$APPCONFIG` 直下）・`evidence` そのもの | 塞ぐ。スコープに当たらず拒否（受入基準で固定。DB ファイルを fs のコマンドから読み書き・削除できない） |
+| 大文字小文字 | `Evidence/<名前>.png`・`<名前>.PNG` | 照合は大文字小文字を区別するため、保存先の名前の綴りを変えたパスはスコープに当たらない（受入基準で固定）。APFS の大文字小文字の同一視で当たっても、行き先は保存先の中で外へは出ない。TS の検査は大文字を含む保存名を拒否（受入基準で固定） |
+| 先頭の `.` | `evidence/.hidden` | 外へは出ない（スコープにも当たらない）。受入基準にしない |
+| 判定と操作の間の差し替え（TOCTOU）・`app_config_dir` より上の祖先のシンボリックリンク | 判定の直後にファイルをリンクへ差し替える | やらないこと（理由は「やらないこと」節） |
+
+#### 契約テストを器の上で通す仕組み（#580 S2 の延長）
+
+- **両版で同じ契約スイート**: 証跡の保存ポートの契約（書いたバイト列が同じに読める・無いものの `read` は `undefined`・`remove` の後は `read` が `undefined`・無いものの `remove` は失敗しない）の本体を `server/src/tasks/test-support/` に置き、開発者用の版は Node fs 実装で `npm test` の中で、製品版は plugin-fs 実装で `npm run test:tauri-db` の中で回す。
+- **IPC の中継の拡張**: 器の IPC の中継（`examples/sql-ipc-bridge.rs`）に、raw の本文（`writeFile`）とヘッダの受け渡し・raw の応答（`readFile`）を足す。`mockIPC` はヘッダを捨てるため、製品版の plugin-fs 実装のテストは `__TAURI_INTERNALS__.invoke` を直接差し替えて中継へ流す（置き換わるのは WebView と Rust の間の転送だけで、JS のプラグイン・製品版の実装・Rust のプラグイン・ACL は製品版と同じものが動く）。
+- **Rust の結合テスト**（`npm run test:tauri`）: 器の ACL の上で、保存先のディレクトリの作成・許可されたコマンドの実行・許可しないコマンドの拒否・上の表の各経路の拒否を、TS を介さずに確かめる。
+
 ### 実装計画（S1 のチケット分解の見通し）
 
 1. LLM バックエンドの注入化と、`claude-code`・`api` の開発者用エントリへの分離
@@ -143,9 +204,9 @@
 | S1（最小） | 実行環境に依存しないコアの切り出しと、製品版からの `claude-code` 除外。製品版のコアのエントリ（`createApp` を束ねる）が Node 組み込み・Agent SDK・`@hono/node-server`・`@anthropic-ai/sdk` を含まずにブラウザ向けに束ねられることをテストで固定し、開発者用の版は現行どおり動く | 15-25 | これだけで価値が出る（ADR 0003 改訂の「製品版に含めない」の構造的な担保。以降のスライスの前提） |
 | S2 | Tauri 2（macOS）の器。製品版のエントリで `/api` をアプリ内の `app.fetch` へ振り向ける。証跡の `<a href>` の Blob URL 化。S2 で確かめるのは DB と LLM を使わずに確かめられるものだけとし、DB を使う画面の動作確認は #580 S2 の後、WKWebView 上の SSE と生成停止の実機確認は #580 S2 と #581 の後に行う（クリティカル設計決定 1「未検証点の扱い」）。ADR 0002 の改訂（永続状態と DB 副作用を受け持つ層＝WebView 内の TS コア。層は本仕様で確定済みのため DB の実行を待たずに S2 で行う） | 10-20 | S1 と #580 の S1（#597）がマージされてから（#580 の S2 は本機能の S2 の器の上で行う） |
 | S3 | デスクトップのスケジューラ・通知・メニューバー常駐（node-cron と `execFile` の置き換え）。WKWebView のタイマー間引きの確認 | 8-15 | S2 がマージされてから |
-| S4 | 証跡ファイルの保存をアプリのデータディレクトリへ（plugin-fs） | 5-10 | S2 がマージされてから |
+| S4 | 証跡ファイルの保存をアプリのデータディレクトリへ（plugin-fs） | 5-10（S4 の着手時に、証跡の保存ポートの非同期化・契約スイート・IPC の中継の拡張・Rust の結合テストを含めて 15-25 と見直した） | S2 がマージされてから（製品版の DB〔#580 S2〕も前提。2026-09-29 時点でいずれもマージ済み） |
 
-実装対象: S2
+実装対象: S4
 
 ## やらないこと
 
@@ -163,7 +224,10 @@
 - Windows 対応（理由: ADR 0011 決定 19〔同上〕で後続リリース）
 - ログイン時の自動起動（理由: 現行版にも無い。必要なら別 Issue）
 - （S2 で追加）製品版で外部の URL（リンクの証跡など）を既定のブラウザや新しいウィンドウで開くこと（理由: 外部 URL を開くには opener 等の権限と、開いてよい URL の範囲の決定が要る。S2 は安全側に倒し、アプリの外へのナビゲーションと新しいウィンドウを `blob:` 以外すべて拒否する。必要になったら別 Issue で範囲を決める）
-- （S2 で追加）製品版で証跡ファイルをダウンロード（端末へ保存）すること（理由: 保存先の扱いは S4〔plugin-fs〕と併せて決める。S2 では WebView のダウンロード要求をすべて拒否する。画像・PDF 以外の証跡は S2 の器では開けない）
+- （S2 で追加・S4 で確定）製品版で証跡ファイルをダウンロード（端末へ保存）すること（理由: S2 では保存先の扱いを S4 と併せて決めるとしていたが、**S4 でも作らない**〔2026-09-29・親の決定〕。S4 は保存先の置き換えだけを行い、WebView のダウンロード要求はすべて拒否したままにする。画像・PDF 以外の証跡は製品版では開けない。必要になったら別 Issue で扱う）
+- （S4 で追加）Node 版の証跡ファイル（`server/data/evidence/`）を製品版の保存先へ移すこと（理由: オーナーの決定 Q3-b。Tauri アプリは新しい DB で始め、証跡ファイルも移さない）
+- （S4 で追加）判定と操作の間にファイルをシンボリックリンクへ差し替える競合（TOCTOU）と、`app_config_dir` より上の祖先のディレクトリのシンボリックリンクの手当て（理由: どちらも WebView からは作れず〔シンボリックリンクを作る fs のコマンドを許可しない〕、利用者と同じ権限でファイルシステムを書き換えられるローカルのプロセスを要する。そのプロセスはアプリを介さずにオーナーのファイルを直接読めるため、アプリの境界で防ぐ対象にしない）
+- （S4 で追加）証跡ファイルの暗号化・孤児ファイル（行の無い実体）の掃除（理由: 開発者用の版にも無い。孤児ファイルの掃除は `evidence-store.ts` の既存の方針〔YAGNI〕のまま）
 - （S2 で追加）製品版の DB の実装・DB を使う画面の動作確認（理由: #580 S2。S2 の器は DB に接続せず、DB を使うルートは失敗の応答になる）
 
 ## 受入基準（S1）
@@ -186,6 +250,7 @@
 ## 受入基準（S2）
 
 > 2026-09-29（#580 S2）: 下の「DB 未接続」の項（`/api/health` の `db:false`・DB を使うルートが 2xx を返さない・DB ポートの 5 つの口の拒否）は、製品版の DB の準備に失敗したときのフォールバックの振る舞いとして残り、通常の起動では製品版の DB（plugin-sql）に接続する。「capability が許可する権限は 0 件」は、#580 S2 で DB に要る最小の単位（`sql:allow-execute`・`sql:allow-select`）に置き換えた（`docs/features/async-db-layer.md` の受入基準（S2）AC-S2-5）。
+> 2026-09-29（#579 S4）: さらに、証跡ファイルに要る fs の 4 つの権限（スコープは保存先の直下だけ）を足した。capability の fs の権限は受入基準（S4）の AC-S4-4〜AC-S4-7 を正とする。
 >
 > S2 は DB と LLM を使わずに確かめられるものだけを受入基準にする（スライス表）。ウィンドウが開き画面が表示されることなど、人間が実機で見るしかないものは「手動の確認手順（S2）」に分ける。
 
@@ -268,6 +333,79 @@
 5. オーナーの DB（`server/data/ai-boss.db`）の更新時刻がアプリの起動・操作で変わらないことを確かめる。
 6. ウィンドウを閉じるとアプリが終了することを確かめる（メニューバーへの常駐は S3）。
 
+## 受入基準（S4）
+
+> S4 は、製品版の証跡ファイルの保存先をアプリのデータディレクトリへ置き、plugin-fs の権限を保存先だけに限ることを受入基準にする。実機でアプリを起動して確かめるものは「手動の確認手順（S4）」に分ける。「両版」は、開発者用の版（Node fs 実装・`npm test`）と製品版（plugin-fs 実装・器の IPC の中継・`npm run test:tauri-db`）の両方で、同じ契約スイートの本体が合格することを指す。
+
+### 保存先（Rust のテスト。`HOME` を一時ディレクトリにして確かめる）
+
+- [ ] AC-S4-1: 器を起動すると、アプリのデータディレクトリ（`app_config_dir`）の直下に `evidence` ディレクトリが作られる
+- [ ] AC-S4-2: 起動時に `app_config_dir` の直下の `evidence` がシンボリックリンク（リンク先がアプリの外のディレクトリ・アプリの中のディレクトリのいずれでも）のとき、器の組み立て（`setup`）は失敗する
+- [ ] AC-S4-3: 起動時に `app_config_dir` の直下の `evidence` が通常のファイルのとき、器の組み立て（`setup`）は失敗する
+
+### 権限（設定の検査）
+
+- [ ] AC-S4-4: アプリの capability が許可する fs の権限は `fs:allow-read-file`・`fs:allow-write-file`・`fs:allow-remove`・`fs:allow-exists` の 4 つだけである（`fs:default`・`fs:scope`・それ以外の `fs:` の権限を含まない）
+- [ ] AC-S4-5: アプリの capability が許可する sql の権限は、#580 S2 の `sql:allow-execute`・`sql:allow-select` のままである
+- [ ] AC-S4-6: capability の fs の 4 つの権限は、いずれも許可のスコープを `$APPCONFIG/evidence/*` の 1 件だけ持つ
+- [ ] AC-S4-7: capability の fs の 4 つの権限は、いずれも拒否のスコープを持たない
+- [ ] AC-S4-8: アプリのクレートの `tauri-plugin-fs` は 2.6 系に解決される（`Cargo.lock`）
+- [ ] AC-S4-9: web の `@tauri-apps/plugin-fs` の版の major・minor は、アプリのクレートの `tauri-plugin-fs` の major・minor と一致する
+
+### 権限と到達経路（Rust の結合テスト。器の ACL の上で `main` のウィンドウから IPC を送る）
+
+- [ ] AC-S4-10: `baseDir` を AppConfig にした `evidence/<UUID>.png` への `plugin:fs|write_file`・`plugin:fs|exists`・`plugin:fs|read_file`・`plugin:fs|remove` は実行され、書いたバイト列が `app_config_dir/evidence/` のファイルに残り、読めて、消える
+- [ ] AC-S4-11: 許可していない fs のコマンド（`plugin:fs|mkdir`・`plugin:fs|read_dir`・`plugin:fs|rename`・`plugin:fs|copy_file`・`plugin:fs|stat`・`plugin:fs|open`）は、保存先の中のパスでも拒否される
+- [ ] AC-S4-12: `..` を含むパス（`evidence/../ai-boss.db`・`evidence/../../outside.txt`）の `read_file`・`write_file` は拒否され、保存先の外のファイルは読めず、内容も変わらない
+- [ ] AC-S4-13: 絶対パス（アプリのデータディレクトリの外の実在するファイル。`baseDir` あり・なし）の `read_file`・`write_file`・`remove` は拒否され、そのファイルの内容は変わらず、消えない
+- [ ] AC-S4-14: `file:` の URL（アプリのデータディレクトリの外の実在するファイル）の `read_file` は拒否される
+- [ ] AC-S4-15: 保存先の中に置いた、アプリの外のファイルを指すシンボリックリンク（リンク先が実在する場合・リンク切れの場合）の `read_file`・`write_file` は拒否され、リンク先は読めず、書かれない
+- [ ] AC-S4-16: 保存先の兄弟（`app_config_dir` 直下の `ai-boss.db`）への `read_file`・`write_file`・`remove` は拒否され、DB ファイルは内容が変わらず、消えない
+- [ ] AC-S4-17: 保存先のサブディレクトリのパス（`evidence/sub/x.png`）の `write_file` は拒否される
+- [ ] AC-S4-18: 保存先のディレクトリそのもの（`evidence`）の `remove` は拒否され、ディレクトリは残る
+- [ ] AC-S4-19: 保存先の名前の大文字小文字を変えたパス（`Evidence/<UUID>.png`・`EVIDENCE/<UUID>.png`）の `write_file` は拒否される
+
+### 製品版の証跡の保存の実装（web のテスト）
+
+- [ ] AC-S4-20: 製品版の plugin-fs 実装は、保存名が「小文字の UUID ＋ ホワイトリストの拡張子（小文字）」の形でないとき（`../x.png`・`/etc/hosts`・`a/b.png`・`a\b.png`・`<UUID>.PNG`・`<大文字の UUID>.png`・`<UUID>.exe`・`<UUID>`・空文字）、`write`・`read`・`remove` のいずれでも plugin-fs（IPC）を呼ばない
+- [ ] AC-S4-21: 製品版の plugin-fs 実装の `write` は、形の検査に通らない保存名を拒否する（例外で失敗する）
+- [ ] AC-S4-22: 製品版の plugin-fs 実装の `read` は、形の検査に通らない保存名に `undefined` を返す
+- [ ] AC-S4-23: 製品版の plugin-fs 実装の `remove` は、形の検査に通らない保存名で失敗しない（例外を投げない）
+- [ ] AC-S4-24: 製品版の plugin-fs 実装は、plugin-fs を `baseDir: BaseDirectory.AppConfig` と相対パス `evidence/<保存名>` で呼ぶ（IPC の要求の引数で確かめる）
+- [ ] AC-S4-25: 器の IPC の中継の上で製品版の plugin-fs 実装が `write` すると、中継の `HOME` の `Library/Application Support/dev.aiboss.app/evidence/<保存名>` に、書いたバイト列のファイルができる
+
+### 両版で同じ契約（契約スイート）
+
+- [ ] AC-S4-26: 両版で、`write` したバイト列（0 バイト・1 MB を含む）は `read` で同じバイト列に戻る
+- [ ] AC-S4-27: 両版で、書いていない保存名の `read` は `undefined` を返す
+- [ ] AC-S4-28: 両版で、`remove` した保存名の `read` は `undefined` を返す
+- [ ] AC-S4-29: 両版で、書いていない保存名の `remove` は失敗しない
+
+### 製品版のエントリ（器の IPC の中継の上）
+
+- [ ] AC-S4-30: 製品版の web のエントリが組み立てたアプリで、ファイル証跡をアップロード（`POST /api/tasks/:id/evidences`）すると、その本文（`GET …/content`）は送ったバイト列と同じである
+- [ ] AC-S4-31: 製品版の web のエントリが組み立てたアプリで、ファイル証跡を削除（`DELETE …/evidences/:evidenceId`）すると、その実体のファイルは保存先から消える
+- [ ] AC-S4-32: 製品版の web のビルドの入力モジュールに `server/src/tasks/evidence-storage.ts`（開発者用の版の Node fs 実装）が含まれない（#579 S2 の検査を保つ）
+- [ ] AC-S4-33: 製品版の web のビルドの入力モジュールに `@tauri-apps/plugin-fs` が含まれる
+
+### 開発者用の版・品質ゲート
+
+- [ ] AC-S4-34: 開発者用の版の証跡の保存・読み出し・削除の既存テスト（`evidence-storage.test.ts`・`task-evidences-routes.test.ts`・`core-app.test.ts`）が変更なしで合格する（保存先は現行どおり DB と同じディレクトリの `evidence/`）
+- [ ] AC-S4-35: `npm run lint`・`npm run typecheck`・`npm test`・`npm run test:tz`・`npm run test:rust`・`npm run test:tauri`・`npm run test:tauri-db` が合格する
+- [ ] AC-S4-36: `npm run build:tauri` で macOS の `.app` が生成され、`npm run verify:tauri-bundle` が合格する
+
+## 手動の確認手順（S4）
+
+人間が実機（macOS）で確かめる。`npm run build:tauri` の後に行う。Node サーバー（`npm run start`）は起動しない状態で行う。
+
+1. オーナーの開発者用の版の証跡のディレクトリ（`server/data/evidence/`）のファイルの一覧と更新時刻（`ls -la server/data/evidence/`）、オーナーの DB（`server/data/ai-boss.db`）の更新時刻を控える。
+2. 生成された `.app`（`native/tauri-app/target/release/bundle/macos/`）を起動し、タスクを 1 件作り、画像（PNG）と PDF の証跡ファイルを 1 件ずつアップロードする。
+3. `ls -la ~/Library/Application\ Support/dev.aiboss.app/evidence/` に 2 つのファイル（`<UUID>.png`・`<UUID>.pdf`）があることを確かめる。
+4. **（S2 の未検証のリスク）** 画像の証跡のリンクを押し、新しいウィンドウが開いて画像が表示されることを確かめる。PDF の証跡も同じく確かめる。表示されない（空白・エラー）ときは、その見え方を記録して別 Issue にする。**この手順の結果は S4 の合否に含めない**（「S2 の器の設計」が `blob:` の新しいウィンドウを「証跡を扱えるようになった後に手動で確かめる未検証のリスク」としており、S4 の範囲は保存先の置き換えだけのため。手当ては確かめた時点で決める〔クリティカル設計決定 1「未検証点の扱い」と同じ扱い〕）。
+5. アプリを終了して起動し直し、手順 3 の 2 つのファイルが残っていることを確かめる。手順 4 で表示できた場合は、証跡のリンクを押して同じ画像が表示されることも確かめる。
+6. 画像の証跡を削除し、手順 3 のディレクトリから `<UUID>.png` が消えたことを確かめる。
+7. 手順 1 のディレクトリの一覧・更新時刻と DB の更新時刻が変わっていないことを確かめる。
+
 ## 仮定（軽微・可逆）
 
 - A1: `server/` ディレクトリは S1 では動かさない（ワークスペースの再編は差分が大きく、S1 の目的に要らない）
@@ -278,3 +416,9 @@
 - A6（S2）: Blob URL の失効までの時間は 60 秒とする（新しいウィンドウが本文を読み終えるのに十分で、開きっぱなしの URL を残さない長さ。値は後で変えてよい）
 - A7（S2）: CSP の `style-src` は `'self' 'unsafe-inline'` とする（スタイルはスクリプトを実行しないため。画面のライブラリが実行時に `<style>` を差し込んでも崩れないようにする）
 - A8（S2）: アプリの識別子（bundle identifier）は `dev.aiboss.app`、製品名は `ai-boss` とする（署名・配布〔#587〕で見直してよい）
+- A9（S4）: plugin-fs は `tauri-plugin-fs` 2.6（2026-09-29 時点の 2 系の最新。3 系は alpha）と `@tauri-apps/plugin-fs` 2.6 を使う（fork しない。plugin-sql と違い、上流の振る舞いを変える必要が無い）
+- A10（S4）: 証跡の保存ポート（`EvidenceStore`）の `write`・`read`・`remove` は、戻り値に `Promise` を許す形にする（引数と `Uint8Array` の受け渡しは S1 のまま。開発者用の版の Node fs 実装は同期のまま。コアは `await` する）。plugin-fs が非同期のための内部構造の変更で、S1 の受入基準（既存テストが変更なしで合格）を保つ
+- A11（S4）: 製品版の保存先のディレクトリ名は `evidence` とする（開発者用の版と同じ名前。場所がアプリのデータディレクトリなので取り違えない）
+- A12（S4）: 保存名の検査に通らないときの振る舞いは、`write` が拒否（例外）・`read` が `undefined`（本文の取得は 404）・`remove` が何もしない、とする（`remove` は行の削除の確定後に呼ばれるため、例外にすると削除の応答だけが 500 になり行は消えている、という食い違いを作る。検査に通らない名前の実体はこの実装が書いたものではない）。検査を通った名前での I/O の失敗は、開発者用の版と同じく失敗を伝える
+- A13（S4）: 保存先のディレクトリが実ディレクトリでないときは、エラーの画面を作らず起動を止める（#580 S2 の A7 の Rust 側の失敗と同じ扱い。オーナー以外の利用者が自然に作る状態ではない）
+- A14（S4）: IPC の中継（`examples/sql-ipc-bridge.rs`）は名前を変えずに raw の本文・ヘッダ・raw の応答の受け渡しを足す（#580 S2 のテストの起動の仕組みをそのまま使うため。名前の一般化は必要になったら行う）
