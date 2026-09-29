@@ -105,7 +105,19 @@ describe("製品版の web のビルド（vite.app.config.ts）の入力モジ�
     BUILD_TIMEOUT_MS,
   );
 
+  // #579 S4（docs/features/tauri-in-app-runtime.md AC-S4-33）: 製品版の証跡の
+  // 保存の実装（plugin-fs）がアプリ内に載る。
+  it.each(["@tauri-apps/plugin-fs", "web/src/app-entry/plugin-fs-evidence-store.ts"])(
+    "includes %s (製品版の証跡の保存)",
+    (substring) => {
+      expect(includesAnyInput(productModuleIds, substring)).toBe(true);
+    },
+    BUILD_TIMEOUT_MS,
+  );
+
   it.each([
+    // #579 S4（AC-S4-32）: 開発者用の版の Node fs 実装が製品版に載らない。
+    "server/src/tasks/evidence-storage.ts",
     "@anthropic-ai/claude-agent-sdk",
     "server/src/llm/backends/claude-code-backend.ts",
     "@anthropic-ai/sdk",

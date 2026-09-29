@@ -12,6 +12,11 @@
 //! `sql:allow-execute`・`sql:allow-select`（`load`・`close` は許可しない。機能
 //! 仕様 `docs/features/async-db-layer.md`「S2 の設計」）と、通信層の 5 つの
 //! コマンドの `allow-*` を許可する（#581 S3）。
+//! 証跡ファイルは #579 S4 で配線した: plugin-fs を登録し、capability で
+//! `read_file`・`write_file`・`remove`・`exists` の 4 つだけを、保存先
+//! （`app_config_dir` の直下の `evidence/`。[`prepare_evidence_dir`] が起動時に
+//! 作る）の直下のファイルに限って許可する（機能仕様
+//! `docs/features/tauri-in-app-runtime.md`「S4 の設計」）。
 //!
 //! メインウィンドウのナビゲーション・新規ウィンドウ・ダウンロードの許可判定は、
 //! [`is_allowed_navigation`]・[`is_allowed_new_window`] という URL を受け取る
@@ -19,8 +24,42 @@
 //! `WebviewWindowBuilder::on_navigation`/`on_new_window` へはそのままクロージャ
 //! として渡すだけで、判定ロジック自体はテスト対象として独立している）。
 
+use std::io;
+use std::path::{Path, PathBuf};
+
 use tauri::webview::{NewWindowFeatures, NewWindowResponse};
-use tauri::{Runtime, Url, WebviewUrl, WebviewWindowBuilder};
+use tauri::{Manager, Runtime, Url, WebviewUrl, WebviewWindowBuilder};
+
+/// 証跡ファイルの保存先のディレクトリ名（`app_config_dir` の直下。
+/// capability の fs のスコープ `$APPCONFIG/evidence/*` と web の実装の `evidence/`
+/// と一致していることは、定数の共有ではなくテスト〔AC-S4-1・AC-S4-6・AC-S4-25〕が
+/// 確かめる。機能仕様 `docs/features/tauri-in-app-runtime.md`「S4 の設計」・仮定 A11）。
+const EVIDENCE_DIR_NAME: &str = "evidence";
+
+/// 証跡ファイルの保存先（`<app_config_dir>/evidence`）を用意し、そのパスを返す
+/// （機能仕様 S4「保存先」）。WebView には `mkdir` を許可しないため、ここ
+/// （起動時の `setup`）で作る。
+///
+/// 既にあって**実ディレクトリでない**（シンボリックリンク・通常のファイル）
+/// ときは失敗させ、器を起動しない。plugin-fs のスコープの判定は、まだ無い
+/// パスを `canonicalize` しないため、保存先そのものがアプリの外を指す
+/// シンボリックリンクだと、新しいファイルの書き込みがリンク先（アプリの外）に
+/// 届いてしまう——その経路を塞ぐ（`symlink_metadata` はリンクを辿らない）。
+pub fn prepare_evidence_dir(app_config_dir: &Path) -> io::Result<PathBuf> {
+    let dir = app_config_dir.join(EVIDENCE_DIR_NAME);
+    match std::fs::symlink_metadata(&dir) {
+        Ok(metadata) if metadata.is_dir() => Ok(dir),
+        Ok(_) => Err(io::Error::other(format!(
+            "the evidence directory is not a real directory (a symlink or a file): {}",
+            dir.display()
+        ))),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {
+            std::fs::create_dir_all(&dir)?;
+            Ok(dir)
+        }
+        Err(error) => Err(error),
+    }
+}
 
 mod app_commands;
 pub mod secure_commands;
@@ -135,6 +174,9 @@ pub fn context<R: Runtime>() -> tauri::Context<R> {
 /// plugin-sql（リポジトリ内 fork。接続 1 本）は `tauri.conf.json` の
 /// `plugins.sql.preload` の DB を起動時に開く。WebView には `load` を許可
 /// しない（`capabilities/default.json`）。
+///
+/// plugin-fs（#579 S4）は、証跡ファイルの保存先（[`prepare_evidence_dir`]）の
+/// 直下だけを capability のスコープで許可する。
 pub fn configure<R: Runtime>(builder: tauri::Builder<R>) -> tauri::Builder<R> {
     let secure_state = SecureState::production().expect("failed to build the secure transport");
     configure_with(builder, secure_state)
@@ -147,6 +189,7 @@ pub fn configure<R: Runtime>(builder: tauri::Builder<R>) -> tauri::Builder<R> {
 pub fn configure_with<R: Runtime>(builder: tauri::Builder<R>, secure_state: SecureState) -> tauri::Builder<R> {
     builder
         .plugin(tauri_plugin_sql::Builder::new().build())
+        .plugin(tauri_plugin_fs::init())
         .manage(secure_state)
         // 公開するコマンドは `APP_COMMANDS` の 5 つだけ（`build.rs` が同じ一覧を
         // `AppManifest` に渡す。一覧との一致は tests/secure_commands.rs が IPC で
@@ -159,6 +202,7 @@ pub fn configure_with<R: Runtime>(builder: tauri::Builder<R>, secure_state: Secu
             secure_commands::byok_key_status,
         ])
         .setup(|app| {
+            prepare_evidence_dir(&app.path().app_config_dir()?)?;
             build_main_window(app)?;
             Ok(())
         })
@@ -170,6 +214,87 @@ mod tests {
 
     fn url(s: &str) -> Url {
         Url::parse(s).unwrap_or_else(|e| panic!("failed to parse test URL {s:?}: {e}"))
+    }
+
+    // --- prepare_evidence_dir（#579 S4: AC-S4-1〜3 の関数の単体） -------------
+
+    #[test]
+    fn prepare_evidence_dir_creates_evidence_under_a_config_dir_that_does_not_exist_yet() {
+        let root = tempfile::tempdir().unwrap();
+        let config_dir = root.path().join("dev.aiboss.app");
+
+        let dir = prepare_evidence_dir(&config_dir).unwrap();
+
+        assert_eq!(dir, config_dir.join("evidence"));
+        assert!(std::fs::symlink_metadata(&dir).unwrap().is_dir());
+    }
+
+    #[test]
+    fn prepare_evidence_dir_keeps_an_existing_real_directory_and_its_files() {
+        let config_dir = tempfile::tempdir().unwrap();
+        let evidence = config_dir.path().join("evidence");
+        std::fs::create_dir(&evidence).unwrap();
+        std::fs::write(evidence.join("kept.png"), b"kept").unwrap();
+
+        // 2 回目の起動でも成功し、既存のファイルに触れない。
+        assert_eq!(prepare_evidence_dir(config_dir.path()).unwrap(), evidence);
+        assert_eq!(prepare_evidence_dir(config_dir.path()).unwrap(), evidence);
+
+        assert_eq!(std::fs::read(evidence.join("kept.png")).unwrap(), b"kept");
+    }
+
+    #[test]
+    fn prepare_evidence_dir_rejects_a_regular_file() {
+        let config_dir = tempfile::tempdir().unwrap();
+        std::fs::write(config_dir.path().join("evidence"), b"not a directory").unwrap();
+
+        assert!(prepare_evidence_dir(config_dir.path()).is_err());
+        // 通常のファイルは置き換えない。
+        assert_eq!(
+            std::fs::read(config_dir.path().join("evidence")).unwrap(),
+            b"not a directory"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn prepare_evidence_dir_rejects_a_symlink_to_a_directory_outside_the_config_dir() {
+        let root = tempfile::tempdir().unwrap();
+        let config_dir = root.path().join("config");
+        let outside = root.path().join("outside");
+        std::fs::create_dir(&config_dir).unwrap();
+        std::fs::create_dir(&outside).unwrap();
+        std::os::unix::fs::symlink(&outside, config_dir.join("evidence")).unwrap();
+
+        assert!(prepare_evidence_dir(&config_dir).is_err());
+        // リンクはそのまま（消さない・張り替えない）で、リンク先には何も作らない。
+        assert_eq!(std::fs::read_link(config_dir.join("evidence")).unwrap(), outside);
+        assert_eq!(std::fs::read_dir(&outside).unwrap().count(), 0);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn prepare_evidence_dir_rejects_a_symlink_to_a_directory_inside_the_config_dir() {
+        let config_dir = tempfile::tempdir().unwrap();
+        let elsewhere = config_dir.path().join("elsewhere");
+        std::fs::create_dir(&elsewhere).unwrap();
+        std::os::unix::fs::symlink(&elsewhere, config_dir.path().join("evidence")).unwrap();
+
+        assert!(prepare_evidence_dir(config_dir.path()).is_err());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn prepare_evidence_dir_rejects_a_dangling_symlink() {
+        let root = tempfile::tempdir().unwrap();
+        let config_dir = root.path().join("config");
+        std::fs::create_dir(&config_dir).unwrap();
+        let missing = root.path().join("missing");
+        std::os::unix::fs::symlink(&missing, config_dir.join("evidence")).unwrap();
+
+        assert!(prepare_evidence_dir(&config_dir).is_err());
+        // リンク切れの先を作らない（`create_dir_all` がリンクを辿ると作ってしまう）。
+        assert!(!missing.exists());
     }
 
     // --- is_allowed_navigation ------------------------------------------------

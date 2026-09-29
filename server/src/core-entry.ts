@@ -108,3 +108,13 @@ export type {
   NudgeSchedulerPort,
   ScheduledNotificationRequest,
 } from "./nudge-plan/nudge-scheduler-port.js";
+
+/**
+ * 証跡ファイルの保存ポートと保存名の形の検査（#579 S4・機能仕様
+ * docs/features/tauri-in-app-runtime.md「S4 の設計」）。製品版の web のエントリが、
+ * plugin-fs 実装（`web/src/app-entry/plugin-fs-evidence-store.ts`）をこのポートで
+ * 組み、保存名をパスに使う前に `isValidStoredEvidenceFilename` で検査する
+ * （保存名を作る側と同じ定義を共有するため web 側に複製しない）。
+ */
+export type { EvidenceStore } from "./tasks/evidence-store.js";
+export { isValidStoredEvidenceFilename } from "./tasks/evidence-validation.js";

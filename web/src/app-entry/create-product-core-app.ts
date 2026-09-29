@@ -6,6 +6,7 @@
 // 戻り値の型は `createCoreApp` の宣言から推論させ、`hono` を明示的に
 // import しない — web/package.json に `hono` を宣言していないため）。
 import { createCoreApp, type DbPort } from "../../../server/src/core-entry.js";
+import { createPluginFsEvidenceStore } from "./plugin-fs-evidence-store";
 
 /**
  * 製品版の web のエントリが組み立てる Hono アプリ（機能仕様
@@ -15,6 +16,9 @@ import { createCoreApp, type DbPort } from "../../../server/src/core-entry.js";
  * - DB は、製品版の DB 実装（plugin-sql・`product-db.ts`）か、その準備に
  *   失敗したときの「DB 未接続」ポート（`disconnected-db-port.ts`）を受け取る
  *   （選ぶのは `boot-product-app.ts`）。
+ * - 証跡ファイルの保存は plugin-fs 実装（`plugin-fs-evidence-store.ts`・#579 S4）。
+ *   保存先はアプリのデータディレクトリの `evidence/`。DB が「未接続」のときも
+ *   同じ実装を渡す（DB を使うルートが先に失敗するため、保存先には触れない）。
  * - `env` は空（`process.env` を読まない。このモジュールから到達可能な
  *   コードは Node 組み込みを参照しない — `core-app.ts` 自身が
  *   `core-entry.bundle.test.ts` でバンドル検査済み）。
@@ -24,7 +28,7 @@ import { createCoreApp, type DbPort } from "../../../server/src/core-entry.js";
  *   呼ぶだけではどのバックエンドも登録されない。
  */
 export function createProductCoreApp(db: DbPort) {
-  return createCoreApp(db, {});
+  return createCoreApp(db, {}, { evidenceStore: createPluginFsEvidenceStore() });
 }
 
 export type ProductCoreApp = ReturnType<typeof createProductCoreApp>;

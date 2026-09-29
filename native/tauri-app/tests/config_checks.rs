@@ -51,10 +51,14 @@ fn csp_directive(conf: &serde_json::Value, directive: &str) -> Vec<String> {
 // ---------------------------------------------------------------------------
 
 #[test]
-fn capabilities_grant_only_sql_and_the_five_secure_commands_to_the_main_window() {
+fn capabilities_grant_only_sql_the_five_secure_commands_and_the_evidence_fs_to_the_main_window() {
     // #581 S3（docs/features/secure-transport-byok.md S3-C3・S3-C5）: 通信層の
     // コマンド 5 つの `allow-*` を足した（使うスライスが最小の単位で足す——
     // #579 の仕様「権限と到達経路の境界」）。`core:default` 等は足さない。
+    //
+    // #579 S4（docs/features/tauri-in-app-runtime.md AC-S4-4〜7）: 証跡ファイルに
+    // 要る fs の 4 つ（スコープは保存先の直下だけ）を足した。fs の内訳は下の
+    // AC-S4-4〜7 のテストも個別に固定する。
     //
     // #580 S2（docs/features/async-db-layer.md AC-S2-5）: #579 S2 の「0 件」を、
     // DB に要る最小の単位（`sql:allow-execute`・`sql:allow-select`）へ置き
@@ -86,6 +90,8 @@ fn capabilities_grant_only_sql_and_the_five_secure_commands_to_the_main_window()
         capability.get("webviews").is_none() && capability.get("remote").is_none(),
         "対象は main のウィンドウだけ（webviews・remote を指定しない）: {capability}"
     );
+    // 権限の全体は、sql の 2 件・通信層のコマンドの 5 件（文字列）と fs の 4 件
+    // （スコープ付きのオブジェクト）だけ。
     assert_eq!(
         capability["permissions"],
         serde_json::json!([
@@ -95,9 +101,131 @@ fn capabilities_grant_only_sql_and_the_five_secure_commands_to_the_main_window()
             "allow-secure-cancel",
             "allow-byok-key-set",
             "allow-byok-key-delete",
-            "allow-byok-key-status"
+            "allow-byok-key-status",
+            { "identifier": "fs:allow-read-file", "allow": [{ "path": "$APPCONFIG/evidence/*" }] },
+            { "identifier": "fs:allow-write-file", "allow": [{ "path": "$APPCONFIG/evidence/*" }] },
+            { "identifier": "fs:allow-remove", "allow": [{ "path": "$APPCONFIG/evidence/*" }] },
+            { "identifier": "fs:allow-exists", "allow": [{ "path": "$APPCONFIG/evidence/*" }] }
         ])
     );
+}
+
+/// capability の `permissions` のうち、スコープを付けたオブジェクトの形の
+/// fs の権限（`{ "identifier": "fs:...", "allow": [...], "deny": [...] }`）。
+fn fs_permission_objects() -> Vec<serde_json::Value> {
+    let text = fs::read_to_string(manifest_dir().join("capabilities/default.json")).unwrap();
+    let capability: serde_json::Value = serde_json::from_str(&text).unwrap();
+    capability["permissions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|p| {
+            p.as_str().is_some_and(|s| s.starts_with("fs:"))
+                || p["identifier"].as_str().is_some_and(|s| s.starts_with("fs:"))
+        })
+        .cloned()
+        .collect()
+}
+
+#[test]
+fn ac_s4_4_capability_grants_only_four_fs_permissions() {
+    // #579 S4: `fs:default`・`fs:scope`・それ以外の `fs:` の権限（`mkdir`・
+    // `read_dir`・`rename`・`copy_file`・`stat`・`open` を含む束）は許可しない。
+    let identifiers: Vec<String> = fs_permission_objects()
+        .iter()
+        .map(|p| {
+            p["identifier"]
+                .as_str()
+                .unwrap_or_else(|| panic!("fs の権限がスコープ付きのオブジェクトでない: {p}"))
+                .to_owned()
+        })
+        .collect();
+    assert_eq!(
+        identifiers,
+        vec![
+            "fs:allow-read-file",
+            "fs:allow-write-file",
+            "fs:allow-remove",
+            "fs:allow-exists"
+        ]
+    );
+}
+
+#[test]
+fn ac_s4_5_capability_keeps_the_two_sql_permissions_as_plain_strings() {
+    let text = fs::read_to_string(manifest_dir().join("capabilities/default.json")).unwrap();
+    let capability: serde_json::Value = serde_json::from_str(&text).unwrap();
+    let sql: Vec<&str> = capability["permissions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|p| p.as_str())
+        .filter(|p| p.starts_with("sql:"))
+        .collect();
+    assert_eq!(sql, vec!["sql:allow-execute", "sql:allow-select"]);
+}
+
+#[test]
+fn ac_s4_6_each_fs_permission_has_exactly_one_allow_scope_directly_under_evidence() {
+    let permissions = fs_permission_objects();
+    assert_eq!(permissions.len(), 4);
+    for permission in &permissions {
+        assert_eq!(
+            permission["allow"],
+            serde_json::json!([{ "path": "$APPCONFIG/evidence/*" }]),
+            "{permission}"
+        );
+    }
+}
+
+#[test]
+fn ac_s4_7_no_fs_permission_has_a_deny_scope() {
+    for permission in fs_permission_objects() {
+        assert!(permission.get("deny").is_none(), "{permission}");
+    }
+}
+
+#[test]
+fn ac_s4_8_cargo_lock_resolves_tauri_plugin_fs_to_2_6() {
+    let text = fs::read_to_string(manifest_dir().join("Cargo.lock")).unwrap();
+    let lock: toml::Value = toml::from_str(&text).unwrap();
+    let fs_plugin: Vec<_> = lock["package"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|p| p["name"].as_str() == Some("tauri-plugin-fs"))
+        .collect();
+    assert_eq!(fs_plugin.len(), 1, "tauri-plugin-fs は 1 件だけ: {fs_plugin:?}");
+    let version = fs_plugin[0]["version"].as_str().unwrap();
+    assert!(version.starts_with("2.6."), "tauri-plugin-fs が 2.6 系でない: {version}");
+}
+
+#[test]
+fn ac_s4_9_web_plugin_fs_matches_the_crate_major_minor() {
+    let web: serde_json::Value = serde_json::from_str(
+        &fs::read_to_string(manifest_dir().join("../../web/package.json")).unwrap(),
+    )
+    .unwrap();
+    let spec = web["dependencies"]["@tauri-apps/plugin-fs"]
+        .as_str()
+        .expect("web の dependencies に @tauri-apps/plugin-fs が無い");
+    let lock: toml::Value =
+        toml::from_str(&fs::read_to_string(manifest_dir().join("Cargo.lock")).unwrap()).unwrap();
+    let crate_version = lock["package"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|p| p["name"].as_str() == Some("tauri-plugin-fs"))
+        .and_then(|p| p["version"].as_str())
+        .expect("Cargo.lock に tauri-plugin-fs が無い");
+    let major_minor = |v: &str| {
+        v.trim_start_matches(['^', '~', '='])
+            .split('.')
+            .take(2)
+            .collect::<Vec<_>>()
+            .join(".")
+    };
+    assert_eq!(major_minor(spec), major_minor(crate_version));
 }
 
 // ---------------------------------------------------------------------------

@@ -63,6 +63,31 @@ export function resolveEvidenceMimeType(filename: string): string | undefined {
   return EVIDENCE_EXTENSION_MIME_TYPES[lowerExtname(filename)];
 }
 
+/** 小文字の UUID（`crypto.randomUUID()` の書式。8-4-4-4-12 の 36 文字）。 */
+const LOWERCASE_UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+const UUID_LENGTH = 36;
+
+/**
+ * 保存名（`task_evidences.stored_filename`）が、コアの保存名生成
+ * （`evidence-store.ts` の `generateStoredFilename`）が作る形 —
+ * **小文字の UUID ＋ ホワイトリストの拡張子（小文字）** — かどうかを判定する
+ * （#579 S4・機能仕様 docs/features/tauri-in-app-runtime.md「S4 の設計」）。
+ *
+ * 製品版の plugin-fs 実装が、保存名をパスに使う前に呼ぶ多層防御。保存名は DB
+ * から来るが、WebView の JS は SQL を実行できるため任意の文字列になりうる。
+ * 境界の本体は Rust 側の capability のスコープで、これはそれに先立って `..`・
+ * 区切り文字・想定外の拡張子を通さない。
+ */
+export function isValidStoredEvidenceFilename(storedFilename: string): boolean {
+  if (storedFilename.length <= UUID_LENGTH) {
+    return false;
+  }
+  return (
+    LOWERCASE_UUID_PATTERN.test(storedFilename.slice(0, UUID_LENGTH)) &&
+    Object.hasOwn(EVIDENCE_EXTENSION_MIME_TYPES, storedFilename.slice(UUID_LENGTH))
+  );
+}
+
 /** サイズ上限判定（10 MB、境界含む＝上限ちょうどは許可）。 */
 export function isEvidenceFileSizeAllowed(sizeBytes: number): boolean {
   return sizeBytes <= MAX_EVIDENCE_FILE_BYTES;
