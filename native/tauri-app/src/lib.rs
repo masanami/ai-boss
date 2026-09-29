@@ -2,13 +2,14 @@
 //! `docs/features/tauri-in-app-runtime.md` クリティカル設計決定・S2 の器の設計）。
 //!
 //! この crate は WebView 内の TS コア（`server/src/core-app.ts`）を Hono の
-//! ルートごと動かすための「器」に徹する — LLM・通知・スケジューラはまだ
-//! 配線しない（S3・#581 の範囲）。DB は #580 S2 で配線した: plugin-sql の
+//! ルートごと動かすための「器」に徹する — LLM はまだ配線しない（#581 の範囲）。
+//! 通知・毎分の刻み・メニューバー常駐は #579 S3 で足した（[`desktop_shell`]）。
+//! DB は #580 S2 で配線した: plugin-sql の
 //! リポジトリ内 fork（`native/tauri-plugin-sql/`。接続 1 本・ATTACH 不可）を
 //! 登録し、`tauri.conf.json` の `plugins.sql.preload` の DB を起動時に開く。
 //! capability は `capabilities/default.json` の 1 件だけで、`main` のウィンドウに
-//! `sql:allow-execute`・`sql:allow-select` を許可する（`load`・`close` は許可
-//! しない。機能仕様 `docs/features/async-db-layer.md`「S2 の設計」）。
+//! `sql:allow-execute`・`sql:allow-select`（と S3 の `notification:allow-notify`・
+//! `core:event:allow-listen`）を許可する（`load`・`close` は許可しない。機能仕様 `docs/features/async-db-layer.md`「S2 の設計」）。
 //!
 //! メインウィンドウのナビゲーション・新規ウィンドウ・ダウンロードの許可判定は、
 //! [`is_allowed_navigation`]・[`is_allowed_new_window`] という URL を受け取る
@@ -17,7 +18,9 @@
 //! として渡すだけで、判定ロジック自体はテスト対象として独立している）。
 
 use tauri::webview::{NewWindowFeatures, NewWindowResponse};
-use tauri::{Runtime, Url, WebviewUrl, WebviewWindowBuilder};
+use tauri::{Manager, Runtime, Url, WebviewWindowBuilder};
+
+pub mod desktop_shell;
 
 /// メインウィンドウのナビゲーション先として許すかどうかを判定する（機能仕様
 /// S2「権限と到達経路の境界」・受入基準）。
@@ -68,8 +71,11 @@ fn build_main_window<R: Runtime, M: tauri::Manager<R>>(
     // `index.html` の順に試し、最後まで見つからず `AssetNotFound`）が失敗し、
     // ウィンドウは開いても中身が表示されない（手動の確認手順でしか発覚しない
     // 欠陥だった）。
-    WebviewWindowBuilder::new(manager, "main", WebviewUrl::App("app.html".into()))
-        .title("ai-boss")
+    //
+    // #579 S3（仮定 S3-A4）: 設定値（`background_throttling: Disabled`・`app.html`）を
+    // テストで検査できるよう、`WebviewWindowBuilder::new` ではなくコードで組んだ
+    // `WindowConfig` から作る（`desktop_shell::main_window_config`）。
+    WebviewWindowBuilder::from_config(manager, &desktop_shell::main_window_config())?
         .on_navigation(is_allowed_navigation)
         // self-review（code-reviewer、PLAUSIBLE）: `NewWindowResponse::Allow`
         // は wry の既定実装に任せる形で、生成される新規ウィンドウ（証跡の
@@ -104,10 +110,22 @@ fn build_main_window<R: Runtime, M: tauri::Manager<R>>(
 }
 
 /// アプリのエントリポイント（`main.rs` の `app_lib::run()`）。
+///
+/// #579 S3: メニューバーのアイコンは `RunEvent::Ready` で作り、閉じる要求（メインの
+/// ウィンドウは隠す）・Dock の再表示の要求もここで処理する
+/// （`desktop_shell::handle_run_event`）。`configure` では作らない。
 pub fn run() {
     configure(tauri::Builder::default())
-        .run(context())
-        .expect("error while running tauri application");
+        .build(context())
+        .expect("error while building tauri application")
+        .run(|app, event| {
+            if let tauri::RunEvent::Ready = event {
+                if let Err(error) = desktop_shell::create_tray(app) {
+                    eprintln!("failed to create the menu bar icon: {error}");
+                }
+            }
+            desktop_shell::handle_run_event(app, event);
+        });
 }
 
 /// `tauri.conf.json`・capability（ACL）・アセットを埋め込んだコンテキスト。
@@ -129,8 +147,13 @@ pub fn context<R: Runtime>() -> tauri::Context<R> {
 pub fn configure<R: Runtime>(builder: tauri::Builder<R>) -> tauri::Builder<R> {
     builder
         .plugin(tauri_plugin_sql::Builder::new().build())
+        // #579 S3: 通知の送信（`plugin:notification|notify`。WebView には
+        // `notification:allow-notify` だけを許可する）。
+        .plugin(tauri_plugin_notification::init())
         .setup(|app| {
             build_main_window(app)?;
+            // #579 S3: 毎分の刻みを WebView へ送る（ウィンドウを隠しても続く）。
+            app.manage(desktop_shell::spawn_minute_ticker(app.handle().clone())?);
             Ok(())
         })
 }

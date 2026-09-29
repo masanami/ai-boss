@@ -1,5 +1,7 @@
 import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
+import { invoke } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
 import App from "../App";
 import "../index.css";
 import { installInAppApi } from "./in-app-fetch";
@@ -7,6 +9,7 @@ import { createBlobEvidenceContentOpener } from "./open-evidence-content-as-blob
 import { EvidenceContentOpenerContext } from "../evidence-content-opener-context";
 import { bootProductApp } from "./boot-product-app";
 import { getProductDatabase, openProductDb } from "./product-db";
+import { startProductScheduler } from "./start-product-scheduler";
 
 /**
  * 製品版（Tauri アプリ）の web のエントリ（機能仕様
@@ -21,6 +24,9 @@ import { getProductDatabase, openProductDb } from "./product-db";
  *    `createCoreApp` へ振り向ける（決定1「/api の振り向け」）。
  * 3. Blob URL の方式（証跡ファイルのリンク）を組み立て、コンテキストで注入
  *    する。
+ * 描画の後、DB の準備に成功していれば毎分の検知（`createTicker`）を始める
+ * （#579 S3。Rust 側の毎分の刻みのイベントを `listen` で受け、通知は
+ * `invoke` で Rust 側の通知プラグインへ渡す）。
  */
 
 const evidenceContentOpener = createBlobEvidenceContentOpener({
@@ -47,6 +53,13 @@ void bootProductApp({
     const originalFetch = window.fetch.bind(window);
     window.fetch = installInAppApi(app, originalFetch, window.location);
   },
+  startScheduler: (db) =>
+    startProductScheduler({
+      db,
+      listen: (event, handler) => listen(event, handler),
+      invoke: (command, args) => invoke(command, args),
+      logError: (message, error) => console.error(message, error),
+    }),
   render: () => {
     createRoot(rootElement).render(
       <StrictMode>

@@ -93,3 +93,20 @@ export type {
   NudgeSchedulerPort,
   ScheduledNotificationRequest,
 } from "./nudge-plan/nudge-scheduler-port.js";
+
+/**
+ * 毎分の検知（`createTicker`）も**呼ばずに re-export する**（#579 S3・機能仕様
+ * docs/features/tauri-in-app-runtime.md「S3 の設計」）。製品版の web のエントリが
+ * DB のポートと製品版の通知ポートで組み立て、Rust 側の毎分の刻みのイベントを
+ * 受けるたびに `tick` を呼ぶ（node-cron の置き換え）。`scheduler-tick.ts` は
+ * 通知ポート（`notification-port.ts`）だけを受け取り、`notifier.ts`
+ * （`node:child_process`）を import しないため、コアのバンドルに載せられる。
+ * re-export により、この処理と依存グラフが `core-entry.bundle.test.ts` の
+ * バンドル検査の対象になる。
+ */
+export { createTicker, type Ticker, type TickDeps } from "./scheduler/scheduler-tick.js";
+export type {
+  NotificationPayload,
+  NotificationSender,
+  SendNotificationResult,
+} from "./notifications/notification-port.js";

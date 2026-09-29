@@ -183,6 +183,7 @@
 #### 権限（capability）
 
 - S3 で足す権限は、通知の送信（`notification:allow-notify`）と刻みのイベントの購読（`core:event:allow-listen`）の 2 つだけ。`notification:default`・許可の問い合わせ・予約・取り消し・`core:event:allow-emit` 等は足さない。トレイ・ウィンドウの操作は Rust 側だけで行うため、ウィンドウ・トレイの権限は足さない。
+- （実装時の実測）プラグインの初期化スクリプト（`init-iife.js`）は、ページの読み込みのたびに `window.Notification.permission` を決めるため `plugin:notification|is_permission_granted` を呼び、失敗を捕まえない。S3 はこのコマンドを許可しない（AC-S3-16）ため、読み込みのたびに WebView のコンソールに未処理の拒否が 1 件出て、`window.Notification.permission` は `default` のままになる。製品版は `window.Notification` を使わず `invoke` で直接送るため、通知の送信には影響しない（仮定 S3-A9）。
 
 ### 実装計画（S1 のチケット分解の見通し）
 
@@ -435,3 +436,5 @@
 - S3-A6（S3）: `tauri-plugin-notification` は `~2.5` に固定し（2.5.0 の実測に拠るため）、JS のパッケージ `@tauri-apps/plugin-notification` は入れない（`@tauri-apps/api` の `invoke` で直接呼ぶ）
 - S3-A7（S3）: Tauri の API を呼ぶ部分（トレイ・メニューの組み立て・ウィンドウの表示・`exit`）は薄く保ち、判定だけを純粋な関数としてテストする（`MockRuntime` は `hide`・`show` を観測できず、終了の要求は未実装のため）
 - S3-A8（S3）: 刻みの送り手が起動したことを示す器の状態の型・名前は実装で決める。AC-S3-14 の権限の一覧は、並行する #581 S3（PR #653）・#579 S4（PR #656）が先にマージされたら、その権限を足した一覧に読み替える（S3 が足すのは `notification:allow-notify`・`core:event:allow-listen` の 2 つ）
+- S3-A9（S3・実装時）: 通知プラグインの初期化スクリプトが呼ぶ `is_permission_granted` の拒否（コンソールの未処理の拒否 1 件）は受け入れ、権限を最小（AC-S3-14）のままにする。気になるなら `notification:allow-is-permission-granted` を足す（AC-S3-14・AC-S3-16 の変更になるため、オーナーまたは親の判断で行う）
+- S3-A10（S3・実装時）: 製品の刻みは次の分の境界の 100 ミリ秒後に送る（眠りは単調時計、境界は壁時計のため、早く起きたときに前の分を読まないように）。待ち時間の計算（AC-S3-10）は境界までのまま

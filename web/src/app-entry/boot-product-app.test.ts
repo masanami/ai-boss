@@ -1,6 +1,10 @@
 // @vitest-environment node
 import { describe, expect, it, vi } from "vitest";
-import { bootProductApp, PRODUCT_DB_OPEN_FAILED_MESSAGE } from "./boot-product-app";
+import {
+  bootProductApp,
+  PRODUCT_DB_OPEN_FAILED_MESSAGE,
+  PRODUCT_SCHEDULER_START_FAILED_MESSAGE,
+} from "./boot-product-app";
 import type { ProductCoreApp } from "./create-product-core-app";
 import type { DbPort } from "../../../server/src/core-entry.js";
 
@@ -39,7 +43,13 @@ describe("bootProductApp", () => {
       calls.push("render");
     });
 
-    const booting = bootProductApp({ openDb: () => opened.promise, logError: vi.fn(), installApi, render });
+    const booting = bootProductApp({
+      openDb: () => opened.promise,
+      logError: vi.fn(),
+      installApi,
+      render,
+      startScheduler: vi.fn(),
+    });
     await new Promise((resolve) => setTimeout(resolve, 0));
     expect(installApi).not.toHaveBeenCalled();
     expect(render).not.toHaveBeenCalled();
@@ -58,11 +68,105 @@ describe("bootProductApp", () => {
     const installApi = vi.fn<(app: ProductCoreApp) => void>();
     const render = vi.fn();
 
-    await bootProductApp({ openDb: () => Promise.reject(failure), logError, installApi, render });
+    await bootProductApp({
+      openDb: () => Promise.reject(failure),
+      logError,
+      installApi,
+      render,
+      startScheduler: vi.fn(),
+    });
 
     expect(logError).toHaveBeenCalledWith(PRODUCT_DB_OPEN_FAILED_MESSAGE, failure);
     const app = installApi.mock.calls[0]![0];
     expect(await (await app.request("/api/health")).json()).toEqual({ status: "ok", db: false });
     expect(render).toHaveBeenCalledTimes(1);
+  });
+
+  // #579 S3（機能仕様 docs/features/tauri-in-app-runtime.md「起動の順序」・
+  // 受入基準（S3）AC-S3-30〜33）。
+  describe("毎分の検知の起動（#579 S3）", () => {
+    it("AC-S3-30: DB の準備に成功したとき、そのポートで毎分の検知を始める", async () => {
+      const port = portAnsweringSelectOne();
+      const startScheduler = vi.fn<(db: DbPort) => Promise<void>>().mockResolvedValue(undefined);
+
+      await bootProductApp({
+        openDb: () => Promise.resolve(port),
+        logError: vi.fn(),
+        installApi: vi.fn(),
+        render: vi.fn(),
+        startScheduler,
+      });
+
+      expect(startScheduler).toHaveBeenCalledTimes(1);
+      expect(startScheduler.mock.calls[0]![0]).toBe(port);
+    });
+
+    it("AC-S3-31: DB の準備に失敗して「DB 未接続」で起動したとき、毎分の検知を始めない", async () => {
+      const startScheduler = vi.fn<(db: DbPort) => Promise<void>>().mockResolvedValue(undefined);
+      const render = vi.fn();
+
+      await bootProductApp({
+        openDb: () => Promise.reject(new Error("migration failed")),
+        logError: vi.fn(),
+        installApi: vi.fn(),
+        render,
+        startScheduler,
+      });
+
+      expect(startScheduler).not.toHaveBeenCalled();
+      expect(render).toHaveBeenCalledTimes(1);
+    });
+
+    it.each([
+      ["拒否する", () => Promise.reject(new Error("listen failed"))],
+      ["同期的に投げる", () => { throw new Error("listen threw"); }],
+    ])("AC-S3-32: 毎分の検知の開始が失敗しても（%s）、画面を描画する", async (_label, startScheduler) => {
+      const render = vi.fn();
+
+      await expect(
+        bootProductApp({
+          openDb: () => Promise.resolve(portAnsweringSelectOne()),
+          logError: vi.fn(),
+          installApi: vi.fn(),
+          render,
+          startScheduler,
+        }),
+      ).resolves.toBeUndefined();
+
+      expect(render).toHaveBeenCalledTimes(1);
+    });
+
+    it("AC-S3-33: 毎分の検知の開始が失敗したとき、その失敗をログに出す", async () => {
+      const failure = new Error("listen failed");
+      const logError = vi.fn();
+
+      await bootProductApp({
+        openDb: () => Promise.resolve(portAnsweringSelectOne()),
+        logError,
+        installApi: vi.fn(),
+        render: vi.fn(),
+        startScheduler: () => Promise.reject(failure),
+      });
+
+      expect(logError).toHaveBeenCalledWith(PRODUCT_SCHEDULER_START_FAILED_MESSAGE, failure);
+    });
+
+    it("毎分の検知の開始が長引いても（未解決でも）、先に /api の振り向けと描画を済ませる", async () => {
+      const calls: string[] = [];
+      const booting = bootProductApp({
+        openDb: () => Promise.resolve(portAnsweringSelectOne()),
+        logError: vi.fn(),
+        installApi: () => calls.push("installApi"),
+        render: () => calls.push("render"),
+        startScheduler: () => {
+          calls.push("startScheduler");
+          return new Promise<void>(() => undefined);
+        },
+      });
+      await new Promise((resolve) => setTimeout(resolve, 0));
+
+      expect(calls).toEqual(["installApi", "render", "startScheduler"]);
+      void booting;
+    });
   });
 });

@@ -1,9 +1,19 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-const { scheduleMock, tickMock, createTickerMock } = vi.hoisted(() => ({
-  scheduleMock: vi.fn(),
-  tickMock: vi.fn().mockResolvedValue(undefined),
-  createTickerMock: vi.fn(),
+const { scheduleMock, tickMock, createTickerMock, sendNotificationMock, fakeExecFile } = vi.hoisted(
+  () => ({
+    scheduleMock: vi.fn(),
+    tickMock: vi.fn().mockResolvedValue(undefined),
+    createTickerMock: vi.fn(),
+    sendNotificationMock: vi.fn(),
+    fakeExecFile: vi.fn(),
+  }),
+);
+
+// 実際の通知コマンド（terminal-notifier / osascript）を起動しない。
+vi.mock("../notifications/notifier.js", () => ({
+  sendNotification: sendNotificationMock,
+  nodeSystemExecFile: fakeExecFile,
 }));
 
 vi.mock("node-cron", () => ({
@@ -52,5 +62,24 @@ describe("startScheduler", () => {
     handle.stop();
 
     expect(fakeTask.stop).toHaveBeenCalledTimes(1);
+  });
+
+  // #579 S3（機能仕様 docs/features/tauri-in-app-runtime.md AC-S3-21）
+  it("AC-S3-21: passes the ticker a notification port that sends via notifier.ts's sendNotification with nodeSystemExecFile", async () => {
+    const result = { delivered: true, channel: "terminal-notifier" };
+    sendNotificationMock.mockReset().mockResolvedValue(result);
+
+    startScheduler({ db: {} as never, env: {}, notificationUrl: "http://localhost:8787/" });
+
+    const tickDeps = createTickerMock.mock.calls[0]![0] as {
+      sendNotification: (payload: unknown) => Promise<unknown>;
+      notificationUrl?: string;
+    };
+    const payload = { title: "ai-boss", body: "本文", url: "http://localhost:8787/" };
+    await expect(tickDeps.sendNotification(payload)).resolves.toBe(result);
+
+    expect(sendNotificationMock).toHaveBeenCalledTimes(1);
+    expect(sendNotificationMock).toHaveBeenCalledWith(payload, { execFile: fakeExecFile });
+    expect(tickDeps.notificationUrl).toBe("http://localhost:8787/");
   });
 });

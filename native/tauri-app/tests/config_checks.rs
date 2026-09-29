@@ -51,11 +51,16 @@ fn csp_directive(conf: &serde_json::Value, directive: &str) -> Vec<String> {
 // ---------------------------------------------------------------------------
 
 #[test]
-fn capabilities_grant_only_sql_execute_and_select_to_the_main_window() {
+fn capabilities_grant_only_the_four_minimal_permissions_to_the_main_window() {
     // #580 S2（docs/features/async-db-layer.md AC-S2-5）: #579 S2 の「0 件」を、
     // DB に要る最小の単位（`sql:allow-execute`・`sql:allow-select`）へ置き
     // 換えた。`load`（任意のパスの DB を開ける）・`close`・`sql:default` は
     // 許可しない。
+    //
+    // #579 S3（機能仕様 docs/features/tauri-in-app-runtime.md AC-S3-14）: さらに
+    // 通知の送信（`notification:allow-notify`）と刻みのイベントの購読
+    // （`core:event:allow-listen`）を足した 4 件だけ。`notification:default`・
+    // 許可の問い合わせ・`core:event:allow-emit` 等は足さない。
     //
     // 「By default (not set or empty list), all capability files from
     // ./capabilities/ are included」（tauri-utils の SecurityConfig::capabilities
@@ -84,7 +89,12 @@ fn capabilities_grant_only_sql_execute_and_select_to_the_main_window() {
     );
     assert_eq!(
         capability["permissions"],
-        serde_json::json!(["sql:allow-execute", "sql:allow-select"])
+        serde_json::json!([
+            "sql:allow-execute",
+            "sql:allow-select",
+            "notification:allow-notify",
+            "core:event:allow-listen"
+        ])
     );
 }
 

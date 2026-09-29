@@ -90,6 +90,15 @@ describe("製品版の web のビルド（vite.app.config.ts）の入力モジ�
     BUILD_TIMEOUT_MS,
   );
 
+  // #579 S3（AC-S3-37）: 毎分の検知（`createTicker`）がアプリ内に載る。
+  it(
+    "includes server/src/scheduler/scheduler-tick.ts (毎分の検知がアプリ内に載る)",
+    () => {
+      expect(includesAnyInput(productModuleIds, "server/src/scheduler/scheduler-tick.ts")).toBe(true);
+    },
+    BUILD_TIMEOUT_MS,
+  );
+
   it.each([
     "@anthropic-ai/claude-agent-sdk",
     "server/src/llm/backends/claude-code-backend.ts",
@@ -100,6 +109,12 @@ describe("製品版の web のビルド（vite.app.config.ts）の入力モジ�
     "server/src/app.ts",
     "server/src/index.ts",
     "server/src/llm/dev-llm-backends.ts",
+    // #579 S3（AC-S3-34〜36・38）: 開発者用の版のスケジューラ・通知（Node の
+    // 周辺）と、JS の通知 API（`invoke` で直接呼ぶ。仮定 S3-A6）は載らない。
+    "node-cron",
+    "server/src/scheduler/scheduler.ts",
+    "server/src/notifications/notifier.ts",
+    "@tauri-apps/plugin-notification",
   ])(
     "does not include %s",
     (substring) => {
