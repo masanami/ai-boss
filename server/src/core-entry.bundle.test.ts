@@ -447,6 +447,29 @@ describe("core-entry bundle — S2 (BYOK〔Anthropic〕の登録関数を呼ば�
   });
 });
 
+describe("core-entry bundle — #581 S3（選択の解決関数を呼ばずに re-export する。機能仕様 docs/features/secure-transport-byok.md クリティカル設計決定 7）", () => {
+  it("S3-E6: bundles the selection resolver module and exports the product resolver and its registration function", () => {
+    const inputs = metafileInputPaths(buildResult!.metafile!);
+    expect(includesAnyInput(inputs, "llm/llm-selection.ts")).toBe(true);
+    const context = createSandboxContext();
+    vm.runInContext(bundleCode, context);
+    const exported = (context as Record<string, unknown>).AiBossCore as Record<string, unknown>;
+    expect(typeof exported.productLlmSelectionResolver).toBe("function");
+    expect(typeof exported.setLlmSelectionResolver).toBe("function");
+  });
+
+  it("S3-E7: merely loading the bundle registers no resolver — an env without LLM_BACKEND resolves to claude-code", () => {
+    const context = createSandboxContext();
+    vm.runInContext(bundleCode, context);
+    const exported = (context as Record<string, unknown>).AiBossCore as {
+      resolveLlmSelection: (env: Record<string, string | undefined>, settings: ReadonlyMap<string, string>) => {
+        backend: string;
+      };
+    };
+    expect(exported.resolveLlmSelection({}, new Map()).backend).toBe("claude-code");
+  });
+});
+
 describe("core-entry bundle — S1（#582。BYOK〔OpenAI〕の登録関数を呼ばずに re-export する。機能仕様 docs/features/llm-provider-abstraction.md 案 A）", () => {
   it("bundles the BYOK (OpenAI) backend module (reachable from core-entry.ts)", () => {
     const inputs = metafileInputPaths(buildResult!.metafile!);

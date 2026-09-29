@@ -51,7 +51,11 @@ fn csp_directive(conf: &serde_json::Value, directive: &str) -> Vec<String> {
 // ---------------------------------------------------------------------------
 
 #[test]
-fn capabilities_grant_only_sql_execute_and_select_to_the_main_window() {
+fn capabilities_grant_only_sql_and_the_five_secure_commands_to_the_main_window() {
+    // #581 S3（docs/features/secure-transport-byok.md S3-C3・S3-C5）: 通信層の
+    // コマンド 5 つの `allow-*` を足した（使うスライスが最小の単位で足す——
+    // #579 の仕様「権限と到達経路の境界」）。`core:default` 等は足さない。
+    //
     // #580 S2（docs/features/async-db-layer.md AC-S2-5）: #579 S2 の「0 件」を、
     // DB に要る最小の単位（`sql:allow-execute`・`sql:allow-select`）へ置き
     // 換えた。`load`（任意のパスの DB を開ける）・`close`・`sql:default` は
@@ -84,7 +88,15 @@ fn capabilities_grant_only_sql_execute_and_select_to_the_main_window() {
     );
     assert_eq!(
         capability["permissions"],
-        serde_json::json!(["sql:allow-execute", "sql:allow-select"])
+        serde_json::json!([
+            "sql:allow-execute",
+            "sql:allow-select",
+            "allow-secure-send",
+            "allow-secure-cancel",
+            "allow-byok-key-set",
+            "allow-byok-key-delete",
+            "allow-byok-key-status"
+        ])
     );
 }
 

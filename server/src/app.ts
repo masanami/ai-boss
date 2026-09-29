@@ -5,7 +5,6 @@ import type { DbPort } from "./db/db-port.js";
 import { createCoreApp } from "./core-app.js";
 import { createNodeFsEvidenceStore } from "./tasks/evidence-storage.js";
 import { registerDevLlmBackends } from "./llm/dev-llm-backends.js";
-import type { LlmBackend } from "./config.js";
 
 /**
  * 開発者用の版（現行の Node サーバー版）の合成ルート（機能仕様
@@ -28,19 +27,6 @@ export interface CreateAppOptions {
    * API only and the Vite dev server handles the frontend.
    */
   staticRoot?: string;
-  /**
-   * LLM backend for the chat and session-summary routes (`sessions`),
-   * resolved by the caller via `loadConfig(env).llmBackend` (`index.ts`) and
-   * threaded through to `createCoreApp`. When omitted (most tests), it is
-   * resolved from `env` via `resolveLlmBackend(env)` inside `createCoreApp`
-   * — i.e. the caller's own `LLM_BACKEND`, falling back to `config.ts`'s
-   * `DEFAULT_LLM_BACKEND` when that is unset. See
-   * `CreateCoreAppOptions.llmBackend`'s doc comment (`core-app.ts`) for which
-   * routes this option does and does not reach — `decisions` is read-only
-   * and never took a backend (self-review correction, 2周目: an earlier
-   * version of this doc comment listed it).
-   */
-  llmBackend?: LlmBackend;
   /**
    * Directory where task evidence files (attachments) are stored on disk
    * (機能仕様 docs/features/completion-evidence-enforcement.md 決定 1-a).
@@ -90,7 +76,6 @@ export function createApp(
     : undefined;
 
   const app = createCoreApp(db, env, {
-    llmBackend: options.llmBackend,
     evidenceStore,
   });
 

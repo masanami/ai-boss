@@ -19,7 +19,7 @@ import {
   type TodaysAdhocMessage,
 } from "../boss/persona-prompt.js";
 import { BOSS_TOOLS, executeBossTool } from "../boss/boss-tools.js";
-import type { LlmBackend } from "../config.js";
+import { resolveLlmSelection } from "../llm/llm-selection.js";
 import {
   createClaudeClient,
   streamBossMessage,
@@ -222,15 +222,20 @@ async function checkRewriteTarget(
  * own module because the SSE + tool-use orchestration is substantially
  * larger than the other session endpoints in `sessions-routes.ts`.
  *
- * `llmBackend` is threaded down from `loadConfig(env).llmBackend`, with no
- * default here (the default lives at the single `app.ts` boundary — see
- * `CreateAppOptions.llmBackend`'s doc comment).
+ * The LLM backend and model are resolved by the selection resolver
+ * (機能仕様 docs/features/secure-transport-byok.md クリティカル設計決定 7・
+ * `llm/llm-selection.ts`). The backend is resolved when the client is created
+ * (before the turn's snapshot, so that a client initialization failure still
+ * answers 500 before anything is recorded — the existing order), and the
+ * model from the turn's snapshot (#618). The S3 resolvers decide the backend
+ * without reading the settings, so the pair cannot mix two saves; #582 S2,
+ * which resolves the backend from the saved selection, moves the client
+ * creation after the snapshot (#582 のクリティカル設計決定 5).
  */
 export function registerChatMessageRoute(
   router: Hono,
   db: Db,
   env: NodeJS.ProcessEnv,
-  llmBackend: LlmBackend,
 ): void {
   router.post("/:id/messages", async (c) => {
     const rawId = c.req.param("id");
@@ -290,7 +295,8 @@ export function registerChatMessageRoute(
 
     let client: BossLlmClient;
     try {
-      client = createClaudeClient(env, llmBackend);
+      const { backend } = resolveLlmSelection(env, await readSettingsSnapshot(db));
+      client = createClaudeClient(env, backend);
     } catch (err) {
       const message =
         err instanceof Error
@@ -372,7 +378,10 @@ export function registerChatMessageRoute(
         // スナップショットから導く（#618。`resolveBossSettings` と
         // `resolveMorningMentoringRequired` を別々に読むと、その間の保存で新旧が混ざる）。
         const settings = await readSettingsSnapshot(tx);
-        const { model, persona } = resolveBossSettingsFrom(settings);
+        const { persona } = resolveBossSettingsFrom(settings);
+        // モデルは選択の解決関数で決める（機能仕様 docs/features/
+        // secure-transport-byok.md クリティカル設計決定 7）。
+        const { model } = resolveLlmSelection(env, settings);
         // 時刻の読みは1回にまとめる（Issue #367）。`listTodaysAdhocMessages` は
         // ローカル暦日の半開区間の両端をこの値から導出するため、プロンプト側の
         // `now` と読みが割れると真夜中をまたいで窓が壊れる（`local-day.ts` の

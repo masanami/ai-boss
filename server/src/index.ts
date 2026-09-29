@@ -76,7 +76,6 @@ const evidenceDir = resolveEvidenceDir(config.dbPath);
 
 const app = createApp(db, process.env, {
   staticRoot,
-  llmBackend: config.llmBackend,
   evidenceDir,
 });
 

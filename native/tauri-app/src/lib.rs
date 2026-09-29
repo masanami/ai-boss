@@ -2,13 +2,16 @@
 //! `docs/features/tauri-in-app-runtime.md` クリティカル設計決定・S2 の器の設計）。
 //!
 //! この crate は WebView 内の TS コア（`server/src/core-app.ts`）を Hono の
-//! ルートごと動かすための「器」に徹する — LLM・通知・スケジューラはまだ
-//! 配線しない（S3・#581 の範囲）。DB は #580 S2 で配線した: plugin-sql の
+//! ルートごと動かすための「器」に徹する — 通知・スケジューラはまだ配線しない
+//! （#579 S3 の範囲）。LLM の送信は #581 S3 で配線した: 秘密情報を扱う通信層
+//! （`native/secure-transport/`）をコマンド 5 つ（[`APP_COMMANDS`]・
+//! [`secure_commands`]）で公開する。キーの値を返すコマンドは無い。DB は #580 S2 で配線した: plugin-sql の
 //! リポジトリ内 fork（`native/tauri-plugin-sql/`。接続 1 本・ATTACH 不可）を
 //! 登録し、`tauri.conf.json` の `plugins.sql.preload` の DB を起動時に開く。
 //! capability は `capabilities/default.json` の 1 件だけで、`main` のウィンドウに
-//! `sql:allow-execute`・`sql:allow-select` を許可する（`load`・`close` は許可
-//! しない。機能仕様 `docs/features/async-db-layer.md`「S2 の設計」）。
+//! `sql:allow-execute`・`sql:allow-select`（`load`・`close` は許可しない。機能
+//! 仕様 `docs/features/async-db-layer.md`「S2 の設計」）と、通信層の 5 つの
+//! コマンドの `allow-*` を許可する（#581 S3）。
 //!
 //! メインウィンドウのナビゲーション・新規ウィンドウ・ダウンロードの許可判定は、
 //! [`is_allowed_navigation`]・[`is_allowed_new_window`] という URL を受け取る
@@ -18,6 +21,12 @@
 
 use tauri::webview::{NewWindowFeatures, NewWindowResponse};
 use tauri::{Runtime, Url, WebviewUrl, WebviewWindowBuilder};
+
+mod app_commands;
+pub mod secure_commands;
+
+pub use app_commands::APP_COMMANDS;
+pub use secure_commands::SecureState;
 
 /// メインウィンドウのナビゲーション先として許すかどうかを判定する（機能仕様
 /// S2「権限と到達経路の境界」・受入基準）。
@@ -127,8 +136,28 @@ pub fn context<R: Runtime>() -> tauri::Context<R> {
 /// `plugins.sql.preload` の DB を起動時に開く。WebView には `load` を許可
 /// しない（`capabilities/default.json`）。
 pub fn configure<R: Runtime>(builder: tauri::Builder<R>) -> tauri::Builder<R> {
+    let secure_state = SecureState::production().expect("failed to build the secure transport");
+    configure_with(builder, secure_state)
+}
+
+/// [`configure`] の、秘密情報を扱う通信層の状態を注入できる形（#581 S3。
+/// 機能仕様 docs/features/secure-transport-byok.md 仮定 A18）。製品版は
+/// [`SecureState::production`]（製品版の宛先の表とキーチェーン）、テストは
+/// 模擬の宛先の表とメモリの保管を渡す。
+pub fn configure_with<R: Runtime>(builder: tauri::Builder<R>, secure_state: SecureState) -> tauri::Builder<R> {
     builder
         .plugin(tauri_plugin_sql::Builder::new().build())
+        .manage(secure_state)
+        // 公開するコマンドは `APP_COMMANDS` の 5 つだけ（`build.rs` が同じ一覧を
+        // `AppManifest` に渡す。一覧との一致は tests/secure_commands.rs が IPC で
+        // 確かめる）。キーの値を返すコマンドは無い。
+        .invoke_handler(tauri::generate_handler![
+            secure_commands::secure_send,
+            secure_commands::secure_cancel,
+            secure_commands::byok_key_set,
+            secure_commands::byok_key_delete,
+            secure_commands::byok_key_status,
+        ])
         .setup(|app| {
             build_main_window(app)?;
             Ok(())
