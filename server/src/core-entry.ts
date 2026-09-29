@@ -77,6 +77,21 @@ export {
 } from "./llm/secure-transport-port.js";
 
 /**
+ * 選択の解決関数（#581 S3・機能仕様 docs/features/secure-transport-byok.md
+ * クリティカル設計決定 7）。製品版の web のエントリが、BYOK（Anthropic）の
+ * 登録と同時に製品版の解決関数を `setLlmSelectionResolver` で登録する——この
+ * モジュール自身は登録しない（読み込んだだけでは開発者用の解決関数のまま）。
+ * re-export により `core-entry.bundle.test.ts` のバンドル検査の対象になる。
+ */
+export {
+  productLlmSelectionResolver,
+  setLlmSelectionResolver,
+  resolveLlmSelection,
+  type LlmSelection,
+  type LlmSelectionResolver,
+} from "./llm/llm-selection.js";
+
+/**
  * 催促の予約を計画し直す処理（機能仕様 docs/features/scheduled-nudges.md
  * 「S2 の設計」）も**呼ばずに re-export する**。S3 で器が通知の予約ポートの
  * 実装を渡して作り、起動・前面への復帰などの契機と `createCoreApp` の
@@ -110,3 +125,13 @@ export type {
   NotificationSender,
   SendNotificationResult,
 } from "./notifications/notification-port.js";
+
+/**
+ * 証跡ファイルの保存ポートと保存名の形の検査（#579 S4・機能仕様
+ * docs/features/tauri-in-app-runtime.md「S4 の設計」）。製品版の web のエントリが、
+ * plugin-fs 実装（`web/src/app-entry/plugin-fs-evidence-store.ts`）をこのポートで
+ * 組み、保存名をパスに使う前に `isValidStoredEvidenceFilename` で検査する
+ * （保存名を作る側と同じ定義を共有するため web 側に複製しない）。
+ */
+export type { EvidenceStore } from "./tasks/evidence-store.js";
+export { isValidStoredEvidenceFilename } from "./tasks/evidence-validation.js";

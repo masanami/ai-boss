@@ -1,7 +1,8 @@
 import type { Db } from "../db/db-port.js";
-import { resolveBossSettings } from "../boss/boss-settings.js";
+import { resolveBossSettingsFrom } from "../boss/boss-settings.js";
+import { resolveLlmSelection } from "../llm/llm-selection.js";
+import { readSettingsSnapshot } from "../settings/settings-repository.js";
 import { buildPersonaPrompt } from "../boss/persona-prompt.js";
-import { resolveLlmBackend } from "../config.js";
 import {
   createClaudeClient,
   createBossMessage,
@@ -125,9 +126,13 @@ export async function generateMeetingOpening(
 ): Promise<MeetingOpeningResult> {
   const fallback = FALLBACK_TEXT[sessionType];
   try {
-    const backend = resolveLlmBackend(env);
+    // 機能仕様 docs/features/secure-transport-byok.md クリティカル設計決定 7:
+    // バックエンドとモデルは、人格と同じ 1 つの設定のスナップショットから
+    // 選択の解決関数で決める。
+    const settings = await readSettingsSnapshot(db);
+    const { backend, model } = resolveLlmSelection(env, settings);
     const client = createClaudeClient(env, backend);
-    const { model, persona } = await resolveBossSettings(db);
+    const { persona } = resolveBossSettingsFrom(settings);
     const tasks = await listTasks(db);
     // purpose は指定しない（既定 "chat"）。sessionType を渡すことで
     // MORNING_FLOW_INSTRUCTION / EVENING_FLOW_INSTRUCTION が乗る

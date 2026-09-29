@@ -6,6 +6,9 @@ import { createDisconnectedDbPort } from "./disconnected-db-port";
  * 製品版の web のエントリの起動の順序（#580 S2・機能仕様
  * docs/features/async-db-layer.md「S2 の設計」・受入基準（S2）AC-S2-24・25）。
  *
+ * 0. 製品版の LLM を準備する（BYOK〔Anthropic〕と製品版の解決関数の登録。
+ *    #581 S3・機能仕様 docs/features/secure-transport-byok.md 受入基準
+ *    （S3）S3-E4: `/api` の振り向けより前）。
  * 1. DB を準備する（plugin-sql 実装のポートを組み、マイグレーションする）。
  *    失敗したら「DB 未接続」ポートにフォールバックし、失敗を記録する
  *    （起動は止めない。画面は #579 S2 の器と同じく DB を使う部分がエラーの
@@ -21,6 +24,7 @@ import { createDisconnectedDbPort } from "./disconnected-db-port";
  * ルートに触らせない）。
  */
 export interface BootProductAppDeps {
+  installLlm: () => void;
   openDb: () => Promise<DbPort>;
   logError: (message: string, error: unknown) => void;
   installApi: (app: ProductCoreApp) => void;
@@ -36,6 +40,7 @@ export const PRODUCT_SCHEDULER_START_FAILED_MESSAGE =
   "製品版の毎分の検知を始められませんでした（催促は届きません）";
 
 export async function bootProductApp(deps: BootProductAppDeps): Promise<void> {
+  deps.installLlm();
   let db: DbPort;
   let dbReady = true;
   try {

@@ -32,6 +32,7 @@ const { generateNotificationBody, buildNotificationLlmRequest, buildFallbackBody
   "../notifications/notification-body.js"
 );
 const { DEFAULT_PERSONA_SETTINGS } = await import("../boss/persona-prompt.js");
+const { setLlmSelectionResolver, resetLlmSelectionResolverForTest } = await import("../llm/llm-selection.js");
 const { evaluateRules } = await import("../detection/rule-engine.js");
 const { DEFAULT_DETECTION_SETTINGS } = await import("../detection/detection-types.js");
 const {
@@ -1426,5 +1427,44 @@ describe("固定文へのフォールバックの内容", () => {
     await replan(h);
     const row = reservationRows(h.raw).find((r) => r.scheduled_at === at(10, 40))!;
     expect(row.body).toBe(buildFallbackBody({ ruleType: "silence", escalationLevel: 1, task: null, now: NOW }));
+  });
+});
+
+describe("選択の解決関数（#581 S3・機能仕様 docs/features/secure-transport-byok.md クリティカル設計決定 7）", () => {
+  afterEach(() => {
+    resetLlmSelectionResolverForTest();
+  });
+
+  it("S3-S19: 催促の予約の文面の生成は、解決関数が返した名前のバックエンドでクライアントを作る", async () => {
+    // `env` は空（`LLM_BACKEND` 未設定なら claude-code）だが、解決関数は byok-openai を返す。
+    setLlmSelectionResolver(() => ({ backend: "byok-openai", model: "model-from-the-resolver" }));
+    llmSucceeds();
+    const h = await setup();
+    await replan(h);
+    expect(createClaudeClientMock).toHaveBeenCalled();
+    expect(createClaudeClientMock.mock.calls.map((call) => call[1])).toEqual(
+      createClaudeClientMock.mock.calls.map(() => "byok-openai"),
+    );
+  });
+
+  it("S3-S20: 催促の予約の文面の要求の model は、解決関数が返したモデルである", async () => {
+    setLlmSelectionResolver(() => ({ backend: "byok-openai", model: "model-from-the-resolver" }));
+    llmSucceeds();
+    const h = await setup();
+    await replan(h);
+    const models = llmRequests().map((request) => request.model);
+    expect(models.length).toBeGreaterThan(0);
+    expect(models).toEqual(models.map(() => "model-from-the-resolver"));
+  });
+
+  it("解決関数が例外を投げても計画し直しは続き、文面の生成だけをやめる（LLM_BACKEND が許容外の開発者用の版）", async () => {
+    setLlmSelectionResolver(() => {
+      throw new Error("invalid LLM_BACKEND");
+    });
+    llmSucceeds();
+    const h = await setup();
+    await replan(h);
+    expect(h.port.scheduled.size).toBeGreaterThan(0);
+    expect(createClaudeClientMock).not.toHaveBeenCalled();
   });
 });

@@ -1,6 +1,6 @@
 import type { Db } from "../db/db-port.js";
-import type { LlmBackend } from "../config.js";
-import { resolveBossSettings } from "../boss/boss-settings.js";
+import { resolveLlmSelection } from "../llm/llm-selection.js";
+import { readSettingsSnapshot } from "../settings/settings-repository.js";
 import {
   createClaudeClient,
   createBossMessage,
@@ -64,7 +64,6 @@ function extractText(message: BossLlmMessage): string {
 export async function generateSessionSummary(
   db: Db,
   env: NodeJS.ProcessEnv,
-  llmBackend: LlmBackend,
   sessionId: number,
 ): Promise<string | null> {
   try {
@@ -73,8 +72,11 @@ export async function generateSessionSummary(
       return null;
     }
 
-    const client = createClaudeClient(env, llmBackend);
-    const { model } = await resolveBossSettings(db);
+    // 機能仕様 docs/features/secure-transport-byok.md クリティカル設計決定 7:
+    // バックエンドとモデルは 1 つの設定のスナップショットから選択の解決関数で
+    // 決める。
+    const { backend, model } = resolveLlmSelection(env, await readSettingsSnapshot(db));
+    const client = createClaudeClient(env, backend);
 
     const message = await createBossMessage(client, {
       model,

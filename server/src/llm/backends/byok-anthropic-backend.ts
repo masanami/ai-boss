@@ -14,6 +14,7 @@ import {
 import {
   ANTHROPIC_MESSAGES_DESTINATION,
   SecureTransportError,
+  discardSecureTransportBody,
   type SecureTransportPort,
   type SecureTransportResponse,
 } from "../secure-transport-port.js";
@@ -151,7 +152,9 @@ async function sendAnthropicRequest(
   const response = await transport({ destination: ANTHROPIC_MESSAGES_DESTINATION, body }, signal);
   if (response.status < 200 || response.status >= 300) {
     // 2xx でない応答は text/tool_use として解釈しない（本文は読まない・
-    // onTextDelta も呼ばない）——機能仕様「HTTP のエラー」。
+    // onTextDelta も呼ばない）——機能仕様「HTTP のエラー」。読まない本文は
+    // 捨てて、転送（Rust の中継）を止め未読の断片を解放させる（PR #653 の指摘）。
+    await discardSecureTransportBody(response.body);
     throw new AnthropicMessagesHttpError(response.status, response.headers["retry-after"]);
   }
   return response;

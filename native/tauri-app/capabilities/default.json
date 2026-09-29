@@ -1,10 +1,21 @@
 {
   "identifier": "default",
-  "description": "製品版の WebView に許可する最小の権限。#580 S2: DB（起動時に Rust 側が preload で開く ai-boss.db）の execute・select（load・close は許可しない。docs/features/async-db-layer.md「S2 の設計」）。#579 S3: 通知の送信（notification:allow-notify。許可の問い合わせ・予約・取り消しは許可しない）と、毎分の刻みのイベントの購読（core:event:allow-listen。core:event:allow-emit は許可しない）",
-  "windows": ["main"],
+  "description": "製品版の WebView に許可する最小の権限。#580 S2: DB（起動時に Rust 側が preload で開く ai-boss.db）の execute・select（load・close は許可しない。docs/features/async-db-layer.md「S2 の設計」）。#581 S3: 秘密情報を扱う通信層のコマンド 5 つだけを許可する（キーの値を返すコマンドは無い。docs/features/secure-transport-byok.md クリティカル設計決定 8）。#579 S4: 証跡ファイルの読み書き・削除・有無の確認だけを、保存先（$APPCONFIG/evidence）の直下に限って許可する（docs/features/tauri-in-app-runtime.md「S4 の設計」）。#579 S3: 通知の送信（notification:allow-notify。許可の問い合わせ・予約・取り消しは許可しない）と、毎分の刻みのイベントの購読（core:event:allow-listen。core:event:allow-emit は許可しない）",
+  "windows": [
+    "main"
+  ],
   "permissions": [
     "sql:allow-execute",
     "sql:allow-select",
+    "allow-secure-send",
+    "allow-secure-cancel",
+    "allow-byok-key-set",
+    "allow-byok-key-delete",
+    "allow-byok-key-status",
+    { "identifier": "fs:allow-read-file", "allow": [{ "path": "$APPCONFIG/evidence/*" }] },
+    { "identifier": "fs:allow-write-file", "allow": [{ "path": "$APPCONFIG/evidence/*" }] },
+    { "identifier": "fs:allow-remove", "allow": [{ "path": "$APPCONFIG/evidence/*" }] },
+    { "identifier": "fs:allow-exists", "allow": [{ "path": "$APPCONFIG/evidence/*" }] },
     "notification:allow-notify",
     "core:event:allow-listen"
   ]

@@ -5,14 +5,19 @@
 //! 上に、製品版と同じ `tauri.conf.json`・同じ capability（`generate_context!`
 //! の ACL）で組み、標準入力で受けた IPC の要求を `main` のウィンドウ（アプリの
 //! オリジン）の IPC へ渡して、結果を標準出力へ返す。web のテスト
-//! （`npm run test:tauri-db`）が子プロセスとして起動し、`@tauri-apps/api/mocks`
-//! の `mockIPC` から `@tauri-apps/plugin-sql`（JS）の `invoke` をここへ流す。
+//! （`npm run test:tauri-db`）が子プロセスとして起動し、`@tauri-apps/plugin-sql`・
+//! `@tauri-apps/plugin-fs`（JS）の `invoke` をここへ流す。
 //!
 //! 行ごとの JSON（1 行 1 メッセージ）:
 //! - 起動が済んだら `{"ready":true}` を 1 行出す。
 //! - 要求 `{"id":<数>,"cmd":"plugin:sql|execute","args":{...}}` に対し、
 //!   `{"id":<数>,"ok":<戻り値>}` か `{"id":<数>,"err":<エラー>}` を返す。
 //!   要求はスレッドごとに並行に処理する（応答の順は要求の順と限らない）。
+//! - raw の本文とヘッダ（#579 S4・仮定 A14）: 要求に `"raw":"<base64>"` があれば、
+//!   本文は `args` ではなくそのバイト列（plugin-fs の `writeFile` が本文を raw で
+//!   送る形）。`"headers":{"<名前>":"<値>"}` があれば要求のヘッダに載せる
+//!   （`writeFile` は `path`・`options` をヘッダで送る）。応答が raw のバイト列
+//!   （plugin-fs の `readFile`）のときは `{"id":<数>,"raw":"<base64>"}` を返す。
 //! - 標準入力が閉じたら、処理中の要求を待って終わる。
 //!
 //! 利用者のアプリのデータディレクトリに触れないよう、環境変数
@@ -23,8 +28,10 @@ use std::io::{BufRead, Write};
 use std::sync::{Arc, Mutex};
 use std::thread;
 
+use base64::Engine as _;
 use serde_json::{json, Value};
-use tauri::ipc::{CallbackFn, InvokeBody};
+use tauri::http::{HeaderMap, HeaderName, HeaderValue};
+use tauri::ipc::{CallbackFn, InvokeBody, InvokeResponseBody};
 use tauri::test::{get_ipc_response, mock_builder, INVOKE_KEY};
 use tauri::webview::InvokeRequest;
 use tauri::Manager;
@@ -60,6 +67,24 @@ fn main() {
         workers.push(thread::spawn(move || {
             let id = request["id"].clone();
             let cmd = request["cmd"].as_str().expect("cmd must be a string");
+            let body = match request.get("raw").and_then(Value::as_str) {
+                Some(encoded) => InvokeBody::Raw(
+                    base64::engine::general_purpose::STANDARD
+                        .decode(encoded)
+                        .expect("raw must be base64"),
+                ),
+                None => InvokeBody::Json(request["args"].clone()),
+            };
+            let mut headers = HeaderMap::new();
+            if let Some(map) = request.get("headers").and_then(Value::as_object) {
+                for (name, value) in map {
+                    headers.insert(
+                        HeaderName::from_bytes(name.as_bytes()).expect("header name"),
+                        HeaderValue::from_str(value.as_str().expect("header value must be a string"))
+                            .expect("header value"),
+                    );
+                }
+            }
             let response = get_ipc_response(
                 &window,
                 InvokeRequest {
@@ -67,15 +92,19 @@ fn main() {
                     callback: CallbackFn(0),
                     error: CallbackFn(1),
                     url: "tauri://localhost".parse().unwrap(),
-                    body: InvokeBody::Json(request["args"].clone()),
-                    headers: Default::default(),
+                    body,
+                    headers,
                     invoke_key: INVOKE_KEY.to_string(),
                 },
             );
             let message = match response {
-                Ok(body) => json!({
+                Ok(InvokeResponseBody::Json(text)) => json!({
                     "id": id,
-                    "ok": body.deserialize::<Value>().expect("response body is JSON"),
+                    "ok": serde_json::from_str::<Value>(&text).expect("response body is JSON"),
+                }),
+                Ok(InvokeResponseBody::Raw(bytes)) => json!({
+                    "id": id,
+                    "raw": base64::engine::general_purpose::STANDARD.encode(bytes),
                 }),
                 Err(error) => json!({ "id": id, "err": error }),
             };

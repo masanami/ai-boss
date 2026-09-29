@@ -61,7 +61,7 @@ async function setup(): Promise<Harness> {
   const { db, raw, hooks } = await createHookedTestDb();
   opened.push(raw);
   const app = new Hono();
-  app.route("/api/sessions", createSessionsRouter(db, { LLM_BACKEND: "api" }, "api"));
+  app.route("/api/sessions", createSessionsRouter(db, { LLM_BACKEND: "api" }));
   return { db, raw, hooks, app };
 }
 

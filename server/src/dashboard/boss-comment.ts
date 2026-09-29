@@ -1,7 +1,8 @@
 import type { Db } from "../db/db-port.js";
-import { resolveBossSettings } from "../boss/boss-settings.js";
+import { resolveBossSettingsFrom } from "../boss/boss-settings.js";
+import { resolveLlmSelection } from "../llm/llm-selection.js";
+import { readSettingsSnapshot } from "../settings/settings-repository.js";
 import { buildPersonaPrompt } from "../boss/persona-prompt.js";
-import { resolveLlmBackend, type LlmBackend } from "../config.js";
 import { stripHtmlTags } from "../lib/strip-html-tags.js";
 import {
   createClaudeClient,
@@ -15,6 +16,7 @@ import type { Task } from "../tasks/task.js";
 import { toDateKey } from "../detection/time-utils.js";
 import { getCachedBossComment, setCachedBossComment } from "./boss-comment-cache.js";
 import { computeTaskFingerprint } from "./task-fingerprint.js";
+import type { LlmBackendName } from "../llm/llm-backend-registry.js";
 
 /**
  * ダッシュボードの「今日のひとこと」生成（Issue #58）。人格プロンプト生成器
@@ -68,7 +70,7 @@ function zenkakuEquivalentLength(text: string): number {
 // （#582 の決定 Q5）: バックエンドの**名前**ではなく、宣言された能力
 // limitsResponseLength で分岐する。応答長を制限できないバックエンドだけに
 // 短文指示（CLAUDE_CODE_SHORT_TEXT_INSTRUCTION）を追加する。
-function buildUserInstruction(backend: LlmBackend): string {
+function buildUserInstruction(backend: LlmBackendName): string {
   if (!getLlmBackendCapabilities(backend).limitsResponseLength) {
     return `${USER_INSTRUCTION}\n${CLAUDE_CODE_SHORT_TEXT_INSTRUCTION}`;
   }
@@ -96,9 +98,13 @@ async function generateBossComment(
   tasks: Task[],
 ): Promise<GenerationResult> {
   try {
-    const backend = resolveLlmBackend(env);
+    // 機能仕様 docs/features/secure-transport-byok.md クリティカル設計決定 7:
+    // バックエンドとモデルは、人格と同じ 1 つの設定のスナップショットから
+    // 選択の解決関数で決める。
+    const settings = await readSettingsSnapshot(db);
+    const { backend, model } = resolveLlmSelection(env, settings);
     const client = createClaudeClient(env, backend);
-    const { model, persona } = await resolveBossSettings(db);
+    const { persona } = resolveBossSettingsFrom(settings);
     const system = buildPersonaPrompt(persona, {
       tasks,
       recentDecisions: [],

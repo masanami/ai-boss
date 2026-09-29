@@ -42,8 +42,24 @@ export interface SecureTransportResponseHeaders {
 export interface SecureTransportResponse {
   status: number;
   headers: SecureTransportResponseHeaders;
-  /** 本文のバイト列の断片の非同期の列（終端・エラーを含む）。 */
+  /** 本文のバイト列の断片の非同期の列（終端・エラーを含む）。最後まで読まない
+   * 呼び出し元は、読み始めていなくても {@link discardSecureTransportBody} で
+   * 捨てる（実装は送信の中止と未読の断片の解放をそこで行う）。 */
   body: AsyncIterable<Uint8Array>;
+}
+
+/**
+ * 本文を読まずに（または途中で）捨てる。本文の反復子の `return` を呼び、
+ * ポートの実装（S3 の Tauri 実装）に送信の中止と未読の断片の解放をさせる
+ * （`for await` の `break` と同じ口）。捨てる側の失敗の報告を妨げないよう、
+ * `return` の失敗は無視する。
+ */
+export async function discardSecureTransportBody(body: AsyncIterable<Uint8Array>): Promise<void> {
+  try {
+    await body[Symbol.asyncIterator]().return?.();
+  } catch {
+    // 捨てるだけなので、後始末の失敗は呼び出し元の失敗より優先しない。
+  }
 }
 
 /**

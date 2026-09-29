@@ -13,8 +13,8 @@ import {
  *
  * 実行環境ごとの実装（証跡ファイルの保存）は、コアがポートとして受け取り、
  * エントリが実装を注入する。開発者用の版は `evidence-storage.ts` の
- * `createNodeFsEvidenceStore`（Node `fs`）、製品版は #594 の S4（plugin-fs、
- * 本機能の対象外）が担う。バイト列は Web 標準の型（`Uint8Array`）で受け渡す
+ * `createNodeFsEvidenceStore`（Node `fs`）、製品版は web のエントリの
+ * plugin-fs 実装（#579 S4）。バイト列は Web 標準の型（`Uint8Array`）で受け渡す
  * （`Buffer` は `Uint8Array` の派生型なので、開発者用の版の実装はそのまま
  * 受け取れる）。
  */
@@ -26,10 +26,16 @@ import {
 // 前提にしている）。`new Uint8Array(n)`／`new File([...]).arrayBuffer()` の
 // 戻り値・Node の `Buffer` はいずれも実体として `ArrayBuffer` を裏付けに持つ
 // ため、この明示は既存の呼び出し元の実際の値と矛盾しない。
+//
+// 戻り値に `Promise` を許す（#579 S4・仮定 A10）: 製品版の plugin-fs 実装は
+// IPC 越しで非同期。開発者用の版の Node fs 実装は同期のままで、コアはポートを
+// 呼ぶすべての箇所で戻り値を `await` する（`await` は同期の値もそのまま通す）。
 export interface EvidenceStore {
-  write(storedFilename: string, data: Uint8Array<ArrayBuffer>): void;
-  read(storedFilename: string): Uint8Array<ArrayBuffer> | undefined;
-  remove(storedFilename: string): void;
+  write(storedFilename: string, data: Uint8Array<ArrayBuffer>): void | Promise<void>;
+  read(
+    storedFilename: string,
+  ): Uint8Array<ArrayBuffer> | undefined | Promise<Uint8Array<ArrayBuffer> | undefined>;
+  remove(storedFilename: string): void | Promise<void>;
 }
 
 export interface SaveFileEvidenceInput {
@@ -95,7 +101,7 @@ export async function saveFileEvidenceIfAllowed(
   }
 
   const storedFilename = generateStoredFilename(input.originalFilename);
-  store.write(storedFilename, input.data);
+  await store.write(storedFilename, input.data);
 
   const evidence = await db.transaction(async (tx) => {
     if (!(await canInsert(tx))) {
@@ -111,7 +117,7 @@ export async function saveFileEvidenceIfAllowed(
     });
   });
   if (!evidence) {
-    store.remove(storedFilename);
+    await store.remove(storedFilename);
   }
   return evidence;
 }
@@ -160,7 +166,7 @@ export async function deleteEvidence(
   if (!evidence) {
     return false;
   }
-  removeEvidenceFile(store, evidence);
+  await removeEvidenceFile(store, evidence);
   return true;
 }
 
@@ -185,8 +191,11 @@ export async function deleteEvidenceRow(
 }
 
 /** 削除済みの行がファイルエビデンスなら、その実体を消す（リンクは何もしない）。 */
-export function removeEvidenceFile(store: EvidenceStore, evidence: TaskEvidence): void {
+export async function removeEvidenceFile(
+  store: EvidenceStore,
+  evidence: TaskEvidence,
+): Promise<void> {
   if (evidence.kind === "file" && evidence.stored_filename) {
-    store.remove(evidence.stored_filename);
+    await store.remove(evidence.stored_filename);
   }
 }

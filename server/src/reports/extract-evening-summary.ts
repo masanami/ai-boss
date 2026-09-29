@@ -11,9 +11,10 @@
 // LLM 呼び出しエラー／タイムアウト／ツール未呼び出し／入力の形式不正・空文字
 // （親要件チケット #100 のクリティカル設計決定）。
 import type { Db } from "../db/db-port.js";
-import { resolveBossSettings } from "../boss/boss-settings.js";
+import { resolveBossSettingsFrom } from "../boss/boss-settings.js";
+import { resolveLlmSelection } from "../llm/llm-selection.js";
+import { readSettingsSnapshot } from "../settings/settings-repository.js";
 import { buildPersonaPrompt } from "../boss/persona-prompt.js";
-import { resolveLlmBackend } from "../config.js";
 import {
   createClaudeClient,
   getLlmBackendCapabilities,
@@ -134,9 +135,13 @@ export async function extractEveningSummary(
   options: ExtractEveningSummaryOptions = {},
 ): Promise<EveningSummaryValues | null> {
   try {
-    const backend = resolveLlmBackend(env);
+    // 機能仕様 docs/features/secure-transport-byok.md クリティカル設計決定 7:
+    // バックエンドとモデルは、人格と同じ 1 つの設定のスナップショットから
+    // 選択の解決関数で決める。
+    const settings = await readSettingsSnapshot(db);
+    const { backend, model } = resolveLlmSelection(env, settings);
     const client: BossLlmClient = createClaudeClient(env, backend);
-    const { model, persona } = await resolveBossSettings(db);
+    const { persona } = resolveBossSettingsFrom(settings);
     const system = buildPersonaPrompt(persona, {
       tasks: [],
       recentDecisions: [],

@@ -44,6 +44,7 @@ describe("bootProductApp", () => {
     });
 
     const booting = bootProductApp({
+      installLlm: vi.fn(),
       openDb: () => opened.promise,
       logError: vi.fn(),
       installApi,
@@ -69,6 +70,7 @@ describe("bootProductApp", () => {
     const render = vi.fn();
 
     await bootProductApp({
+      installLlm: vi.fn(),
       openDb: () => Promise.reject(failure),
       logError,
       installApi,
@@ -90,6 +92,7 @@ describe("bootProductApp", () => {
       const startScheduler = vi.fn<(db: DbPort) => Promise<void>>().mockResolvedValue(undefined);
 
       await bootProductApp({
+        installLlm: vi.fn(),
         openDb: () => Promise.resolve(port),
         logError: vi.fn(),
         installApi: vi.fn(),
@@ -106,6 +109,7 @@ describe("bootProductApp", () => {
       const render = vi.fn();
 
       await bootProductApp({
+        installLlm: vi.fn(),
         openDb: () => Promise.reject(new Error("migration failed")),
         logError: vi.fn(),
         installApi: vi.fn(),
@@ -125,6 +129,7 @@ describe("bootProductApp", () => {
 
       await expect(
         bootProductApp({
+          installLlm: vi.fn(),
           openDb: () => Promise.resolve(portAnsweringSelectOne()),
           logError: vi.fn(),
           installApi: vi.fn(),
@@ -141,6 +146,7 @@ describe("bootProductApp", () => {
       const logError = vi.fn();
 
       await bootProductApp({
+        installLlm: vi.fn(),
         openDb: () => Promise.resolve(portAnsweringSelectOne()),
         logError,
         installApi: vi.fn(),
@@ -154,6 +160,7 @@ describe("bootProductApp", () => {
     it("毎分の検知の開始が長引いても（未解決でも）、先に /api の振り向けと描画を済ませる", async () => {
       const calls: string[] = [];
       const booting = bootProductApp({
+        installLlm: vi.fn(),
         openDb: () => Promise.resolve(portAnsweringSelectOne()),
         logError: vi.fn(),
         installApi: () => calls.push("installApi"),
@@ -168,5 +175,21 @@ describe("bootProductApp", () => {
       expect(calls).toEqual(["installApi", "render", "startScheduler"]);
       void booting;
     });
+  });
+
+  it("S3-E4（#581 S3）: 製品版の LLM の準備は /api の振り向けより前に行う", async () => {
+    const calls: string[] = [];
+    await bootProductApp({
+      installLlm: () => calls.push("installLlm"),
+      openDb: async () => {
+        calls.push("openDb");
+        return portAnsweringSelectOne();
+      },
+      logError: vi.fn(),
+      installApi: () => calls.push("installApi"),
+      render: () => calls.push("render"),
+      startScheduler: vi.fn(),
+    });
+    expect(calls).toEqual(["installLlm", "openDb", "installApi", "render"]);
   });
 });

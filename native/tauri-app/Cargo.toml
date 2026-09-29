@@ -28,6 +28,15 @@ tauri-plugin-sql = { path = "../tauri-plugin-sql", features = ["sqlite"] }
 # `tauri.conf.json` に `plugins`（plugin-sql の preload）を置くと、
 # `generate_context!` の展開が `serde_json` をクレートの依存として参照する。
 serde_json = "1"
+# #581 S3（docs/features/secure-transport-byok.md クリティカル設計決定 8）:
+# 秘密情報を扱う通信層（Tauri 非依存のライブラリ）をコマンドで公開する。
+secure-transport = { path = "../secure-transport" }
+secrecy = "0.10"
+serde = { version = "1", features = ["derive"] }
+# #579 S4（docs/features/tauri-in-app-runtime.md「S4 の設計」・仮定 A9）: 証跡ファイルの
+# 保存。fork せず上流のまま使う。権限は `capabilities/default.json` で保存先の直下
+# （`$APPCONFIG/evidence/*`）に限った 4 つだけを足す。
+tauri-plugin-fs = "~2.6"
 # #579 S3: 通知の送信（`plugin:notification|notify`）。2.5.0 の実測（デスクトップは
 # 表示の結果を捨てる・許可を問い合わせない）に拠るため `~2.5` に固定する
 # （仮定 S3-A6）。JS のパッケージ（`@tauri-apps/plugin-notification`）は入れない。
@@ -39,5 +48,9 @@ tauri-plugin-notification = "~2.5"
 # dev-dependencies でだけ有効にする（製品のバイナリには入らない。仮定 A8）。
 tauri = { version = "2.12", features = ["test"] }
 tempfile = "3"
+# #579 S4: IPC の中継（examples/sql-ipc-bridge.rs）が raw の本文・応答を JSON の行に載せる。
+base64 = "0.22"
 # 設定の検査テスト（tauri.conf.json・capabilities/・Cargo.toml の読み込み）用。
 toml = "0.8"
+# #581 S3: コマンドのテストの模擬 HTTP サーバー（tests/support/）。
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "net", "io-util", "sync", "time"] }

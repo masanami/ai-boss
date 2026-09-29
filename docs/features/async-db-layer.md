@@ -283,6 +283,7 @@ S1 の契約（トランザクションの原子性・直列化・`user_version`
 ### 権限と DB ファイルの場所（Rust のテスト・設定の検査）
 
 - [ ] AC-S2-5: アプリの capability は 1 件で、対象のウィンドウは `main` だけ、許可する権限は `sql:allow-execute`・`sql:allow-select` の 2 つだけである
+  - 2026-09-29（#581 S3）: 許可する権限に、秘密情報を扱う通信層のコマンド 5 つの `allow-*` を足した（`docs/features/secure-transport-byok.md` の受入基準（S3）S3-C3。DB の権限は 2 つのまま）
 - [ ] AC-S2-6: 器の ACL の上で、`main` のウィンドウからの `plugin:sql|execute`・`plugin:sql|select` は実行され、`plugin:sql|load`・`plugin:sql|close` は拒否される
 - [ ] AC-S2-7: `tauri.conf.json` の `plugins.sql.preload` は `["sqlite:ai-boss.db"]` だけである
 - [ ] AC-S2-8: 器を起動すると、DB ファイルはアプリのデータディレクトリ（`app_config_dir`）の直下の `ai-boss.db` に作られる（テストは `HOME` を一時ディレクトリにして確かめる）
