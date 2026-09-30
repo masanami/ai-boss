@@ -122,6 +122,12 @@ fn perform<R: Runtime>(app: &AppHandle<R>, action: ShellAction) {
     }
 }
 
+/// 2 つ目の起動を知らされたとき（#659）: 既にあるメインのウィンドウを表示して前面に
+/// 出す（2 つ目の起動のプロセスは、知らせた後にプラグインが終了させる）。
+pub fn on_second_instance<R: Runtime>(app: &AppHandle<R>) {
+    perform(app, ShellAction::ShowMainWindow);
+}
+
 /// メニューバーのアイコンとメニューを作る。`run` の `RunEvent::Ready` から呼ぶ
 /// （`configure`・`handle_run_event` では作らない — メニューは実際の macOS の
 /// メニュー〔muda〕でメインスレッドを要し、`MockRuntime` の結合テストが本物の

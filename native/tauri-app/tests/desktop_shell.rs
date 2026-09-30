@@ -401,3 +401,53 @@ fn the_context_embeds_a_default_window_icon_for_the_tray() {
 
     assert!(context.default_window_icon().is_some());
 }
+
+// ---------------------------------------------------------------------------
+// #659: 多重起動の防止（single-instance）
+// ---------------------------------------------------------------------------
+
+/// 製品の組み立て（`app_lib::with_single_instance`）で器を組むと、2 つ目の起動を
+/// 受ける口（macOS では `/tmp/<identifier>_si.sock` の Unix ソケット）が開き、
+/// 2 つ目の起動の知らせ（作業ディレクトリと引数）を受け付ける。2 つ目の起動は
+/// この口へ知らせて終了する（`tauri-plugin-single-instance` 2.5 の macOS の実装）。
+///
+/// 利用者が起動している本物のアプリ（`dev.aiboss.app`）の口と取り違えると、
+/// テストのプロセスが 2 つ目の起動として終了するため、プロセスごとに別の
+/// identifier で組む。
+#[cfg(target_os = "macos")]
+#[test]
+fn the_product_assembly_listens_for_a_second_instance() {
+    use std::io::Write;
+    use std::os::unix::net::UnixStream;
+
+    test_home();
+    let identifier = format!("dev.aiboss.app.single-instance-test-{}", std::process::id());
+    let socket = PathBuf::from(format!("/tmp/{}_si.sock", identifier.replace(['.', '-'], "_")));
+    let _ = std::fs::remove_file(&socket);
+    let mut context = app_lib::context();
+    context.config_mut().identifier = identifier;
+    let mut app = app_lib::configure(app_lib::with_single_instance(mock_builder()))
+        .build(context)
+        .expect("failed to build the app on MockRuntime");
+    #[allow(deprecated)]
+    app.run_iteration(|_, _| {});
+    app.state::<MinuteTicker>().stop();
+
+    // 口は非同期に開くため、開くまで待つ。
+    let deadline = Instant::now() + TICKER_TIMEOUT;
+    let stream = loop {
+        match UnixStream::connect(&socket) {
+            Ok(stream) => break stream,
+            Err(error) if Instant::now() > deadline => {
+                panic!("the single-instance socket {} did not open: {error}", socket.display())
+            }
+            Err(_) => std::thread::sleep(Duration::from_millis(20)),
+        }
+    };
+    (&stream)
+        .write_all(b"/\0\0ai-boss")
+        .expect("a second instance can notify the first one");
+
+    tauri_plugin_single_instance::destroy(&app);
+    assert!(!socket.exists(), "the socket should be removed by destroy");
+}

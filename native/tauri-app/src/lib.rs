@@ -164,7 +164,7 @@ fn build_main_window<R: Runtime, M: tauri::Manager<R>>(
 /// ウィンドウは隠す）・Dock の再表示の要求もここで処理する
 /// （`desktop_shell::handle_run_event`）。`configure` では作らない。
 pub fn run() {
-    configure(tauri::Builder::default())
+    configure(with_single_instance(tauri::Builder::default()))
         .build(context())
         .expect("error while building tauri application")
         .run(|app, event| {
@@ -175,6 +175,18 @@ pub fn run() {
             }
             desktop_shell::handle_run_event(app, event);
         });
+}
+
+/// 多重起動の防止（#659）を組み込む。`configure` より前（最初のプラグイン）に登録し、
+/// 2 つ目の起動が DB の preload・刻みの送り手の起動より前に終わるようにする
+/// （同じ DB に対して刻みが 2 重に走り、同じ催促を 2 回送らないように）。
+///
+/// `configure` には入れない: `MockRuntime` の結合テストは 1 つのプロセスで器を
+/// 何度も組むため、2 回目が 2 つ目の起動と判定されてテストのプロセスが終了する。
+pub fn with_single_instance<R: Runtime>(builder: tauri::Builder<R>) -> tauri::Builder<R> {
+    builder.plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
+        desktop_shell::on_second_instance(app)
+    }))
 }
 
 /// `tauri.conf.json`・capability（ACL）・アセットを埋め込んだコンテキスト。
