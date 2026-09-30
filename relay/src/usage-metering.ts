@@ -164,9 +164,15 @@ export interface UsageMeter {
  * 2 度届く・`usage` のある `message_delta` が `message_start` より先に届くときは、
  * 後の `message_start` が出力の値を巻き戻しうるため実額に使わない。
  *
- * 区切りを待つ未処理の行と、組み立て中のイベントの `data` の文字数（UTF-16 の
- * 長さ。UTF-8 のバイト数以下）の合計が `maxBytes` を超えたら、持つのをやめて
- * 実額に使わない（`null`。予約額で確定する——安全側。#641）。
+ * 区切りを待つ未処理の行と、組み立て中のイベントの `data`（行ごとに区切りの
+ * "\n" の 1 を足して数える。空の `data:` 行も 1）の合計が `maxBytes` を超えたら、
+ * 持つのをやめて実額に使わない（`null`。予約額で確定する——安全側。#641）。
+ *
+ * 数えるのは UTF-16 の単位数で、UTF-8 のバイト数ではない（バイト数で数えると、
+ * 日本語の応答では同じ上限でも早く諦め、実額で精算できる応答の範囲が狭まる）。
+ * ただし V8 は Latin-1 に収まらない文字列を 1 単位 2 バイトで持つため、日本語などでは
+ * 上限の約 2 倍のバイト数を持ちうる（UTF-16 の単位数での上限は安全側の上限として
+ * 機能する）。
  */
 export function createSseUsageMeter(maxBytes: number): UsageMeter {
   const decoder = new TextDecoder();
@@ -221,7 +227,8 @@ export function createSseUsageMeter(maxBytes: number): UsageMeter {
     } else if (line.startsWith("data:")) {
       const data = line.slice(line.startsWith("data: ") ? 6 : 5);
       dataLines.push(data);
-      dataLength += data.length;
+      // 行の区切り（"\n"）の分の 1 も数える（空の `data:` 行だけを積んでも上限が効く）。
+      dataLength += data.length + 1;
     }
   }
 

@@ -215,7 +215,8 @@ describe("ストリーミングの計測器の未処理の行・イベントの�
     meter.push(encoder.encode(start));
     for (const line of lines) meter.push(encoder.encode(`data: ${line}\n`));
     for (const text of rest) meter.push(encoder.encode(text));
-    return { result: meter.result(), dataLength: lines.join("").length };
+    // 各行は区切りの "\n" の分（1）も数える。
+    return { result: meter.result(), dataLength: lines.reduce((sum, line) => sum + line.length + 1, 0) };
   }
 
   it("空行の来ないイベントの data の行が積み重なって上限を超えたら、実額に使わない", () => {
@@ -223,6 +224,26 @@ describe("ストリーミングの計測器の未処理の行・イベントの�
     // どの行も単独では上限に届かない。
     expect(multiLineResult(dataLength).result).toEqual({ ...ZERO_TOKENS, inputTokens: 1000, outputTokens: 200 });
     expect(multiLineResult(dataLength - 1).result).toBeNull();
+  });
+
+  const PING = '{"type":"ping"}';
+
+  /** 空の `data:` 行を `emptyLines` 本続けてから、ping で閉じるイベントを挟む（先頭の改行は JSON として許される）。 */
+  function emptyDataLinesResult(maxBytes: number, emptyLines: number) {
+    const meter = createSseUsageMeter(maxBytes);
+    meter.push(encoder.encode(start));
+    for (let i = 0; i < emptyLines; i++) meter.push(encoder.encode("data:\n"));
+    meter.push(encoder.encode(`data: ${PING}\n`));
+    for (const text of rest) meter.push(encoder.encode(text));
+    return meter.result();
+  }
+
+  it("空の data の行も区切りの 1 を数える（空行だけを積んでも上限が効く）", () => {
+    const emptyLines = 50;
+    // 空の行は 1 本につき 1、ping の行は JSON の長さ + 1。
+    const dataLength = emptyLines + PING.length + 1;
+    expect(emptyDataLinesResult(dataLength, emptyLines)).toEqual({ ...ZERO_TOKENS, inputTokens: 1000, outputTokens: 200 });
+    expect(emptyDataLinesResult(dataLength - 1, emptyLines)).toBeNull();
   });
 
   it("中継は計測器が諦めても、読み続けるアプリへは全部を渡し、予約額で確定する", async () => {
