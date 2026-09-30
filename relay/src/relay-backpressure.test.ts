@@ -208,12 +208,21 @@ describe("ストリーミングの計測器の未処理の行・イベントの�
     expect(meterResult(bigLine.length - 1)).toBeNull();
   });
 
-  it("空行の来ないイベントの data の行が積み重なって上限を超えたら、実額に使わない", () => {
-    const meter = createSseUsageMeter(100);
+  /** 複数の data の行に分けた（つなげると正しい JSON になる）ping のイベントを挟む。 */
+  function multiLineResult(maxBytes: number) {
+    const lines = ['{"type":"ping","pad":[', ...Array.from({ length: 20 }, () => "1111111111,"), "1]}"];
+    const meter = createSseUsageMeter(maxBytes);
     meter.push(encoder.encode(start));
-    for (let i = 0; i < 20; i++) meter.push(encoder.encode(`data: ${"y".repeat(10)}\n`));
+    for (const line of lines) meter.push(encoder.encode(`data: ${line}\n`));
     for (const text of rest) meter.push(encoder.encode(text));
-    expect(meter.result()).toBeNull();
+    return { result: meter.result(), dataLength: lines.join("").length };
+  }
+
+  it("空行の来ないイベントの data の行が積み重なって上限を超えたら、実額に使わない", () => {
+    const { dataLength } = multiLineResult(Number.MAX_SAFE_INTEGER);
+    // どの行も単独では上限に届かない。
+    expect(multiLineResult(dataLength).result).toEqual({ ...ZERO_TOKENS, inputTokens: 1000, outputTokens: 200 });
+    expect(multiLineResult(dataLength - 1).result).toBeNull();
   });
 
   it("中継は計測器が諦めても、読み続けるアプリへは全部を渡し、予約額で確定する", async () => {
