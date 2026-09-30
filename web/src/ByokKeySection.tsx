@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import type { FormEvent } from "react";
 import { ByokKeyCommandError, type ByokKeyManager } from "./byok-key-manager-context";
 
@@ -21,15 +21,19 @@ export default function ByokKeySection({ manager }: { manager: ByokKeyManager })
   const [input, setInput] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // 成功した登録・削除の回数。初回の取得がそれより遅れて返ったら、古い結果として捨てる（#659）。
+  const completedOperations = useRef(0);
 
   useEffect(() => {
     let active = true;
+    const operationsAtStart = completedOperations.current;
+    const isCurrent = () => active && completedOperations.current === operationsAtStart;
     manager.isRegistered().then(
       (value) => {
-        if (active) setRegistered(value);
+        if (isCurrent()) setRegistered(value);
       },
       (err: unknown) => {
-        if (active) setError(describeFailure(err));
+        if (isCurrent()) setError(describeFailure(err));
       },
     );
     return () => {
@@ -48,6 +52,7 @@ export default function ByokKeySection({ manager }: { manager: ByokKeyManager })
       .register(key)
       .then(
         () => {
+          completedOperations.current += 1;
           setInput("");
           setRegistered(true);
         },
@@ -63,7 +68,10 @@ export default function ByokKeySection({ manager }: { manager: ByokKeyManager })
     manager
       .remove()
       .then(
-        () => setRegistered(false),
+        () => {
+          completedOperations.current += 1;
+          setRegistered(false);
+        },
         (err: unknown) => setError(describeFailure(err)),
       )
       .finally(() => setBusy(false));
