@@ -5,10 +5,12 @@ import type { TauriInvoke } from "./tauri-secure-transport";
  * キーの操作の Tauri 実装（#581 S3・機能仕様
  * docs/features/secure-transport-byok.md クリティカル設計決定 8）。器の
  * コマンド `byok_key_set`・`byok_key_delete`・`byok_key_status` を、
- * プロバイダ `anthropic` で呼ぶ。キーの値を返すコマンドは無い。
+ * プロバイダ（`anthropic`〔既定〕・`openai`。#582 S2）で呼ぶ。キーの値を返す
+ * コマンドは無い。プロバイダごとに 1 つずつ作る（欄ごとに対応するプロバイダで
+ * コマンドを呼ぶ——キーの取り違えを塞ぐ）。
  */
 
-const PROVIDER = "anthropic";
+export type ByokProvider = "anthropic" | "openai";
 
 function toKeyCommandError(error: unknown): ByokKeyCommandError {
   if (typeof error === "object" && error !== null) {
@@ -28,16 +30,19 @@ async function call(invoke: TauriInvoke, command: string, args: Record<string, u
   }
 }
 
-export function createTauriByokKeyManager(invoke: TauriInvoke): ByokKeyManager {
+export function createTauriByokKeyManager(
+  invoke: TauriInvoke,
+  provider: ByokProvider = "anthropic",
+): ByokKeyManager {
   return {
     async isRegistered() {
-      return (await call(invoke, "byok_key_status", { provider: PROVIDER })) === true;
+      return (await call(invoke, "byok_key_status", { provider })) === true;
     },
     async register(key) {
-      await call(invoke, "byok_key_set", { provider: PROVIDER, key });
+      await call(invoke, "byok_key_set", { provider, key });
     },
     async remove() {
-      await call(invoke, "byok_key_delete", { provider: PROVIDER });
+      await call(invoke, "byok_key_delete", { provider });
     },
   };
 }

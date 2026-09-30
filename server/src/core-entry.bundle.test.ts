@@ -470,6 +470,31 @@ describe("core-entry bundle — #581 S3（選択の解決関数を呼ばずに r
   });
 });
 
+describe("core-entry bundle — #582 S2（選択の入口と製品版の解決関数。機能仕様 docs/features/llm-provider-abstraction.md）", () => {
+  it("S2-E8: bundles the selection API router (reachable from core-entry.ts via createCoreApp) and the product resolver still resolves from a saved selection", () => {
+    const inputs = metafileInputPaths(buildResult!.metafile!);
+    expect(includesAnyInput(inputs, "settings/llm-selection-routes.ts")).toBe(true);
+    expect(includesAnyInput(inputs, "llm/llm-selection.ts")).toBe(true);
+    const context = createSandboxContext();
+    vm.runInContext(bundleCode, context);
+    const exported = (context as Record<string, unknown>).AiBossCore as {
+      productLlmSelectionResolver: (
+        env: Record<string, string | undefined>,
+        settings: ReadonlyMap<string, string>,
+      ) => { backend: string; model: string };
+    };
+    expect(
+      exported.productLlmSelectionResolver(
+        {},
+        new Map([
+          ["byok_provider", "openai"],
+          ["byok_model", "gpt-6-sol"],
+        ]),
+      ),
+    ).toEqual({ backend: "byok-openai", model: "gpt-6-sol" });
+  });
+});
+
 describe("core-entry bundle — S1（#582。BYOK〔OpenAI〕の登録関数を呼ばずに re-export する。機能仕様 docs/features/llm-provider-abstraction.md 案 A）", () => {
   it("bundles the BYOK (OpenAI) backend module (reachable from core-entry.ts)", () => {
     const inputs = metafileInputPaths(buildResult!.metafile!);

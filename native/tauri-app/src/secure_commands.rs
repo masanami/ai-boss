@@ -156,11 +156,13 @@ impl SecureState {
     }
 }
 
-/// キーのコマンドが受け付けるプロバイダは `anthropic` だけ（OpenAI のキーの
-/// 保管は #582 S2）。
+/// キーのコマンドが受け付けるプロバイダは `anthropic` と `openai` だけ（#582 S2・
+/// 機能仕様 docs/features/llm-provider-abstraction.md「S2 の形」）。それ以外の値
+/// （大文字を含む綴り・空の文字列）は「不明なプロバイダ」。
 fn parse_provider(provider: &str) -> Result<Provider, CommandError> {
     match provider {
         "anthropic" => Ok(Provider::Anthropic),
+        "openai" => Ok(Provider::OpenAi),
         _ => Err(CommandError::of("unknown-provider")),
     }
 }

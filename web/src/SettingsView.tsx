@@ -11,6 +11,7 @@ import {
 import type { Settings, TonePreset } from "./settings";
 import { ByokKeyManagerContext } from "./byok-key-manager-context";
 import ByokKeySection from "./ByokKeySection";
+import LlmSelectionSection from "./LlmSelectionSection";
 import "./SettingsView.css";
 
 const STRICTNESS_OPTIONS = Array.from(
@@ -52,8 +53,10 @@ function SettingsView() {
     useSettings();
   const [form, setForm] = useState<FormState | null>(null);
   const [saveSuccess, setSaveSuccess] = useState(false);
-  // 製品版だけが注入する（#581 S3）。開発者用の版では null でキーの欄を出さない。
-  const byokKeyManager = useContext(ByokKeyManagerContext);
+  // 製品版だけが注入する（#581 S3・#582 S2）。開発者用の版では null で、選択の欄・
+  // キーの欄を出さず、従来どおり自由入力の「モデル」の欄を出す。
+  const byokKeyManagers = useContext(ByokKeyManagerContext);
+  const isProduct = byokKeyManagers !== null;
 
   useEffect(() => {
     if (settings) {
@@ -338,18 +341,22 @@ function SettingsView() {
           </label>
         </fieldset>
 
-        <fieldset disabled={isSaving}>
-          <legend>モデル</legend>
-          <label>
-            モデル
-            <input
-              value={form.model}
-              onChange={(event) =>
-                setForm({ ...form, model: event.target.value })
-              }
-            />
-          </label>
-        </fieldset>
+        {/* 製品版では自由入力のモデルの欄を出さない（一覧外のモデルは画面で選べない。
+            プロバイダとモデルは下の「LLM（プロバイダとモデル）」の欄で選ぶ。#582 S2） */}
+        {!isProduct && (
+          <fieldset disabled={isSaving}>
+            <legend>モデル</legend>
+            <label>
+              モデル
+              <input
+                value={form.model}
+                onChange={(event) =>
+                  setForm({ ...form, model: event.target.value })
+                }
+              />
+            </label>
+          </fieldset>
+        )}
 
         <fieldset disabled={isSaving}>
           <legend>エビデンス</legend>
@@ -380,7 +387,13 @@ function SettingsView() {
           保存
         </button>
       </form>
-      {byokKeyManager !== null && <ByokKeySection manager={byokKeyManager} />}
+      {byokKeyManagers !== null && (
+        <>
+          <LlmSelectionSection />
+          <ByokKeySection manager={byokKeyManagers.anthropic} providerName="Anthropic" />
+          <ByokKeySection manager={byokKeyManagers.openai} providerName="OpenAI" />
+        </>
+      )}
     </section>
   );
 }
