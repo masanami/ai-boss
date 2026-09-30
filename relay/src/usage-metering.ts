@@ -163,11 +163,17 @@ export interface UsageMeter {
  * 途中までの `usage` はその後に生成・課金された分を含まない）。`message_start` が
  * 2 度届く・`usage` のある `message_delta` が `message_start` より先に届くときは、
  * 後の `message_start` が出力の値を巻き戻しうるため実額に使わない。
+ *
+ * 区切りを待つ未処理の行と、組み立て中のイベントの `data` の文字数（UTF-16 の
+ * 長さ。UTF-8 のバイト数以下）の合計が `maxBytes` を超えたら、持つのをやめて
+ * 実額に使わない（`null`。予約額で確定する——安全側。#641）。
  */
-export function createSseUsageMeter(): UsageMeter {
+export function createSseUsageMeter(maxBytes: number): UsageMeter {
   const decoder = new TextDecoder();
   let pending = "";
   let dataLines: string[] = [];
+  let dataLength = 0;
+  let overflowed = false;
   let usage: PartialUsage = {};
   let malformed = false;
   let sawMessageStart = false;
@@ -179,6 +185,7 @@ export function createSseUsageMeter(): UsageMeter {
     }
     const payload = dataLines.join("\n");
     dataLines = [];
+    dataLength = 0;
     let event: unknown;
     try {
       event = JSON.parse(payload);
@@ -212,7 +219,9 @@ export function createSseUsageMeter(): UsageMeter {
     if (line === "") {
       dispatch();
     } else if (line.startsWith("data:")) {
-      dataLines.push(line.slice(line.startsWith("data: ") ? 6 : 5));
+      const data = line.slice(line.startsWith("data: ") ? 6 : 5);
+      dataLines.push(data);
+      dataLength += data.length;
     }
   }
 
@@ -233,24 +242,45 @@ export function createSseUsageMeter(): UsageMeter {
 
   return {
     push(chunk) {
+      if (overflowed) return;
       consume(decoder.decode(chunk, { stream: true }));
+      if (pending.length + dataLength > maxBytes) {
+        overflowed = true;
+        pending = "";
+        dataLines = [];
+        dataLength = 0;
+      }
     },
     result() {
       // 壊れた usage が 1 度でも届いたら、実額には使わない（予約額で確定する）。
-      return sawMessageStop && !malformed ? completeUsage(usage) : null;
+      return sawMessageStop && !malformed && !overflowed ? completeUsage(usage) : null;
     },
   };
 }
 
-/** 非ストリーミング（JSON）の計測器。本文を最後まで受けてから `usage` を読む。 */
-export function createJsonUsageMeter(): UsageMeter {
+/**
+ * 非ストリーミング（JSON）の計測器。本文を最後まで受けてから `usage` を読む。
+ * 本文が `maxBytes` を超えたら持つのをやめ、実額に使わない（`null`。予約額で
+ * 確定する——安全側。#641）。
+ */
+export function createJsonUsageMeter(maxBytes: number): UsageMeter {
   const decoder = new TextDecoder();
   let text = "";
+  let received = 0;
+  let overflowed = false;
   return {
     push(chunk) {
+      if (overflowed) return;
+      received += chunk.byteLength;
+      if (received > maxBytes) {
+        overflowed = true;
+        text = "";
+        return;
+      }
       text += decoder.decode(chunk, { stream: true });
     },
     result() {
+      if (overflowed) return null;
       text += decoder.decode();
       let body: unknown;
       try {

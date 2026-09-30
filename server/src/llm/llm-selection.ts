@@ -2,6 +2,7 @@ import { resolveLlmBackend, type AppEnv } from "../config.js";
 import { resolveBossSettingsFrom } from "../boss/boss-settings.js";
 import type { SettingsSnapshot } from "../settings/settings-repository.js";
 import type { LlmBackendName } from "./llm-backend-registry.js";
+import { isBossProvider } from "./model-catalog.js";
 
 /**
  * 選択の解決関数（機能仕様 docs/features/secure-transport-byok.md
@@ -42,16 +43,43 @@ export const devLlmSelectionResolver: LlmSelectionResolver = (env, settings) => 
   model: resolveBossSettingsFrom(settings).model,
 });
 
+/** 製品版の選択の保存先（`settings` のキー。開発者用の `model` とは別。仮定 A10・A11）。 */
+export const BYOK_PROVIDER_SETTING_KEY = "byok_provider";
+export const BYOK_MODEL_SETTING_KEY = "byok_model";
+
 /**
- * 製品版の解決関数（当面の固定の関数。#582 S2 で「保存したプロバイダと
- * モデルから決める関数」へ差し替える）: バックエンドは常に BYOK
- * （Anthropic）、モデルは設定の `model`（未設定なら `DEFAULT_MODEL`）。
- * `env` を読まない（製品版で `LLM_BACKEND` の経路へ切り替わらない）。
+ * 製品版でプロバイダとモデルが選ばれていない（未保存・保存値が不正）ときの
+ * 失敗。別のバックエンドや既定のプロバイダ・既定のモデルを補わず、送信しない
+ * （ADR 0003 決定 9 の読み替え）。呼び出し元は既存の `try` の中で解決関数を
+ * 呼んでおり、この例外は既存の失敗の経路（チャットの 500・テンプレートへの
+ * 退避など）に乗る。文言は秘密を含まない。
  */
-export const productLlmSelectionResolver: LlmSelectionResolver = (_env, settings) => ({
-  backend: "byok-anthropic",
-  model: resolveBossSettingsFrom(settings).model,
-});
+export class LlmSelectionNotConfiguredError extends Error {
+  constructor() {
+    super(
+      "LLM のプロバイダとモデルが選ばれていません。設定画面でプロバイダとモデルを選んで保存してください（選ぶまで LLM は使えません）",
+    );
+    this.name = "LlmSelectionNotConfiguredError";
+  }
+}
+
+/**
+ * 製品版の解決関数（#582 S2・クリティカル設計決定 5）: 1 つのスナップショット
+ * から保存した選択（`byok_provider`・`byok_model`）を読み、`anthropic` →
+ * `byok-anthropic`、`openai` → `byok-openai` とモデルを返す。プロバイダが無い・
+ * 2 値以外、またはモデルが無い（空を含む）ときは {@link LlmSelectionNotConfiguredError}。
+ * モデルが一覧に無い場合は補正せずそのまま返す——BYOK のバックエンドの送信前の
+ * 関門（`assertByokModelAllowed`）が止める。`env` と設定の `model` は読まない
+ * （製品版で `LLM_BACKEND` の経路へ切り替わらない・開発者用の値が影響しない）。
+ */
+export const productLlmSelectionResolver: LlmSelectionResolver = (_env, settings) => {
+  const provider = settings.get(BYOK_PROVIDER_SETTING_KEY);
+  const model = settings.get(BYOK_MODEL_SETTING_KEY);
+  if (!isBossProvider(provider) || model === undefined || model === "") {
+    throw new LlmSelectionNotConfiguredError();
+  }
+  return { backend: provider === "anthropic" ? "byok-anthropic" : "byok-openai", model };
+};
 
 let registeredResolver: LlmSelectionResolver | undefined;
 

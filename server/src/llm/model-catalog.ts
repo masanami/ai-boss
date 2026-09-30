@@ -14,6 +14,11 @@
 
 export type BossProvider = "anthropic" | "openai";
 
+/** 保存値・入力が許可するプロバイダ（`anthropic`・`openai`）のどちらかか。 */
+export function isBossProvider(value: unknown): value is BossProvider {
+  return value === "anthropic" || value === "openai";
+}
+
 export type OpenAiReasoningMode = "chat" | "disabled";
 
 export interface ModelCatalogEntry {
@@ -60,6 +65,11 @@ export function listModelsForProvider(provider: BossProvider): ModelCatalogEntry
   return MODEL_CATALOG.filter((entry) => entry.provider === provider);
 }
 
+/** `modelId` が `provider` の一覧にあるか（保存の入口と送信前の関門が同じ規則を使う）。 */
+export function isModelInCatalog(provider: BossProvider, modelId: string): boolean {
+  return MODEL_CATALOG.some((entry) => entry.provider === provider && entry.modelId === modelId);
+}
+
 export function getDefaultModelId(provider: BossProvider): string {
   const defaultEntry = MODEL_CATALOG.find((entry) => entry.provider === provider && entry.isDefault);
   if (!defaultEntry) {
@@ -97,7 +107,7 @@ function findCatalogEntry(provider: BossProvider, modelId: string): ModelCatalog
  * （転送のポートを呼ぶ前）で呼ぶ。
  */
 export function assertByokModelAllowed(provider: BossProvider, modelId: string): void {
-  if (!findCatalogEntry(provider, modelId)) {
+  if (!isModelInCatalog(provider, modelId)) {
     throw new ByokModelNotAllowedError(provider, modelId);
   }
 }

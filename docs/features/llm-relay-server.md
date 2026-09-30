@@ -154,7 +154,7 @@
 - **採用案**:
   - 上流（プロバイダ）への要求のヘッダは中継が一から組み立てる: `content-type: application/json`・`x-api-key`（事業者のキー）・`anthropic-version: 2023-06-01`（Rust の `ANTHROPIC_VERSION` と同じ値）。アプリから来たヘッダ（`authorization`・`x-api-key`・`anthropic-version`・`anthropic-beta` を含む）は上流へ渡さない。
   - 上流の応答は、ステータスと本文をそのままアプリへ返す（2xx 以外も、上流の本文を加工しない）。応答のヘッダは `content-type`・`retry-after`・`request-id` だけを通す。
-  - ストリーミングの応答は、本文のバイト列を溜めずに逐次流しながら、並行して SSE を解釈し `usage` を読む（クリティカル設計決定 4）。中継は上流を、アプリの読み取りを待たずに最後まで読む（精算を上流の終わりに合わせ、読み取りの遅いアプリが精算を遅らせないようにする。S1 の実装で確定）。アプリが読むより速く届いた断片は中継の内部の待ち行列に残る（1 要求あたり `maxTokensCap` の出力で抑えられる）。
+  - ストリーミングの応答は、本文のバイト列を溜めずに逐次流しながら、並行して SSE を解釈し `usage` を読む（クリティカル設計決定 4）。中継は上流を、アプリの読み取りを待たずに最後まで読む（精算を上流の終わりに合わせ、読み取りの遅いアプリが精算を遅らせないようにする。S1 の実装で確定）。アプリが読むより速く届いた断片は中継の内部の待ち行列に残る。待ち行列のバイト数が設定の `maxBufferedResponseBytes`（省略時 1 MiB）を超えたら（読まないアプリ。非ストリーミングの応答も同じ待ち行列を通るため同じく中止する）、アプリの中止と同じ扱いで上流を止め、アプリへのストリームを固定の文言で異常終了させる。精算はアプリの中止と同じく、終端の `usage` を受け取っていなければ予約額で確定する（#641）。断片を積むと上限を超えるかは積む前に判定する（上限より大きい断片 1 つでも待ち行列は上限を超えない）。非ストリーミングの計測器は本文が、ストリーミングの計測器は区切りを待つ行と組み立て中のイベントの `data` の合計が、同じ上限を超えたら持つのをやめ、予約額で確定する（アプリへの本文の中継は止めない。#641。この値を下げると、非ストリーミングの応答を実額で精算できる本文の大きさも狭まる）。
   - 応答を終える（非ストリーミング・2xx 以外・502 の応答を返す、ストリームを閉じる）のは、利用量のポートの精算が終わってからにする（S1 の実装で追加。書き込みの前に応答が終わると、実行基盤によっては書き込みが打ち切られ、直後の要求が未精算の予約で拒否されうる）。
   - アプリが要求を中止した（接続を切った）ら、上流への要求を中止する（`AbortSignal` を伝える）。
   - 上流の失敗は、課金の有無が確定するかで 2 つに分ける（PR #634 の Codex の 2 巡目の指摘）。いずれもアプリへは 502 を返し、本文は固定の文言にする（アプリが中止した場合は応答を返さない）。
@@ -223,7 +223,7 @@
 ### 6. 推論内容を保存・ログ出力しないことの担保（Q5・親の決定）
 
 - **採用案**:
-  - 中継のログは注入する**ログのポート**だけに出し、渡してよい項目はアカウント ID・ステータス・モデル ID・トークン数・原価単位・所要時間・エラーの種類と、固定の語彙のイベントの種類（拒否・完了・精算の失敗・内部エラー）・精算の結果の種類（実額・予約額・記録しない）に限る（後の 2 つは S1 の実装で追加）。ログのポートが例外を投げても、転送と精算は止めない。
+  - 中継のログは注入する**ログのポート**だけに出し、渡してよい項目はアカウント ID・ステータス・モデル ID・トークン数・原価単位・所要時間・エラーの種類と、固定の語彙のイベントの種類（拒否・完了・精算の失敗・内部エラー・応答の待ち行列の上限の超過〔#641〕）・精算の結果の種類（実額・予約額・記録しない）に限る（後の 2 つは S1 の実装で追加）。ログのポートが例外を投げても、転送と精算は止めない。
   - **利用量の保存先の記録の型は、アカウント ID・期間キー・原価単位・トークン数（4 種）の項目だけを持つ**（構造で限定する）。**予約の型は、予約 ID・アカウント ID・期間キー・原価単位・期限の項目だけを持つ**。
   - **自動テスト**: 要求（`system`・`messages`・ツールの入力）と模擬の上流の応答（本文の差分・ツールの入力）に目印の文字列を入れて中継を通し、ログのポートが受けたすべての記録・`console` の全メソッドへの出力・利用量の保存先のすべての記録・中継自身が作るエラーの応答の本文に、目印が現れないことを確かめる。
   - 本番の実行基盤の要求ログ・エラーの収集の検査手順は S3 で書く（O4 の実行基盤が決まってから）。
@@ -239,7 +239,7 @@
   - ステータス: 上流の応答のステータス（転送した場合）／400 `invalid_request_error`（検査で拒否）／401 `authentication_error`（認証で拒否）／413 `request_too_large`（入力量の上限）／429 `usage_limit_exceeded`（金額の上限）／429 `rate_limit_error`（同時要求数の上限）／502（上流の失敗。送る前の失敗と送った後の失敗の両方）。
 - **処理の順序**: (1) 認証 (2) 入力量の上限（本文のバイト数） (3) JSON の解釈と項目の検査 (4) 既定モデルの解決と書き換え (5) 送信前の予約 (6) 上流への転送 (7) 精算。最初に失敗した段階の応答を返す（例: 認証に失敗し本文も大きすぎる要求は 401）。
 - **中継の組み立て**: `createRelayApp(deps)` が Hono のアプリを返す。`deps` は次を持つ。
-  - `config`: `upstreamUrl`・`defaultModel`・`models`（許可リストの行）・`maxTokensCap`・`maxRequestBytes`・`inputTokensPerByte`・`dailyLimit`・`monthlyLimit`・`maxConcurrentRequests`・`reservationTtlMs`
+  - `config`: `upstreamUrl`・`defaultModel`・`models`（許可リストの行）・`maxTokensCap`・`maxRequestBytes`・`inputTokensPerByte`・`dailyLimit`・`monthlyLimit`・`maxConcurrentRequests`・`reservationTtlMs`・`maxBufferedResponseBytes`（省略可。#641）
   - `operatorKey`: 事業者のキー（秘密情報）
   - `authenticate(token) → Promise<accountId | null>`（認証のポート）
   - `usageStore`: `reserve(accountId, dayKey, monthKey, units, limits, expiresAt) → Promise<{ ok: true, reservationId } | { ok: false, reason: "daily" | "monthly" | "concurrency" }>`（確定額・未精算の予約額・同時要求数の判定と予約の追加を原子的に行う。`expiresAt` は予約の期限の時刻で、予約の項目として保持する）・`settle(reservationId, outcome) → Promise<void>`（予約を取り除き、`outcome` に応じて予約が保持するアカウント ID・期間キーで記録する。呼び出し側は期間キーを渡さない。`outcome` は `{ type: "actual", units, inputTokens, outputTokens, cacheReadInputTokens, cacheCreationInputTokens }`〔実額〕・`{ type: "reserved" }`〔予約が保持する予約額で確定し、トークン数は 0〕・`{ type: "release" }`〔記録しない〕のいずれか。S1 の実装で、仕様の当初の `actual | null` に「予約額で確定」を足した〔期限切れの回収が同じ遷移を使えるようにし、予約額を呼び出し側が持ち回らずに済むようにするため〕。**精算済み・存在しない予約 ID への `settle` は何もしない〔冪等〕**。クリティカル設計決定 4 の「精算の冪等性」）・`get(accountId, dayKey, monthKey) → Promise<{ dayUnits, monthUnits, reservedDayUnits, reservedMonthUnits, openReservations }>`（テストと S3 の観測用）。利用量のポートは、S3 で永続化する保存先へ差し替えるため非同期の契約にする。S1 はメモリ実装
@@ -248,7 +248,7 @@
   - `logger`（ログのポート）
 - **利用量の記録の型**: `{ accountId, dayKey, monthKey, units, inputTokens, outputTokens, cacheReadInputTokens, cacheCreationInputTokens }`（これ以外の項目を持たない）。
 - **予約の型**: `{ reservationId, accountId, dayKey, monthKey, units, expiresAt }`（これ以外の項目を持たない）。期限を過ぎて精算されない予約は予約額で確定する（回収の実装は S3）。
-- **設定の検証**: `upstreamUrl` が `https` の URL でない（事業者のキーを平文で送らない。S1 の実装で追加）・`upstreamUrl` がユーザー名・パスワードを含む（fetch の `Request` が拒否し、予約の後で失敗するため。PR #638 の Codex の 2 巡目の指摘）・事業者のキーがヘッダの値に使えない文字を含む（要求のたびに予約の後で失敗するため。PR #638 のレビューで追加）・重みが 10^-4 刻みでない・上限値が整数表現で数えられる範囲を超える（原価単位を整数で数えるため。同）・`defaultModel` が許可リストに無い・上限や重みが負・`maxTokensCap`・`maxRequestBytes`・`inputTokensPerByte`・`maxConcurrentRequests`・`reservationTtlMs` が正でない設定では、`createRelayApp` が例外を投げる。
+- **設定の検証**: `upstreamUrl` が `https` の URL でない（事業者のキーを平文で送らない。S1 の実装で追加）・`upstreamUrl` がユーザー名・パスワードを含む（fetch の `Request` が拒否し、予約の後で失敗するため。PR #638 の Codex の 2 巡目の指摘）・事業者のキーがヘッダの値に使えない文字を含む（要求のたびに予約の後で失敗するため。PR #638 のレビューで追加）・重みが 10^-4 刻みでない・上限値が整数表現で数えられる範囲を超える（原価単位を整数で数えるため。同）・`defaultModel` が許可リストに無い・上限や重みが負・`maxTokensCap`・`maxRequestBytes`・`inputTokensPerByte`・`maxConcurrentRequests`・`reservationTtlMs` が正でない設定、`maxBufferedResponseBytes` を指定して正の整数でない設定（#641）では、`createRelayApp` が例外を投げる。
 
 ### アプリ側の接続（S2 の見通し。S2 を実装対象にするときに詳細を書く）
 

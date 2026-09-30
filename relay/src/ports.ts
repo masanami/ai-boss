@@ -54,7 +54,7 @@ export function createFetchUpstream(fetchImpl: typeof fetch): UpstreamFetch {
  * キーを入れる項目は無い。
  */
 export interface RelayLogRecord {
-  event: "rejected" | "completed" | "settle_failed" | "internal_error";
+  event: "rejected" | "completed" | "settle_failed" | "internal_error" | "response_buffer_exceeded";
   accountId?: string;
   status?: number;
   model?: string;

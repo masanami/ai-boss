@@ -40,6 +40,17 @@ describe("createProductCoreApp", () => {
     expect(response.status).toBeGreaterThanOrEqual(400);
   });
 
+  it("S2-E6: answers GET /api/llm-selection with 200 (the selection API is enabled for the product app)", async () => {
+    const app = createProductCoreApp(portAnsweringSelectOne());
+    const response = await app.request("/api/llm-selection");
+
+    expect(response.status).toBe(200);
+    const body = (await response.json()) as { provider: unknown; model: unknown; catalog: unknown[] };
+    expect(body.provider).toBeNull();
+    expect(body.model).toBeNull();
+    expect(body.catalog).toHaveLength(4);
+  });
+
   it("registers zero LLM backends after being loaded and used (オーナーの決定 Q4-c)", async () => {
     const app = createProductCoreApp(createDisconnectedDbPort());
     await app.request("/api/health");
