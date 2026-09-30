@@ -5,13 +5,15 @@ import {
   byteLength,
   createControlledBody,
   createHarness,
+  deferred,
   expectedReservedUnits,
   flush,
   messageJson,
+  sseEvent,
   sseResponse,
   sseTranscript,
 } from "./test-support/relay-harness.js";
-import { createJsonUsageMeter } from "./usage-metering.js";
+import { createJsonUsageMeter, createSseUsageMeter } from "./usage-metering.js";
 
 /**
  * アプリが読まない応答の待ち行列の上限（#641）。中継は上流を最後まで読むため、
@@ -130,6 +132,105 @@ describe("アプリが読まない応答の待ち行列の上限（#641）", () 
     await flush();
     expect(state.signal!.aborted).toBe(true);
     await expect(response.body!.getReader().read()).rejects.toThrow("relay response buffer limit exceeded");
+  });
+});
+
+describe("上限より大きい断片（ローカル Codex レビューの指摘 1）", () => {
+  /** 精算を保留できる中継。保留中に待ち行列を観測する（中止のエラーは精算の後に出るため）。 */
+  function harnessWithHeldSettlement(maxBufferedResponseBytes: number) {
+    const { h, state } = harnessWithControlledUpstream(maxBufferedResponseBytes);
+    const gate = deferred<void>();
+    const settle = h.store.settle.bind(h.store);
+    h.store.settle = async (reservationId, outcome) => {
+      await gate.promise;
+      return settle(reservationId, outcome);
+    };
+    return { h, state, gate };
+  }
+
+  it("上限より大きい断片が 1 つ届いたら、待ち行列に積まずに中止し、予約額で確定する", async () => {
+    const { h, state, gate } = harnessWithHeldSettlement(100);
+    const body = streamingBody();
+    const response = await h.send(body);
+    state.body!.push(new Uint8Array(101).fill(0x61));
+    await flush();
+    expect(state.signal!.aborted).toBe(true);
+
+    // 精算の間も、上限を超える断片は待ち行列に無い（アプリの読み取りに渡らない）。
+    let delivered = false;
+    const read = response.body!.getReader().read().then((result) => {
+      delivered = true;
+      return result;
+    });
+    await flush();
+    expect(delivered).toBe(false);
+    gate.resolve();
+    await expect(read).rejects.toThrow("relay response buffer limit exceeded");
+    await flush();
+    const { records, reservations } = h.store.dump();
+    expect(reservations).toEqual([]);
+    expect(records).toEqual([expect.objectContaining({ units: expectedReservedUnits(JSON.stringify(body), 1000), ...ZERO_TOKENS })]);
+  });
+
+  it("上限ちょうどの断片 1 つは待ち行列に積み、後から読んだアプリへ渡す", async () => {
+    const { h, state } = harnessWithControlledUpstream(100);
+    const response = await h.send(streamingBody());
+    state.body!.push(new Uint8Array(100).fill(0x61));
+    await flush();
+    expect(state.signal!.aborted).toBe(false);
+    const { value } = await response.body!.getReader().read();
+    expect(value?.byteLength).toBe(100);
+  });
+});
+
+describe("ストリーミングの計測器の未処理の行・イベントの上限（ローカル Codex レビューの指摘 2）", () => {
+  const encoder = new TextEncoder();
+  const start = sseEvent({ type: "message_start", message: { id: "msg_1", usage: { input_tokens: 1000, output_tokens: 1 } } });
+  const bigLine = `data: ${JSON.stringify({ type: "content_block_delta", index: 0, delta: { type: "text_delta", text: "x".repeat(200) } })}`;
+  const rest = [
+    "\n\n",
+    sseEvent({ type: "message_delta", delta: { stop_reason: "end_turn" }, usage: { output_tokens: 200 } }),
+    sseEvent({ type: "message_stop" }),
+  ];
+
+  /** 区切りの無い大きな行を送ってから、残りのイベントを送り切る。 */
+  function meterResult(maxBytes: number) {
+    const meter = createSseUsageMeter(maxBytes);
+    for (const text of [start, bigLine, ...rest]) meter.push(encoder.encode(text));
+    return meter.result();
+  }
+
+  it("区切りを待つ行がちょうど上限なら、終端の usage を読む", () => {
+    expect(meterResult(bigLine.length)).toEqual({ ...ZERO_TOKENS, inputTokens: 1000, outputTokens: 200 });
+  });
+
+  it("区切りを待つ行が上限を超えたら持つのをやめ、終端まで届いても実額に使わない", () => {
+    expect(meterResult(bigLine.length - 1)).toBeNull();
+  });
+
+  it("空行の来ないイベントの data の行が積み重なって上限を超えたら、実額に使わない", () => {
+    const meter = createSseUsageMeter(100);
+    meter.push(encoder.encode(start));
+    for (let i = 0; i < 20; i++) meter.push(encoder.encode(`data: ${"y".repeat(10)}\n`));
+    for (const text of rest) meter.push(encoder.encode(text));
+    expect(meter.result()).toBeNull();
+  });
+
+  it("中継は計測器が諦めても、読み続けるアプリへは全部を渡し、予約額で確定する", async () => {
+    const { h, state } = harnessWithControlledUpstream(bigLine.length - 1);
+    const body = streamingBody();
+    const response = await h.send(body);
+    const text = response.text();
+    for (const chunk of [start, bigLine.slice(0, 100), bigLine.slice(100), ...rest]) {
+      state.body!.push(chunk);
+      await flush();
+    }
+    state.body!.close();
+
+    expect(await text).toBe([start, bigLine, ...rest].join(""));
+    await flush();
+    expect(state.signal!.aborted).toBe(false);
+    expect(h.store.dump().records).toEqual([expect.objectContaining({ units: expectedReservedUnits(JSON.stringify(body), 1000), ...ZERO_TOKENS })]);
   });
 });
 

@@ -329,7 +329,7 @@ async function handleMessages(
     }
 
     const isEventStream = (upstream.headers.get("content-type") ?? "").includes("text/event-stream");
-    const meter = isEventStream ? createSseUsageMeter() : createJsonUsageMeter(maxBufferedBytes);
+    const meter = isEventStream ? createSseUsageMeter(maxBufferedBytes) : createJsonUsageMeter(maxBufferedBytes);
     if (!upstream.body || isNullBodyStatus(status)) {
       await settleWithUsage(status, null);
       return new Response(null, { status, headers });
@@ -349,8 +349,9 @@ async function handleMessages(
           // 上流を、アプリの読み取りを待たずに最後まで読む（精算を上流の終わりに
           // 合わせ、読み取りの遅いアプリが精算を遅らせないようにする）。断片は
           // 受けたそばからアプリへ流す。アプリが読むより速く届いた断片は、この
-          // ストリームの内部の待ち行列に残る。待ち行列が `maxBufferedBytes` を
-          // 超えたら（読まないアプリ）、アプリの中止と同じ扱いで上流を止める（#641）。
+          // ストリームの内部の待ち行列に残る。断片を積むと待ち行列が `maxBufferedBytes`
+          // を超えるなら（読まないアプリ・上限より大きい断片）、積まずに、アプリの
+          // 中止と同じ扱いで上流を止める（#641）。
           void (async () => {
             let upstreamFailed = false;
             let overflowed = false;
@@ -360,13 +361,13 @@ async function handleMessages(
                 if (done) break;
                 meter.push(value);
                 if (cancelled) continue;
-                controller.enqueue(value);
-                if ((controller.desiredSize ?? 0) < 0) {
+                if (value.byteLength > (controller.desiredSize ?? 0)) {
                   overflowed = true;
                   upstreamAbort.abort();
                   reader.cancel().catch(() => undefined);
                   break;
                 }
+                controller.enqueue(value);
               }
             } catch {
               // 上流との接続が切れた・アプリが中止した。終端の `usage` を受け取って
