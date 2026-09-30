@@ -129,6 +129,8 @@ describe("設定の検証", () => {
     ["inputTokensPerByte が 0", { inputTokensPerByte: 0 }],
     ["maxConcurrentRequests が 0", { maxConcurrentRequests: 0 }],
     ["reservationTtlMs が 0", { reservationTtlMs: 0 }],
+    ["maxBufferedResponseBytes が 0", { maxBufferedResponseBytes: 0 }],
+    ["maxBufferedResponseBytes が小数", { maxBufferedResponseBytes: 1.5 }],
     ["dailyLimit が NaN", { dailyLimit: Number.NaN }],
     ["upstreamUrl が URL でない", { upstreamUrl: "not a url" }],
     ["upstreamUrl が平文の http", { upstreamUrl: "http://upstream.test/v1/messages" }],

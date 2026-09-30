@@ -1,5 +1,11 @@
 import { Hono } from "hono";
-import { RelayConfigError, validateRelayConfig, type RelayConfig, type RelayModel } from "./config.js";
+import {
+  DEFAULT_MAX_BUFFERED_RESPONSE_BYTES,
+  RelayConfigError,
+  validateRelayConfig,
+  type RelayConfig,
+  type RelayModel,
+} from "./config.js";
 import { relayErrorResponse, type RelayErrorType } from "./error-response.js";
 import { rewriteForModel } from "./model-rewrite.js";
 import {
@@ -76,8 +82,9 @@ export function createRelayApp(deps: RelayDeps): Hono {
     monthly: scaledUnits(deps.config.monthlyLimit),
     maxConcurrent: deps.config.maxConcurrentRequests,
   };
+  const maxBufferedBytes = deps.config.maxBufferedResponseBytes ?? DEFAULT_MAX_BUFFERED_RESPONSE_BYTES;
   const app = new Hono();
-  app.post("/v1/messages", (c) => handleMessages(deps, model, limits, c.req.raw));
+  app.post("/v1/messages", (c) => handleMessages(deps, model, limits, maxBufferedBytes, c.req.raw));
   app.onError(() => {
     // 例外の中身（message・stack）は出さない。種類だけを記録する。
     safeLog(deps.logger, { event: "internal_error", status: 500, errorType: "api_error" });
@@ -158,6 +165,7 @@ async function handleMessages(
   deps: RelayDeps,
   model: RelayModel,
   limits: ReserveRequest["limits"],
+  maxBufferedBytes: number,
   request: Request,
 ): Promise<Response> {
   const { config, logger } = deps;
@@ -321,7 +329,7 @@ async function handleMessages(
     }
 
     const isEventStream = (upstream.headers.get("content-type") ?? "").includes("text/event-stream");
-    const meter = isEventStream ? createSseUsageMeter() : createJsonUsageMeter();
+    const meter = isEventStream ? createSseUsageMeter() : createJsonUsageMeter(maxBufferedBytes);
     if (!upstream.body || isNullBodyStatus(status)) {
       await settleWithUsage(status, null);
       return new Response(null, { status, headers });
@@ -329,45 +337,71 @@ async function handleMessages(
 
     const reader = upstream.body.getReader();
     let cancelled = false;
-    const relayed = new ReadableStream<Uint8Array>({
-      start(controller) {
-        // 上流を、アプリの読み取りを待たずに最後まで読む（精算を上流の終わりに
-        // 合わせ、読み取りの遅いアプリが精算を遅らせないようにする）。断片は
-        // 受けたそばからアプリへ流す。アプリが読むより速く届いた断片は、この
-        // ストリームの内部の待ち行列に残る（1 要求あたり `maxTokensCap` の出力で
-        // 抑えられる）。
-        void (async () => {
-          let upstreamFailed = false;
-          try {
-            for (;;) {
-              const { done, value } = await reader.read();
-              if (done) break;
-              meter.push(value);
-              if (!cancelled) controller.enqueue(value);
+    // アプリがまだ読んでいない断片の待ち行列をバイト数で数える（`desiredSize` が
+    // 「上限 − 待ち行列のバイト数」になる）。
+    const queuingStrategy: QueuingStrategy<Uint8Array> = {
+      highWaterMark: maxBufferedBytes,
+      size: (chunk) => chunk.byteLength,
+    };
+    const relayed = new ReadableStream<Uint8Array>(
+      {
+        start(controller) {
+          // 上流を、アプリの読み取りを待たずに最後まで読む（精算を上流の終わりに
+          // 合わせ、読み取りの遅いアプリが精算を遅らせないようにする）。断片は
+          // 受けたそばからアプリへ流す。アプリが読むより速く届いた断片は、この
+          // ストリームの内部の待ち行列に残る。待ち行列が `maxBufferedBytes` を
+          // 超えたら（読まないアプリ）、アプリの中止と同じ扱いで上流を止める（#641）。
+          void (async () => {
+            let upstreamFailed = false;
+            let overflowed = false;
+            try {
+              for (;;) {
+                const { done, value } = await reader.read();
+                if (done) break;
+                meter.push(value);
+                if (cancelled) continue;
+                controller.enqueue(value);
+                if ((controller.desiredSize ?? 0) < 0) {
+                  overflowed = true;
+                  upstreamAbort.abort();
+                  reader.cancel().catch(() => undefined);
+                  break;
+                }
+              }
+            } catch {
+              // 上流との接続が切れた・アプリが中止した。終端の `usage` を受け取って
+              // いなければ、下の精算は予約額で確定する。
+              upstreamFailed = true;
             }
-          } catch {
-            // 上流との接続が切れた・アプリが中止した。終端の `usage` を受け取って
-            // いなければ、下の精算は予約額で確定する。
-            upstreamFailed = true;
-          }
-          await settleWithUsage(status, meter.result());
-          if (cancelled) return;
-          if (upstreamFailed) {
-            // ステータスは変えずに、本文を異常終了させる（正常な終わりに
-            // 見せない）。文言は固定。
-            controller.error(new Error("upstream response ended before completion"));
-          } else {
-            controller.close();
-          }
-        })();
+            if (overflowed) {
+              // 本文・`usage` の中身は記録しない。
+              safeLog(logger, { event: "response_buffer_exceeded", accountId, status, errorType: "response_buffer_exceeded" });
+            }
+            // 中止（アプリの中止・上限の超過）でも、終端の `usage` を受け取って
+            // いなければ予約額で確定する（`cancel()` と同じ扱い）。
+            await settleWithUsage(status, meter.result());
+            if (cancelled) return;
+            if (overflowed) {
+              // 文言は固定。
+              controller.error(new Error("relay response buffer limit exceeded"));
+            } else if (upstreamFailed) {
+              // ステータスは変えずに、本文を異常終了させる（正常な終わりに
+              // 見せない）。文言は固定。
+              controller.error(new Error("upstream response ended before completion"));
+            } else {
+              controller.close();
+            }
+          })();
+        },
+        cancel() {
+          cancelled = true;
+          upstreamAbort.abort();
+          reader.cancel().catch(() => undefined);
+          return settleWithUsage(status, meter.result());
+        },
       },
-      cancel() {
-        cancelled = true;
-        upstreamAbort.abort();
-        reader.cancel().catch(() => undefined);
-        return settleWithUsage(status, meter.result());
-      },
-    });
+      queuingStrategy,
+    );
     return new Response(relayed, { status, headers });
   } catch (error) {
     await settle(500, upstreamCalled ? { type: "reserved" } : { type: "release" });

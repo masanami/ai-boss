@@ -242,15 +242,29 @@ export function createSseUsageMeter(): UsageMeter {
   };
 }
 
-/** 非ストリーミング（JSON）の計測器。本文を最後まで受けてから `usage` を読む。 */
-export function createJsonUsageMeter(): UsageMeter {
+/**
+ * 非ストリーミング（JSON）の計測器。本文を最後まで受けてから `usage` を読む。
+ * 本文が `maxBytes` を超えたら持つのをやめ、実額に使わない（`null`。予約額で
+ * 確定する——安全側。#641）。
+ */
+export function createJsonUsageMeter(maxBytes: number): UsageMeter {
   const decoder = new TextDecoder();
   let text = "";
+  let received = 0;
+  let overflowed = false;
   return {
     push(chunk) {
+      if (overflowed) return;
+      received += chunk.byteLength;
+      if (received > maxBytes) {
+        overflowed = true;
+        text = "";
+        return;
+      }
       text += decoder.decode(chunk, { stream: true });
     },
     result() {
+      if (overflowed) return null;
       text += decoder.decode();
       let body: unknown;
       try {
