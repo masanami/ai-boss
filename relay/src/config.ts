@@ -51,7 +51,27 @@ export interface RelayConfig {
   maxConcurrentRequests: number;
   /** 予約の期限（予約の時刻からのミリ秒）。 */
   reservationTtlMs: number;
+  /**
+   * 1 要求の応答について中継が内部に持つバイト数の上限（#641）。次の 2 つに
+   * **それぞれ**効く（両方が同時にありうるため、1 要求の保持量はこの値の
+   * およそ 2 倍まで）:
+   * - アプリがまだ読んでいない断片の待ち行列。断片を積むとこれを超えるなら、
+   *   積まずにアプリ側を中止する。
+   * - 計測器が持つ量（非ストリーミングは本文、ストリーミングは区切りを待つ行と
+   *   組み立て中のイベントの `data`）。これを超えたら持つのをやめ、予約額で確定
+   *   する（この値を下げると、実額で精算できる応答の大きさも狭まる）。
+   * 省略時は {@link DEFAULT_MAX_BUFFERED_RESPONSE_BYTES}。
+   */
+  maxBufferedResponseBytes?: number;
 }
+
+/**
+ * `maxBufferedResponseBytes` の既定（1 MiB）。読み続けるアプリの待ち行列はほぼ空の
+ * ため、これを超えるのは読まない（止まった）アプリだけである。非ストリーミングの
+ * 本文は出力 128k トークンの日本語（1 トークン 3 バイト程度）でも 400KB 程度に
+ * 収まる。本番の値は実行基盤のメモリと合わせて S3 で決める。
+ */
+export const DEFAULT_MAX_BUFFERED_RESPONSE_BYTES = 1024 * 1024;
 
 /** 設定が不正なときに `createRelayApp` が投げる例外。 */
 export class RelayConfigError extends Error {
@@ -140,6 +160,9 @@ export function validateRelayConfig(config: RelayConfig): RelayModel {
     if (!isPositiveInteger(config[name])) {
       throw new RelayConfigError(`${name} must be a positive integer`);
     }
+  }
+  if (config.maxBufferedResponseBytes !== undefined && !isPositiveInteger(config.maxBufferedResponseBytes)) {
+    throw new RelayConfigError("maxBufferedResponseBytes must be a positive integer");
   }
   for (const name of ["inputTokensPerByte", "reservationTtlMs"] as const) {
     if (!isPositiveFinite(config[name])) {
