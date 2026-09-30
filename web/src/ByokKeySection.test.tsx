@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import SettingsView from "./SettingsView";
 import ByokKeySection from "./ByokKeySection";
 import {
@@ -200,6 +200,100 @@ describe("設定画面のキーの欄", () => {
     expect(button.disabled).toBe(true);
     fireEvent.click(button);
     expect(manager.register).not.toHaveBeenCalled();
+  });
+});
+
+/**
+ * マウント時の登録の有無の取得が、その後の登録・削除より遅れて返ったとき（#659）。
+ * 遅れて返った古い値で、操作の結果の表示を上書きしない。
+ */
+describe("設定画面のキーの欄: 遅れて返る初回の取得", () => {
+  function deferredIsRegistered() {
+    let resolve!: (value: boolean) => void;
+    let reject!: (error: unknown) => void;
+    const promise = new Promise<boolean>((res, rej) => {
+      resolve = res;
+      reject = rej;
+    });
+    return { isRegistered: vi.fn(() => promise), resolve, reject };
+  }
+
+  async function registerKey() {
+    fireEvent.change(keyInput(), { target: { value: KEY } });
+    fireEvent.click(screen.getByRole("button", { name: "登録" }));
+    await screen.findByText("状態: 登録済み");
+  }
+
+  it("登録の後に初回の取得が「未登録」で返っても、「登録済み」のまま", async () => {
+    const pending = deferredIsRegistered();
+    render(<ByokKeySection manager={fakeManager(false, { isRegistered: pending.isRegistered })} />);
+    await registerKey();
+
+    await act(async () => pending.resolve(false));
+
+    expect(screen.getByText("状態: 登録済み")).toBeTruthy();
+  });
+
+  it("登録・削除の後に初回の取得が「登録済み」で返っても、「未登録」のまま", async () => {
+    const pending = deferredIsRegistered();
+    const manager = fakeManager(false, { isRegistered: pending.isRegistered });
+    render(<ByokKeySection manager={manager} />);
+    await registerKey();
+    fireEvent.click(screen.getByRole("button", { name: "削除" }));
+    await screen.findByText("状態: 未登録");
+
+    await act(async () => pending.resolve(true));
+
+    expect(screen.getByText("状態: 未登録")).toBeTruthy();
+  });
+
+  it("登録の後に初回の取得が失敗して返っても、エラーを表示しない", async () => {
+    const pending = deferredIsRegistered();
+    render(<ByokKeySection manager={fakeManager(false, { isRegistered: pending.isRegistered })} />);
+    await registerKey();
+
+    await act(async () => pending.reject(new ByokKeyCommandError("key-store-failure", -34018)));
+
+    expect(screen.queryByRole("alert")).toBeNull();
+    expect(screen.getByText("状態: 登録済み")).toBeTruthy();
+  });
+
+  it("登録が失敗したときは、遅れて返った初回の取得の結果を表示する", async () => {
+    const pending = deferredIsRegistered();
+    const manager = fakeManager(false, {
+      isRegistered: pending.isRegistered,
+      register: vi.fn(async () => {
+        throw new ByokKeyCommandError("key-store-failure", -34018);
+      }),
+    });
+    render(<ByokKeySection manager={manager} />);
+    fireEvent.change(keyInput(), { target: { value: KEY } });
+    fireEvent.click(screen.getByRole("button", { name: "登録" }));
+    await screen.findByRole("alert");
+
+    pending.resolve(false);
+
+    expect(await screen.findByText("状態: 未登録")).toBeTruthy();
+  });
+
+  it("設定画面の OpenAI の欄でも、登録の後に初回の取得が「未登録」で返っても「登録済み」のまま（#582 S2 の欄）", async () => {
+    stubSettingsFetch();
+    const pending = deferredIsRegistered();
+    render(
+      <ByokKeyManagerContext.Provider
+        value={managers(fakeManager(false), fakeManager(false, { isRegistered: pending.isRegistered }))}
+      >
+        <SettingsView />
+      </ByokKeyManagerContext.Provider>,
+    );
+    const section = within(await screen.findByRole("form", { name: "API キー（OpenAI）" }));
+    fireEvent.change(section.getByLabelText("API キー"), { target: { value: KEY } });
+    fireEvent.click(section.getByRole("button", { name: "登録" }));
+    await section.findByText("状態: 登録済み");
+
+    await act(async () => pending.resolve(false));
+
+    expect(section.getByText("状態: 登録済み")).toBeTruthy();
   });
 });
 

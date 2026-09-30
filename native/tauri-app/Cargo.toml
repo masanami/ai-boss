@@ -41,6 +41,10 @@ tauri-plugin-fs = "~2.6"
 # 表示の結果を捨てる・許可を問い合わせない）に拠るため `~2.5` に固定する
 # （仮定 S3-A6）。JS のパッケージ（`@tauri-apps/plugin-notification`）は入れない。
 tauri-plugin-notification = "~2.5"
+# #659: 多重起動の防止。2 つ目の起動は既にあるプロセスへ知らせて終わる（macOS は
+# `/tmp` の Unix ソケット）。WebView のコマンドを持たないため capability は変わらない。
+# 2.5.1 の macOS の実装を読んで組んだため `~2.5` に固定する（3 系は alpha）。
+tauri-plugin-single-instance = "~2.5"
 
 [dev-dependencies]
 # #580 S2: 結合テスト（tests/sql_plugin.rs）と IPC の中継（examples/

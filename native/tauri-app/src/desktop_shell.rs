@@ -122,6 +122,12 @@ fn perform<R: Runtime>(app: &AppHandle<R>, action: ShellAction) {
     }
 }
 
+/// 2 つ目の起動を知らされたとき（#659）: 既にあるメインのウィンドウを表示して前面に
+/// 出す（2 つ目の起動のプロセスは、知らせた後にプラグインが終了させる）。
+pub fn on_second_instance<R: Runtime>(app: &AppHandle<R>) {
+    perform(app, ShellAction::ShowMainWindow);
+}
+
 /// メニューバーのアイコンとメニューを作る。`run` の `RunEvent::Ready` から呼ぶ
 /// （`configure`・`handle_run_event` では作らない — メニューは実際の macOS の
 /// メニュー〔muda〕でメインスレッドを要し、`MockRuntime` の結合テストが本物の
@@ -218,6 +224,11 @@ const MINUTE: Duration = Duration::from_secs(60);
 /// 読み、その分の検知が抜けうる。境界を確実に越えてから刻みを送る。
 const TICK_MARGIN: Duration = Duration::from_millis(100);
 
+/// 製品の眠りを区切る最大の長さ（#659）。Mac のスリープ中は眠り（単調時計）が
+/// 進まないため、1 回で境界まで眠ると復帰の後に最初の刻みが最大で約 60 秒遅れる。
+/// 区切るたびに壁時計を確かめ直し、復帰から最大でこの長さの後に刻みを送る。
+const WAKE_CHECK_INTERVAL: Duration = Duration::from_secs(5);
+
 /// 次の刻み（次の分の境界＝秒 0）までの待ち時間。境界ちょうどなら 60 秒。
 pub fn duration_until_next_minute(now: SystemTime) -> Duration {
     // 1970-01-01 より前の時計は 0（境界）として扱う。
@@ -250,7 +261,8 @@ pub fn emit_minute_tick<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<()> {
 }
 
 /// 製品の待ち: 次の分の境界まで `sleep` で眠り（境界の後に `TICK_MARGIN` を
-/// 足す）、刻みを続ける（`Continue`）。製品では `sleep` は `std::thread::sleep`。
+/// 足す）、刻みを続ける（`Continue`）。製品では `sleep` は `sleep_until_wall_clock`
+/// （区切って壁時計を確かめる `std::thread::sleep`）。
 /// 眠り方を引数で受け取り、マージンの加算と `Continue` を返すことをユニット
 /// テストで固定する。
 pub fn wait_for_next_tick(
@@ -259,6 +271,30 @@ pub fn wait_for_next_tick(
 ) -> ControlFlow<()> {
     sleep(duration + TICK_MARGIN);
     ControlFlow::Continue(())
+}
+
+/// 製品の眠り方（#659）: `duration` だけ眠る。ただし `WAKE_CHECK_INTERVAL` ごとに
+/// 区切って壁時計（`now`）を確かめ、眠り始めの壁時計から `duration` 後の時刻を
+/// 過ぎていれば（スリープから復帰した）、残りを眠らずに戻る。壁時計が戻っても、
+/// 眠りの合計は `duration` を越えない（1 回で眠るのより遅れない）。
+pub fn sleep_until_wall_clock(
+    duration: Duration,
+    mut now: impl FnMut() -> SystemTime,
+    mut sleep: impl FnMut(Duration),
+) {
+    let deadline = now() + duration;
+    let mut slept = Duration::ZERO;
+    while slept < duration {
+        let Ok(until_deadline) = deadline.duration_since(now()) else {
+            return;
+        };
+        let step = until_deadline.min(duration - slept).min(WAKE_CHECK_INTERVAL);
+        if step.is_zero() {
+            return;
+        }
+        sleep(step);
+        slept += step;
+    }
 }
 
 /// 起動した刻みの送り手。`setup` で `manage` し、起動したことを器の状態として
@@ -285,7 +321,9 @@ impl MinuteTicker {
 
 /// 刻みの送り手を別スレッドで起動する。次の分の境界まで眠っては刻みを送る。
 pub fn spawn_minute_ticker<R: Runtime>(app: AppHandle<R>) -> std::io::Result<MinuteTicker> {
-    spawn_minute_ticker_with(app, SystemTime::now, std::thread::sleep)
+    spawn_minute_ticker_with(app, SystemTime::now, |duration| {
+        sleep_until_wall_clock(duration, SystemTime::now, std::thread::sleep)
+    })
 }
 
 /// [`spawn_minute_ticker`] の本体。時計（`now`）と眠り方（`sleep`）だけを受け取り、
@@ -496,6 +534,95 @@ mod tests {
             wait_for_next_tick(Duration::from_secs(60), &mut |_| {}),
             ControlFlow::Continue(())
         );
+    }
+
+    // --- sleep_until_wall_clock（#659: スリープからの復帰） ----------------------
+
+    /// 眠った分だけ進む時計。`jumps` の i 番目の値を、i 回目の眠りの後にさらに
+    /// 足す（負は戻す）。Mac のスリープ中は眠り（単調時計）が進まず壁時計だけが
+    /// 進むことを、眠りの後の壁時計の飛びで模擬する。
+    fn run_sleep_until_wall_clock(duration: Duration, jumps: &[i64]) -> Vec<Duration> {
+        let clock = Cell::new(at(1_700_000_070, 0));
+        let slept = RefCell::new(Vec::new());
+
+        sleep_until_wall_clock(duration, || clock.get(), |d| {
+            let i = slept.borrow().len();
+            slept.borrow_mut().push(d);
+            let jump = jumps.get(i).copied().unwrap_or(0);
+            let advanced = clock.get() + d;
+            clock.set(if jump >= 0 {
+                advanced + Duration::from_secs(jump as u64)
+            } else {
+                advanced - Duration::from_secs(jump.unsigned_abs())
+            });
+        });
+
+        slept.into_inner()
+    }
+
+    #[test]
+    fn sleeps_in_slices_of_at_most_five_seconds_until_the_duration_has_passed() {
+        assert_eq!(
+            run_sleep_until_wall_clock(Duration::from_millis(12_100), &[]),
+            [
+                Duration::from_secs(5),
+                Duration::from_secs(5),
+                Duration::from_millis(2_100),
+            ]
+        );
+    }
+
+    #[test]
+    fn a_duration_within_one_slice_is_slept_at_once() {
+        assert_eq!(
+            run_sleep_until_wall_clock(Duration::from_secs(5), &[]),
+            [Duration::from_secs(5)]
+        );
+    }
+
+    #[test]
+    fn stops_after_the_slice_in_which_the_wall_clock_jumped_past_the_deadline() {
+        // 2 回目の眠りの間に Mac が 10 分スリープした: 壁時計は期限を越えたので、
+        // 残りの約 20 秒を眠らずに戻る（刻みが復帰から 1 区切り以内に送られる）。
+        assert_eq!(
+            run_sleep_until_wall_clock(Duration::from_millis(30_100), &[0, 600]),
+            [Duration::from_secs(5), Duration::from_secs(5)]
+        );
+    }
+
+    #[test]
+    fn a_jump_that_leaves_the_wall_clock_short_of_the_deadline_sleeps_only_the_rest() {
+        // 1 回目の眠りの間に壁時計が 20 秒進んだ: 期限まで残り 5.1 秒だけ眠る。
+        assert_eq!(
+            run_sleep_until_wall_clock(Duration::from_millis(30_100), &[20]),
+            [
+                Duration::from_secs(5),
+                Duration::from_secs(5),
+                Duration::from_millis(100),
+            ]
+        );
+    }
+
+    #[test]
+    fn stops_when_the_wall_clock_lands_exactly_on_the_deadline() {
+        // 1 回目の眠りの間に壁時計が 20 秒進み、2 回目の眠りの後にちょうど期限に着く。
+        assert_eq!(
+            run_sleep_until_wall_clock(Duration::from_secs(30), &[20]),
+            [Duration::from_secs(5), Duration::from_secs(5)]
+        );
+    }
+
+    #[test]
+    fn a_wall_clock_set_back_does_not_sleep_longer_than_the_duration() {
+        // 壁時計が戻っても、眠りの合計は元の待ち時間を越えない（変更前より遅れない）。
+        let slept = run_sleep_until_wall_clock(Duration::from_millis(12_100), &[-600]);
+
+        assert_eq!(slept.iter().sum::<Duration>(), Duration::from_millis(12_100));
+    }
+
+    #[test]
+    fn a_zero_duration_does_not_sleep() {
+        assert!(run_sleep_until_wall_clock(Duration::ZERO, &[]).is_empty());
     }
 
     // --- run_minute_ticker (AC-S3-11) ------------------------------------------
