@@ -25,10 +25,14 @@ import { createPluginFsEvidenceStore } from "./plugin-fs-evidence-store";
  * - LLM バックエンドは 1 つも登録しない（オーナーの決定 Q4-c）。
  *   `createCoreApp` はバックエンドを登録する側ではなく、登録済みレジストリ
  *   （`llm/llm-backend-registry.ts`）を参照するだけなので、このモジュールを
- *   呼ぶだけではどのバックエンドも登録されない。
+ *   呼ぶだけではどのバックエンドも登録されない（登録は `product-llm.ts`）。
+ * - LLM の選択の保存の入口 `/api/llm-selection` を有効にする（#582 S2。
+ *   開発者用の版は有効にしない）。
  */
 export function createProductCoreApp(db: DbPort) {
-  return createCoreApp(db, {}, { evidenceStore: createPluginFsEvidenceStore() });
+  // 選択の入口（`GET`・`PUT /api/llm-selection`）は製品版だけが有効にする（#582 S2）。
+  // DB が「未接続」のときも有効にする（DB を読む時点で失敗する。仮定 A20）。
+  return createCoreApp(db, {}, { evidenceStore: createPluginFsEvidenceStore(), llmSelectionApi: true });
 }
 
 export type ProductCoreApp = ReturnType<typeof createProductCoreApp>;

@@ -78,9 +78,11 @@ export {
 
 /**
  * 選択の解決関数（#581 S3・機能仕様 docs/features/secure-transport-byok.md
- * クリティカル設計決定 7）。製品版の web のエントリが、BYOK（Anthropic）の
- * 登録と同時に製品版の解決関数を `setLlmSelectionResolver` で登録する——この
- * モジュール自身は登録しない（読み込んだだけでは開発者用の解決関数のまま）。
+ * クリティカル設計決定 7・#582 S2）。製品版の web のエントリが、BYOK
+ * （Anthropic）・BYOK（OpenAI）の登録と同時に製品版の解決関数（保存した
+ * プロバイダとモデルから決める。未選択なら失敗する）を `setLlmSelectionResolver`
+ * で登録する——このモジュール自身は登録しない（読み込んだだけでは開発者用の
+ * 解決関数のまま）。
  * re-export により `core-entry.bundle.test.ts` のバンドル検査の対象になる。
  */
 export {

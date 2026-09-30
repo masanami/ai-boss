@@ -28,9 +28,10 @@ import { installProductLlm } from "./product-llm";
  *    `createCoreApp` へ振り向ける（決定1「/api の振り向け」）。
  * 3. Blob URL の方式（証跡ファイルのリンク）を組み立て、コンテキストで注入
  *    する。
- * 4. （#581 S3）製品版の LLM（BYOK〔Anthropic〕と製品版の解決関数）を DB と
- *    `/api` より前に登録し、キーの操作（設定画面のキーの欄）をコンテキストで
- *    注入する。どちらも器のコマンド（`secure_*`・`byok_key_*`）を呼ぶ。
+ * 4. （#581 S3・#582 S2）製品版の LLM（BYOK〔Anthropic〕・BYOK〔OpenAI〕と製品版の
+ *    解決関数）を DB と `/api` より前に登録し、プロバイダごとのキーの操作
+ *    （設定画面のキーの欄・選択の欄の表示条件）をコンテキストで注入する。
+ *    どちらも器のコマンド（`secure_*`・`byok_key_*`）を呼ぶ。
  * 描画の後、DB の準備に成功していれば毎分の検知（`createTicker`）を始める
  * （#579 S3。Rust 側の毎分の刻みのイベントを `listen` で受け、通知は
  * `invoke` で Rust 側の通知プラグインへ渡す）。
@@ -41,7 +42,11 @@ const secureTransport = createTauriSecureTransport({
   createChannel: () => new Channel<SecureStreamEvent>(),
   newRequestId: () => crypto.randomUUID(),
 });
-const byokKeyManager = createTauriByokKeyManager((command, args) => invoke(command, args));
+// プロバイダごとに 1 つずつ（欄ごとに対応するプロバイダでコマンドを呼ぶ。#582 S2）。
+const byokKeyManagers = {
+  anthropic: createTauriByokKeyManager((command, args) => invoke(command, args), "anthropic"),
+  openai: createTauriByokKeyManager((command, args) => invoke(command, args), "openai"),
+};
 
 const evidenceContentOpener = createBlobEvidenceContentOpener({
   // 呼ばれる時点の `window.fetch`（描画より前に包んだ後の参照）— `/api` 配下の
@@ -79,7 +84,7 @@ void bootProductApp({
     createRoot(rootElement).render(
       <StrictMode>
         <EvidenceContentOpenerContext.Provider value={evidenceContentOpener}>
-          <ByokKeyManagerContext.Provider value={byokKeyManager}>
+          <ByokKeyManagerContext.Provider value={byokKeyManagers}>
             <App />
           </ByokKeyManagerContext.Provider>
         </EvidenceContentOpenerContext.Provider>

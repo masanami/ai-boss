@@ -266,10 +266,10 @@ async fn key_never_appears_in_command_results_errors_or_channel_events() {
         let (s, _rx) = sink();
         outputs.push(serde_json::to_value(state.send(request("e", destination), s).await).unwrap());
     }
-    // キーの失敗
-    outputs.push(serde_json::to_value(state.key_set("openai", KEY.to_owned())).unwrap());
-    outputs.push(serde_json::to_value(state.key_status("openai")).unwrap());
-    outputs.push(serde_json::to_value(state.key_delete("openai")).unwrap());
+    // キーの失敗（不明なプロバイダ。#582 S2 から `openai` は受け付けるため別の名前で）
+    outputs.push(serde_json::to_value(state.key_set("google", KEY.to_owned())).unwrap());
+    outputs.push(serde_json::to_value(state.key_status("google")).unwrap());
+    outputs.push(serde_json::to_value(state.key_delete("google")).unwrap());
 
     // リダイレクト拒否
     let (redirect, openai2) = servers(MockResponse::new(302).header("location", "http://127.0.0.1:9/").chunk(b"x")).await;
@@ -328,13 +328,6 @@ fn deleting_an_absent_key_succeeds() {
 }
 
 #[test]
-fn key_set_refuses_openai() {
-    let state = memory_state();
-    assert_eq!(state.key_set("openai", KEY.to_owned()), Err(error_of("unknown-provider")));
-    assert_eq!(state.key_status("anthropic"), Ok(false));
-}
-
-#[test]
 fn key_set_refuses_an_empty_key() {
     let state = memory_state();
     assert_eq!(state.key_set("anthropic", String::new()), Err(error_of("invalid-key")));
@@ -342,20 +335,187 @@ fn key_set_refuses_an_empty_key() {
 }
 
 #[test]
-fn key_delete_refuses_openai() {
-    assert_eq!(memory_state().key_delete("openai"), Err(error_of("unknown-provider")));
-}
-
-#[test]
-fn key_status_refuses_openai() {
-    assert_eq!(memory_state().key_status("openai"), Err(error_of("unknown-provider")));
-}
-
-#[test]
 fn key_set_refuses_a_key_with_a_newline() {
     let state = memory_state();
     assert_eq!(state.key_set("anthropic", format!("{KEY}\n")), Err(error_of("invalid-key")));
     assert_eq!(state.key_status("anthropic"), Ok(false));
+}
+
+// --- キーのコマンド（OpenAI・#582 S2。機能仕様 docs/features/llm-provider-abstraction.md
+// 受入基準（S2）S2-K1〜S2-K10）------------------------------------------------------
+
+const OPENAI_KEY: &str = "sk-proj-test-S2-SECRET";
+
+/// S2-K1
+#[test]
+fn s2_k1_openai_key_is_reported_as_present_after_registration() {
+    let state = memory_state();
+    state.key_set("openai", OPENAI_KEY.to_owned()).unwrap();
+    assert_eq!(state.key_status("openai"), Ok(true));
+}
+
+/// S2-K2
+#[test]
+fn s2_k2_registering_the_openai_key_leaves_anthropic_unregistered() {
+    let state = memory_state();
+    state.key_set("openai", OPENAI_KEY.to_owned()).unwrap();
+    assert_eq!(state.key_status("anthropic"), Ok(false));
+}
+
+/// S2-K3
+#[test]
+fn s2_k3_deleting_the_openai_key_keeps_the_anthropic_key() {
+    let state = memory_state();
+    state.key_set("anthropic", KEY.to_owned()).unwrap();
+    state.key_set("openai", OPENAI_KEY.to_owned()).unwrap();
+    state.key_delete("openai").unwrap();
+    assert_eq!(state.key_status("openai"), Ok(false));
+    assert_eq!(state.key_status("anthropic"), Ok(true));
+}
+
+/// S2-K4（旧 S3-K4・S3-K6・S3-K7 の置き換え: `anthropic`・`openai` 以外は不明なプロバイダ）
+#[test]
+fn s2_k4_key_commands_refuse_unknown_providers_and_store_nothing() {
+    for provider in ["google", "OpenAI", "Anthropic", ""] {
+        let state = memory_state();
+        assert_eq!(state.key_set(provider, KEY.to_owned()), Err(error_of("unknown-provider")), "{provider}");
+        assert_eq!(state.key_delete(provider), Err(error_of("unknown-provider")), "{provider}");
+        assert_eq!(state.key_status(provider), Err(error_of("unknown-provider")), "{provider}");
+        assert_eq!(state.key_status("anthropic"), Ok(false), "{provider}");
+        assert_eq!(state.key_status("openai"), Ok(false), "{provider}");
+    }
+}
+
+/// S2-K5
+#[test]
+fn s2_k5_openai_key_set_refuses_an_empty_key_or_a_newline() {
+    for key in [String::new(), format!("{OPENAI_KEY}\n")] {
+        let state = memory_state();
+        assert_eq!(state.key_set("openai", key), Err(error_of("invalid-key")));
+        assert_eq!(state.key_status("openai"), Ok(false));
+    }
+}
+
+/// S2-K6
+#[tokio::test]
+async fn s2_k6_openai_key_registered_by_command_is_sent_as_a_bearer_token() {
+    let (anthropic, openai) = servers(MockResponse::new(200).chunk(b"x")).await;
+    let state = state(&anthropic, &openai);
+    state.key_set("openai", OPENAI_KEY.to_owned()).unwrap();
+    let (s, rx) = sink();
+    state.send(request("o", OPENAI_RESPONSES), s).await.unwrap();
+    collect(rx).await;
+    let requests = openai.requests();
+    assert_eq!(requests.len(), 1);
+    assert_eq!(requests[0].header_values("authorization"), vec![format!("Bearer {OPENAI_KEY}").as_str()]);
+}
+
+/// S2-K7
+#[tokio::test]
+async fn s2_k7_only_an_openai_key_does_not_send_to_anthropic() {
+    let (anthropic, openai) = servers(MockResponse::new(200).chunk(b"x")).await;
+    let state = state(&anthropic, &openai);
+    state.key_set("openai", OPENAI_KEY.to_owned()).unwrap();
+    let (s, _rx) = sink();
+    assert_eq!(state.send(request("a", ANTHROPIC_MESSAGES), s).await.unwrap_err(), error_of("key-not-registered"));
+    assert!(anthropic.requests().is_empty());
+}
+
+/// S2-K8
+#[tokio::test]
+async fn s2_k8_anthropic_request_never_carries_the_openai_key() {
+    let (anthropic, openai) = servers(MockResponse::new(200).chunk(b"x")).await;
+    let state = state(&anthropic, &openai);
+    state.key_set("anthropic", KEY.to_owned()).unwrap();
+    state.key_set("openai", OPENAI_KEY.to_owned()).unwrap();
+    let (s, rx) = sink();
+    state.send(request("a", ANTHROPIC_MESSAGES), s).await.unwrap();
+    collect(rx).await;
+    let requests = anthropic.requests();
+    assert_eq!(requests.len(), 1);
+    for (name, value) in &requests[0].headers {
+        assert!(!value.contains(OPENAI_KEY), "{name}");
+    }
+    assert_eq!(requests[0].header_values("x-api-key"), vec![KEY]);
+}
+
+/// S2-K9・S2-K10: OpenAI のキーを登録した後の、5 つのコマンドの戻り値・失敗の値の JSON、
+/// `Channel` へ送った値の JSON、失敗の値の `Debug` にそのキーが現れない。
+#[tokio::test]
+async fn s2_k9_k10_openai_key_never_appears_in_command_results_errors_channel_events_or_debug() {
+    let mut outputs: Vec<Value> = Vec::new();
+    let mut debugs: Vec<String> = Vec::new();
+    let record = |outputs: &mut Vec<Value>, debugs: &mut Vec<String>, value: Value, debug: String| {
+        outputs.push(value);
+        debugs.push(debug);
+    };
+
+    // 成功（本文を最後まで）
+    let (anthropic, openai) = servers(MockResponse::new(200).chunk(b"hello")).await;
+    let state = state(&anthropic, &openai);
+    let r = state.key_set("openai", OPENAI_KEY.to_owned());
+    record(&mut outputs, &mut debugs, serde_json::to_value(&r).unwrap(), format!("{r:?}"));
+    let r = state.key_status("openai");
+    record(&mut outputs, &mut debugs, serde_json::to_value(&r).unwrap(), format!("{r:?}"));
+    let (ok_sink, rx) = sink();
+    let r = state.send(request("ok", OPENAI_RESPONSES), ok_sink).await;
+    record(&mut outputs, &mut debugs, serde_json::to_value(&r).unwrap(), format!("{r:?}"));
+    for event in collect(rx).await {
+        record(&mut outputs, &mut debugs, serde_json::to_value(&event).unwrap(), format!("{event:?}"));
+    }
+    let r = state.cancel("ok");
+    record(&mut outputs, &mut debugs, serde_json::to_value(r).unwrap(), format!("{r:?}"));
+    // 宛先不明・キー未登録（Anthropic）
+    for destination in ["nowhere", ANTHROPIC_MESSAGES] {
+        let (s, _rx) = sink();
+        let r = state.send(request("e", destination), s).await;
+        record(&mut outputs, &mut debugs, serde_json::to_value(&r).unwrap(), format!("{r:?}"));
+    }
+    // 不明なプロバイダ・不正なキー
+    let r = state.key_set("google", OPENAI_KEY.to_owned());
+    record(&mut outputs, &mut debugs, serde_json::to_value(&r).unwrap(), format!("{r:?}"));
+    let r = state.key_set("openai", format!("{OPENAI_KEY}\n"));
+    record(&mut outputs, &mut debugs, serde_json::to_value(&r).unwrap(), format!("{r:?}"));
+
+    // リダイレクト拒否
+    let anthropic2 = MockServer::start(MockResponse::new(200).chunk(b"x")).await;
+    let redirect = MockServer::start(MockResponse::new(302).header("location", "http://127.0.0.1:9/").chunk(b"x")).await;
+    let redirect_state = self::state(&anthropic2, &redirect);
+    redirect_state.key_set("openai", OPENAI_KEY.to_owned()).unwrap();
+    let (s, _rx) = sink();
+    let r = redirect_state.send(request("r", OPENAI_RESPONSES), s).await;
+    record(&mut outputs, &mut debugs, serde_json::to_value(&r).unwrap(), format!("{r:?}"));
+
+    // 要求 ID の重複と中止
+    let gate = Gate::new();
+    let held = MockServer::start(MockResponse::new(200).chunk(b"a").chunk(b"b").gate(Arc::clone(&gate))).await;
+    let anthropic3 = MockServer::start(MockResponse::new(200).chunk(b"x")).await;
+    let held_state = self::state(&anthropic3, &held);
+    held_state.key_set("openai", OPENAI_KEY.to_owned()).unwrap();
+    let (s, mut rx) = sink();
+    let r = held_state.send(request("h", OPENAI_RESPONSES), s).await;
+    record(&mut outputs, &mut debugs, serde_json::to_value(&r).unwrap(), format!("{r:?}"));
+    let first = rx.recv().await.unwrap();
+    record(&mut outputs, &mut debugs, serde_json::to_value(&first).unwrap(), format!("{first:?}"));
+    let (dup, _dup_rx) = sink();
+    let r = held_state.send(request("h", OPENAI_RESPONSES), dup).await;
+    record(&mut outputs, &mut debugs, serde_json::to_value(&r).unwrap(), format!("{r:?}"));
+    let r = held_state.cancel("h");
+    record(&mut outputs, &mut debugs, serde_json::to_value(r).unwrap(), format!("{r:?}"));
+    for event in collect(rx).await {
+        record(&mut outputs, &mut debugs, serde_json::to_value(&event).unwrap(), format!("{event:?}"));
+    }
+    let r = held_state.key_delete("openai");
+    record(&mut outputs, &mut debugs, serde_json::to_value(&r).unwrap(), format!("{r:?}"));
+
+    let text = serde_json::to_string(&outputs).unwrap();
+    for kind in ["unknown-destination", "key-not-registered", "unknown-provider", "invalid-key", "redirect-refused", "duplicate-request-id", "cancelled"] {
+        assert!(text.contains(kind), "{kind} was not exercised: {text}");
+    }
+    assert!(!text.contains(OPENAI_KEY), "{text}");
+    for debug in &debugs {
+        assert!(!debug.contains(OPENAI_KEY), "{debug}");
+    }
 }
 
 // --- IPC（名前・引数の名前・ACL） ---------------------------------------------

@@ -3,7 +3,7 @@ import type { FormEvent } from "react";
 import { ByokKeyCommandError, type ByokKeyManager } from "./byok-key-manager-context";
 
 /**
- * 設定画面の「API キー（Anthropic）」の欄（#581 S3・機能仕様
+ * 設定画面の「API キー（{プロバイダ}）」の欄（#581 S3・機能仕様
  * docs/features/secure-transport-byok.md クリティカル設計決定 8）。製品版で
  * キーの操作が注入されたときだけ表示される（`SettingsView`）。
  *
@@ -16,7 +16,14 @@ function describeFailure(error: unknown): string {
   return error instanceof ByokKeyCommandError ? error.message : "キーの操作に失敗しました";
 }
 
-export default function ByokKeySection({ manager }: { manager: ByokKeyManager }) {
+export default function ByokKeySection({
+  manager,
+  providerName = "Anthropic",
+}: {
+  manager: ByokKeyManager;
+  /** 見出しに出すプロバイダの表示名（省略時は Anthropic。#582 S2）。 */
+  providerName?: string;
+}) {
   const [registered, setRegistered] = useState<boolean | null>(null);
   const [input, setInput] = useState("");
   const [busy, setBusy] = useState(false);
@@ -71,10 +78,12 @@ export default function ByokKeySection({ manager }: { manager: ByokKeyManager })
 
   const statusText = registered === null ? "確認中…" : registered ? "登録済み" : "未登録";
 
+  const heading = `API キー（${providerName}）`;
+
   return (
-    <form aria-label="API キー（Anthropic）" onSubmit={handleSubmit}>
+    <form aria-label={heading} onSubmit={handleSubmit}>
       <fieldset disabled={busy}>
-        <legend>API キー（Anthropic）</legend>
+        <legend>{heading}</legend>
         <p>状態: {statusText}</p>
         <label>
           API キー

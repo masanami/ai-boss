@@ -19,7 +19,7 @@ import {
   type TodaysAdhocMessage,
 } from "../boss/persona-prompt.js";
 import { BOSS_TOOLS, executeBossTool } from "../boss/boss-tools.js";
-import { resolveLlmSelection } from "../llm/llm-selection.js";
+import { resolveLlmSelection, type LlmSelection } from "../llm/llm-selection.js";
 import {
   createClaudeClient,
   streamBossMessage,
@@ -38,6 +38,7 @@ import { validateChatMessageInput } from "./sessions-validation.js";
 import type { Message } from "./message.js";
 import type { SessionType } from "./session.js";
 import { deferStateChangeNotice } from "../state-change-notice.js";
+import type { LlmBackendName } from "../llm/llm-backend-registry.js";
 
 /** Sanitized message surfaced to the client; never includes raw error details
  * (which may contain request internals) per the critical API-key/error
@@ -217,20 +218,28 @@ async function checkRewriteTarget(
   return undefined;
 }
 
+function describeClientInitFailure(err: unknown): string {
+  return err instanceof Error ? err.message : "failed to initialize the Claude client";
+}
+
 /**
  * Registers `POST /:id/messages` on the given sessions router. Kept in its
  * own module because the SSE + tool-use orchestration is substantially
  * larger than the other session endpoints in `sessions-routes.ts`.
  *
  * The LLM backend and model are resolved by the selection resolver
- * (機能仕様 docs/features/secure-transport-byok.md クリティカル設計決定 7・
- * `llm/llm-selection.ts`). The backend is resolved when the client is created
- * (before the turn's snapshot, so that a client initialization failure still
- * answers 500 before anything is recorded — the existing order), and the
- * model from the turn's snapshot (#618). The S3 resolvers decide the backend
- * without reading the settings, so the pair cannot mix two saves; #582 S2,
- * which resolves the backend from the saved selection, moves the client
- * creation after the snapshot (#582 のクリティカル設計決定 5).
+ * (機能仕様 docs/features/llm-provider-abstraction.md クリティカル設計決定 5
+ * 「S2 の形」・`llm/llm-selection.ts`). Two resolutions exist, with different
+ * roles:
+ *  - the *preflight* (before the user message is saved) only decides whether
+ *    a client can be created at all, so that an initialization failure still
+ *    answers 500 before anything is recorded — the existing order;
+ *  - the *turn* resolution, from the turn's own settings snapshot (#618),
+ *    yields the `{ backend, model }` pair that is actually sent. If its
+ *    backend differs from the preflight's, the client is created again for
+ *    it. The preflight client is never paired with a model from a different
+ *    resolution, so a save landing mid-request cannot send one provider's
+ *    model through another provider's client (仮定 A19・A21).
  */
 export function registerChatMessageRoute(
   router: Hono,
@@ -293,16 +302,17 @@ export function registerChatMessageRoute(
       }
     }
 
+    // 事前の確認（従来の位置）: クライアントを作れなければ、発言を保存する前に
+    // 500 で返す。ここで得たクライアントは、下の 1 ターン分の解決の結果が同じ
+    // バックエンドのときにだけ使う。
     let client: BossLlmClient;
+    let preflightBackend: LlmBackendName;
     try {
       const { backend } = resolveLlmSelection(env, await readSettingsSnapshot(db));
+      preflightBackend = backend;
       client = createClaudeClient(env, backend);
     } catch (err) {
-      const message =
-        err instanceof Error
-          ? err.message
-          : "failed to initialize the Claude client";
-      return c.json({ error: message }, 500);
+      return c.json({ error: describeClientInitFailure(err) }, 500);
     }
 
     // 切り捨て（やりなおし時のみ）と新しい発言の挿入は単一トランザクション
@@ -366,7 +376,7 @@ export function registerChatMessageRoute(
     // タスクの更新が割り込むと、どの時点にも存在しなかった新旧の組み合わせが
     // プロンプトに入りうる。LLM の呼び出しはこのトランザクションの外に置く
     // （ロックを応答生成のあいだ持ち続けない）。
-    const { model, system, messages, mentoringTaskIdForTurn } = await db.transaction(
+    const turn = await db.transaction(
       async (tx) => {
         const tasks = await listTasks(tx);
         const recentDecisions = await listRecentDecisions(tx, 5);
@@ -378,10 +388,16 @@ export function registerChatMessageRoute(
         // スナップショットから導く（#618。`resolveBossSettings` と
         // `resolveMorningMentoringRequired` を別々に読むと、その間の保存で新旧が混ざる）。
         const settings = await readSettingsSnapshot(tx);
+        // 送るバックエンドとモデルは、このターンのスナップショットから選択の
+        // 解決関数で 1 回だけ決める（#582 クリティカル設計決定 5）。事前の確認の
+        // 後に選択が未選択などへ変わっていれば、ここで失敗する（発言は保存済み）。
+        let selection: LlmSelection;
+        try {
+          selection = resolveLlmSelection(env, settings);
+        } catch (error) {
+          return { ok: false as const, error };
+        }
         const { persona } = resolveBossSettingsFrom(settings);
-        // モデルは選択の解決関数で決める（機能仕様 docs/features/
-        // secure-transport-byok.md クリティカル設計決定 7）。
-        const { model } = resolveLlmSelection(env, settings);
         // 時刻の読みは1回にまとめる（Issue #367）。`listTodaysAdhocMessages` は
         // ローカル暦日の半開区間の両端をこの値から導出するため、プロンプト側の
         // `now` と読みが割れると真夜中をまたいで窓が壊れる（`local-day.ts` の
@@ -435,9 +451,25 @@ export function registerChatMessageRoute(
           includeCurrentDateTime: true,
         });
         const messages = toClaudeMessages(await listMessagesBySessionId(tx, id));
-        return { model, system, messages, mentoringTaskIdForTurn };
+        return { ok: true as const, selection, system, messages, mentoringTaskIdForTurn };
       },
     );
+    if (!turn.ok) {
+      return c.json({ error: describeClientInitFailure(turn.error) }, 500);
+    }
+    const { selection, system, messages, mentoringTaskIdForTurn } = turn;
+    const { model } = selection;
+    // 組のバックエンドが事前の確認と同じなら、そのクライアントをそのまま使う
+    // （同じ `env` と名前から作ったクライアントは入れ替えても振る舞いが変わらない
+    // — 仮定 A19）。違えば組のバックエンドで作り直す。作れなければ 500（発言は
+    // 保存済みのまま残る — LLM の応答の生成の失敗と同じ扱い。仮定 A21）。
+    if (selection.backend !== preflightBackend) {
+      try {
+        client = createClaudeClient(env, selection.backend);
+      } catch (err) {
+        return c.json({ error: describeClientInitFailure(err) }, 500);
+      }
+    }
 
     // The client stopping the generation *is* the client hanging up: there is
     // no stop endpoint, just an aborted `fetch` (#254 論点2). On Node, an

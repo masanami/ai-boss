@@ -9,6 +9,7 @@ import { createDashboardRouter } from "./dashboard/dashboard-routes.js";
 import { createReportsRouter } from "./reports/reports-routes.js";
 import { createWorkLogsRouter } from "./reports/work-logs-routes.js";
 import { createSettingsRouter } from "./settings/settings-routes.js";
+import { createLlmSelectionRouter } from "./settings/llm-selection-routes.js";
 import { createMeetingScheduleRouter } from "./meeting-schedule/meeting-schedule-routes.js";
 import type { AppEnv } from "./config.js";
 import type { EvidenceStore } from "./tasks/evidence-store.js";
@@ -68,6 +69,15 @@ export interface CreateCoreAppOptions {
    * （`createNudgeReplanner` の `requestReplan`）を渡す。
    */
   onStateChangingRequest?: () => void;
+  /**
+   * 製品版の LLM の選択（プロバイダとモデル）の保存の入口 `GET`・`PUT
+   * /api/llm-selection` を有効にする（機能仕様
+   * docs/features/llm-provider-abstraction.md クリティカル設計決定 5・
+   * 仮定 A11）。製品版のエントリ（`createProductCoreApp`）だけが `true` を
+   * 渡す。開発者用の版（`app.ts`）は渡さない——入口は 404 になり、開発者用の
+   * `GET /api/settings` の応答の形も変わらない。
+   */
+  llmSelectionApi?: boolean;
 }
 
 /**
@@ -129,6 +139,9 @@ export function createCoreApp(
   api.route("/reports", createReportsRouter(db, env));
   api.route("/work-logs", createWorkLogsRouter(db));
   api.route("/settings", createSettingsRouter(db));
+  if (options.llmSelectionApi === true) {
+    api.route("/llm-selection", createLlmSelectionRouter(db));
+  }
   api.route("/meeting-schedule", createMeetingScheduleRouter(db));
 
   const app = new Hono();

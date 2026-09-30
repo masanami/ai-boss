@@ -1,7 +1,7 @@
 import { createContext } from "react";
 
 /**
- * BYOK（Anthropic）のキーの登録・削除・登録の有無（#581 S3・機能仕様
+ * BYOK のキー（1 プロバイダ分）の登録・削除・登録の有無（#581 S3・機能仕様
  * docs/features/secure-transport-byok.md クリティカル設計決定 8）。
  *
  * 画面が知るのは登録の有無だけで、キーの値を読み出す手段は無い。登録の瞬間
@@ -15,11 +15,22 @@ export interface ByokKeyManager {
 }
 
 /**
+ * プロバイダごとのキーの操作の組（#582 S2・仮定 A15）。欄ごとに対応する
+ * プロバイダの操作を使う。
+ */
+export interface ByokKeyManagers {
+  anthropic: ByokKeyManager;
+  openai: ByokKeyManager;
+}
+
+/**
  * 製品版（Tauri アプリ）のエントリだけがこのコンテキストへ値を注入する
  * （`web/src/app-entry/main.tsx`）。既定値は `null` — 開発者用の版は注入しない
- * ため、設定画面にキーの欄は出ない（証跡の Blob URL の方式と同じ型）。
+ * ため、設定画面にプロバイダ・モデルの選択の欄もキーの欄も出ず、自由入力の
+ * 「モデル」の欄が出る（証跡の Blob URL の方式と同じ型。仮定 A16: 製品版かどうか
+ * の判定はこの値の有無だけ）。
  */
-export const ByokKeyManagerContext = createContext<ByokKeyManager | null>(null);
+export const ByokKeyManagerContext = createContext<ByokKeyManagers | null>(null);
 
 /**
  * キーの操作の失敗。種類とキーチェーンの OSStatus だけを持つ（キーの値を
