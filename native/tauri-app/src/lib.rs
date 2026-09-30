@@ -65,6 +65,56 @@ pub fn prepare_evidence_dir(app_config_dir: &Path) -> io::Result<PathBuf> {
     }
 }
 
+/// 多重起動の排他の錠のファイル名（`app_config_dir` の直下。DB と同じ場所）。
+const INSTANCE_LOCK_FILE_NAME: &str = "ai-boss.lock";
+
+/// 多重起動の排他の錠を取るプラグインの名前（#659）。錠を取れないとき、器の
+/// 組み立ては `tauri::Error::PluginInitialization` にこの名前を載せて失敗する。
+pub const INSTANCE_LOCK_PLUGIN_NAME: &str = "instance-lock";
+
+/// 多重起動の排他の錠（#659）。持っているあいだ（プロセスが生きているあいだ）、
+/// 同じアプリのデータディレクトリに対する別の取得は失敗する。プロセスが落ちると
+/// OS が外す（`flock`）。
+pub struct InstanceLock {
+    _file: std::fs::File,
+}
+
+/// 多重起動の排他の錠（`<app_config_dir>/ai-boss.lock` への排他の `flock`・
+/// 非ブロッキング）を取る。別のプロセス（または同じプロセスの別の取得）が持って
+/// いれば `Ok(None)`。
+///
+/// `tauri-plugin-single-instance` の待ち受けは非同期に始まるため、ほぼ同時の 2 つの
+/// 起動がどちらも「先に起動したものは無い」と判定して続行しうる。錠の取得は原子的
+/// なので、そのうち 1 つだけが DB・刻みへ進む。
+pub fn acquire_instance_lock(app_config_dir: &Path) -> io::Result<Option<InstanceLock>> {
+    std::fs::create_dir_all(app_config_dir)?;
+    let file = std::fs::OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .write(true)
+        .open(app_config_dir.join(INSTANCE_LOCK_FILE_NAME))?;
+    match file.try_lock() {
+        Ok(()) => Ok(Some(InstanceLock { _file: file })),
+        Err(std::fs::TryLockError::WouldBlock) => Ok(None),
+        Err(std::fs::TryLockError::Error(error)) => Err(error),
+    }
+}
+
+/// 多重起動の排他の錠を取るプラグイン。錠は `manage` して器が生きているあいだ持つ。
+/// 取れなければ初期化を失敗させ、後に登録したプラグイン（plugin-sql の DB の
+/// preload）と `setup`（刻みの送り手の起動）へ進ませない。
+fn instance_lock_plugin<R: Runtime>() -> tauri::plugin::TauriPlugin<R> {
+    tauri::plugin::Builder::new(INSTANCE_LOCK_PLUGIN_NAME)
+        .setup(|app, _api| match acquire_instance_lock(&app.path().app_config_dir()?)? {
+            Some(lock) => {
+                app.manage(lock);
+                Ok(())
+            }
+            None => Err("another instance of the app holds the instance lock".into()),
+        })
+        .build()
+}
+
 mod app_commands;
 pub mod secure_commands;
 
@@ -164,10 +214,16 @@ fn build_main_window<R: Runtime, M: tauri::Manager<R>>(
 /// ウィンドウは隠す）・Dock の再表示の要求もここで処理する
 /// （`desktop_shell::handle_run_event`）。`configure` では作らない。
 pub fn run() {
-    configure(with_single_instance(tauri::Builder::default()))
-        .build(context())
-        .expect("error while building tauri application")
-        .run(|app, event| {
+    let app = match configure(with_single_instance(tauri::Builder::default())).build(context()) {
+        Ok(app) => app,
+        // ほぼ同時に起動した別のプロセスが錠を持っている（#659）: DB・刻みに触れずに終わる。
+        Err(tauri::Error::PluginInitialization(name, error)) if name == INSTANCE_LOCK_PLUGIN_NAME => {
+            eprintln!("not starting: {error}");
+            return;
+        }
+        Err(error) => panic!("error while building tauri application: {error}"),
+    };
+    app.run(|app, event| {
             if let tauri::RunEvent::Ready = event {
                 if let Err(error) = desktop_shell::create_tray(app) {
                     eprintln!("failed to create the menu bar icon: {error}");
@@ -181,12 +237,20 @@ pub fn run() {
 /// 2 つ目の起動が DB の preload・刻みの送り手の起動より前に終わるようにする
 /// （同じ DB に対して刻みが 2 重に走り、同じ催促を 2 回送らないように）。
 ///
+/// single-instance（既にあるプロセスへ知らせて終わる・前面化）の後に、排他の錠
+/// （[`acquire_instance_lock`]）を取るプラグインを登録する。single-instance の待ち
+/// 受けは非同期に始まり、ほぼ同時の 2 つの起動はどちらも通り抜けうるため、錠で
+/// 原子的に 1 つに絞る（錠を先にすると、ふつうの 2 つ目の起動が前面化を知らせる
+/// 前に終わってしまう）。
+///
 /// `configure` には入れない: `MockRuntime` の結合テストは 1 つのプロセスで器を
 /// 何度も組むため、2 回目が 2 つ目の起動と判定されてテストのプロセスが終了する。
 pub fn with_single_instance<R: Runtime>(builder: tauri::Builder<R>) -> tauri::Builder<R> {
-    builder.plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
-        desktop_shell::on_second_instance(app)
-    }))
+    builder
+        .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
+            desktop_shell::on_second_instance(app)
+        }))
+        .plugin(instance_lock_plugin())
 }
 
 /// `tauri.conf.json`・capability（ACL）・アセットを埋め込んだコンテキスト。
@@ -331,6 +395,97 @@ mod tests {
         assert!(prepare_evidence_dir(&config_dir).is_err());
         // リンク切れの先を作らない（`create_dir_all` がリンクを辿ると作ってしまう）。
         assert!(!missing.exists());
+    }
+
+    // --- acquire_instance_lock（#659: 多重起動の原子的な排他） ------------------
+
+    /// 子プロセスを起こすテストと、錠を手放して取り直すテストを直列にする。子を
+    /// 起こす途中（fork から exec まで）の子は親の開いているファイルを一時的に
+    /// 持つため、その間に手放した錠が外れず、取り直しが失敗しうる（並行に走らせて
+    /// 1 回再現）。
+    static LOCK_TESTS: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    #[test]
+    fn a_second_acquisition_of_the_instance_lock_fails_while_the_first_is_held() {
+        let _serial = LOCK_TESTS.lock().unwrap_or_else(|e| e.into_inner());
+        let config_dir = tempfile::tempdir().unwrap();
+
+        let first = acquire_instance_lock(config_dir.path()).unwrap();
+        assert!(first.is_some(), "the first acquisition should get the lock");
+
+        // 別に開いたファイルからの 2 回目の取得（2 つ目の起動と同じ）は取れない。
+        assert!(acquire_instance_lock(config_dir.path()).unwrap().is_none());
+
+        // 持ち手が手放せば取れる。
+        drop(first);
+        assert!(acquire_instance_lock(config_dir.path()).unwrap().is_some());
+    }
+
+    #[test]
+    fn the_instance_lock_can_be_acquired_under_a_config_dir_that_does_not_exist_yet() {
+        let root = tempfile::tempdir().unwrap();
+        let config_dir = root.path().join("dev.aiboss.app");
+
+        assert!(acquire_instance_lock(&config_dir).unwrap().is_some());
+    }
+
+    /// 子プロセスとして起動されたときだけ、`INSTANCE_LOCK_HOLDER_DIR` の錠を取って
+    /// 標準出力に `locked` と書き、殺されるまで持ち続ける（下のテストの持ち手）。
+    #[test]
+    #[ignore = "helper process for the_instance_lock_is_released_when_the_holder_process_dies"]
+    fn instance_lock_holder_process() {
+        let Some(dir) = std::env::var_os("INSTANCE_LOCK_HOLDER_DIR") else {
+            return;
+        };
+        let _lock = acquire_instance_lock(Path::new(&dir))
+            .unwrap()
+            .expect("the holder should get the lock");
+        println!("locked");
+        loop {
+            std::thread::sleep(std::time::Duration::from_secs(60));
+        }
+    }
+
+    #[test]
+    fn the_instance_lock_is_released_when_the_holder_process_dies() {
+        use std::io::{BufRead, BufReader};
+        use std::process::{Command, Stdio};
+
+        let _serial = LOCK_TESTS.lock().unwrap_or_else(|e| e.into_inner());
+        let config_dir = tempfile::tempdir().unwrap();
+        /// テストが途中で失敗しても、持ち手の子プロセスを残さない。
+        struct KillOnDrop(std::process::Child);
+        impl Drop for KillOnDrop {
+            fn drop(&mut self) {
+                let _ = self.0.kill();
+                let _ = self.0.wait();
+            }
+        }
+
+        let mut holder = Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", "tests::instance_lock_holder_process", "--ignored", "--nocapture"])
+            .env("INSTANCE_LOCK_HOLDER_DIR", config_dir.path())
+            .stdout(Stdio::piped())
+            .spawn()
+            .unwrap();
+        let mut stdout = BufReader::new(holder.stdout.take().unwrap());
+        let holder = KillOnDrop(holder);
+        let mut line = String::new();
+        while line.trim() != "locked" {
+            line.clear();
+            if stdout.read_line(&mut line).unwrap() == 0 {
+                panic!("the holder process exited before taking the lock");
+            }
+        }
+
+        let while_held = acquire_instance_lock(config_dir.path()).unwrap().is_none();
+        drop(holder);
+
+        assert!(while_held, "the lock held by another process should not be acquired");
+        assert!(
+            acquire_instance_lock(config_dir.path()).unwrap().is_some(),
+            "the lock should be released when the holder process dies"
+        );
     }
 
     // --- is_allowed_navigation ------------------------------------------------
