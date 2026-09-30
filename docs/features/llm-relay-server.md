@@ -250,13 +250,68 @@
 - **予約の型**: `{ reservationId, accountId, dayKey, monthKey, units, expiresAt }`（これ以外の項目を持たない）。期限を過ぎて精算されない予約は予約額で確定する（回収の実装は S3）。
 - **設定の検証**: `upstreamUrl` が `https` の URL でない（事業者のキーを平文で送らない。S1 の実装で追加）・`upstreamUrl` がユーザー名・パスワードを含む（fetch の `Request` が拒否し、予約の後で失敗するため。PR #638 の Codex の 2 巡目の指摘）・事業者のキーがヘッダの値に使えない文字を含む（要求のたびに予約の後で失敗するため。PR #638 のレビューで追加）・重みが 10^-4 刻みでない・上限値が整数表現で数えられる範囲を超える（原価単位を整数で数えるため。同）・`defaultModel` が許可リストに無い・上限や重みが負・`maxTokensCap`・`maxRequestBytes`・`inputTokensPerByte`・`maxConcurrentRequests`・`reservationTtlMs` が正でない設定、`maxBufferedResponseBytes` を指定して正の整数でない設定（#641）では、`createRelayApp` が例外を投げる。
 
-### アプリ側の接続（S2 の見通し。S2 を実装対象にするときに詳細を書く）
+### アプリ側の接続（S2）
 
-- **Rust の通信層**（#581 の「1 行ずつ足す」）: 宛先 `relay-messages` → 中継の URL（S3 で決まる）、資格情報 `RelayBearer`（`authorization: Bearer <ライセンストークン>`）、保管の `Provider` にライセンストークンの行。`anthropic-version`・`x-api-key` は付けない（中継が付ける）。
-- **TS のバックエンド**: 仮に `relay`。`byok-anthropic` の変換器を宛先の名前を引数に取る形にして使い回す（要求の `model` はプラン込みの既定の値）。能力の宣言は BYOK（Anthropic）と同じ。
-- **エラーの分類**: 429 で `error.type` が `usage_limit_exceeded` の応答は再試行不可にする（プロバイダの 429 と、中継の同時要求数の上限の 429〔`rate_limit_error`〕は従来どおり再試行可）。413（`request_too_large`）は既存の規則どおり再試行不可。
-- **自動で切り替えない**: 中継の失敗（上限到達を含む）で `byok-anthropic`・`byok-openai` の宛先へ送らない（ADR 0001 改訂の帰結・ADR 0003 決定 9・#582 の機能要件）。
-- **課金経路の選択**（プラン込み ⇔ BYOK）は #582 の選択の解決関数（#582 のクリティカル設計決定 5）に「プラン込み」を足す形で入れる。選択の画面は #584 と合わせる。
+> 【草案・回答待ち】S2-Q1〜S2-Q7（「S2 の論点」節）の回答で確定させる。下の記述は各論点の推奨案で書いている。
+
+#### S2 の実測（2026-10-01・`main` b14de9a）
+
+| 対象 | 実測 |
+|---|---|
+| Rust の宛先の表 | `native/secure-transport/src/destination.rs` の `DestinationTable::production()` は `anthropic-messages`・`openai-responses` の 2 行の固定の定数。`Credential` は `AnthropicApiKey`・`OpenAiBearer` の 2 つで、`Credential::provider()` が保管の `Provider`（`key_store.rs:59`。`Anthropic`〔account `anthropic`〕・`OpenAi`〔account `openai`〕）を返す。`native/secure-transport/tests/transport.rs:70` が表の名前を 2 つと固定している |
+| Rust の送信 | `transport.rs` は呼び出し元の `x-api-key`・`authorization`・`anthropic-version` を捨ててから資格情報を付ける。リダイレクトに従わない（`RedirectRefused`）。応答のヘッダは `retry-after`・`request-id`・`content-type` だけ |
+| キーのコマンド | `native/tauri-app/src/secure_commands.rs` の `parse_provider` は `anthropic`・`openai` だけを受け、それ以外は `unknown-provider`。キーの値を返すコマンドは無い |
+| 変換器の宛先 | `server/src/llm/backends/byok-anthropic-backend.ts:152` の `sendAnthropicRequest` が宛先を `ANTHROPIC_MESSAGES_DESTINATION` に固定し、同 `:150` で `assertByokModelAllowed("anthropic", …)` を通す |
+| 2xx 以外の本文 | 同 `:153-158` は 2xx 以外の本文を**読まずに捨て**、`AnthropicMessagesHttpError`（ステータスと `retry-after` だけ）を投げる。したがって現状では `usage_limit_exceeded` と `rate_limit_error` の 429 を見分けられない |
+| エラーの分類 | 同 `classifyByokAnthropicError`（`:478`）は 408・429・5xx を再試行可、他の 4xx を再試行不可、`SecureTransportError` は `connection` だけ再試行可とする。再試行の枠組み（`claude-client.ts:938-944`）は分類が再試行不可なら元の例外をそのまま投げる（呼び出し元まで型が届く） |
+| 選択の解決関数 | `server/src/llm/llm-selection.ts` の `productLlmSelectionResolver` は `byok_provider`（`anthropic`／`openai`）と `byok_model` から `byok-anthropic`／`byok-openai` を返し、未選択なら `LlmSelectionNotConfiguredError`（#582 S2・PR #661） |
+| 製品版の登録 | `web/src/app-entry/product-llm.ts` の `installProductLlm` が BYOK の 2 つのバックエンドと製品版の解決関数を登録する |
+| チャットの失敗の表示 | `server/src/sessions/chat-messages-route.ts` は応答の生成の失敗を SSE の `error` イベント（本文は固定の `GENERIC_STREAM_ERROR_MESSAGE`）で返し、`web/src/chat-api.ts:143-145` はその `error` の文字列をそのまま表示する |
+| 中継の 2xx 以外 | `relay/src/relay-app.ts:325-328` は上流の 2xx 以外（3xx を除く）を、予約を解放してステータスと本文を加工せずに返す。中継自身の 401 は `relay-app.ts:188`（`authentication_error`） |
+| プラン込みの既定の値 | `relay/src/request-validation.ts:30` の `PLAN_DEFAULT_MODEL = "ai-boss-plan-default"`（仮定 A2 の値で確定） |
+
+#### 変更対象（S2）
+
+- **Rust の通信層**（`native/secure-transport/`。#581 の「1 行ずつ足す」）:
+  - 宛先 `relay-messages`（定数 `RELAY_MESSAGES`）・資格情報 `Credential::RelayBearer`（`authorization: Bearer <ライセンストークン>` だけを付け、`x-api-key`・`anthropic-version` は付けない）・保管の `Provider::RelayLicense`（account `relay-license`。仮定 A14）を足す。
+  - 中継の URL は**ビルド時の環境変数**（仮に `AI_BOSS_RELAY_URL`）から `production()` の表に入れる。値が無い・`https://` で始まらない・ユーザー名やパスワードを含むときは、表に `relay-messages` の行を作らない（送信は `unknown-destination` で失敗する）。**実行時に URL を変える手段（設定・WebView からの指定）は作らない**（S2-Q2）。本番の値は S3 で決める。
+- **Tauri のコマンドの層**（`native/tauri-app/`）: コマンドを増やさない。`byok_key_set`・`byok_key_delete`・`byok_key_status` は `relay-license` を含む `anthropic`・`openai` 以外を従来どおり `unknown-provider` で拒否する（ライセンストークンを WebView から書き換え・削除させない）。ライセンストークンを保管へ入れる経路は S4（#584）で作る（S2-Q3）。
+- **TS のバックエンド**（`server/src/llm/backends/`）:
+  - `byok-anthropic` の変換器（要求本文の組み立て・SSE／JSON の解釈）を宛先の名前を引数に取る形にし、新しいバックエンド `relay`（宛先 `relay-messages`）で使い回す。BYOK（Anthropic）の振る舞い（宛先・モデルの関門・エラーの分類）は変えない。
+  - `relay` は `assertByokModelAllowed` を通さず、要求の `model` がプラン込みの既定の値（`PLAN_DEFAULT_MODEL` と同じ値の定数）でなければ送らずに再試行不可の失敗にする（仮定 A16）。能力の宣言は BYOK（Anthropic）と同じ。
+  - `relay` は 2xx 以外の応答の本文を**上限つき**（仮定 A15）で読み、`error.type`（と 429 の `error.limit`）だけを取り出す。本文そのものは失敗の値・ログに含めない。
+- **エラーの分類**（`relay` 専用の分類。S2-Q4）:
+  - 429 で `error.type` が `usage_limit_exceeded` → 再試行不可の「上限到達」の失敗（`limit` は `daily`／`monthly`。それ以外の値は `unknown` として持つ）。
+  - 429 で `error.type` が `rate_limit_error` → 従来どおり再試行可（`retry-after` に従う）。
+  - 429 でそれ以外（本文が読めない・JSON でない・上限を超える・`error.type` が無いか未知）→ **再試行不可**（安全側。上限到達を再試行で叩き続けない）。
+  - それ以外のステータス・転送の失敗は `classifyByokAnthropicError` と同じ規則（401・403・413 は再試行不可、408・5xx は再試行可、`connection` だけ再試行可）。
+- **中継**（`relay/`。C-155・S2-Q1）: 上流が 401・403 を返したときは、上流の本文を返さずに **502 `api_error`**（固定の文言）を返す。予約は従来どおり解放して記録しない。ログのポートへは新しい固定の語彙のイベント（仮に `upstream_auth_failed`）とステータスだけを渡す。これにより、中継の応答の 401 は「中継がアプリのトークンを認証できなかった」ことだけを意味する。
+- **課金経路の選択**（`server/src/llm/llm-selection.ts`。S2-Q5）: 設定に新しいキー（仮に `llm_billing_route`。値は `plan`／`byok`）を足し、製品版の解決関数は 1 つのスナップショットから、`plan` なら `{ backend: "relay", model: <プラン込みの既定の値> }`、`byok` または**キーが無い**なら従来の BYOK の解決（未選択なら `LlmSelectionNotConfiguredError`）を返す。`plan`・`byok` 以外の値は補わず「未選択」の失敗にする。`relay` を選んだときは `byok_provider`・`byok_model` を読まない。
+- **製品版のエントリ**（`web/src/app-entry/product-llm.ts`）: `installProductLlm` が `relay` も同じ Tauri 実装の転送のポートで登録する。
+- **上限到達の案内**（S2-Q6）: チャットの応答の生成が「上限到達」の失敗で終わったときは、SSE の `error` イベントの `error` を、汎用の文言ではなく上限到達の固定の文言（`daily`・`monthly`・不明の 3 種）にする。ダッシュボードのひとこと・通知文面・会議の開始文は従来どおりテンプレートへ退避する（決定 Q3。新しい表示は作らない）。
+- **画面**（S2-Q7）: 課金経路（プラン込み ⇔ BYOK）の選択の欄は S2 では**出さない**（#584 の料金プラン・アカウントと合わせて出す）。S2 では設定のキーを画面から変えられないため、プラン込みの経路はテストだけで通る。
+- **自動で切り替えない**: 中継の失敗（上限到達・401・502・転送の失敗・ライセンストークン未登録を含む）で、`anthropic-messages`・`openai-responses` の宛先へ送らない（ADR 0001 改訂の帰結・ADR 0003 決定 9・#582 の機能要件）。
+
+#### IF / API（S2 で固定する境界・名前は仮）
+
+- Rust: `RELAY_MESSAGES = "relay-messages"`・`Credential::RelayBearer`・`Provider::RelayLicense`（account `relay-license`）・`DestinationTable::production()` はビルド時の中継の URL が妥当なときだけ 3 行目を持つ（URL の妥当性を判定する関数は単体で試せる形にする）。
+- TS: `RELAY_MESSAGES_DESTINATION = "relay-messages"`・`RELAY_BACKEND: LlmBackendName = "relay"`・`registerRelayBackend(transport)`・`classifyRelayError(error, now)`・上限到達の失敗 `RelayUsageLimitError`（項目 `limit: "daily" | "monthly" | "unknown"`。`message` は固定の文言）・`PLAN_DEFAULT_MODEL_ID = "ai-boss-plan-default"`（`relay/` の `PLAN_DEFAULT_MODEL` と同じ値であることをテストで固定する）・設定のキー `LLM_BILLING_ROUTE_SETTING_KEY = "llm_billing_route"`。
+- 中継: 上流の 401・403 → 502 `api_error`。ログのイベントの語彙に 1 つ足す。
+
+#### 悪意ある利用者・誤設定で境界を迂回する経路（S2）
+
+中継の枠（金額・同時要求数・入力量）の判定はすべて中継側にあり、アプリ側を改変してもトークンを持つ利用者は中継を直接呼べるため、**枠の担保はアプリに置かない**（S1 の受入基準が固定済み）。S2 で塞ぐのは、アプリが秘密を別の宛先へ漏らす経路と、中継の失敗で別の課金経路へ流れる経路である。
+
+| 経路 | 塞ぎ方 |
+|---|---|
+| ライセンストークンが中継以外へ送られる（別の宛先の行・リダイレクト・実行時の URL の差し替え） | トークンは `RelayBearer` の行だけが付ける／リダイレクトは従来どおり拒否／URL はビルド時の値だけで、`https` 以外・資格情報入りは表に入れない／WebView から表を変える手段を作らない（受入基準 S2-R） |
+| BYOK のキーが中継へ送られる | `relay-messages` の要求には `x-api-key` を付けない（Anthropic・OpenAI のキーが登録済みでも）（S2-R） |
+| ライセンストークンがログ・失敗の値・WebView へ出る | 値を返すコマンドを作らない／キーのコマンドは `relay-license` を拒否する／失敗の値は種類だけ（S2-R） |
+| 上限到達・中継の失敗で BYOK へ流れる | `relay` の失敗の後、再試行を含めて宛先は `relay-messages` のまま（S2-F） |
+| 上限到達の 429 を再試行で叩き続ける | `usage_limit_exceeded` と、種類の分からない 429 は再試行不可（S2-C） |
+| 中継の 502（送った後の失敗）の再試行で利用者の枠が二重に減る | 従来どおり再試行可のまま（5xx）。予約額で確定した分は利用者の枠を消費するが、事業者の原価の上限は中継の枠が守る。利用者の枠の消費を抑えるための再試行の抑止は「やらないこと」 |
+| 上流の 401／403 で「再ログインが必要」と誤案内される（C-155） | 中継が 502 に変える（S2-U） |
+| 巨大な 2xx 以外の本文を読み続ける | 読む量に上限を置き、超えたら種類不明として扱う（S2-C） |
 
 ### 実装計画（S1 のチケット分解の見通し）
 
@@ -446,6 +501,92 @@
 - [ ] `npm run test:tz` が合格する（`relay/` を含む）
 - [ ] `npm run test:rust` が合格する（変更なし）
 
+## 受入基準（S2）
+
+> 【草案・回答待ち】S2-Q1〜S2-Q7 の推奨案で書いている。テストはすべて模擬の中継（Rust は既存の模擬サーバー、TS は模擬の転送のポート、中継は S1 の模擬の上流のポート）とメモリの保管で行い、実 API・実トークン・実 URL は使わない。固定時刻は使わない（日付の境界に触らない）。
+
+**Rust の通信層（S2-R）**
+
+- [ ] 模擬サーバーを指す `relay-messages` の行（`RelayBearer`）の表で送ると、要求の `authorization` は `Bearer <保管したライセンストークン>` である
+- [ ] 同じ要求に `x-api-key` と `anthropic-version` のヘッダが無い（Anthropic・OpenAI のキーを保管に登録した状態でも）
+- [ ] 呼び出し元が `authorization`・`x-api-key` を渡しても、`relay-messages` の要求の `authorization` は保管したライセンストークンで、`x-api-key` は付かない
+- [ ] `anthropic-messages`・`openai-responses` の行で送った要求のどのヘッダにも、保管したライセンストークンの文字列が現れない
+- [ ] ライセンストークンが保管に無いとき、`relay-messages` への送信は `KeyNotRegistered` で失敗し、模擬サーバーは要求を受けない
+- [ ] `relay-messages` の送信先が 3xx を返すと `RedirectRefused` で失敗し、誘導先の模擬サーバーは要求を受けない
+- [ ] 中継の URL の判定関数は、`https://relay.example/v1/messages` を受け付け、`http://…`・空の文字列・`https://user:pass@relay.example/…`・URL として解釈できない値を拒否する
+- [ ] ビルド時の中継の URL が無いとき、`DestinationTable::production()` の名前は `anthropic-messages`・`openai-responses` の 2 つで、`relay-messages` への送信は `UnknownDestination` で失敗する
+- [ ] `byok_key_set`・`byok_key_delete`・`byok_key_status` に `relay-license` を渡すと `unknown-provider` で失敗し、保管の `relay-license` の項目は変わらない
+- [ ] ライセンストークンの `Debug`・失敗の値（`TransportError`・`CommandError`）の表示にトークンの文字列が現れない
+
+**TS の `relay` バックエンド（S2-B）**
+
+- [ ] `relay` の要求は、転送のポートの宛先の名前が `relay-messages` である
+- [ ] `relay` の要求本文の最上位の項目は、BYOK（Anthropic）と同じ 9 項目の範囲で、`model` はプラン込みの既定の値（`ai-boss-plan-default`）である
+- [ ] TS の `PLAN_DEFAULT_MODEL_ID` は `relay/` の `PLAN_DEFAULT_MODEL` と同じ値である
+- [ ] 同じ `ResolvedLlmRequest` を `relay` と `byok-anthropic` に渡すと、要求本文は `model` を除いて一致する
+- [ ] `relay` の要求本文を S1 の中継（既定のテスト設定）へ通すと、要求の検査で拒否されずに模擬の上流へ転送される（チャットの形・ツールつき・ストリーミングと非ストリーミングの両方）
+- [ ] `relay` は、`model` がプラン込みの既定の値でない要求を転送のポートを呼ばずに再試行不可の失敗にする
+- [ ] `relay` のストリーミングの応答は、BYOK（Anthropic）と同じく差分が逐次 `onTextDelta` に届き、ツールの呼び出しが解釈される
+- [ ] `byok-anthropic` の要求の宛先は `anthropic-messages` のまま、モデルの一覧の関門も従来どおり働く（既存のテストが変更なしで通る）
+
+**エラーの分類（S2-C）**
+
+- [ ] 429 で本文の `error.type` が `usage_limit_exceeded`・`error.limit` が `daily` の応答は、再試行不可の上限到達の失敗（`limit` が `daily`）になり、転送のポートは 1 回だけ呼ばれる
+- [ ] 同じく `error.limit` が `monthly` なら `limit` は `monthly`、それ以外・無いときは `unknown` になる
+- [ ] 429 で `error.type` が `rate_limit_error`・`retry-after: 1` の応答は再試行可で、待ち時間は 1 秒である
+- [ ] 429 で本文が JSON でない・`error.type` が無い・未知の値・読む量の上限を超える応答は、いずれも再試行不可になる
+- [ ] 401・403・413 は再試行不可、408・500・502・529 は再試行可、転送の失敗の `connection` は再試行可・`key-not-registered`・`unknown-destination` は再試行不可である
+- [ ] 失敗の値の `message` と `String(error)` に、応答の本文の文字列（目印）が現れない
+- [ ] 2xx 以外の本文を読み終えた後（または上限で打ち切った後）、本文の反復子の `return` が呼ばれる（転送の中止と未読の断片の解放）
+
+**自動で切り替えない（S2-F）**
+
+- [ ] `relay` の失敗（429 `usage_limit_exceeded`・429 `rate_limit_error` の再試行の尽き・401・502・`connection`・`key-not-registered`）の後、転送のポートが受けたすべての要求の宛先は `relay-messages` で、`anthropic-messages`・`openai-responses` は 1 回も受けない（BYOK の選択とキーが保存済みでも）
+- [ ] 同じ場合に、要求本文の `model` はすべてプラン込みの既定の値である
+
+**課金経路の選択（S2-S）**
+
+- [ ] 製品版の解決関数は、`llm_billing_route` が `plan` なら `{ backend: "relay", model: "ai-boss-plan-default" }` を返す（`byok_provider`・`byok_model` が保存済みでも、未保存でも）
+- [ ] `llm_billing_route` が `byok` または無いときは、#582 S2 の解決（`byok-anthropic`／`byok-openai`、未選択なら `LlmSelectionNotConfiguredError`）と同じ結果を返す
+- [ ] `llm_billing_route` が `plan`・`byok` 以外の値（空の文字列・`PLAN`・`relay`）のときは `LlmSelectionNotConfiguredError` を投げ、どのバックエンドへも送らない
+- [ ] `llm_billing_route` を `plan` にすると、チャット・セッションの要約・会議の開始文・ダッシュボードのひとこと・夕会の要約抽出・通知文面・催促の予約の文面の 7 経路の次の要求が `relay` へ送られる
+- [ ] `installProductLlm` の後、`relay`・`byok-anthropic`・`byok-openai` の 3 つが登録されている
+- [ ] 開発者用の版（解決関数を登録しない）は `llm_billing_route` を読まず、`LLM_BACKEND` 未設定なら `claude-code`、`api` なら `api` へ送る（現行の維持）
+
+**上限到達の案内（S2-G）**
+
+- [ ] `relay` が 1 日の上限到達で失敗したチャットの SSE の `error` イベントの `error` は、1 日の上限到達の固定の文言である（汎用の文言ではない）
+- [ ] 1 か月の上限到達・`limit` 不明のときは、それぞれの固定の文言である
+- [ ] 上限到達以外の失敗のチャットの `error` は、従来どおり汎用の文言である
+- [ ] 上限到達の固定の文言に、応答の本文・トークン・モデル ID が含まれない
+- [ ] `relay` が上限到達で失敗したとき、ダッシュボードのひとこと・通知文面・会議の開始文はテンプレートの文面になる
+
+**中継の上流の 401／403（S2-U・C-155）**
+
+- [ ] 上流が 401 `authentication_error` を返すと、中継の応答は 502 で本文の `error.type` は `api_error`、上流の本文（目印）を含まない
+- [ ] 上流が 403 を返しても同じく 502 `api_error` である
+- [ ] 同じ場合に、利用量を記録せず、未精算の予約は 0 件である
+- [ ] 同じ場合に、ログのポートは新しい固定の語彙のイベントとステータスを受け、目印・事業者のキー・アプリのトークンを受けない
+- [ ] 上流の 400・413・429・529 は従来どおりステータスと本文が変わらずに返る
+- [ ] 中継自身の認証の失敗は従来どおり 401 `authentication_error` である
+
+**品質ゲート**
+
+- [ ] `npm run lint`・`npm run typecheck`・`npm test`・`npm run test:tz`・`npm run test:rust`・`npm run test:tauri` が合格する
+- [ ] `core-entry.bundle.test.ts`（製品版のコアのバンドル検査）が合格する（`relay` のバックエンドも Node の組み込み・SDK を引き込まない）
+
+## S2 の論点（回答待ち）
+
+> 2026-10-01 の仕様策定の委譲で、親（ユーザー役）とオーナーへ上げた問い。回答を得たら「決定」表へ移し、この節を消す。
+
+- S2-Q1（C-155）: 上流の 401／403 をどう扱うか（推奨: 中継で 502 `api_error` に変える）
+- S2-Q2: 中継の URL の渡し方（推奨: ビルド時の環境変数・`https` のみ・実行時に変えない）
+- S2-Q3: ライセンストークンの保管と、S2 で保管へ入れる経路（推奨: Rust の保管に行を足すだけで、入れる経路は S4）
+- S2-Q4: 種類の分からない 429 の再試行（推奨: 再試行不可）
+- S2-Q5: 課金経路の選択の保存と、キーが無いときの既定（推奨: 新しいキー `llm_billing_route`・無ければ BYOK の従来の解決）
+- S2-Q6（オーナー）: 上限到達の案内の文面・体験
+- S2-Q7（オーナー）: 課金経路の選択の画面を S2 で出すか、#584 まで出さないか（推奨: #584 まで出さない）
+
 ## 未決（オーナー判断・後続スライス）
 
 - **O2 プランの上限値・価格帯**: 「推論原価の見積もり」を材料に決める。S1 は `dailyLimit`・`monthlyLimit`・`maxConcurrentRequests`・`maxRequestBytes`・重みを設定で受ける。
@@ -468,3 +609,6 @@
 - A11: 同時要求数の上限の 429 は、Anthropic の既存のエラーの形の `rate_limit_error` と `retry-after: 1` にする（アプリの既存のエラーの分類で再試行可になり、S2 で新しい分類を足さずに済む）。金額の上限（`usage_limit_exceeded`）とは再試行の可否が逆である。
 - A12: 上流のポート（`upstreamFetch`）は、失敗を区分つきの例外（仮に `UpstreamFailure`、項目 `phase: "before-send" | "after-send"`）で投げる。`"before-send"` は要求のバイトを 1 つも送っていないことが確定している失敗（名前解決・接続の確立・TLS の確立の失敗）に限り、それ以外（送信後のタイムアウト・接続のリセット等）は `"after-send"` とする。区分の無い例外（未知の例外）は `"after-send"` として扱う（安全側）。応答ヘッダが届く前のアプリの中止は、中継が自分で「送った後」と判定する（上流へ要求を渡した後の中止のため）。区分の名前・判定の実装（実行基盤の `fetch` の例外から区分を作る方法）は S3 の実行基盤に合わせて実装で決めてよい。S1 の受入基準は模擬の上流のポートが区分つきの例外を投げて固定する。
 - A13: 上流のポートを Web 標準の `fetch` から作る関数（`createFetchUpstream`）は、リダイレクトに従わない（`redirect: "manual"`。PR #638 のレビューで `"error"` から改めた。どの実行基盤でも受け付けられる値にするため）。上流が 3xx（または `opaqueredirect`）を返したときは、`location` を通さずに 502（`api_error`）を返し、要求は処理されていないため予約を解放して記録しない。従うと、`fetch` はオリジンをまたいでも独自のヘッダ（`x-api-key`）を付けたまま転送先へ送るため、事業者のキーが上流の URL 以外へ漏れうる（S1 の実装で追加）。
+- A14（S2・草案）: 保管の行の名前は `Provider::RelayLicense`・account `relay-license`、宛先の名前は `relay-messages`、ビルド時の環境変数は `AI_BOSS_RELAY_URL`、TS のバックエンドの名前は `relay`、設定のキーは `llm_billing_route`（いずれも仮。実装で決めてよい）。
+- A15（S2・草案）: `relay` が 2xx 以外の本文を読む量の上限は 64 KiB（中継自身のエラーの本文は数百バイト、Anthropic のエラーの本文も数 KiB 以内）。超えたら読むのをやめて種類不明として扱う。
+- A16（S2・草案）: `relay` のバックエンドは要求の `model` をプラン込みの既定の値に書き換えず、違えば送らない（解決関数が常に既定の値を返すため、違うのは呼び出し側の誤り。黙って直さない）。
