@@ -2,7 +2,7 @@
  * 通知の予約ポート（機能仕様 docs/features/scheduled-nudges.md 決定 6・
  * 「S2 の設計」）。S2 は型だけを置き、計画し直しの処理（`replan-nudges.ts`）
  * はこの型を通して OS の予約を扱う。製品版の実装（Tauri の通知プラグイン・
- * iOS の時差の手当て）は S3 が作る。
+ * iOS の時差の手当て）は S3 が作る（`web/src/app-entry/product-nudge-scheduler-port.ts`）。
  */
 export interface ScheduledNotificationRequest {
   /**
@@ -27,4 +27,9 @@ export interface NudgeSchedulerPort {
   register(request: ScheduledNotificationRequest): Promise<void>;
   /** 予約を取り消す。失敗は例外で返す */
   cancel(id: number): Promise<void>;
+  /**
+   * OS に保留中の予約の件数（S3「切り詰めの検出」）。任意の操作で、持たない
+   * ポート（S2 の模擬など）では検出を行わない（仮定 A28）。失敗は例外で返す。
+   */
+  countPending?(): Promise<number>;
 }

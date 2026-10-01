@@ -312,7 +312,7 @@ function createMutex(): <T>(fn: () => Promise<T>) => Promise<T> {
 /**
  * 催促の予約を計画し直す処理を作る（機能仕様 docs/features/scheduled-nudges.md
  * 決定 2〜4・「S2 の設計」）。OS の予約は {@link NudgeSchedulerPort} を通して
- * 扱う。S2 ではどこからも呼ばない（器・ポートの実装への接続は S3）。
+ * 扱う。製品版の iOS のエントリが組む（S3。`web/src/app-entry/boot-product-app.ts`）。
  */
 export function createNudgeReplanner(deps: NudgeReplannerDeps): NudgeReplanner {
   const { db, env, port } = deps;
@@ -498,6 +498,7 @@ export function createNudgeReplanner(deps: NudgeReplannerDeps): NudgeReplanner {
     // 倒す。取り消しが成功した次の計画し直しで置かれる）。
     if (pendingRows.length >= OS_RESERVATION_LIMIT) {
       console.error("nudge replan: pending cancellations fill the OS limit; the report prompt was not placed");
+      await checkPendingCount();
       startEnrichment(prepared.slice(0, INDIVIDUAL_GENERATION_TARGETS), bossSettings, llm);
       return prepared;
     }
@@ -520,8 +521,31 @@ export function createNudgeReplanner(deps: NudgeReplannerDeps): NudgeReplanner {
       canceledInOs,
     );
 
+    await checkPendingCount();
     startEnrichment(prepared.slice(0, INDIVIDUAL_GENERATION_TARGETS), bossSettings, llm);
     return prepared;
+  }
+
+  /**
+   * 切り詰めの検出（決定 2 の S3 の分・「S3 の設計」）。登録まで終えた後に、OS
+   * に保留中の予約の件数を控えの行の件数（有効と取り消し待ちの合計）と比べ、
+   * 食い違えば両方の件数をログに出す。控えも確定の対象も変えない（確定は控え
+   * のまま）。ポートが件数を返せない・失敗したときは検出をやめるだけで、計画
+   * し直しの残り（文面の上乗せ）は止めない。
+   */
+  async function checkPendingCount(): Promise<void> {
+    if (!port.countPending) return;
+    try {
+      const osCount = await port.countPending();
+      const reservationCount = (await listReservations(db)).length;
+      if (osCount !== reservationCount) {
+        console.error(
+          `nudge replan: the OS pending count differs from the reservations (os=${osCount}, reservations=${reservationCount})`,
+        );
+      }
+    } catch (err) {
+      console.error("nudge replan: failed to compare the OS pending count:", describeError(err));
+    }
   }
 
   /**
