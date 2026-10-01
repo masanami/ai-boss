@@ -124,7 +124,10 @@ export type BossLlmClient =
   | { backend: "byok-anthropic"; transport: SecureTransportPort }
   // 機能仕様 docs/features/secure-transport-byok.md 仮定 A12 と同じ形:
   // BYOK（OpenAI）も転送のポートだけを持つ。
-  | { backend: "byok-openai"; transport: SecureTransportPort };
+  | { backend: "byok-openai"; transport: SecureTransportPort }
+  // 機能仕様 docs/features/llm-relay-server.md「アプリ側の接続（S2）」: LLM 中継も
+  // 転送のポートだけを持つ（ライセンストークンは Rust の保管にあり TS には渡らない）。
+  | { backend: "relay"; transport: SecureTransportPort };
 
 export interface BossTextBlock {
   type: "text";

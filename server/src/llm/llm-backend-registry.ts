@@ -83,10 +83,10 @@ export interface LlmBackendCapabilities {
  * **意図して分けている**: `LlmBackend` をそのまま広げると
  * `LLM_BACKEND=byok-anthropic` が開発者用の版で通ってしまう
  * （`resolveLlmBackend` は `config.ts` の狭い型のまま変えない）。
- * BYOK（Anthropic。S2）・BYOK（OpenAI。#582 S1）はこちらの広い型の
- * 鍵としてのみレジストリへ登録される。
+ * BYOK（Anthropic。S2）・BYOK（OpenAI。#582 S1）・LLM 中継（`relay`。#583 S2）は
+ * こちらの広い型の鍵としてのみレジストリへ登録される。
  */
-export type LlmBackendName = LlmBackend | "byok-anthropic" | "byok-openai";
+export type LlmBackendName = LlmBackend | "byok-anthropic" | "byok-openai" | "relay";
 
 export interface LlmBackendImplementation {
   /** このバックエンドが宣言する能力。 */

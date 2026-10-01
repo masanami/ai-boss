@@ -15,6 +15,7 @@ import {
   ANTHROPIC_MESSAGES_DESTINATION,
   SecureTransportError,
   discardSecureTransportBody,
+  type SecureTransportDestination,
   type SecureTransportPort,
   type SecureTransportResponse,
 } from "../secure-transport-port.js";
@@ -136,26 +137,49 @@ function buildRequestBody(request: ResolvedLlmRequest, stream: boolean): string 
 // 送信（HTTP のエラーの判定を含む）
 // ---------------------------------------------------------------------------
 
-async function sendAnthropicRequest(
-  transport: SecureTransportPort,
-  request: ResolvedLlmRequest,
-  stream: boolean,
-  signal: AbortSignal,
-): Promise<SecureTransportResponse> {
+/**
+ * 送信の差分（BYOK〔Anthropic〕と中継〔`relay`〕は同じ変換器を使い、これだけが
+ * 違う）。宛先の名前・送信前の検査・2xx 以外の応答の扱い。
+ */
+export interface AnthropicMessagesSendPolicy {
+  destination: SecureTransportDestination;
+  /** 転送のポートを呼ぶ前の検査。通らなければ例外を投げて送らない。 */
+  assertRequestAllowed(request: ResolvedLlmRequest): void;
+  /** 2xx 以外の応答を失敗の値にして投げる（本文の後始末を含む）。 */
+  rejectNon2xx(response: SecureTransportResponse): Promise<never>;
+}
+
+const byokAnthropicSendPolicy: AnthropicMessagesSendPolicy = {
+  destination: ANTHROPIC_MESSAGES_DESTINATION,
   // 機能仕様 docs/features/llm-provider-abstraction.md クリティカル設計決定3
   // （#582 S1）: streamRound/createRound の入口（転送のポートを呼ぶ前）で
   // モデルの一覧の関門を通す。BYOK（Anthropic）への S1 の変更はこの呼び出し
   // と classifyByokAnthropicError の判定の2点のみに限る（機能仕様「影響
   // 範囲」）。
-  assertByokModelAllowed("anthropic", request.model);
-  const body = buildRequestBody(request, stream);
-  const response = await transport({ destination: ANTHROPIC_MESSAGES_DESTINATION, body }, signal);
-  if (response.status < 200 || response.status >= 300) {
+  assertRequestAllowed(request) {
+    assertByokModelAllowed("anthropic", request.model);
+  },
+  async rejectNon2xx(response) {
     // 2xx でない応答は text/tool_use として解釈しない（本文は読まない・
     // onTextDelta も呼ばない）——機能仕様「HTTP のエラー」。読まない本文は
     // 捨てて、転送（Rust の中継）を止め未読の断片を解放させる（PR #653 の指摘）。
     await discardSecureTransportBody(response.body);
     throw new AnthropicMessagesHttpError(response.status, response.headers["retry-after"]);
+  },
+};
+
+async function sendAnthropicRequest(
+  policy: AnthropicMessagesSendPolicy,
+  transport: SecureTransportPort,
+  request: ResolvedLlmRequest,
+  stream: boolean,
+  signal: AbortSignal,
+): Promise<SecureTransportResponse> {
+  policy.assertRequestAllowed(request);
+  const body = buildRequestBody(request, stream);
+  const response = await transport({ destination: policy.destination, body }, signal);
+  if (response.status < 200 || response.status >= 300) {
+    return policy.rejectNon2xx(response);
   }
   return response;
 }
@@ -435,22 +459,26 @@ function parseNonStreamingResponse(text: string): BossLlmMessage {
 // バックエンドの実装本体
 // ---------------------------------------------------------------------------
 
-async function streamAnthropicMessage(
+/** 変換器の入口（ストリーミング）。中継のバックエンドも宛先と 2xx 以外の扱いを `policy` で変えて使う。 */
+export async function streamAnthropicMessage(
+  policy: AnthropicMessagesSendPolicy,
   transport: SecureTransportPort,
   request: ResolvedLlmRequest,
   onTextDelta: OnTextDelta | undefined,
   signal: AbortSignal,
 ): Promise<BossLlmMessage> {
-  const response = await sendAnthropicRequest(transport, request, true, signal);
+  const response = await sendAnthropicRequest(policy, transport, request, true, signal);
   return parseStreamingResponse(response.body, onTextDelta);
 }
 
-async function createAnthropicMessage(
+/** 変換器の入口（非ストリーミング）。 */
+export async function createAnthropicMessage(
+  policy: AnthropicMessagesSendPolicy,
   transport: SecureTransportPort,
   request: ResolvedLlmRequest,
   signal: AbortSignal,
 ): Promise<BossLlmMessage> {
-  const response = await sendAnthropicRequest(transport, request, false, signal);
+  const response = await sendAnthropicRequest(policy, transport, request, false, signal);
   const text = await readAllText(response.body);
   return parseNonStreamingResponse(text);
 }
@@ -527,13 +555,13 @@ export function registerByokAnthropicBackend(transport: SecureTransportPort): vo
       if (!isByokAnthropicClient(client)) {
         throw new Error("byok-anthropic backend implementation received a non-byok-anthropic client");
       }
-      return streamAnthropicMessage(client.transport, request, hooks.onTextDelta, signal);
+      return streamAnthropicMessage(byokAnthropicSendPolicy, client.transport, request, hooks.onTextDelta, signal);
     },
     createRound(client, request, signal) {
       if (!isByokAnthropicClient(client)) {
         throw new Error("byok-anthropic backend implementation received a non-byok-anthropic client");
       }
-      return createAnthropicMessage(client.transport, request, signal);
+      return createAnthropicMessage(byokAnthropicSendPolicy, client.transport, request, signal);
     },
     classifyError: (error: unknown) => classifyByokAnthropicError(error),
   };

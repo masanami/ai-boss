@@ -57,9 +57,37 @@ async function streamWith(selection: Map<string, string>): Promise<void> {
 describe("installProductLlm", () => {
   // S3-E1〜S3-E3 の置き換え（#582 S2・S2-X1）: 登録は byok-anthropic だけ・未選択でも
   // byok-anthropic へ送る、から、両方を登録し保存した選択で送信先を決める、へ。
-  it("S2-E1: 準備の後、登録済みの LLM バックエンドは byok-anthropic と byok-openai の 2 つだけである", () => {
+  it("S2-E1（#583 S2 で relay を加えた）: 準備の後、登録済みの LLM バックエンドは byok-anthropic・byok-openai・relay の 3 つだけである", () => {
     installProductLlm(fakeTransport().transport);
-    expect([...registeredCoreLlmBackendNames()].sort()).toEqual(["byok-anthropic", "byok-openai"]);
+    expect([...registeredCoreLlmBackendNames()].sort()).toEqual(["byok-anthropic", "byok-openai", "relay"]);
+  });
+
+  it("課金経路 plan を保存したスナップショットで解決したクライアントの streamBossMessage は secure_send を宛先 relay-messages・要求本文の model ai-boss-plan-default で呼ぶ（BYOK の選択が保存済みでも）", async () => {
+    const { transport, calls } = fakeTransport();
+    installProductLlm(transport);
+    const selection = selectionOf("openai", "gpt-6-sol");
+    selection.set("llm_billing_route", "plan");
+
+    await expect(streamWith(selection)).rejects.toThrow();
+
+    const sends = calls.filter((call) => call.command === "secure_send");
+    expect(sends.length).toBeGreaterThan(0);
+    expect(sends.map((send) => send.args.destination)).toEqual(sends.map(() => "relay-messages"));
+    expect(JSON.parse(String(sends[0]!.args.body)).model).toBe("ai-boss-plan-default");
+  });
+
+  it("課金経路 byok（またはキー無し）の選択では、relay-messages へは送られない", async () => {
+    const { transport, calls } = fakeTransport();
+    installProductLlm(transport);
+    const byok = selectionOf("anthropic", "claude-haiku-4-5");
+    byok.set("llm_billing_route", "byok");
+
+    await expect(streamWith(byok)).rejects.toThrow();
+    await expect(streamWith(selectionOf("anthropic", "claude-haiku-4-5"))).rejects.toThrow();
+
+    const destinations = calls.filter((call) => call.command === "secure_send").map((call) => call.args.destination);
+    expect(destinations.length).toBeGreaterThan(0);
+    expect(destinations).not.toContain("relay-messages");
   });
 
   it("S2-E2: 準備の後、選択 openai・gpt-6-sol で解決したクライアントの streamBossMessage は secure_send を宛先 openai-responses・要求本文の model gpt-6-sol で呼ぶ", async () => {
@@ -146,6 +174,66 @@ describe("installProductLlm", () => {
 
     expect(calls.filter((call) => call.command === "secure_cancel").map((call) => call.args)).toEqual([
       { requestId: "req-401" },
+    ]);
+  });
+
+  // 中継の失敗は 2xx 以外の本文を読むため、器の Tauri 実装の上でも本文の `end` で読み終えて、
+  // 上限到達は再試行されず（secure_send は 1 回）、BYOK の宛先へも送られない。
+  it("relay が 429 usage_limit_exceeded（本文は Channel で届く）を返すと、RelayUsageLimitError で失敗し、secure_send は relay-messages へ 1 回だけ呼ばれる", async () => {
+    const calls: Array<{ command: string; args: Record<string, unknown> }> = [];
+    const transport = createTauriSecureTransport({
+      invoke: async (command, args) => {
+        calls.push({ command, args });
+        if (command === "secure_send") {
+          const channel = args.onEvent as SecureEventChannel;
+          const body = JSON.stringify({ type: "error", error: { type: "usage_limit_exceeded", limit: "monthly" } });
+          queueMicrotask(() => {
+            channel.onmessage({ event: "chunk", data: [...new TextEncoder().encode(body)] });
+            channel.onmessage({ event: "end" });
+          });
+          return { status: 429, headers: {} };
+        }
+        return true;
+      },
+      createChannel: (): SecureEventChannel => ({ onmessage: () => undefined }),
+      newRequestId: () => "req-limit",
+    });
+    installProductLlm(transport);
+    const selection = selectionOf("anthropic", "claude-sonnet-5");
+    selection.set("llm_billing_route", "plan");
+
+    await expect(streamWith(selection)).rejects.toMatchObject({ name: "RelayUsageLimitError", limit: "monthly" });
+
+    const sends = calls.filter((call) => call.command === "secure_send");
+    expect(sends.map((send) => send.args.destination)).toEqual(["relay-messages"]);
+    // 本文を最後まで読んだので、Rust の送信を止める必要は無い。
+    expect(calls.filter((call) => call.command === "secure_cancel")).toEqual([]);
+  });
+
+  it("relay の 2xx 以外の本文が上限（64 KiB）を超えるときは、読むのを打ち切って secure_cancel を呼ぶ", async () => {
+    const calls: Array<{ command: string; args: Record<string, unknown> }> = [];
+    const transport = createTauriSecureTransport({
+      invoke: async (command, args) => {
+        calls.push({ command, args });
+        if (command === "secure_send") {
+          const channel = args.onEvent as SecureEventChannel;
+          queueMicrotask(() => {
+            channel.onmessage({ event: "chunk", data: new Array<number>(65_537).fill(0x61) });
+          });
+          return { status: 401, headers: {} };
+        }
+        return true;
+      },
+      createChannel: (): SecureEventChannel => ({ onmessage: () => undefined }),
+      newRequestId: () => "req-big",
+    });
+    installProductLlm(transport);
+    const selection = new Map([["llm_billing_route", "plan"]]);
+
+    await expect(streamWith(selection)).rejects.toThrow();
+
+    expect(calls.filter((call) => call.command === "secure_cancel").map((call) => call.args)).toEqual([
+      { requestId: "req-big" },
     ]);
   });
 });
