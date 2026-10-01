@@ -18,7 +18,10 @@ use std::time::Duration;
 
 use app_lib::secure_commands::{CommandError, StreamEvent};
 use app_lib::{SecureState, APP_COMMANDS};
-use secure_transport::{Destination, DestinationTable, MemoryKeyStore, SendRequest, ANTHROPIC_MESSAGES, OPENAI_RESPONSES};
+use secure_transport::{
+    Destination, DestinationTable, KeyStore, MemoryKeyStore, Provider, SendRequest, ANTHROPIC_MESSAGES,
+    OPENAI_RESPONSES, RELAY_MESSAGES,
+};
 use serde_json::{json, Value};
 use support::{Gate, MockResponse, MockServer};
 use tauri::ipc::{CallbackFn, InvokeBody};
@@ -606,5 +609,76 @@ fn commands_that_would_return_the_key_do_not_exist() {
         let result = invoke(&window, cmd, json!({ "provider": "anthropic" }));
         assert!(result.is_err(), "{cmd} should fail: {result:?}");
         assert!(!format!("{result:?}").contains(KEY));
+    }
+}
+
+// --- relay-license はキーのコマンドで触れない（機能仕様 docs/features/llm-relay-server.md
+// 受入基準（S2）S2-R。決定 S2-Q3）--------------------------------------------------
+
+const LICENSE: &str = "relay-license-test-S2-SECRET";
+
+/// ライセンストークンを保管へ直接登録した状態（登録の経路は #584。ここは保管を直接書く）。
+fn relay_state(relay: &MockServer) -> (SecureState, Arc<MemoryKeyStore>) {
+    let store = Arc::new(MemoryKeyStore::new());
+    store.set(Provider::RelayLicense, secrecy::SecretString::from(LICENSE)).unwrap();
+    let table = DestinationTable::from_entries([(RELAY_MESSAGES, Destination::relay_messages(relay.url("/v1/messages")))]);
+    (SecureState::new(table, store.clone()).unwrap(), store)
+}
+
+#[tokio::test]
+async fn s2_r_key_commands_refuse_relay_license_and_leave_the_stored_token_unchanged() {
+    let relay = MockServer::start(MockResponse::new(200).chunk(b"ok")).await;
+    let (state, store) = relay_state(&relay);
+
+    assert_eq!(state.key_set("relay-license", "attacker-token".to_owned()), Err(error_of("unknown-provider")));
+    assert_eq!(state.key_delete("relay-license"), Err(error_of("unknown-provider")));
+    assert_eq!(state.key_status("relay-license"), Err(error_of("unknown-provider")));
+
+    // 保管の項目は残り、値も変わっていない（中継へ送ると保管したトークンが付く）。
+    assert!(store.contains(Provider::RelayLicense).unwrap());
+    let (s, rx) = sink();
+    state.send(request("r", RELAY_MESSAGES), s).await.unwrap();
+    collect(rx).await;
+    let requests = relay.requests();
+    assert_eq!(requests.len(), 1);
+    assert_eq!(requests[0].header_values("authorization"), vec![format!("Bearer {LICENSE}").as_str()]);
+}
+
+#[tokio::test]
+async fn s2_r_license_never_appears_in_command_results_errors_channel_events_or_debug() {
+    let relay = MockServer::start(MockResponse::new(200).chunk(b"hello")).await;
+    let (state, _store) = relay_state(&relay);
+    let mut texts: Vec<String> = Vec::new();
+
+    let r = state.key_set("relay-license", "attacker-token".to_owned());
+    texts.push(format!("{r:?}{}", serde_json::to_string(&r).unwrap()));
+    let r = state.key_delete("relay-license");
+    texts.push(format!("{r:?}{}", serde_json::to_string(&r).unwrap()));
+    let r = state.key_status("relay-license");
+    texts.push(format!("{r:?}{}", serde_json::to_string(&r).unwrap()));
+
+    let (s, rx) = sink();
+    let r = state.send(request("ok", RELAY_MESSAGES), s).await;
+    texts.push(format!("{r:?}{}", serde_json::to_string(&r).unwrap()));
+    for event in collect(rx).await {
+        texts.push(format!("{event:?}{}", serde_json::to_string(&event).unwrap()));
+    }
+
+    // 保管に無い・宛先に無いときの失敗の値。
+    let empty = SecureState::new(
+        DestinationTable::from_entries([(RELAY_MESSAGES, Destination::relay_messages(relay.url("/v1/messages")))]),
+        Arc::new(MemoryKeyStore::new()),
+    )
+    .unwrap();
+    let (s, _rx) = sink();
+    let r = empty.send(request("none", RELAY_MESSAGES), s).await;
+    assert_eq!(r.as_ref().unwrap_err(), &error_of("key-not-registered"));
+    texts.push(format!("{r:?}{}", serde_json::to_string(&r).unwrap()));
+    let (s, _rx) = sink();
+    let r = state.send(request("nowhere", "nowhere"), s).await;
+    texts.push(format!("{r:?}{}", serde_json::to_string(&r).unwrap()));
+
+    for text in texts {
+        assert!(!text.contains(LICENSE), "{text}");
     }
 }

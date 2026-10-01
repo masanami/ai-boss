@@ -321,6 +321,17 @@ async function handleMessages(
       return relayErrorResponse(502, "api_error");
     }
 
+    if (status === 401 || status === 403) {
+      // 上流の認証の拒否（事業者のキーの問題）は、上流の本文を返さずに 502 にする。そのまま
+      // 返すと、アプリが中継自身の 401（アプリのトークンが不正）と見分けられず、利用者へ
+      // 「再ログインが必要」と誤って案内する（C-155・#642）。上流が処理していないため課金されず、
+      // 予約は解放する（アプリの再試行で利用者の枠は減らない）。ログへはステータスだけを渡す。
+      upstream.body?.cancel().catch(() => undefined);
+      safeLog(logger, { event: "upstream_auth_rejected", status });
+      await settle(502, { type: "release" });
+      return relayErrorResponse(502, "api_error");
+    }
+
     const headers = passedResponseHeaders(upstream.headers);
     if (status < 200 || status >= 300) {
       // 上流が応答を返した 2xx 以外は確定的に課金されない。本文は加工せずに返す。

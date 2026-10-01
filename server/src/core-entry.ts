@@ -58,6 +58,13 @@ export {
 } from "./llm/backends/byok-openai-backend.js";
 
 /**
+ * LLM 中継（`relay`。#583 S2・機能仕様 docs/features/llm-relay-server.md「アプリ側の
+ * 接続（S2）」）の登録関数も同じ理由で**呼ばずに re-export する**。製品版の web の
+ * エントリが `installProductLlm` で転送のポートを渡して呼ぶ。
+ */
+export { registerRelayBackend } from "./llm/backends/relay-backend.js";
+
+/**
  * `SecureTransportError`（と失敗の種類の型）も re-export する（self-review:
  * design-reviewer, PLAUSIBLE）。エラーの分類（`classifyByokAnthropicError`）
  * は `instanceof SecureTransportError` というクラスの同一性に依存する。S3

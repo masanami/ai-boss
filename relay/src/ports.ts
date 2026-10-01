@@ -54,7 +54,14 @@ export function createFetchUpstream(fetchImpl: typeof fetch): UpstreamFetch {
  * キーを入れる項目は無い。
  */
 export interface RelayLogRecord {
-  event: "rejected" | "completed" | "settle_failed" | "internal_error" | "response_buffer_exceeded";
+  event:
+    | "rejected"
+    | "completed"
+    | "settle_failed"
+    | "internal_error"
+    | "response_buffer_exceeded"
+    /** 上流が 401・403 を返した（事業者のキーの問題。`status` は上流のステータス）。 */
+    | "upstream_auth_rejected";
   accountId?: string;
   status?: number;
   model?: string;

@@ -22,6 +22,11 @@ export type SecureTransportDestination = string;
 
 export const ANTHROPIC_MESSAGES_DESTINATION: SecureTransportDestination = "anthropic-messages";
 
+/** ai-boss の LLM 中継の宛先の名前（Rust の宛先の表の `relay-messages`。機能仕様
+ * docs/features/llm-relay-server.md「アプリ側の接続（S2）」）。URL とライセンストークンの
+ * 付与は Rust 側が持ち、TS はこの名前だけを渡す。 */
+export const RELAY_MESSAGES_DESTINATION: SecureTransportDestination = "relay-messages";
+
 /** ポートへ渡す送信の要求（`requestId` の発行・秘密のヘッダの付与は Rust /
  * S3 実装の責務。呼び出し元〔TS のクライアント〕は秘密でないヘッダ
  * （例: `anthropic-beta`）だけを渡せる）。 */

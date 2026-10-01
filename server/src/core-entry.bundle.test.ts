@@ -522,6 +522,43 @@ describe("core-entry bundle — S1（#582。BYOK〔OpenAI〕の登録関数を�
   });
 });
 
+describe("core-entry bundle — #583 S2（LLM 中継の登録関数を呼ばずに re-export する。機能仕様 docs/features/llm-relay-server.md）", () => {
+  it("bundles the relay backend and the usage limit modules (reachable from core-entry.ts)", () => {
+    const inputs = metafileInputPaths(buildResult!.metafile!);
+    expect(includesAnyInput(inputs, "llm/backends/relay-backend.ts")).toBe(true);
+    expect(includesAnyInput(inputs, "llm/relay-usage-limit.ts")).toBe(true);
+  });
+
+  it("exports registerRelayBackend as a function", () => {
+    const context = createSandboxContext();
+    vm.runInContext(bundleCode, context);
+    const exported = (context as Record<string, unknown>).AiBossCore as Record<string, unknown>;
+    expect(typeof exported.registerRelayBackend).toBe("function");
+  });
+
+  it("merely loading the bundle does not register relay — registeredCoreLlmBackendNames() stays empty", () => {
+    const context = createSandboxContext();
+    vm.runInContext(bundleCode, context);
+    const exported = (context as Record<string, unknown>).AiBossCore as CoreExports;
+    expect(exported.registeredCoreLlmBackendNames()).toEqual([]);
+  });
+
+  it("the bundled product resolver returns relay and the plan default model for llm_billing_route=plan", () => {
+    const context = createSandboxContext();
+    vm.runInContext(bundleCode, context);
+    const exported = (context as Record<string, unknown>).AiBossCore as {
+      productLlmSelectionResolver: (
+        env: Record<string, string | undefined>,
+        settings: ReadonlyMap<string, string>,
+      ) => { backend: string; model: string };
+    };
+    expect(exported.productLlmSelectionResolver({}, new Map([["llm_billing_route", "plan"]]))).toEqual({
+      backend: "relay",
+      model: "ai-boss-plan-default",
+    });
+  });
+});
+
 describe("core-entry bundle — #579 S3（毎分の検知 createTicker を呼ばずに re-export する。機能仕様 docs/features/tauri-in-app-runtime.md AC-S3-39・AC-S3-40）", () => {
   it("AC-S3-39: exports createTicker as a function", () => {
     const context = createSandboxContext();

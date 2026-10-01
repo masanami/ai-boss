@@ -39,6 +39,7 @@ import type { Message } from "./message.js";
 import type { SessionType } from "./session.js";
 import { deferStateChangeNotice } from "../state-change-notice.js";
 import type { LlmBackendName } from "../llm/llm-backend-registry.js";
+import { RelayUsageLimitError, describeUsageLimitReached } from "../llm/relay-usage-limit.js";
 
 /** Sanitized message surfaced to the client; never includes raw error details
  * (which may contain request internals) per the critical API-key/error
@@ -710,9 +711,18 @@ export function registerChatMessageRoute(
           // (The write would be swallowed anyway — the socket is already
           // gone — but sending one would misrepresent what happened to any
           // client that did still read it.)
+          //
+          // 中継の上限到達（日・月）だけは、利用者が次にどうすればよいか分かる
+          // 固定の文言（上限が戻る時刻つき）にする（機能仕様
+          // docs/features/llm-relay-server.md 決定 S2-Q6）。再試行の枠組みは再試行
+          // 不可の失敗を元の型のまま投げるため `instanceof` で判定できる。
+          const errorMessage =
+            err instanceof RelayUsageLimitError
+              ? describeUsageLimitReached(err.limit, new Date())
+              : GENERIC_STREAM_ERROR_MESSAGE;
           await stream.writeSSE({
             event: "error",
-            data: JSON.stringify({ error: GENERIC_STREAM_ERROR_MESSAGE }),
+            data: JSON.stringify({ error: errorMessage }),
           });
         }
       } finally {

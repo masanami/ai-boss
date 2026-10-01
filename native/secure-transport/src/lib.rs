@@ -12,8 +12,8 @@ mod keychain;
 mod transport;
 
 pub use destination::{
-    Credential, Destination, DestinationTable, ANTHROPIC_MESSAGES, ANTHROPIC_MESSAGES_URL, ANTHROPIC_VERSION,
-    OPENAI_RESPONSES, OPENAI_RESPONSES_URL,
+    is_valid_relay_url, Credential, Destination, DestinationTable, ANTHROPIC_MESSAGES, ANTHROPIC_MESSAGES_URL,
+    ANTHROPIC_VERSION, OPENAI_RESPONSES, OPENAI_RESPONSES_URL, RELAY_MESSAGES,
 };
 pub use key_store::{KeyStore, MemoryKeyStore, Provider, StoreError};
 #[cfg(target_vendor = "apple")]

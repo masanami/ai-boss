@@ -1,8 +1,8 @@
 //! 資格情報を付与するストリーミング転送（中止つき）。
 //!
 //! - 宛先は名前で指定し、[`DestinationTable`] に無い名前は送らない
-//! - `x-api-key` と `anthropic-version` はこの層が付与し、呼び出し元が渡した同名のヘッダと
-//!   `authorization` は捨てる
+//! - 資格情報（`x-api-key`＋`anthropic-version`、または `authorization: Bearer`）は宛先の行が
+//!   決めてこの層が付与し、呼び出し元が渡した同名のヘッダと `authorization` は捨てる
 //! - リダイレクトに追従しない（3xx は「リダイレクト拒否」の失敗にする）
 //! - 応答の本文はバイト列の断片のまま順に中継する（SSE の区切りは解釈しない）
 
@@ -176,7 +176,7 @@ impl SecureTransport {
                 headers.insert(HeaderName::from_static("x-api-key"), api_key);
                 headers.insert(HeaderName::from_static("anthropic-version"), HeaderValue::from_static(ANTHROPIC_VERSION));
             }
-            Credential::OpenAiBearer => {
+            Credential::OpenAiBearer | Credential::RelayBearer => {
                 let key = self
                     .store
                     .load(credential.provider(), Seal::new())

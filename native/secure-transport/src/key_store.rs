@@ -59,6 +59,9 @@ use secrecy::SecretString;
 pub enum Provider {
     Anthropic,
     OpenAi,
+    /// ai-boss の LLM 中継のライセンストークン（中継の宛先 `relay-messages` だけが使う。
+    /// WebView のキーのコマンドは扱わず、保管へ入れる経路は #584）。
+    RelayLicense,
 }
 
 impl Provider {
@@ -67,6 +70,7 @@ impl Provider {
         match self {
             Provider::Anthropic => "anthropic",
             Provider::OpenAi => "openai",
+            Provider::RelayLicense => "relay-license",
         }
     }
 }

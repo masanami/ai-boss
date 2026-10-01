@@ -8,8 +8,8 @@ use std::time::Duration;
 
 use secrecy::SecretString;
 use secure_transport::{
-    Destination, DestinationTable, KeyStore, MemoryKeyStore, Provider, ResponseStream, SecureTransport, SendRequest,
-    TransportError, ANTHROPIC_MESSAGES, OPENAI_RESPONSES,
+    is_valid_relay_url, Credential, Destination, DestinationTable, KeyStore, MemoryKeyStore, Provider, ResponseStream,
+    SecureTransport, SendRequest, TransportError, ANTHROPIC_MESSAGES, OPENAI_RESPONSES, RELAY_MESSAGES,
 };
 use support::{Gate, MockResponse, MockServer};
 
@@ -64,21 +64,23 @@ fn assert_no_secret(text: &str, secret: &str) {
 
 // ---- 製品版の宛先の表（機能仕様 docs/features/llm-provider-abstraction.md 受入基準（S1）「Rust の通信層」）----
 
+/// 製品版の表の検査は、ビルド時の中継の URL（`AI_BOSS_RELAY_URL`）に依存しない内側の関数で行う
+/// （機能仕様 docs/features/llm-relay-server.md 仮定 A19）。
 #[test]
-fn production_table_has_exactly_anthropic_messages_and_openai_responses() {
-    let table = DestinationTable::production();
+fn production_table_without_a_relay_url_has_exactly_anthropic_messages_and_openai_responses() {
+    let table = DestinationTable::production_with(None);
     assert_eq!(table.names().collect::<Vec<_>>(), vec!["anthropic-messages", "openai-responses"]);
 }
 
 #[test]
 fn production_anthropic_messages_points_to_the_messages_api() {
-    let table = DestinationTable::production();
+    let table = DestinationTable::production_with(None);
     assert_eq!(table.get("anthropic-messages").unwrap().url(), "https://api.anthropic.com/v1/messages");
 }
 
 #[test]
 fn production_openai_responses_points_to_the_responses_api() {
-    let table = DestinationTable::production();
+    let table = DestinationTable::production_with(None);
     assert_eq!(table.get("openai-responses").unwrap().url(), "https://api.openai.com/v1/responses");
 }
 
@@ -561,4 +563,225 @@ async fn openai_error_values_do_not_contain_the_registered_key() {
 fn send_request_debug_does_not_contain_the_body() {
     assert_no_secret(&format!("{:?}", request(&[("x-api-key", "caller-secret")])), "BODY-MARKER");
     assert_no_secret(&format!("{:?}", request(&[("x-api-key", "caller-secret")])), "caller-secret");
+}
+
+// ---- 中継（relay-messages）の宛先・RelayBearer の資格情報（機能仕様 docs/features/llm-relay-server.md 受入基準（S2）S2-R）----
+
+const LICENSE: &str = "relay-license-dummy-token-0123456789";
+const RELAY_URL: &str = "https://relay.example/v1/messages";
+
+/// 3 つの宛先がそれぞれ別の模擬サーバーを指す表（保管は引数で渡した値だけを登録する）。
+struct TriTransport {
+    transport: SecureTransport,
+    anthropic: MockServer,
+    openai: MockServer,
+    relay: MockServer,
+}
+
+async fn tri_transport(anthropic_key: Option<&str>, openai_key: Option<&str>, license: Option<&str>) -> TriTransport {
+    tri_transport_with_relay(MockResponse::new(200).chunk(b"ok"), anthropic_key, openai_key, license).await
+}
+
+async fn tri_transport_with_relay(
+    relay_response: MockResponse,
+    anthropic_key: Option<&str>,
+    openai_key: Option<&str>,
+    license: Option<&str>,
+) -> TriTransport {
+    let anthropic = MockServer::start(MockResponse::new(200).chunk(b"ok")).await;
+    let openai = MockServer::start(MockResponse::new(200).chunk(b"ok")).await;
+    let relay = MockServer::start(relay_response).await;
+    let store = MemoryKeyStore::new();
+    for (provider, key) in
+        [(Provider::Anthropic, anthropic_key), (Provider::OpenAi, openai_key), (Provider::RelayLicense, license)]
+    {
+        if let Some(key) = key {
+            store.set(provider, SecretString::from(key)).unwrap();
+        }
+    }
+    let table = DestinationTable::from_entries([
+        (ANTHROPIC_MESSAGES, Destination::anthropic_messages(anthropic.url("/v1/messages"))),
+        (OPENAI_RESPONSES, Destination::openai_responses(openai.url("/v1/responses"))),
+        (RELAY_MESSAGES, Destination::relay_messages(relay.url("/v1/messages"))),
+    ]);
+    let transport = SecureTransport::new(table, Arc::new(store)).unwrap();
+    TriTransport { transport, anthropic, openai, relay }
+}
+
+fn relay_request(headers: &[(&str, &str)]) -> SendRequest {
+    SendRequest {
+        request_id: "req-relay-1".to_owned(),
+        destination: RELAY_MESSAGES.to_owned(),
+        headers: headers.iter().map(|(name, value)| ((*name).to_owned(), (*value).to_owned())).collect(),
+        body: BODY.to_owned(),
+    }
+}
+
+async fn send_to_relay(tri: &TriTransport, headers: &[(&str, &str)]) -> support::ReceivedRequest {
+    let mut stream = within(tri.transport.send(relay_request(headers))).await.expect("send");
+    within(read_all(&mut stream)).await.expect("body");
+    let requests = tri.relay.requests();
+    assert_eq!(requests.len(), 1);
+    requests.into_iter().next().unwrap()
+}
+
+#[test]
+fn relay_messages_destination_name_is_relay_messages() {
+    assert_eq!(RELAY_MESSAGES, "relay-messages");
+    assert_eq!(Destination::relay_messages(RELAY_URL).credential(), Credential::RelayBearer);
+    assert_eq!(Provider::RelayLicense.account(), "relay-license");
+}
+
+#[tokio::test]
+async fn relay_messages_attaches_the_stored_license_as_bearer_authorization() {
+    let tri = tri_transport(None, None, Some(LICENSE)).await;
+    let received = send_to_relay(&tri, &[]).await;
+    assert_eq!(received.header_values("authorization"), vec![format!("Bearer {LICENSE}")]);
+    assert_eq!(received.body, BODY.as_bytes());
+}
+
+#[tokio::test]
+async fn relay_messages_request_has_no_x_api_key_or_anthropic_version_even_with_provider_keys_registered() {
+    let tri = tri_transport(Some(KEY), Some(OPENAI_KEY), Some(LICENSE)).await;
+    let received = send_to_relay(&tri, &[]).await;
+    assert!(received.header_values("x-api-key").is_empty());
+    assert!(received.header_values("anthropic-version").is_empty());
+    // Anthropic・OpenAI のキーは中継へ送らない。
+    for (name, value) in &received.headers {
+        assert!(!value.contains(KEY) && !value.contains(OPENAI_KEY), "{name}");
+    }
+}
+
+#[tokio::test]
+async fn relay_messages_drops_caller_authorization_and_x_api_key() {
+    let tri = tri_transport(Some(KEY), None, Some(LICENSE)).await;
+    let received = send_to_relay(
+        &tri,
+        &[("authorization", "Bearer caller-supplied-token"), ("X-Api-Key", "caller-supplied-api-key")],
+    )
+    .await;
+    assert_eq!(received.header_values("authorization"), vec![format!("Bearer {LICENSE}")]);
+    assert!(received.header_values("x-api-key").is_empty());
+    assert!(received.headers.iter().all(|(_, value)| {
+        !value.contains("caller-supplied-token") && !value.contains("caller-supplied-api-key")
+    }));
+}
+
+#[tokio::test]
+async fn anthropic_and_openai_requests_never_carry_the_license() {
+    let tri = tri_transport(Some(KEY), Some(OPENAI_KEY), Some(LICENSE)).await;
+    let mut anthropic_stream = within(tri.transport.send(request(&[]))).await.expect("anthropic send");
+    within(read_all(&mut anthropic_stream)).await.expect("body");
+    let mut openai_stream = within(tri.transport.send(openai_request(&[]))).await.expect("openai send");
+    within(read_all(&mut openai_stream)).await.expect("body");
+    for server in [&tri.anthropic, &tri.openai] {
+        let requests = server.requests();
+        assert_eq!(requests.len(), 1);
+        for (name, value) in &requests[0].headers {
+            assert_no_secret(value, LICENSE);
+            assert_no_secret(name, LICENSE);
+        }
+    }
+    assert!(tri.relay.requests().is_empty());
+}
+
+#[tokio::test]
+async fn relay_messages_without_a_stored_license_fails_without_sending() {
+    // Anthropic・OpenAI のキーが登録済みでも、ライセンスの代わりには使わない。
+    let tri = tri_transport(Some(KEY), Some(OPENAI_KEY), None).await;
+    let error = within(tri.transport.send(relay_request(&[]))).await.unwrap_err();
+    assert_eq!(error, TransportError::KeyNotRegistered);
+    assert!(tri.relay.requests().is_empty());
+    assert!(tri.anthropic.requests().is_empty());
+    assert!(tri.openai.requests().is_empty());
+}
+
+#[tokio::test]
+async fn relay_messages_redirect_is_refused_and_the_target_receives_nothing() {
+    for status in REDIRECT_STATUSES {
+        let target = MockServer::start(MockResponse::new(200).chunk(b"leaked")).await;
+        let tri = tri_transport_with_relay(
+            MockResponse::new(status).header("location", &target.url("/v1/messages")),
+            None,
+            None,
+            Some(LICENSE),
+        )
+        .await;
+        let error = within(tri.transport.send(relay_request(&[]))).await.unwrap_err();
+        assert_eq!(error, TransportError::RedirectRefused { status });
+        assert!(target.requests().is_empty(), "HTTP {status}: the redirect target received a request");
+    }
+}
+
+#[test]
+fn relay_url_check_accepts_https_and_rejects_everything_else() {
+    assert!(is_valid_relay_url("https://relay.example/v1/messages"));
+    assert!(is_valid_relay_url("https://relay.example"));
+    assert!(!is_valid_relay_url("http://relay.example/v1/messages"));
+    assert!(!is_valid_relay_url(""));
+    assert!(!is_valid_relay_url("https://user:pass@relay.example/v1/messages"));
+    assert!(!is_valid_relay_url("https://user@relay.example/v1/messages"));
+    assert!(!is_valid_relay_url("https://:pass@relay.example/v1/messages"));
+    assert!(!is_valid_relay_url("not a url"));
+    assert!(!is_valid_relay_url("https://"));
+    assert!(!is_valid_relay_url("ftp://relay.example/v1/messages"));
+    assert!(!is_valid_relay_url("relay.example/v1/messages"));
+}
+
+#[test]
+fn production_with_a_valid_relay_url_adds_the_relay_messages_row() {
+    let table = DestinationTable::production_with(Some(RELAY_URL));
+    assert_eq!(table.names().collect::<Vec<_>>(), vec!["anthropic-messages", "openai-responses", "relay-messages"]);
+    let relay = table.get(RELAY_MESSAGES).unwrap();
+    assert_eq!(relay.url(), RELAY_URL);
+    assert_eq!(relay.credential(), Credential::RelayBearer);
+}
+
+#[tokio::test]
+async fn production_with_no_relay_url_has_two_rows_and_relay_messages_is_an_unknown_destination() {
+    let table = DestinationTable::production_with(None);
+    assert_eq!(table.names().collect::<Vec<_>>(), vec!["anthropic-messages", "openai-responses"]);
+    assert!(table.get(RELAY_MESSAGES).is_none());
+    let store = MemoryKeyStore::new();
+    store.set(Provider::RelayLicense, SecretString::from(LICENSE)).unwrap();
+    let transport = SecureTransport::new(table, Arc::new(store)).unwrap();
+    let error = within(transport.send(relay_request(&[]))).await.unwrap_err();
+    assert_eq!(error, TransportError::UnknownDestination);
+}
+
+#[test]
+fn production_with_a_rejected_relay_url_has_only_the_two_provider_rows() {
+    for url in ["http://relay.example/v1/messages", "https://user:pass@relay.example/v1/messages", "", "garbage"] {
+        let table = DestinationTable::production_with(Some(url));
+        assert_eq!(table.names().collect::<Vec<_>>(), vec!["anthropic-messages", "openai-responses"], "{url:?}");
+    }
+}
+
+#[tokio::test]
+async fn license_does_not_appear_in_debug_or_error_values() {
+    let store = MemoryKeyStore::new();
+    store.set(Provider::RelayLicense, SecretString::from(LICENSE)).unwrap();
+    let license = SecretString::from(LICENSE);
+    assert_no_secret(&format!("{license:?}"), LICENSE);
+    let table = DestinationTable::from_entries([(
+        RELAY_MESSAGES,
+        Destination::relay_messages(closed_port_url().await),
+    )]);
+    assert_no_secret(&format!("{table:?}"), LICENSE);
+    let transport = SecureTransport::new(table, Arc::new(store)).unwrap();
+    let error = within(transport.send(relay_request(&[]))).await.unwrap_err();
+    assert_eq!(error, TransportError::Connection);
+    assert_no_secret(&format!("{error:?}"), LICENSE);
+    assert_no_secret(&error.to_string(), LICENSE);
+
+    // 保管の失敗（ヘッダに使えない値）の表示にも値は出ない。
+    let store = MemoryKeyStore::new();
+    let invalid = format!("{LICENSE}\nsecond-line");
+    store.set(Provider::RelayLicense, SecretString::from(invalid.as_str())).unwrap();
+    let table = DestinationTable::from_entries([(RELAY_MESSAGES, Destination::relay_messages(closed_port_url().await))]);
+    let transport = SecureTransport::new(table, Arc::new(store)).unwrap();
+    let error = within(transport.send(relay_request(&[]))).await.unwrap_err();
+    assert_eq!(error, TransportError::KeyStore(secure_transport::StoreError::InvalidKeyFormat));
+    assert_no_secret(&format!("{error:?}"), LICENSE);
+    assert_no_secret(&error.to_string(), LICENSE);
 }

@@ -60,6 +60,7 @@ describe("催促の予約の文面の送信先は保存した選択で決まる�
     log = createRequestLog();
     registerRecordingBackend("byok-anthropic", log);
     registerRecordingBackend("byok-openai", log);
+    registerRecordingBackend("relay", log);
     vi.spyOn(console, "error").mockImplementation(() => undefined);
   });
 
@@ -109,6 +110,24 @@ describe("催促の予約の文面の送信先は保存した選択で決まる�
 
     expect(log.requests.length).toBeGreaterThan(0);
     expect(log.requests).toEqual(log.requests.map(() => ({ backend: "byok-openai", model: "gpt-6-luna" })));
+  });
+
+  it("llm_billing_route=plan を保存すると、次の催促の予約の文面の要求は relay へプラン込みの既定の値で送られる（BYOK の選択が保存済みでも。#583 S2）", async () => {
+    const h = await setupHarness();
+    saveSelection(h.raw, "anthropic", "claude-sonnet-5");
+    await replan(h);
+    expect(log.requests.length).toBeGreaterThan(0);
+    expect(log.requests).toEqual(
+      log.requests.map(() => ({ backend: "byok-anthropic", model: "claude-sonnet-5" })),
+    );
+
+    h.raw.exec("DELETE FROM nudge_reservations; DELETE FROM nudge_individual_bodies; DELETE FROM nudge_message_sets; DELETE FROM nudge_generation_attempts;");
+    h.raw.exec("INSERT INTO settings (key, value) VALUES ('llm_billing_route', 'plan')");
+    log.requests.length = 0;
+    await replan(h);
+
+    expect(log.requests.length).toBeGreaterThan(0);
+    expect(log.requests).toEqual(log.requests.map(() => ({ backend: "relay", model: "ai-boss-plan-default" })));
   });
 
   it("S2-R11f: 選択が未保存のとき、催促の予約の計画し直しは予約を作り（LLM の文面を持たない既存の退避の形）、どちらの記録するバックエンドにも要求は送られない", async () => {
