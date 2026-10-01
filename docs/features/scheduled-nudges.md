@@ -515,7 +515,7 @@ S3 は次の 5 つを作る。**iOS の器（Tauri の iOS ターゲット）は
   - `createNudgeReplanner` を、製品版の DB のポート・`env: {}`・製品版の通知の予約ポートで作る。
   - `createCoreApp` に、計画し直しの入口（`requestReplan`）を呼ぶ `onStateChangingRequest` を渡す。
   - 毎分の検知（`createTicker`）は始めない。
-- **計画し直しの契機**（機能全体の設計「計画し直す契機」のうち S3 の分）は、次の 3 つにする。
+- **計画し直しの契機**（機能全体の設計「計画し直す契機」のうち S3 の分）は、次の 4 つにする。
   1. 起動時に 1 回（DB の準備に成功した後）
   2. 前面への復帰（`document` の `visibilitychange` で `visible` になったとき）
   3. 状態を変える API 要求の後（S2 の `onStateChangingRequest`。`/api` の GET・HEAD・OPTIONS 以外。仮定 A20）
@@ -682,3 +682,9 @@ iOS シミュレータ（端末の時間帯を `Asia/Tokyo` にする）で、fo
 - A29（S3）: 製品版の通知の予約ポートのファイル名（例 `web/src/app-entry/product-nudge-scheduler-port.ts`）・iOS／Android 用の capability のファイル名・食い違いのログの文言は実装で決める
 - A30（S3）: ADR 0004 本体の改訂は、仕様の PR ではなく S3 の実装の PR に含める。改訂の帰結は「モバイルは予約通知方式で動く」を述べるため、その実行系（ポート・配線）が入る PR と揃える。改訂の内容は「機能全体の設計」で確定済みで、PR ではそれを写す
 - A31（S3）: 前面にある間の定期の計画し直しは 15 分ごととする（`setInterval` 相当の WebView の中のタイマー）。理由: 実測で最も密な 1 時間の発火は 17 件で、15 分で消化されるのは多くて 5 件程度のため、63 件の枠が尽きる前に十分補充できる。1 回の計画し直しは、未来の予約の取り消しと登録をやり直す（最大でおよそ 64 件ずつの IPC）ため、毎分にはしない。「最後の予約時刻の前に補充する」形は、時刻の計算と取り消しの扱いが増えるため採らない。活動が無ければ予約 ID と使い回しのキーは変わらず（S2 の受入基準「確定した送信履歴と次の計画」）、定期の計画し直しで B の生成は増えない。周期は受入基準で固定するため、変えるときは受入基準も変える
+- A32（S3・実装）: プラットフォームの判定（A26）は、ビルド時の値で行う。Tauri の CLI が `beforeBuildCommand`（`npm run build:app --workspace web`）に渡す `TAURI_ENV_PLATFORM` を `web/vite.app.config.ts` の `envPrefix` で `import.meta.env` へ載せ、`ios` のときだけ計画し直しを組む（`start-product-nudge-replanning.ts` の `isIosProductPlatform`）。CLI を経ないビルド（`npm run build:app` の直接実行・`test:tauri`）では未定義で、macOS の毎分方式になる（判定を誤ったときに倒れる側は、現行の振る舞い）。器の Rust のコマンドで返す形は、capability とコマンドの公開面が増えるため採らない
+- A33（S3・実装）: 実装のファイル名は、通知の予約ポート `web/src/app-entry/product-nudge-scheduler-port.ts`、契機の配線 `web/src/app-entry/start-product-nudge-replanning.ts`、iOS・Android 用の capability `native/tauri-app/capabilities/mobile-nudges.json`。食い違いのログは `nudge replan: the OS pending count differs from the reservations (os=<OS の件数>, reservations=<控えの件数>)`、`countPending` の失敗のログは `nudge replan: failed to compare the OS pending count:`（エラーの型名だけ。S2 の作法）
+- A34（S3・実装）: `countPending` は、`get_pending` の結果が配列でないときも例外で返す（件数を読めないものを 0 件として扱わない）。計画し直しの側では、他の失敗と同じくログに出すだけになる
+- A35（S3・実装）: 計画し直しの作成・開始（`boot-product-app.ts` の `createReplanner`・`start`）が同期で投げたときは、毎分の検知の開始の失敗と同じく記録して描画を止めない（記録の文言は `PRODUCT_NUDGE_REPLANNING_START_FAILED_MESSAGE`）。作成に失敗したときは `onStateChangingRequest` を渡さない
+- A36（S3・実装）: fork の差分 1 は、書式（`yyyy-MM-dd'T'HH:mm:ss.SSS'Z'`）を変えずに `timeZone` を UTC にするだけにする。Swift に届く文字列は、コードの読みでは `2026-10-02T00:00:00.000000000Z`（小数部 9 桁。`time` の `Iso8601` の既定の設定）で、同じ書式・同じ経路の 2.4.0 で #576 のときに解釈できていた（ずれたのは時差だけ）。届いた文字列の実測は手動の確認手順 1 で行う
+
