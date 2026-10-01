@@ -16,6 +16,9 @@ export default tseslint.config(
       // plugin-sql の Rust 側のリポジトリ内 fork（#580 S2）。上流の配布物を
       // そのまま置いており、同梱の `api-iife.js` は上流のビルド成果物。
       "native/tauri-plugin-sql/**",
+      // 通知プラグインのリポジトリ内 fork（#585 S3）。同じく上流の配布物を
+      // そのまま置いており、`api-iife.js`・`src/init-iife.js` は上流のビルド成果物。
+      "native/tauri-plugin-notification/**",
     ],
   },
   js.configs.recommended,
