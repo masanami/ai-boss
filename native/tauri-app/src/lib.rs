@@ -28,6 +28,8 @@
 
 use std::io;
 use std::path::{Path, PathBuf};
+#[cfg(target_os = "macos")]
+use std::time::Duration;
 
 use tauri::webview::{NewWindowFeatures, NewWindowResponse};
 use tauri::{Manager, Runtime, Url, WebviewWindowBuilder};
@@ -72,6 +74,24 @@ const INSTANCE_LOCK_FILE_NAME: &str = "ai-boss.lock";
 /// 組み立ては `tauri::Error::PluginInitialization` にこの名前を載せて失敗する。
 pub const INSTANCE_LOCK_PLUGIN_NAME: &str = "instance-lock";
 
+/// 錠を別の持ち手が持っている（[`acquire_instance_lock`] が `Ok(None)`）ときに、
+/// 錠のプラグインが初期化の失敗に載せる文言。錠の取得そのものの失敗（データ
+/// ディレクトリを作れない・ファイルを開けない等）と見分けるために固定する
+/// （[`is_instance_lock_held`]）。
+pub const INSTANCE_LOCK_HELD_MESSAGE: &str = "another instance of the app holds the instance lock";
+
+/// 器の組み立ての失敗が「錠を別の持ち手が持っている」ことによるものか（#664）。
+/// 錠のプラグインの失敗で、かつ文言が [`INSTANCE_LOCK_HELD_MESSAGE`] のときだけ
+/// `true`。データディレクトリの解決・作成・錠のファイルの I/O の失敗は `false`
+/// （`run` はそれを無言で終えず、失敗として扱う）。
+pub fn is_instance_lock_held(error: &tauri::Error) -> bool {
+    matches!(
+        error,
+        tauri::Error::PluginInitialization(name, message)
+            if name == INSTANCE_LOCK_PLUGIN_NAME && message == INSTANCE_LOCK_HELD_MESSAGE
+    )
+}
+
 /// 多重起動の排他の錠（#659）。持っているあいだ（プロセスが生きているあいだ）、
 /// 同じアプリのデータディレクトリに対する別の取得は失敗する。プロセスが落ちると
 /// OS が外す（`flock`）。
@@ -101,8 +121,10 @@ pub fn acquire_instance_lock(app_config_dir: &Path) -> io::Result<Option<Instanc
 }
 
 /// 多重起動の排他の錠を取るプラグイン。錠は `manage` して器が生きているあいだ持つ。
-/// 取れなければ初期化を失敗させ、後に登録したプラグイン（plugin-sql の DB の
-/// preload）と `setup`（刻みの送り手の起動）へ進ませない。
+/// 取れなければ初期化を失敗させ、後に登録したプラグイン（single-instance の
+/// ソケットの掃除・待ち受け、plugin-sql の DB の preload）と `setup`（刻みの送り手の
+/// 起動）へ進ませない。別の持ち手が持っているときの失敗の文言は
+/// [`INSTANCE_LOCK_HELD_MESSAGE`]。
 fn instance_lock_plugin<R: Runtime>() -> tauri::plugin::TauriPlugin<R> {
     tauri::plugin::Builder::new(INSTANCE_LOCK_PLUGIN_NAME)
         .setup(|app, _api| match acquire_instance_lock(&app.path().app_config_dir()?)? {
@@ -110,9 +132,67 @@ fn instance_lock_plugin<R: Runtime>() -> tauri::plugin::TauriPlugin<R> {
                 app.manage(lock);
                 Ok(())
             }
-            None => Err("another instance of the app holds the instance lock".into()),
+            None => Err(INSTANCE_LOCK_HELD_MESSAGE.into()),
         })
         .build()
+}
+
+/// single-instance（`tauri-plugin-single-instance` 2.5 の macOS の実装。`semver`
+/// 機能は無効）が 2 つ目の起動を受ける Unix ソケットのパス。プラグインと同じ式
+/// （identifier の `.`・`-` を `_` にして `/tmp/<identifier>_si.sock`）。
+#[cfg(target_os = "macos")]
+pub fn single_instance_socket_path(identifier: &str) -> PathBuf {
+    PathBuf::from(format!("/tmp/{}_si.sock", identifier.replace(['.', '-'], "_")))
+}
+
+/// 錠を取れなかったプロセスが、既にあるプロセス（錠を持っている側）へ 2 つ目の起動を
+/// 知らせる既定の試行の回数と間隔（[`notify_running_instance`]）。勝者の待ち受けは
+/// 非同期に始まるため、ほぼ同時の起動でも数百 ms 以内に開く。
+#[cfg(target_os = "macos")]
+const NOTIFY_ATTEMPTS: u32 = 20;
+#[cfg(target_os = "macos")]
+const NOTIFY_INTERVAL: Duration = Duration::from_millis(100);
+
+/// 既にあるプロセスの single-instance のソケットへ、2 つ目の起動の知らせ
+/// （プラグインの `notify_singleton` と同じ形式: 作業ディレクトリ + `\0\0` + 引数を
+/// `\0` で連結）を送る。
+///
+/// ソケットが無い（`NotFound`）・待ち受けが無い（`ConnectionRefused`）ときだけ、
+/// `interval` を空けて `attempts` 回まで試す（錠を持つ勝者の待ち受けの開始が、
+/// まだ済んでいないだけの可能性があるため）。それ以外のエラーは待たずに返す。
+#[cfg(target_os = "macos")]
+pub fn notify_running_instance(socket: &Path, attempts: u32, interval: Duration) -> io::Result<()> {
+    let attempts = attempts.max(1);
+    let mut attempt = 1;
+    loop {
+        match notify_once(socket) {
+            Ok(()) => return Ok(()),
+            Err(error)
+                if attempt < attempts
+                    && matches!(
+                        error.kind(),
+                        io::ErrorKind::NotFound | io::ErrorKind::ConnectionRefused
+                    ) =>
+            {
+                attempt += 1;
+                std::thread::sleep(interval);
+            }
+            Err(error) => return Err(error),
+        }
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn notify_once(socket: &Path) -> io::Result<()> {
+    use std::io::Write;
+
+    let stream = std::os::unix::net::UnixStream::connect(socket)?;
+    let mut writer = io::BufWriter::new(&stream);
+    let cwd = std::env::current_dir().unwrap_or_default();
+    writer.write_all(cwd.to_str().unwrap_or_default().as_bytes())?;
+    writer.write_all(b"\0\0")?;
+    writer.write_all(std::env::args().collect::<Vec<String>>().join("\0").as_bytes())?;
+    writer.flush()
 }
 
 mod app_commands;
@@ -214,13 +294,23 @@ fn build_main_window<R: Runtime, M: tauri::Manager<R>>(
 /// ウィンドウは隠す）・Dock の再表示の要求もここで処理する
 /// （`desktop_shell::handle_run_event`）。`configure` では作らない。
 pub fn run() {
-    let app = match configure(with_single_instance(tauri::Builder::default())).build(context()) {
+    let context = context();
+    #[cfg(target_os = "macos")]
+    let socket = single_instance_socket_path(&context.config().identifier);
+    let app = match configure(with_single_instance(tauri::Builder::default())).build(context) {
         Ok(app) => app,
         // ほぼ同時に起動した別のプロセスが錠を持っている（#659）: DB・刻みに触れずに終わる。
-        Err(tauri::Error::PluginInitialization(name, error)) if name == INSTANCE_LOCK_PLUGIN_NAME => {
+        // 錠を取れなかったプロセスは single-instance のプラグインを通らない（#664）ため、
+        // 既にあるプロセスへの知らせ（前面化）は自分で行ってから終わる。
+        Err(error) if is_instance_lock_held(&error) => {
             eprintln!("not starting: {error}");
+            #[cfg(target_os = "macos")]
+            if let Err(error) = notify_running_instance(&socket, NOTIFY_ATTEMPTS, NOTIFY_INTERVAL) {
+                eprintln!("failed to notify the running instance: {error}");
+            }
             return;
         }
+        // 錠の取得そのものの失敗（データディレクトリ・錠のファイルの I/O）を含め、無言で終えない。
         Err(error) => panic!("error while building tauri application: {error}"),
     };
     app.run(|app, event| {
@@ -233,24 +323,31 @@ pub fn run() {
         });
 }
 
-/// 多重起動の防止（#659）を組み込む。`configure` より前（最初のプラグイン）に登録し、
-/// 2 つ目の起動が DB の preload・刻みの送り手の起動より前に終わるようにする
+/// 多重起動の防止（#659）を組み込む。`configure` より前（先頭の 2 つのプラグイン）に
+/// 登録し、2 つ目の起動が DB の preload・刻みの送り手の起動より前に終わるようにする
 /// （同じ DB に対して刻みが 2 重に走り、同じ催促を 2 回送らないように）。
 ///
-/// single-instance（既にあるプロセスへ知らせて終わる・前面化）の後に、排他の錠
-/// （[`acquire_instance_lock`]）を取るプラグインを登録する。single-instance の待ち
-/// 受けは非同期に始まり、ほぼ同時の 2 つの起動はどちらも通り抜けうるため、錠で
-/// 原子的に 1 つに絞る（錠を先にすると、ふつうの 2 つ目の起動が前面化を知らせる
-/// 前に終わってしまう）。
+/// 排他の錠（[`acquire_instance_lock`]）を取るプラグインを **single-instance より先**に
+/// 登録する。プラグインの `setup` は登録順に走り、失敗したら以降は走らない。single-instance
+/// は `setup` で既存のソケットへ接続を試み、つながらなければ**ソケットのファイルを消して**
+/// 自分が待ち受ける——錠より後ろに置くと、ほぼ同時の 2 つの起動のうち錠を取れなかった
+/// 方が、錠を取った勝者のソケットを消しうる（以降の起動は前面化の知らせが届かず、
+/// 多重起動の防止が効かなくなる）。錠が先なら、錠を取れなかったプロセスは single-instance
+/// の `setup`（掃除・待ち受け）を通らない。その代わり、錠を取れなかったふつうの 2 つ目の
+/// 起動も single-instance の知らせを通らないため、`run` が
+/// [`notify_running_instance`] で自分から既にあるプロセスへ知らせる（前面化を保つ。
+/// 製品は macOS 限定で、この知らせも macOS の実装だけに置く）。
+/// single-instance の待ち受けは非同期に始まるため、ほぼ同時の起動でも錠で原子的に
+/// 1 つに絞る。
 ///
 /// `configure` には入れない: `MockRuntime` の結合テストは 1 つのプロセスで器を
 /// 何度も組むため、2 回目が 2 つ目の起動と判定されてテストのプロセスが終了する。
 pub fn with_single_instance<R: Runtime>(builder: tauri::Builder<R>) -> tauri::Builder<R> {
     builder
+        .plugin(instance_lock_plugin())
         .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
             desktop_shell::on_second_instance(app)
         }))
-        .plugin(instance_lock_plugin())
 }
 
 /// `tauri.conf.json`・capability（ACL）・アセットを埋め込んだコンテキスト。
@@ -486,6 +583,141 @@ mod tests {
             acquire_instance_lock(config_dir.path()).unwrap().is_some(),
             "the lock should be released when the holder process dies"
         );
+    }
+
+    // --- is_instance_lock_held（#664: 錠が保持中の失敗だけを無言終了にする判定） ----
+
+    #[test]
+    fn a_held_instance_lock_error_from_the_lock_plugin_is_recognized() {
+        let error = tauri::Error::PluginInitialization(
+            INSTANCE_LOCK_PLUGIN_NAME.into(),
+            INSTANCE_LOCK_HELD_MESSAGE.into(),
+        );
+
+        assert!(is_instance_lock_held(&error));
+    }
+
+    #[test]
+    fn the_held_message_from_another_plugin_is_not_a_held_instance_lock() {
+        let error = tauri::Error::PluginInitialization("sql".into(), INSTANCE_LOCK_HELD_MESSAGE.into());
+
+        assert!(!is_instance_lock_held(&error));
+    }
+
+    #[test]
+    fn another_failure_of_the_lock_plugin_is_not_a_held_instance_lock() {
+        let error = tauri::Error::PluginInitialization(
+            INSTANCE_LOCK_PLUGIN_NAME.into(),
+            "Permission denied (os error 13)".into(),
+        );
+
+        assert!(!is_instance_lock_held(&error));
+    }
+
+    // --- single-instance のソケットへの知らせ（#664） -----------------------------
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn single_instance_socket_path_follows_the_plugin_rule() {
+        assert_eq!(
+            single_instance_socket_path("dev.aiboss.app"),
+            PathBuf::from("/tmp/dev_aiboss_app_si.sock")
+        );
+        assert_eq!(
+            single_instance_socket_path("dev.aiboss.app-test"),
+            PathBuf::from("/tmp/dev_aiboss_app_test_si.sock")
+        );
+    }
+
+    /// 一時ディレクトリの中のソケットのパス（Unix ソケットのパスは 104 バイト未満）。
+    #[cfg(target_os = "macos")]
+    fn short_socket_in(dir: &tempfile::TempDir) -> PathBuf {
+        let socket = dir.path().join("si.sock");
+        assert!(socket.as_os_str().len() < 104, "the test socket path is too long");
+        socket
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn notify_running_instance_retries_until_the_winner_binds_the_socket() {
+        use std::io::Read;
+        use std::os::unix::net::UnixListener;
+        use std::time::Duration;
+
+        let dir = tempfile::tempdir().unwrap();
+        let socket = short_socket_in(&dir);
+        let (received_tx, received_rx) = std::sync::mpsc::channel::<String>();
+        // 勝者の待ち受けは非同期に始まる: 知らせる側が最初に試した後で bind する。
+        let listener_socket = socket.clone();
+        let winner = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(50));
+            let listener = UnixListener::bind(&listener_socket).unwrap();
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut body = String::new();
+            stream.read_to_string(&mut body).unwrap();
+            received_tx.send(body).unwrap();
+        });
+
+        notify_running_instance(&socket, 50, Duration::from_millis(20)).unwrap();
+
+        let body = received_rx.recv_timeout(Duration::from_secs(10)).unwrap();
+        winner.join().unwrap();
+        // プラグインの知らせと同じ形式: 作業ディレクトリ + "\0\0" + 引数（"\0" 区切り）。
+        let (cwd, args) = body.split_once("\0\0").expect("the body has the \\0\\0 separator");
+        assert_eq!(cwd, std::env::current_dir().unwrap().to_str().unwrap());
+        assert_eq!(args.split('\0').map(String::from).collect::<Vec<_>>(), std::env::args().collect::<Vec<_>>());
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn notify_running_instance_gives_up_after_the_attempts_when_there_is_no_socket() {
+        use std::time::{Duration, Instant};
+
+        let dir = tempfile::tempdir().unwrap();
+        let socket = short_socket_in(&dir);
+        let started = Instant::now();
+
+        let error = notify_running_instance(&socket, 3, Duration::from_millis(30)).unwrap_err();
+
+        assert_eq!(error.kind(), io::ErrorKind::NotFound);
+        // 試行の間（3 回なら 2 回）だけ待つ。
+        assert!(started.elapsed() >= Duration::from_millis(60));
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn notify_running_instance_also_retries_a_socket_nobody_listens_on() {
+        use std::os::unix::net::UnixListener;
+        use std::time::{Duration, Instant};
+
+        let dir = tempfile::tempdir().unwrap();
+        let socket = short_socket_in(&dir);
+        // 待ち受けを止めたソケットのファイルは残り、接続は拒否される。
+        drop(UnixListener::bind(&socket).unwrap());
+        let started = Instant::now();
+
+        let error = notify_running_instance(&socket, 3, Duration::from_millis(30)).unwrap_err();
+
+        assert_eq!(error.kind(), io::ErrorKind::ConnectionRefused);
+        assert!(started.elapsed() >= Duration::from_millis(60));
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn notify_running_instance_returns_other_errors_without_retrying() {
+        use std::time::{Duration, Instant};
+
+        // Unix ソケットのパスが長すぎる（NotFound・ConnectionRefused 以外のエラー）。
+        let socket = tempfile::tempdir().unwrap().path().join("x".repeat(200));
+        let started = Instant::now();
+
+        let error = notify_running_instance(&socket, 5, Duration::from_millis(500)).unwrap_err();
+
+        assert!(!matches!(
+            error.kind(),
+            io::ErrorKind::NotFound | io::ErrorKind::ConnectionRefused
+        ));
+        assert!(started.elapsed() < Duration::from_millis(500), "the error should not be retried");
     }
 
     // --- is_allowed_navigation ------------------------------------------------

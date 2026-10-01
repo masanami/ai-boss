@@ -123,7 +123,7 @@ fn perform<R: Runtime>(app: &AppHandle<R>, action: ShellAction) {
 }
 
 /// 2 つ目の起動を知らされたとき（#659）: 既にあるメインのウィンドウを表示して前面に
-/// 出す（2 つ目の起動のプロセスは、知らせた後にプラグインが終了させる）。
+/// 出す（2 つ目の起動のプロセスは、錠を取れずに器の組み立てが失敗した `run` が、既にあるプロセスへ知らせてから終える。#664）。
 pub fn on_second_instance<R: Runtime>(app: &AppHandle<R>) {
     perform(app, ShellAction::ShowMainWindow);
 }
