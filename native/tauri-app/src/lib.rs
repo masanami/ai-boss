@@ -9,7 +9,8 @@
 //! [`secure_commands`]）で公開する。キーの値を返すコマンドは無い。DB は #580 S2 で配線した: plugin-sql の
 //! リポジトリ内 fork（`native/tauri-plugin-sql/`。接続 1 本・ATTACH 不可）を
 //! 登録し、`tauri.conf.json` の `plugins.sql.preload` の DB を起動時に開く。
-//! capability は `capabilities/default.json` の 1 件だけで、`main` のウィンドウに
+//! capability は 2 件ある。`platforms` を指定しない `capabilities/default.json` は
+//! `main` のウィンドウに
 //! `sql:allow-execute`・`sql:allow-select`（`load`・`close` は許可しない。機能
 //! 仕様 `docs/features/async-db-layer.md`「S2 の設計」）と、通信層の 5 つの
 //! コマンドの `allow-*` を許可する（#581 S3）。
@@ -19,6 +20,9 @@
 //! 作る）の直下のファイルに限って許可する（機能仕様
 //! `docs/features/tauri-in-app-runtime.md`「S4 の設計」）。
 //! #579 S3 の `notification:allow-notify`・`core:event:allow-listen` も許可する。
+//! もう 1 件の `capabilities/mobile-nudges.json` は `platforms` を iOS・Android に
+//! 限り、予約通知の `notification:allow-cancel`・`notification:allow-get-pending`
+//! だけを許可する（#585 S3・機能仕様 `docs/features/scheduled-nudges.md`）。
 //!
 //! メインウィンドウのナビゲーション・新規ウィンドウ・ダウンロードの許可判定は、
 //! [`is_allowed_navigation`]・[`is_allowed_new_window`] という URL を受け取る
