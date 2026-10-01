@@ -403,13 +403,52 @@ fn the_context_embeds_a_default_window_icon_for_the_tray() {
 }
 
 // ---------------------------------------------------------------------------
-// #659: 多重起動の防止（single-instance）
+// #659: 多重起動の防止（single-instance・錠）
 // ---------------------------------------------------------------------------
+
+/// single-instance が開くソケット（`/tmp/<identifier>_si.sock`）を、テストが終わる
+/// とき（途中の `expect`・`run_iteration` の panic も含む）に `/tmp` へ残さない。
+/// ソケットを作りうる箇所（器を組む・ソケットを置く）より前に作る。
+#[cfg(target_os = "macos")]
+struct SingleInstanceSocketGuard {
+    socket: PathBuf,
+    /// single-instance が非同期に開くのを待ってから消す（開かないまま時間切れに
+    /// なったら何もしない）。待ち受けが開かないはずのテストは `false`。
+    wait_for_bind: bool,
+}
+
+#[cfg(target_os = "macos")]
+impl SingleInstanceSocketGuard {
+    /// 器を組むと single-instance が非同期に待ち受けを開く場合。
+    fn expecting_bind(socket: PathBuf) -> Self {
+        Self { socket, wait_for_bind: true }
+    }
+
+    /// 待ち受けが開かない（テストが置く・既に消してある）場合。すぐ消す。
+    fn immediate(socket: PathBuf) -> Self {
+        Self { socket, wait_for_bind: false }
+    }
+}
+
+#[cfg(target_os = "macos")]
+impl Drop for SingleInstanceSocketGuard {
+    fn drop(&mut self) {
+        if self.wait_for_bind {
+            let deadline = Instant::now() + TICKER_TIMEOUT;
+            while !self.socket.exists() && Instant::now() < deadline {
+                std::thread::sleep(Duration::from_millis(20));
+            }
+        }
+        let _ = std::fs::remove_file(&self.socket);
+    }
+}
 
 /// 製品の組み立て（`app_lib::with_single_instance`）で器を組むと、2 つ目の起動を
 /// 受ける口（macOS では `/tmp/<identifier>_si.sock` の Unix ソケット）が開き、
-/// 2 つ目の起動の知らせ（作業ディレクトリと引数）を受け付ける。2 つ目の起動は
-/// この口へ知らせて終了する（`tauri-plugin-single-instance` 2.5 の macOS の実装）。
+/// 2 つ目の起動の知らせ（作業ディレクトリと引数）を受け付ける。錠を取れなかった
+/// 2 つ目の起動は、この口へ `app_lib::notify_running_instance` で知らせて終了する
+/// （#664。知らせの形式は `tauri-plugin-single-instance` 2.5 の macOS の実装と同じ）。
+/// ここでは本物のプラグインの口へ、その関数で知らせて受け付けられることを確かめる。
 ///
 /// 利用者が起動している本物のアプリ（`dev.aiboss.app`）の口と取り違えると、
 /// テストのプロセスが 2 つ目の起動として終了するため、プロセスごとに別の
@@ -417,13 +456,13 @@ fn the_context_embeds_a_default_window_icon_for_the_tray() {
 #[cfg(target_os = "macos")]
 #[test]
 fn the_product_assembly_listens_for_a_second_instance() {
-    use std::io::Write;
-    use std::os::unix::net::UnixStream;
-
     test_home();
     let identifier = format!("dev.aiboss.app.single-instance-test-{}", std::process::id());
-    let socket = PathBuf::from(format!("/tmp/{}_si.sock", identifier.replace(['.', '-'], "_")));
+    let socket = app_lib::single_instance_socket_path(&identifier);
     let _ = std::fs::remove_file(&socket);
+    // 途中で失敗したときに、非同期に開く口を待ってから消す（正常に終われば `destroy` が
+    // 消しているため、待たせない）。
+    let mut guard = SingleInstanceSocketGuard::expecting_bind(socket.clone());
     let mut context = app_lib::context();
     context.config_mut().identifier = identifier;
     let mut app = app_lib::configure(app_lib::with_single_instance(mock_builder()))
@@ -433,33 +472,13 @@ fn the_product_assembly_listens_for_a_second_instance() {
     app.run_iteration(|_, _| {});
     app.state::<MinuteTicker>().stop();
 
-    // 口は非同期に開くため、開くまで待つ。
-    let deadline = Instant::now() + TICKER_TIMEOUT;
-    let stream = loop {
-        match UnixStream::connect(&socket) {
-            Ok(stream) => break stream,
-            Err(error) if Instant::now() > deadline => {
-                panic!("the single-instance socket {} did not open: {error}", socket.display())
-            }
-            Err(_) => std::thread::sleep(Duration::from_millis(20)),
-        }
-    };
-    (&stream)
-        .write_all(b"/\0\0ai-boss")
+    // 口は非同期に開くため、開くまで（`TICKER_TIMEOUT` まで）再試行して知らせる。
+    app_lib::notify_running_instance(&socket, 500, Duration::from_millis(20))
         .expect("a second instance can notify the first one");
 
     tauri_plugin_single_instance::destroy(&app);
+    guard.wait_for_bind = false;
     assert!(!socket.exists(), "the socket should be removed by destroy");
-}
-
-/// single-instance が非同期に開く待ち受けのソケットを、開くのを待ってから消す
-/// （`/tmp` に残さない。開かないまま時間切れになったら何もしない）。
-fn remove_single_instance_socket(socket: &Path) {
-    let deadline = Instant::now() + TICKER_TIMEOUT;
-    while !socket.exists() && Instant::now() < deadline {
-        std::thread::sleep(Duration::from_millis(20));
-    }
-    let _ = std::fs::remove_file(socket);
 }
 
 /// 製品の組み立てで器を組むと、アプリのデータディレクトリの錠（#659）を取り、
@@ -469,7 +488,8 @@ fn remove_single_instance_socket(socket: &Path) {
 fn the_product_assembly_holds_the_instance_lock() {
     test_home();
     let identifier = format!("dev.aiboss.app.instance-lock-held-{}", std::process::id());
-    let socket = PathBuf::from(format!("/tmp/{}_si.sock", identifier.replace(['.', '-'], "_")));
+    // 器を組む（ソケットが開きうる）より前に作る。
+    let _socket = SingleInstanceSocketGuard::expecting_bind(app_lib::single_instance_socket_path(&identifier));
     let mut context = app_lib::context();
     context.config_mut().identifier = identifier;
     let mut app = app_lib::configure(app_lib::with_single_instance(mock_builder()))
@@ -482,40 +502,101 @@ fn the_product_assembly_holds_the_instance_lock() {
 
     let second = app_lib::acquire_instance_lock(&config_dir).unwrap();
 
-    remove_single_instance_socket(&socket);
     assert!(second.is_none(), "the running app should hold the instance lock");
 }
 
 /// 錠を別の持ち手（先に起動したプロセス）が持っていると、製品の組み立ては錠の
 /// プラグインの初期化で失敗し、DB の preload（plugin-sql）・`setup`（刻みの送り手の
 /// 起動）へ進まない（#659。ほぼ同時の 2 つの起動のうち、錠を取れなかった方）。
+///
+/// 錠を取れなかった方は single-instance の `setup` を通らない（#664）: 勝者の
+/// ソケットのファイルを、掃除（`remove_file`）も待ち受けのやり直しもしない。ここでは
+/// 勝者のものに見立てた「待ち受けていないソケットのファイル」（接続が拒否される
+/// ＝ single-instance の `setup` を通ると掃除されて消える）を置き、失敗の後も同じ
+/// ファイルが残っていることで確かめる。
 #[cfg(target_os = "macos")]
 #[test]
 fn the_product_assembly_stops_before_the_db_when_the_instance_lock_is_held() {
+    use std::os::unix::fs::MetadataExt;
+    use std::os::unix::net::UnixListener;
+
     test_home();
     let identifier = format!("dev.aiboss.app.instance-lock-busy-{}", std::process::id());
-    let socket = PathBuf::from(format!("/tmp/{}_si.sock", identifier.replace(['.', '-'], "_")));
+    let socket = app_lib::single_instance_socket_path(&identifier);
+    let _ = std::fs::remove_file(&socket);
+    // 敗者はソケットを作らない。置いたファイルがあるうちは待たずに消す。退行して
+    // single-instance が掃除した場合は、非同期に開き直した口を待ってから消す。
+    let _socket = SingleInstanceSocketGuard::expecting_bind(socket.clone());
     let config_dir = test_home()
         .join("Library/Application Support")
         .join(&identifier);
     let _held = app_lib::acquire_instance_lock(&config_dir)
         .unwrap()
         .expect("the test should get the lock first");
+    drop(UnixListener::bind(&socket).unwrap());
+    // 消して作り直されたファイルと区別するため、i-node を控える。
+    let placed = std::fs::symlink_metadata(&socket).unwrap().ino();
     let mut context = app_lib::context();
     context.config_mut().identifier = identifier;
 
     let result = app_lib::configure(app_lib::with_single_instance(mock_builder())).build(context);
 
-    remove_single_instance_socket(&socket);
     match result {
-        Err(tauri::Error::PluginInitialization(name, _)) => {
-            assert_eq!(name, app_lib::INSTANCE_LOCK_PLUGIN_NAME)
+        Err(error) => {
+            assert!(
+                matches!(&error, tauri::Error::PluginInitialization(name, _) if name == app_lib::INSTANCE_LOCK_PLUGIN_NAME),
+                "unexpected build error: {error}"
+            );
+            assert!(
+                app_lib::is_instance_lock_held(&error),
+                "a failure because another process holds the lock should be recognized: {error}"
+            );
         }
-        Err(other) => panic!("unexpected build error: {other}"),
         Ok(_) => panic!("the build should fail while another process holds the lock"),
     }
     assert!(
         !config_dir.join("ai-boss.db").exists(),
         "the DB must not be opened by the instance that did not get the lock"
     );
+    assert_eq!(
+        std::fs::symlink_metadata(&socket).map(|metadata| metadata.ino()).ok(),
+        Some(placed),
+        "the instance that did not get the lock must not clean up or replace the running instance's socket"
+    );
+}
+
+/// 錠のプラグインが I/O で失敗した（錠が保持中ではない）ときは、錠が保持中と
+/// 見分けられる（#664。`run` は保持中のときだけ無言で終え、それ以外は失敗にする）。
+/// データディレクトリの位置に通常のファイルがあり、ディレクトリを作れない。
+#[cfg(target_os = "macos")]
+#[test]
+fn a_lock_plugin_io_failure_is_not_mistaken_for_a_held_lock() {
+    test_home();
+    let identifier = format!("dev.aiboss.app.instance-lock-io-{}", std::process::id());
+    let socket = app_lib::single_instance_socket_path(&identifier);
+    let _ = std::fs::remove_file(&socket);
+    let _socket = SingleInstanceSocketGuard::immediate(socket.clone());
+    let config_dir = test_home()
+        .join("Library/Application Support")
+        .join(&identifier);
+    std::fs::create_dir_all(config_dir.parent().unwrap()).unwrap();
+    std::fs::write(&config_dir, b"not a directory").unwrap();
+    let mut context = app_lib::context();
+    context.config_mut().identifier = identifier;
+
+    let result = app_lib::configure(app_lib::with_single_instance(mock_builder())).build(context);
+
+    match result {
+        Err(error) => {
+            assert!(
+                matches!(&error, tauri::Error::PluginInitialization(name, _) if name == app_lib::INSTANCE_LOCK_PLUGIN_NAME),
+                "the lock plugin should fail: {error}"
+            );
+            assert!(
+                !app_lib::is_instance_lock_held(&error),
+                "an I/O failure must not be treated as a held lock: {error}"
+            );
+        }
+        Ok(_) => panic!("the build should fail when the data directory cannot be created"),
+    }
 }

@@ -2,6 +2,9 @@
 name = "ai-boss-tauri-app"
 version = "0.1.0"
 edition = "2021"
+# 依存（tauri・tray-icon・各プラグイン）が要求する最小の版。自前のコードが使う
+# `File::try_lock`・`std::fs::TryLockError`（多重起動の錠。#659）は 1.89 で安定化した。
+rust-version = "1.90"
 publish = false
 description = "ai-boss 製品版の Tauri 2（macOS）の器（機能仕様 docs/features/tauri-in-app-runtime.md S2）"
 
