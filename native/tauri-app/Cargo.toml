@@ -41,9 +41,12 @@ serde = { version = "1", features = ["derive"] }
 # （`$APPCONFIG/evidence/*`）に限った 4 つだけを足す。
 tauri-plugin-fs = "~2.6"
 # #579 S3: 通知の送信（`plugin:notification|notify`）。2.5.0 の実測（デスクトップは
-# 表示の結果を捨てる・許可を問い合わせない）に拠るため `~2.5` に固定する
-# （仮定 S3-A6）。JS のパッケージ（`@tauri-apps/plugin-notification`）は入れない。
-tauri-plugin-notification = "~2.5"
+# 表示の結果を捨てる・許可を問い合わせない）に拠る（仮定 S3-A6）。JS のパッケージ
+# （`@tauri-apps/plugin-notification`）は入れない。
+# #585 S3（docs/features/scheduled-nudges.md 決定 6・「通知プラグインの fork」）:
+# 2.5.0 のリポジトリ内 fork（iOS の予約時刻を UTC で読む・`add` の失敗を拒否で返す。
+# 差分は native/tauri-plugin-notification/FORK.md）。crates.io の版は使わない。
+tauri-plugin-notification = { path = "../tauri-plugin-notification" }
 # #659: 多重起動の防止。2 つ目の起動は既にあるプロセスへ知らせて終わる（macOS は
 # `/tmp` の Unix ソケット）。WebView のコマンドを持たないため capability は変わらない。
 # 2.5.1 の macOS の実装を読んで組んだため `~2.5` に固定する（3 系は alpha）。

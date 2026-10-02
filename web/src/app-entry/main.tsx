@@ -10,6 +10,7 @@ import { EvidenceContentOpenerContext } from "../evidence-content-opener-context
 import { bootProductApp } from "./boot-product-app";
 import { getProductDatabase, openProductDb } from "./product-db";
 import { startProductScheduler } from "./start-product-scheduler";
+import { selectProductNudgeReplanning } from "./start-product-nudge-replanning";
 import { ByokKeyManagerContext } from "../byok-key-manager-context";
 import { createTauriSecureTransport, type SecureStreamEvent } from "./tauri-secure-transport";
 import { createTauriByokKeyManager } from "./tauri-byok-key-manager";
@@ -35,6 +36,9 @@ import { installProductLlm } from "./product-llm";
  * 描画の後、DB の準備に成功していれば毎分の検知（`createTicker`）を始める
  * （#579 S3。Rust 側の毎分の刻みのイベントを `listen` で受け、通知は
  * `invoke` で Rust 側の通知プラグインへ渡す）。
+ * iOS のビルド（Tauri の CLI が `beforeBuildCommand` に渡す `TAURI_ENV_PLATFORM`
+ * が `ios`）では、毎分の検知の代わりに催促の予約の計画し直しを組む（#585 S3・
+ * docs/features/scheduled-nudges.md「製品版のエントリの配線」・仮定 A26）。
  */
 
 const secureTransport = createTauriSecureTransport({
@@ -73,6 +77,17 @@ void bootProductApp({
     const originalFetch = window.fetch.bind(window);
     window.fetch = installInAppApi(app, originalFetch, window.location);
   },
+  nudgeReplanning: selectProductNudgeReplanning(import.meta.env.TAURI_ENV_PLATFORM, {
+    invoke: (command, args) => invoke(command, args),
+    visibility: {
+      isVisible: () => document.visibilityState === "visible",
+      onChange: (handler) => document.addEventListener("visibilitychange", handler),
+    },
+    timers: {
+      setInterval: (callback, ms) => window.setInterval(callback, ms),
+      clearInterval: (handle) => window.clearInterval(handle as number),
+    },
+  }),
   startScheduler: (db) =>
     startProductScheduler({
       db,

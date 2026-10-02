@@ -1,0 +1,15 @@
+{
+  "identifier": "mobile-nudges",
+  "description": "モバイル（iOS・Android）だけに許す権限。#585 S3（docs/features/scheduled-nudges.md「製品版のエントリの配線」）: 催促の予約通知の取り消し（notification:allow-cancel）と予約一覧（notification:allow-get-pending。切り詰めの検出に件数だけを使う）。macOS は毎分方式（予約を使わない）のため、macOS に効く default.json には置かない",
+  "windows": [
+    "main"
+  ],
+  "platforms": [
+    "iOS",
+    "android"
+  ],
+  "permissions": [
+    "notification:allow-cancel",
+    "notification:allow-get-pending"
+  ]
+}

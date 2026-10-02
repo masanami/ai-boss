@@ -1,6 +1,7 @@
 import type { DbPort } from "../../../server/src/core-entry.js";
 import { createProductCoreApp, type ProductCoreApp } from "./create-product-core-app";
 import { createDisconnectedDbPort } from "./disconnected-db-port";
+import type { ProductNudgeReplanning } from "./start-product-nudge-replanning";
 
 /**
  * 製品版の web のエントリの起動の順序（#580 S2・機能仕様
@@ -22,6 +23,14 @@ import { createDisconnectedDbPort } from "./disconnected-db-port";
  *
  * 準備が終わる前に `/api` を振り向けない（マイグレーションの途中の DB を
  * ルートに触らせない）。
+ *
+ * iOS のとき（`nudgeReplanning` を渡したとき。#585 S3・機能仕様
+ * docs/features/scheduled-nudges.md「製品版のエントリの配線」）は、毎分の検知の
+ * 代わりに催促の予約の計画し直しを組む。DB の準備に成功した後、`/api` の振り
+ * 向けより前に計画し直しを作ってコアのアプリの `onStateChangingRequest` へつなぎ、
+ * 描画の後に起動時の 1 回の計画し直しと前面・背面の購読を始める。DB の準備に
+ * 失敗したときは作らない（「DB 未接続」ポートは読むたびに失敗するため）。
+ * 開始の失敗は毎分の検知と同じく記録し、描画は止めない。
  */
 export interface BootProductAppDeps {
   installLlm: () => void;
@@ -31,6 +40,11 @@ export interface BootProductAppDeps {
   render: () => void;
   /** 準備した DB のポートで毎分の検知を始める（`start-product-scheduler.ts`）。 */
   startScheduler: (db: DbPort) => Promise<void>;
+  /**
+   * 催促の予約の計画し直し（iOS のときだけ渡す。#585 S3・仮定 A26）。渡すと
+   * `startScheduler` は呼ばない。macOS は渡さない。
+   */
+  nudgeReplanning?: ProductNudgeReplanning;
 }
 
 export const PRODUCT_DB_OPEN_FAILED_MESSAGE =
@@ -38,6 +52,9 @@ export const PRODUCT_DB_OPEN_FAILED_MESSAGE =
 
 export const PRODUCT_SCHEDULER_START_FAILED_MESSAGE =
   "製品版の毎分の検知を始められませんでした（催促は届きません）";
+
+export const PRODUCT_NUDGE_REPLANNING_START_FAILED_MESSAGE =
+  "製品版の催促の予約を始められませんでした（催促は届きません）";
 
 export async function bootProductApp(deps: BootProductAppDeps): Promise<void> {
   deps.installLlm();
@@ -50,6 +67,31 @@ export async function bootProductApp(deps: BootProductAppDeps): Promise<void> {
     db = createDisconnectedDbPort();
     dbReady = false;
   }
+
+  const nudgeReplanning = deps.nudgeReplanning;
+  if (nudgeReplanning) {
+    let replanner: ReturnType<ProductNudgeReplanning["createReplanner"]> | null = null;
+    if (dbReady) {
+      try {
+        replanner = nudgeReplanning.createReplanner(db);
+      } catch (error) {
+        deps.logError(PRODUCT_NUDGE_REPLANNING_START_FAILED_MESSAGE, error);
+      }
+    }
+    const started = replanner;
+    deps.installApi(
+      createProductCoreApp(db, started ? { onStateChangingRequest: () => void started.requestReplan() } : {}),
+    );
+    deps.render();
+    if (!started) return;
+    try {
+      nudgeReplanning.start(started);
+    } catch (error) {
+      deps.logError(PRODUCT_NUDGE_REPLANNING_START_FAILED_MESSAGE, error);
+    }
+    return;
+  }
+
   deps.installApi(createProductCoreApp(db));
   deps.render();
 

@@ -81,14 +81,19 @@ fn capabilities_grant_only_sql_the_five_secure_commands_the_evidence_fs_and_the_
     // JSON5（`.json5` 拡張子や、コメント付き `.json`）もパースする。以前は
     // トップレベルの `.json`/`.toml` だけを見ていたため、サブディレクトリへ
     // 置かれたファイルや `.json5` 拡張子のファイルが検査を素通りしていた。
+    //
+    // #585 S3（docs/features/scheduled-nudges.md「製品版のエントリの配線」）:
+    // モバイル（iOS・Android）だけに効く `mobile-nudges.json` を足した（中身は
+    // 下の S3 のテストが固定する）。`default.json` の中身はこのテストのまま変えない。
     let dir = manifest_dir().join("capabilities");
-    let entries = find_capability_files_recursively(&dir);
+    let mut entries = find_capability_files_recursively(&dir);
+    entries.sort();
     assert_eq!(
         entries,
-        vec![dir.join("default.json")],
-        "capabilities/ 配下（サブディレクトリ含む）の capability は default.json の 1 件だけであること"
+        vec![dir.join("default.json"), dir.join("mobile-nudges.json")],
+        "capabilities/ 配下（サブディレクトリ含む）の capability は default.json と mobile-nudges.json の 2 件だけであること"
     );
-    let text = fs::read_to_string(&entries[0]).unwrap();
+    let text = fs::read_to_string(dir.join("default.json")).unwrap();
     let capability: serde_json::Value = serde_json::from_str(&text).unwrap();
     assert_eq!(capability["windows"], serde_json::json!(["main"]));
     assert!(
@@ -328,6 +333,153 @@ fn sql_plugin_preloads_only_the_app_db() {
         conf["plugins"]["sql"]["preload"],
         serde_json::json!(["sqlite:ai-boss.db"])
     );
+}
+
+// ---------------------------------------------------------------------------
+// 通知プラグインの fork と、催促の予約に要る権限（#585 S3・機能仕様
+// docs/features/scheduled-nudges.md「通知プラグインの fork」「製品版のエントリの
+// 配線」・受入基準（S3）「器の設定」）
+// ---------------------------------------------------------------------------
+
+fn notification_fork_dir() -> PathBuf {
+    manifest_dir().join("../tauri-plugin-notification")
+}
+
+const MOBILE_ONLY_NOTIFICATION_PERMISSIONS: [&str; 2] =
+    ["notification:allow-cancel", "notification:allow-get-pending"];
+
+fn load_capability(path: &Path) -> serde_json::Value {
+    serde_json::from_str(&fs::read_to_string(path).unwrap()).unwrap()
+}
+
+fn permission_identifiers(capability: &serde_json::Value) -> Vec<String> {
+    capability["permissions"]
+        .as_array()
+        .expect("permissions が配列でない")
+        .iter()
+        .map(|p| match p {
+            serde_json::Value::String(id) => id.clone(),
+            other => other["identifier"].as_str().unwrap_or_default().to_string(),
+        })
+        .collect()
+}
+
+fn platforms_of(capability: &serde_json::Value) -> Option<Vec<String>> {
+    capability.get("platforms").map(|p| {
+        let mut platforms: Vec<String> = p
+            .as_array()
+            .expect("platforms が配列でない")
+            .iter()
+            .map(|v| v.as_str().unwrap().to_string())
+            .collect();
+        platforms.sort();
+        platforms
+    })
+}
+
+#[test]
+fn tauri_plugin_notification_is_the_in_repo_fork_via_path_dependency() {
+    let cargo = load_cargo_toml();
+    let dep = &cargo["dependencies"]["tauri-plugin-notification"];
+    assert_eq!(dep["path"].as_str(), Some("../tauri-plugin-notification"));
+    assert!(dep.get("version").is_none(), "crates.io の版を併記しない: {dep:?}");
+}
+
+#[test]
+fn cargo_lock_has_no_crates_io_tauri_plugin_notification() {
+    let text = fs::read_to_string(manifest_dir().join("Cargo.lock")).unwrap();
+    let lock: toml::Value = toml::from_str(&text).unwrap();
+    let notification: Vec<_> = lock["package"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|p| p["name"].as_str() == Some("tauri-plugin-notification"))
+        .collect();
+    assert_eq!(notification.len(), 1, "tauri-plugin-notification は fork の 1 件だけ: {notification:?}");
+    assert!(
+        notification[0].get("source").is_none(),
+        "tauri-plugin-notification が crates.io 等の外部の source から来ている: {:?}",
+        notification[0]
+    );
+}
+
+#[test]
+fn notification_fork_keeps_upstream_license_files() {
+    for name in ["LICENSE_MIT", "LICENSE_APACHE-2.0", "LICENSE.spdx"] {
+        assert!(notification_fork_dir().join(name).is_file(), "fork に上流の {name} が無い");
+    }
+}
+
+#[test]
+fn notification_fork_md_records_the_origin_and_the_two_differences() {
+    let text = fs::read_to_string(notification_fork_dir().join("FORK.md")).expect("FORK.md が無い");
+    assert!(text.contains("2.5.0"), "FORK.md に由来の版（2.5.0）が無い");
+    assert!(
+        text.contains("a2364a5f216324439feedeb25b2db74e7b1eba90"),
+        "FORK.md に上流のコミットが無い"
+    );
+    assert!(text.contains("差分 1: iOS の予約時刻を UTC として読む"), "FORK.md に差分 1 が無い");
+    assert!(text.contains("差分 2: iOS の `show` は"), "FORK.md に差分 2 が無い");
+    for needle in ["UTC", "UNUserNotificationCenter.add", "拒否"] {
+        assert!(text.contains(needle), "FORK.md に「{needle}」が無い（差分 1・2）");
+    }
+    let fork: toml::Value =
+        toml::from_str(&fs::read_to_string(notification_fork_dir().join("Cargo.toml")).unwrap()).unwrap();
+    assert_eq!(fork["package"]["version"].as_str(), Some("2.5.0"));
+}
+
+#[test]
+fn mobile_only_notification_permissions_are_in_a_capability_limited_to_ios_and_android() {
+    let path = manifest_dir().join("capabilities/mobile-nudges.json");
+    let capability = load_capability(&path);
+    assert_eq!(capability["windows"], serde_json::json!(["main"]));
+    assert!(
+        capability.get("webviews").is_none() && capability.get("remote").is_none(),
+        "対象は main のウィンドウだけ: {capability}"
+    );
+    assert_eq!(
+        platforms_of(&capability),
+        Some(vec!["android".to_string(), "iOS".to_string()]),
+        "platforms は iOS・Android だけ"
+    );
+    assert_eq!(permission_identifiers(&capability), MOBILE_ONLY_NOTIFICATION_PERMISSIONS);
+}
+
+#[test]
+fn cancel_and_get_pending_are_granted_only_by_capabilities_limited_to_ios_and_android() {
+    let dir = manifest_dir().join("capabilities");
+    for path in find_capability_files_recursively(&dir) {
+        let capability = load_capability(&path);
+        let granted: Vec<String> = permission_identifiers(&capability)
+            .into_iter()
+            .filter(|id| MOBILE_ONLY_NOTIFICATION_PERMISSIONS.contains(&id.as_str()) || id == "notification:default")
+            .collect();
+        if granted.is_empty() {
+            continue;
+        }
+        assert_eq!(
+            platforms_of(&capability),
+            Some(vec!["android".to_string(), "iOS".to_string()]),
+            "{} が {granted:?} を、iOS・Android に限らずに許している",
+            path.display()
+        );
+        assert!(
+            !granted.contains(&"notification:default".to_string()),
+            "{} が notification:default を許している",
+            path.display()
+        );
+    }
+}
+
+#[test]
+fn default_capability_applies_to_every_platform_and_grants_only_notify_for_notifications() {
+    let capability = load_capability(&manifest_dir().join("capabilities/default.json"));
+    assert!(capability.get("platforms").is_none(), "default.json は platforms を指定しない（macOS に効く）");
+    let notification: Vec<String> = permission_identifiers(&capability)
+        .into_iter()
+        .filter(|id| id.starts_with("notification:"))
+        .collect();
+    assert_eq!(notification, vec!["notification:allow-notify".to_string()]);
 }
 
 /// `capabilities/` をサブディレクトリまで再帰的に走査し、capability の定義

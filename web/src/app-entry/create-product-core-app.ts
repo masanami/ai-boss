@@ -28,11 +28,28 @@ import { createPluginFsEvidenceStore } from "./plugin-fs-evidence-store";
  *   呼ぶだけではどのバックエンドも登録されない（登録は `product-llm.ts`）。
  * - LLM の選択の保存の入口 `/api/llm-selection` を有効にする（#582 S2。
  *   開発者用の版は有効にしない）。
+ * - 催促の予約の計画し直しの契機（#585 S3・docs/features/scheduled-nudges.md
+ *   「製品版のエントリの配線」）: iOS のときだけ `boot-product-app.ts` が
+ *   `onStateChangingRequest` を渡し、`createCoreApp` の同名の引数へそのまま
+ *   渡す（`/api` の GET・HEAD・OPTIONS 以外の要求の後に呼ばれる。仮定 A20）。
+ *   macOS は渡さない（毎分方式のまま）。
  */
-export function createProductCoreApp(db: DbPort) {
+export interface ProductCoreAppOptions {
+  onStateChangingRequest?: () => void;
+}
+
+export function createProductCoreApp(db: DbPort, options: ProductCoreAppOptions = {}) {
   // 選択の入口（`GET`・`PUT /api/llm-selection`）は製品版だけが有効にする（#582 S2）。
   // DB が「未接続」のときも有効にする（DB を読む時点で失敗する。仮定 A20）。
-  return createCoreApp(db, {}, { evidenceStore: createPluginFsEvidenceStore(), llmSelectionApi: true });
+  return createCoreApp(
+    db,
+    {},
+    {
+      evidenceStore: createPluginFsEvidenceStore(),
+      llmSelectionApi: true,
+      onStateChangingRequest: options.onStateChangingRequest,
+    },
+  );
 }
 
 export type ProductCoreApp = ReturnType<typeof createProductCoreApp>;

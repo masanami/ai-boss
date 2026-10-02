@@ -21,6 +21,12 @@ const webRoot = fileURLToPath(new URL(".", import.meta.url));
 
 export default defineConfig({
   plugins: [react()],
+  // #585 S3（docs/features/scheduled-nudges.md 仮定 A26）: Tauri の CLI が
+  // `beforeBuildCommand` に渡す `TAURI_ENV_PLATFORM`（ビルドの対象。`ios`・
+  // `darwin` など）を `import.meta.env` へ載せ、iOS のときだけ催促の予約を組む。
+  // `npm run build:app` を直接走らせたとき（CLI を経ない）は未定義で、macOS の
+  // 毎分方式になる。
+  envPrefix: ["VITE_", "TAURI_ENV_PLATFORM"],
   build: {
     outDir: "dist-app",
     emptyOutDir: true,
