@@ -127,25 +127,42 @@ pub fn exclude_from_backup(path: &Path) -> io::Result<()> {
     ))
 }
 
-/// アプリのデータの置き場所（`app_config_dir`）を起動時に用意する（`setup`）。証跡の
-/// 保存先を作り（[`prepare_evidence_dir`]）、iOS ではディレクトリごとバックアップから外す
-/// （#681。DB は plugin-sql の preload が先に作るが、属性はディレクトリに付けるため
-/// 配下に効く）。外せなければ失敗させ、器を起動しない（データを OS のバックアップに
-/// 載せたまま動かさない）。証跡の保存先のパスを返す。
-pub fn prepare_app_data_dir(app_config_dir: &Path) -> io::Result<PathBuf> {
-    prepare_app_data_dir_with(app_config_dir, backup_exclusion_for(EXCLUDES_APP_DATA_FROM_BACKUP))
-}
-
-/// [`prepare_app_data_dir`] の、バックアップから外す処理を注入できる形（テスト用）。
-pub fn prepare_app_data_dir_with(
+/// アプリのデータの置き場所（`app_config_dir`）を OS のバックアップから外す（#681）。
+/// `exclusion` があれば、ディレクトリを作ってから（新規のインストールではまだ無い）
+/// ディレクトリそのものに属性を付ける。属性はディレクトリに付けるため、後から作られる
+/// 配下（DB〔`-wal`・`-shm`〕・`evidence/`）にも効く。外せなければ失敗させる。
+/// `exclusion` が無ければ何もしない（macOS・Android の経路は変えない）。
+pub fn exclude_app_data_dir_from_backup(
     app_config_dir: &Path,
     exclusion: Option<BackupExclusion>,
-) -> io::Result<PathBuf> {
-    let evidence = prepare_evidence_dir(app_config_dir)?;
+) -> io::Result<()> {
     if let Some(exclude) = exclusion {
+        std::fs::create_dir_all(app_config_dir)?;
         exclude(app_config_dir)?;
     }
-    Ok(evidence)
+    Ok(())
+}
+
+/// アプリのデータをバックアップから外すプラグインの名前（#681）。外せないとき、器の
+/// 組み立ては `tauri::Error::PluginInitialization` にこの名前を載せて失敗する。
+pub const APP_DATA_BACKUP_EXCLUSION_PLUGIN_NAME: &str = "app-data-backup-exclusion";
+
+/// アプリのデータをバックアップから外すプラグイン（#681・機能仕様
+/// `docs/features/ios-shell.md` 仮定 A12）。**plugin-sql より先に登録する**: plugin-sql は
+/// 自分の初期化（`tauri.conf.json` の `plugins.sql.preload`）で `app_config_dir` と DB を
+/// 作って開く。Tauri（2.12）はプラグインを登録順に初期化し（`PluginStore::initialize_all`
+/// の `try_for_each`）、失敗したら以降のプラグインもアプリの `setup` も走らせない。
+/// アプリの `setup` で外すと、DB が除外より先に作られ、preload が失敗したときは
+/// 除外を試みもせずに終わる。ここで外せなければ DB を開く前に器の起動を止める。
+fn app_data_backup_exclusion_plugin<R: Runtime>(
+    exclusion: Option<BackupExclusion>,
+) -> tauri::plugin::TauriPlugin<R> {
+    tauri::plugin::Builder::new(APP_DATA_BACKUP_EXCLUSION_PLUGIN_NAME)
+        .setup(move |app, _api| {
+            exclude_app_data_dir_from_backup(&app.path().app_config_dir()?, exclusion)?;
+            Ok(())
+        })
+        .build()
 }
 
 /// 多重起動の排他の錠のファイル名（`app_config_dir` の直下。DB と同じ場所）。
@@ -561,7 +578,25 @@ pub fn configure<R: Runtime>(builder: tauri::Builder<R>) -> tauri::Builder<R> {
 /// Android は S1 では保管できない保管〔#674〕）、テストは
 /// 模擬の宛先の表とメモリの保管を渡す。
 pub fn configure_with<R: Runtime>(builder: tauri::Builder<R>, secure_state: SecureState) -> tauri::Builder<R> {
+    configure_with_backup_exclusion(
+        builder,
+        secure_state,
+        backup_exclusion_for(EXCLUDES_APP_DATA_FROM_BACKUP),
+    )
+}
+
+/// [`configure_with`] の、アプリのデータをバックアップから外す処理を注入できる形（#681。
+/// 製品版は [`backup_exclusion_for`]`(`[`EXCLUDES_APP_DATA_FROM_BACKUP`]`)`。結合テスト
+/// `tests/backup_exclusion.rs` は記録する模擬・失敗する模擬を渡し、除外が plugin-sql の
+/// preload より前に走ること・外せなければ DB を作らずに組み立てが失敗することを確かめる）。
+pub fn configure_with_backup_exclusion<R: Runtime>(
+    builder: tauri::Builder<R>,
+    secure_state: SecureState,
+    exclusion: Option<BackupExclusion>,
+) -> tauri::Builder<R> {
     builder
+        // #681: plugin-sql（DB の preload）より先（[`app_data_backup_exclusion_plugin`]）。
+        .plugin(app_data_backup_exclusion_plugin(exclusion))
         .plugin(tauri_plugin_sql::Builder::new().build())
         .plugin(tauri_plugin_fs::init())
         // #579 S3: 通知の送信（`plugin:notification|notify`。WebView には
@@ -579,7 +614,7 @@ pub fn configure_with<R: Runtime>(builder: tauri::Builder<R>, secure_state: Secu
             secure_commands::byok_key_status,
         ])
         .setup(|app| {
-            prepare_app_data_dir(&app.path().app_config_dir()?)?;
+            prepare_evidence_dir(&app.path().app_config_dir()?)?;
             build_main_window(app)?;
             // #579 S3: 毎分の刻みを WebView へ送る（ウィンドウを隠しても続く）。
             // デスクトップだけ（#669 S1・決定 1。iOS は予約通知方式で、刻みの受け手がいない）。
@@ -678,7 +713,7 @@ mod tests {
         assert!(!missing.exists());
     }
 
-    // --- prepare_app_data_dir（#681: iOS でアプリのデータをバックアップから外す） ----
+    // --- exclude_app_data_dir_from_backup（#681: iOS でアプリのデータをバックアップから外す） ----
 
     /// `path` そのものに付いた除外の属性（Apple の `NSURLIsExcludedFromBackupKey` が書く
     /// 拡張属性）があるか。祖先の除外は見ない。
@@ -735,44 +770,50 @@ mod tests {
     }
 
     #[test]
-    fn prepare_app_data_dir_excludes_the_app_config_dir_itself_and_prepares_evidence() {
+    fn exclude_app_data_dir_from_backup_creates_and_excludes_the_app_config_dir_itself() {
         let _serial = EXCLUSION_TESTS.lock().unwrap_or_else(|e| e.into_inner());
         EXCLUDED.lock().unwrap_or_else(|e| e.into_inner()).clear();
         let root = tempfile::tempdir().unwrap();
+        // 新規のインストール: まだ無いディレクトリを作ってから外す。
         let config_dir = root.path().join("dev.aiboss.app");
 
-        let evidence = prepare_app_data_dir_with(&config_dir, Some(record_exclusion)).unwrap();
+        exclude_app_data_dir_from_backup(&config_dir, Some(record_exclusion)).unwrap();
 
-        assert_eq!(evidence, config_dir.join("evidence"));
-        assert!(evidence.is_dir());
         // 配下の DB・evidence/・錠に効くよう、`app_config_dir` そのもの（だけ）に付ける。
         assert_eq!(*EXCLUDED.lock().unwrap_or_else(|e| e.into_inner()), vec![config_dir]);
     }
 
     #[test]
-    fn prepare_app_data_dir_does_not_exclude_without_an_exclusion() {
+    fn exclude_app_data_dir_from_backup_does_nothing_without_an_exclusion() {
         let _serial = EXCLUSION_TESTS.lock().unwrap_or_else(|e| e.into_inner());
         EXCLUDED.lock().unwrap_or_else(|e| e.into_inner()).clear();
-        let config_dir = tempfile::tempdir().unwrap();
+        let root = tempfile::tempdir().unwrap();
+        let config_dir = root.path().join("dev.aiboss.app");
 
-        prepare_app_data_dir_with(config_dir.path(), None).unwrap();
+        exclude_app_data_dir_from_backup(&config_dir, None).unwrap();
 
         assert!(EXCLUDED.lock().unwrap_or_else(|e| e.into_inner()).is_empty());
+        // macOS・Android の経路は変えない（ディレクトリも作らない）。
+        assert!(!config_dir.exists());
     }
 
     #[test]
-    fn prepare_app_data_dir_fails_when_the_exclusion_fails() {
+    fn exclude_app_data_dir_from_backup_fails_when_the_exclusion_fails() {
         let config_dir = tempfile::tempdir().unwrap();
-        let error = prepare_app_data_dir_with(config_dir.path(), Some(fail_exclusion)).unwrap_err();
+        let error = exclude_app_data_dir_from_backup(config_dir.path(), Some(fail_exclusion)).unwrap_err();
         assert_eq!(error.to_string(), "exclusion failed");
     }
 
     #[cfg(target_vendor = "apple")]
     #[test]
-    fn prepare_app_data_dir_on_the_host_leaves_the_directory_in_backup() {
+    fn the_production_exclusion_on_the_host_leaves_the_directory_in_backup() {
         // macOS（ホスト）の製品の経路は属性を付けない（除外は iOS だけ）。
         let config_dir = tempfile::tempdir().unwrap();
-        prepare_app_data_dir(config_dir.path()).unwrap();
+        exclude_app_data_dir_from_backup(
+            config_dir.path(),
+            backup_exclusion_for(EXCLUDES_APP_DATA_FROM_BACKUP),
+        )
+        .unwrap();
         assert!(!has_backup_exclusion_attribute(config_dir.path()));
     }
 
