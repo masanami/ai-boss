@@ -25,8 +25,9 @@
 //! だけを許可する（#585 S3・機能仕様 `docs/features/scheduled-nudges.md`）。
 //!
 //! メインウィンドウのナビゲーション・新規ウィンドウ・ダウンロードの許可判定は、
-//! [`is_allowed_navigation`]・[`is_allowed_new_window`] という URL を受け取る
-//! 純粋関数として切り出し、`cargo test` で固定する（Tauri の
+//! [`is_allowed_navigation_for`]・[`is_allowed_new_window_for`] というアプリのオリジン
+//! （[`AppOrigin`]。macOS・iOS は `tauri://localhost`、Android は `http://tauri.localhost`。
+//! #674 S1）と URL を受け取る純粋関数として切り出し、`cargo test` で固定する（Tauri の
 //! `WebviewWindowBuilder::on_navigation`/`on_new_window` へはそのままクロージャ
 //! として渡すだけで、判定ロジック自体はテスト対象として独立している）。
 
@@ -207,30 +208,101 @@ pub mod secure_commands;
 pub use app_commands::APP_COMMANDS;
 pub use secure_commands::SecureState;
 
-/// メインウィンドウのナビゲーション先として許すかどうかを判定する（機能仕様
-/// S2「権限と到達経路の境界」・受入基準）。
+/// アプリのオリジン（Tauri がアプリの画面を開く URL のスキームとホスト）。
 ///
-/// アプリのオリジン（`tauri://localhost`）だけを許し、それ以外（外部の
-/// `https:`/`http:`、`file:`、`blob:`、`data:` 等）はすべて拒否する。
-/// `tauri://` スキームでも `localhost` 以外のホスト（例:
-/// `tauri://evil.example`）は許さない — オリジン全体（scheme + host）が
-/// 一致することを要求する。
-pub fn is_allowed_navigation(url: &Url) -> bool {
-    url.scheme() == "tauri" && url.host_str() == Some("localhost")
+/// macOS・iOS は `tauri://localhost`、Android は `http://tauri.localhost`（Tauri 2.12 の
+/// `custom_protocol` のビルド。`use_https_scheme` は既定の偽のまま変えない。#674 S1・
+/// `docs/features/android-shell.md` 決定 2）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AppOrigin {
+    /// `tauri://localhost`（macOS・iOS）。
+    TauriLocalhost,
+    /// `http://tauri.localhost`（Android）。
+    HttpTauriLocalhost,
 }
 
-/// `blob:` の接頭辞（アプリのオリジン配下）。新規ウィンドウの許可判定
-/// ([`is_allowed_new_window`]) だけが使う — ナビゲーション判定
-/// ([`is_allowed_navigation`]) は `blob:` を常に拒否するため対象外。
-const ALLOWED_BLOB_URL_PREFIX: &str = "tauri://localhost/";
+impl AppOrigin {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            AppOrigin::TauriLocalhost => "tauri://localhost",
+            AppOrigin::HttpTauriLocalhost => "http://tauri.localhost",
+        }
+    }
+
+    /// 新規ウィンドウで許す `blob:` の、コロンの後ろの接頭辞（オリジン＋`/`）。
+    /// 末尾の `/` まで比べ、`tauri.localhost.evil.example`・ポートつきを一致させない。
+    fn blob_url_prefix(self) -> &'static str {
+        match self {
+            AppOrigin::TauriLocalhost => "tauri://localhost/",
+            AppOrigin::HttpTauriLocalhost => "http://tauri.localhost/",
+        }
+    }
+}
+
+/// 器が判定に渡すオリジンを選ぶ（純粋関数。Android かどうかを引数に取り、どちらの値も
+/// ホストの単体テストで確かめる。#674 S1・決定 1）。
+pub const fn app_origin_for(is_android: bool) -> AppOrigin {
+    if is_android {
+        AppOrigin::HttpTauriLocalhost
+    } else {
+        AppOrigin::TauriLocalhost
+    }
+}
+
+/// このビルドのアプリのオリジン。Android に固有の分岐は `target_os = "android"` に付ける
+/// （`mobile` に付けない。iOS の振る舞いを変えないため。決定 1）。
+pub const fn app_origin() -> AppOrigin {
+    app_origin_for(cfg!(target_os = "android"))
+}
+
+// 選んだオリジンを、ターゲットごとのコンパイルで固定する（Android は `check:android`、
+// Apple は `check:ios`・`test:tauri`・`build:tauri` がコンパイルする）。`cfg!` の付け先を
+// 誤ると（例: `mobile`・`target_os = "ios"`）、どちらかのターゲットでコンパイルが失敗する。
+#[cfg(target_os = "android")]
+const _: () = assert!(matches!(app_origin(), AppOrigin::HttpTauriLocalhost));
+#[cfg(target_vendor = "apple")]
+const _: () = assert!(matches!(app_origin(), AppOrigin::TauriLocalhost));
+
+/// メインウィンドウのナビゲーション先として許すかどうかを判定する（機能仕様
+/// S2「権限と到達経路の境界」・受入基準）。このビルドのオリジン（[`app_origin`]）で
+/// [`is_allowed_navigation_for`] を呼ぶ。
+pub fn is_allowed_navigation(url: &Url) -> bool {
+    is_allowed_navigation_for(app_origin(), url)
+}
+
+/// オリジン `origin` のアプリのナビゲーション先として許すかどうか。
+///
+/// アプリのオリジンだけを許し、それ以外（外部の `https:`/`http:`、`file:`、`blob:`、
+/// `data:` 等）はすべて拒否する。オリジン全体（scheme + host）が一致することを要求する
+/// （例: `tauri://evil.example` は許さない）。
+///
+/// - `tauri://localhost`（macOS・iOS）: スキーム `tauri`・ホスト `localhost`（#674 の前と同じ判定）
+/// - `http://tauri.localhost`（Android）: スキーム `http`・ホスト `tauri.localhost`・ポート無し。
+///   `https://tauri.localhost`・`http://tauri.localhost:8080` は拒否する（`url` は既定の
+///   ポート〔`:80`〕を落とすため、`http://tauri.localhost:80/` は同じオリジンとして許す）
+pub fn is_allowed_navigation_for(origin: AppOrigin, url: &Url) -> bool {
+    match origin {
+        AppOrigin::TauriLocalhost => url.scheme() == "tauri" && url.host_str() == Some("localhost"),
+        AppOrigin::HttpTauriLocalhost => {
+            url.scheme() == "http" && url.host_str() == Some("tauri.localhost") && url.port().is_none()
+        }
+    }
+}
 
 /// 新規ウィンドウ（`window.open`）の要求先として許すかどうかを判定する（機能
-/// 仕様 S2「権限と到達経路の境界」・受入基準）。
+/// 仕様 S2「権限と到達経路の境界」・受入基準）。このビルドのオリジン（[`app_origin`]）で
+/// [`is_allowed_new_window_for`] を呼ぶ。
+pub fn is_allowed_new_window(url: &Url) -> bool {
+    is_allowed_new_window_for(app_origin(), url)
+}
+
+/// オリジン `origin` のアプリの新規ウィンドウの要求先として許すかどうか。
 ///
 /// アプリのオリジンの `blob:` URL（証跡ファイルの表示。例:
-/// `blob:tauri://localhost/<uuid>`）だけを許し、それ以外（外部オリジンの
-/// `blob:`、`https:`/`http:`、`file:`、`data:`、`about:blank` 等）はすべて
-/// 拒否する。
+/// `blob:tauri://localhost/<uuid>`・Android は `blob:http://tauri.localhost/<uuid>`）だけを
+/// 許し、それ以外（外部オリジンの `blob:`、`https:`/`http:`、`file:`、`data:`、
+/// `about:blank` 等）はすべて拒否する。ナビゲーション判定（[`is_allowed_navigation_for`]）は
+/// `blob:` を常に拒否する。
 ///
 /// `url` クレートは `blob:` を "cannot-be-a-base" スキームとして扱い、
 /// `scheme()` は `"blob"`、`path()` はコロンの後ろ全体（例:
@@ -238,8 +310,8 @@ const ALLOWED_BLOB_URL_PREFIX: &str = "tauri://localhost/";
 /// `starts_with` で末尾の `/` まで含めて比較することで、
 /// `tauri://localhost.evil.example/...` のような接頭辞だけが似た文字列を
 /// 誤って許可しない。
-pub fn is_allowed_new_window(url: &Url) -> bool {
-    url.scheme() == "blob" && url.path().starts_with(ALLOWED_BLOB_URL_PREFIX)
+pub fn is_allowed_new_window_for(origin: AppOrigin, url: &Url) -> bool {
+    url.scheme() == "blob" && url.path().starts_with(origin.blob_url_prefix())
 }
 
 /// メインウィンドウを組み立てる（`tauri.conf.json` の `app.windows` ではなく
@@ -409,7 +481,8 @@ pub fn configure<R: Runtime>(builder: tauri::Builder<R>) -> tauri::Builder<R> {
 
 /// [`configure`] の、秘密情報を扱う通信層の状態を注入できる形（#581 S3。
 /// 機能仕様 docs/features/secure-transport-byok.md 仮定 A18）。製品版は
-/// [`SecureState::production`]（製品版の宛先の表とキーチェーン）、テストは
+/// [`SecureState::production`]（製品版の宛先の表と端末の保管。Apple はキーチェーン、
+/// Android は S1 では保管できない保管〔#674〕）、テストは
 /// 模擬の宛先の表とメモリの保管を渡す。
 pub fn configure_with<R: Runtime>(builder: tauri::Builder<R>, secure_state: SecureState) -> tauri::Builder<R> {
     builder
@@ -844,5 +917,93 @@ mod tests {
         assert!(!is_allowed_new_window(&url(
             "blob:tauri://localhost.evil.example/9f3e1b0a-1111-2222-3333-444455556666"
         )));
+    }
+
+    // --- アプリのオリジン（#674 S1・docs/features/android-shell.md 決定 1・2） -------
+
+    const UUID: &str = "9f3e1b0a-1111-2222-3333-444455556666";
+
+    fn android_allows(s: &str) -> bool {
+        is_allowed_navigation_for(AppOrigin::HttpTauriLocalhost, &url(s))
+    }
+
+    #[test]
+    fn android_origin_allows_the_app_origin_and_its_pages() {
+        assert!(android_allows("http://tauri.localhost/"));
+        assert!(android_allows("http://tauri.localhost/index.html"));
+    }
+
+    #[test]
+    fn android_origin_denies_https() {
+        assert!(!android_allows("https://tauri.localhost/"));
+    }
+
+    #[test]
+    fn android_origin_denies_a_host_that_only_starts_with_tauri_localhost() {
+        assert!(!android_allows("http://tauri.localhost.evil.example/"));
+    }
+
+    #[test]
+    fn android_origin_denies_an_explicit_port() {
+        assert!(!android_allows("http://tauri.localhost:8080/"));
+    }
+
+    #[test]
+    fn android_origin_denies_plain_localhost_and_the_apple_origin() {
+        assert!(!android_allows("http://localhost/"));
+        assert!(!android_allows("tauri://localhost"));
+    }
+
+    #[test]
+    fn android_origin_denies_external_https_and_its_own_blob_url() {
+        assert!(!android_allows("https://example.com/"));
+        assert!(!android_allows(&format!("blob:http://tauri.localhost/{UUID}")));
+    }
+
+    #[test]
+    fn apple_origin_denies_the_android_origin() {
+        assert!(!is_allowed_navigation_for(AppOrigin::TauriLocalhost, &url("http://tauri.localhost/")));
+    }
+
+    #[test]
+    fn apple_origin_allows_its_own_origin() {
+        assert!(is_allowed_navigation_for(AppOrigin::TauriLocalhost, &url("tauri://localhost")));
+        assert!(!is_allowed_navigation_for(AppOrigin::TauriLocalhost, &url("tauri://evil.example")));
+    }
+
+    #[test]
+    fn android_new_window_allows_only_its_own_blob_url() {
+        let allows = |s: &str| is_allowed_new_window_for(AppOrigin::HttpTauriLocalhost, &url(s));
+        assert!(allows(&format!("blob:http://tauri.localhost/{UUID}")));
+        assert!(!allows(&format!("blob:tauri://localhost/{UUID}")));
+        assert!(!allows(&format!("blob:http://tauri.localhost.evil.example/{UUID}")));
+        assert!(!allows(&format!("blob:http://tauri.localhost:8080/{UUID}")));
+        assert!(!allows(&format!("blob:https://tauri.localhost/{UUID}")));
+        assert!(!allows("http://tauri.localhost/"));
+    }
+
+    #[test]
+    fn apple_new_window_denies_the_android_blob_url() {
+        let allows = |s: &str| is_allowed_new_window_for(AppOrigin::TauriLocalhost, &url(s));
+        assert!(allows(&format!("blob:tauri://localhost/{UUID}")));
+        assert!(!allows(&format!("blob:http://tauri.localhost/{UUID}")));
+    }
+
+    #[test]
+    fn the_origin_chosen_for_android_is_http_tauri_localhost() {
+        assert_eq!(app_origin_for(true), AppOrigin::HttpTauriLocalhost);
+        assert_eq!(AppOrigin::HttpTauriLocalhost.as_str(), "http://tauri.localhost");
+    }
+
+    #[test]
+    fn the_origin_chosen_for_macos_and_ios_is_tauri_localhost() {
+        assert_eq!(app_origin_for(false), AppOrigin::TauriLocalhost);
+        assert_eq!(AppOrigin::TauriLocalhost.as_str(), "tauri://localhost");
+    }
+
+    #[test]
+    fn the_host_build_uses_the_apple_origin() {
+        // ホスト（macOS）の `cargo test` では Android の分岐に入らない。
+        assert_eq!(app_origin(), AppOrigin::TauriLocalhost);
     }
 }

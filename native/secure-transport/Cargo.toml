@@ -7,16 +7,29 @@ description = "BYOK の API キーを OS のセキュアストレージに保管
 
 [dependencies]
 bytes = "1"
-reqwest = { version = "0.12", default-features = false, features = ["default-tls"] }
+# TLS の機能はターゲットごとの表で足す（#674 S1・docs/features/android-shell.md 決定 6）。
+# ここに TLS の機能を書くと、Cargo の機能は同じターゲットの中で合わさるため、Android でも
+# `native-tls`（OpenSSL）が有効のまま残る。
+reqwest = { version = "0.12", default-features = false }
 secrecy = "0.10"
 tokio = { version = "1", features = ["macros", "sync"] }
 tokio-util = "0.7"
+# 組み立てた資格情報の文字列（`Bearer <キー>`）とキーチェーンから読み出した値を、drop 時に
+# 消去する。transport.rs がどのターゲットでも使うため、共通の依存に置く（#674 S1。
+# Apple の表の下だけにあると Android 向けにコンパイルできない）。
+zeroize = "1"
 
 [target.'cfg(target_vendor = "apple")'.dependencies]
 core-foundation = "0.10"
 core-foundation-sys = "0.8"
 security-framework-sys = { version = "2.17", features = ["OSX_10_15"] }
-zeroize = "1"
+# Apple（macOS・iOS）の TLS は今の `default-tls`（Security.framework）のまま。
+reqwest = { version = "0.12", default-features = false, features = ["default-tls"] }
+
+# Android の TLS は rustls と同梱のルート証明書（webpki-roots）（#674 S1・決定 6・Q3）。
+# 端末に利用者が足した証明書は信頼しない。
+[target.'cfg(target_os = "android")'.dependencies]
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls-webpki-roots"] }
 
 [dev-dependencies]
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "net", "io-util", "sync", "time"] }

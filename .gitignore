@@ -21,6 +21,19 @@ web/dist-app/
 # ビルドの出力（build/・Externals/）とユーザー固有の Xcode の状態（xcuserdata/）は、
 # gen/apple/.gitignore（tauri ios init が作る）とこのファイルの build/ が無視する
 native/tauri-app/gen/schemas/
+# Android の器の Gradle のプロジェクト（gen/android）はコミットする（#674 S1・
+# docs/features/android-shell.md 決定 4）。開発機に固有のファイル（local.properties。SDK の
+# 場所）・Gradle の状態とビルドの出力・署名の鍵・IDE の状態は無視する。gen/android/.gitignore（tauri
+# android init が作る）も local.properties・.gradle・build を無視するが、署名の鍵（*.jks・
+# *.keystore）は無視しないため、ここに明記する
+native/tauri-app/gen/android/**/local.properties
+native/tauri-app/gen/android/**/.gradle/
+native/tauri-app/gen/android/**/build/
+native/tauri-app/gen/android/**/*.jks
+native/tauri-app/gen/android/**/*.keystore
+# Android Studio・Kotlin の開発機ごとの状態（JDK の場所等を含む）
+native/tauri-app/gen/android/**/.idea/
+native/tauri-app/gen/android/**/.kotlin/
 # iOS 向けのビルドで tauri-plugin の build.rs がプラグインの下に写す Swift の tauri-api（#669 S1）
 native/tauri-plugin-*/.tauri/
 # tauri-build が AppManifest のコマンドから生成する権限の定義（#581 S3。ビルドのたびに作り直される）

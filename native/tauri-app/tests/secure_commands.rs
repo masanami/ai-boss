@@ -19,8 +19,8 @@ use std::time::Duration;
 use app_lib::secure_commands::{CommandError, StreamEvent};
 use app_lib::{SecureState, APP_COMMANDS};
 use secure_transport::{
-    Destination, DestinationTable, KeyStore, MemoryKeyStore, Provider, SendRequest, ANTHROPIC_MESSAGES,
-    OPENAI_RESPONSES, RELAY_MESSAGES,
+    Destination, DestinationTable, KeyStore, MemoryKeyStore, Provider, SendRequest, UnsupportedKeyStore,
+    ANTHROPIC_MESSAGES, OPENAI_RESPONSES, RELAY_MESSAGES,
 };
 use serde_json::{json, Value};
 use support::{Gate, MockResponse, MockServer};
@@ -681,4 +681,45 @@ async fn s2_r_license_never_appears_in_command_results_errors_channel_events_or_
     for text in texts {
         assert!(!text.contains(LICENSE), "{text}");
     }
+}
+
+// --- 保管できない端末（#674 S1 の Android。docs/features/android-shell.md 決定 7・受入基準（S1）「秘密情報の保管」）---
+
+fn unsupported_state(anthropic: &MockServer, openai: &MockServer, relay: &MockServer) -> SecureState {
+    let table = DestinationTable::from_entries([
+        (ANTHROPIC_MESSAGES, Destination::anthropic_messages(anthropic.url("/v1/messages"))),
+        (OPENAI_RESPONSES, Destination::openai_responses(openai.url("/v1/responses"))),
+        (RELAY_MESSAGES, Destination::relay_messages(relay.url("/v1/messages"))),
+    ]);
+    SecureState::new(table, Arc::new(UnsupportedKeyStore::new())).unwrap()
+}
+
+#[tokio::test]
+async fn with_an_unsupported_store_the_key_commands_fail_as_key_store_failure() {
+    let (anthropic, openai) = servers(MockResponse::new(200).chunk(b"x")).await;
+    let relay = MockServer::start(MockResponse::new(200).chunk(b"x")).await;
+    let state = unsupported_state(&anthropic, &openai, &relay);
+    for provider in ["anthropic", "openai"] {
+        assert_eq!(state.key_set(provider, KEY.to_owned()), Err(error_of("key-store-failure")), "{provider}");
+        assert_eq!(state.key_delete(provider), Err(error_of("key-store-failure")), "{provider}");
+        // 「未登録」（`Ok(false)`）と区別できるよう、登録の有無も失敗で返す。
+        assert_eq!(state.key_status(provider), Err(error_of("key-store-failure")), "{provider}");
+    }
+}
+
+#[tokio::test]
+async fn with_an_unsupported_store_byok_and_relay_sends_fail_as_key_store_failure_without_sending() {
+    let (anthropic, openai) = servers(MockResponse::new(200).chunk(b"x")).await;
+    let relay = MockServer::start(MockResponse::new(200).chunk(b"x")).await;
+    let state = unsupported_state(&anthropic, &openai, &relay);
+    for destination in [ANTHROPIC_MESSAGES, OPENAI_RESPONSES, RELAY_MESSAGES] {
+        let (sink, _rx) = sink();
+        let error = state.send(request(destination, destination), sink).await.unwrap_err();
+        assert_eq!(error, error_of("key-store-failure"), "{destination}");
+        assert_ne!(error.kind, "key-not-registered", "{destination}");
+        assert_eq!(serde_json::to_value(&error).unwrap(), json!({ "kind": "key-store-failure" }));
+    }
+    assert!(anthropic.requests().is_empty());
+    assert!(openai.requests().is_empty());
+    assert!(relay.requests().is_empty());
 }

@@ -9,6 +9,9 @@
 //!   で模擬の表とメモリの保管を注入する）
 //! - 失敗は種類（とリダイレクト拒否のステータス・キーチェーンの OSStatus）
 //!   だけを持つ [`CommandError`] で返し、キー・要求本文・応答本文を含めない
+//! - 保管は端末ごとに選ぶ（Apple はキーチェーン。Android は S1 では保管できず、
+//!   キーの操作・送信が `key-store-failure` で失敗する。#674 S1・
+//!   docs/features/android-shell.md 決定 7）
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -43,7 +46,11 @@ impl From<StoreError> for CommandError {
     fn from(error: StoreError) -> Self {
         match error {
             StoreError::Keychain { status } => Self { os_status: Some(status), ..Self::of("key-store-failure") },
-            StoreError::InvalidEncoding | StoreError::InvalidKeyFormat => Self::of("key-store-failure"),
+            // `Unsupported`（#674 S1 の Android。保管は S2）も、既存の保管の失敗の表示へ写す
+            // （`key-not-registered` にしない。画面〔web/src/〕は変えない）。
+            StoreError::InvalidEncoding | StoreError::InvalidKeyFormat | StoreError::Unsupported => {
+                Self::of("key-store-failure")
+            }
         }
     }
 }
@@ -116,9 +123,9 @@ impl SecureState {
         Ok(Self { transport, store })
     }
 
-    /// 製品版の状態: 製品版の宛先の表とキーチェーンの保管。
+    /// 製品版の状態: 製品版の宛先の表と、端末の保管（[`production_key_store`]）。
     pub fn production() -> Result<Self, CommandError> {
-        Self::new(DestinationTable::production(), Arc::new(secure_transport::KeychainKeyStore::new()))
+        Self::new(DestinationTable::production(), production_key_store())
     }
 
     /// 送信し、応答の頭を返す。本文は `sink` へ順に渡す（`sink` が偽を返したら
@@ -154,6 +161,19 @@ impl SecureState {
     pub fn key_status(&self, provider: &str) -> Result<bool, CommandError> {
         Ok(self.store.contains(parse_provider(provider)?)?)
     }
+}
+
+/// 製品版の保管: Apple（macOS・iOS）はキーチェーン。
+#[cfg(target_vendor = "apple")]
+fn production_key_store() -> Arc<dyn KeyStore> {
+    Arc::new(secure_transport::KeychainKeyStore::new())
+}
+
+/// 製品版の保管: Android は S1 では保管できない（すべての操作が保管の失敗。#674 S1・
+/// docs/features/android-shell.md 決定 7・A2。Android Keystore の保管は S2）。
+#[cfg(target_os = "android")]
+fn production_key_store() -> Arc<dyn KeyStore> {
+    Arc::new(secure_transport::UnsupportedKeyStore::new())
 }
 
 /// キーのコマンドが受け付けるプロバイダは `anthropic` と `openai` だけ（#582 S2・
@@ -242,6 +262,16 @@ mod tests {
             serde_json::to_value(&error).unwrap(),
             serde_json::json!({ "kind": "key-store-failure", "osStatus": -34018 })
         );
+    }
+
+    #[test]
+    fn unsupported_store_maps_to_key_store_failure_without_an_os_status() {
+        // #674 S1（docs/features/android-shell.md 決定 7）: 画面は既存の保管の失敗の表示を使う。
+        let error: CommandError = StoreError::Unsupported.into();
+        assert_eq!(error, CommandError { kind: "key-store-failure", status: None, os_status: None });
+        let error: CommandError = TransportError::KeyStore(StoreError::Unsupported).into();
+        assert_eq!(error, CommandError { kind: "key-store-failure", status: None, os_status: None });
+        assert_eq!(serde_json::to_value(&error).unwrap(), serde_json::json!({ "kind": "key-store-failure" }));
     }
 
     #[test]
