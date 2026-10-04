@@ -22,15 +22,27 @@ function isIgnored(path) {
   return status === 0;
 }
 
-test("gen/apple の project.yml はコミットされている", () => {
-  const { status, stdout } = git("ls-files", `${genApple}/project.yml`);
-  assert.equal(status, 0);
-  assert.deepEqual(stdout.split("\n").filter(Boolean), [`${genApple}/project.yml`]);
-});
+// project.yml（受入基準）と、手で加えた設定を残すためにコミットする Info.plist・
+// エンタイトルメント・Xcode のプロジェクト（決定 2 の理由）。
+const committedFiles = [
+  "project.yml",
+  "ai-boss-tauri-app_iOS/Info.plist",
+  "ai-boss-tauri-app_iOS/ai-boss-tauri-app_iOS.entitlements",
+  "ai-boss-tauri-app.xcodeproj/project.pbxproj",
+  "Assets.xcassets/AppIcon.appiconset/Contents.json",
+].map((file) => `${genApple}/${file}`);
 
-test("gen/apple の project.yml は無視の規則に当たらない", () => {
-  assert.equal(isIgnored(`${genApple}/project.yml`), false);
-});
+for (const path of committedFiles) {
+  test(`${path} はコミットされている`, () => {
+    const { status, stdout } = git("ls-files", path);
+    assert.equal(status, 0);
+    assert.deepEqual(stdout.split("\n").filter(Boolean), [path]);
+  });
+
+  test(`${path} は無視の規則に当たらない`, () => {
+    assert.equal(isIgnored(path), false);
+  });
+}
 
 test("gen/schemas の下は無視される（tauri-build の生成物）", () => {
   assert.equal(isIgnored("native/tauri-app/gen/schemas/acl-manifests.json"), true);
