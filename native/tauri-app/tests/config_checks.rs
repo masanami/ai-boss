@@ -807,15 +807,17 @@ fn run_is_the_mobile_entry_point() {
 /// 製品の `configure_with` が、ビルド対象の除外（`backup_exclusion_for(EXCLUDES_APP_DATA_FROM_BACKUP)`）
 /// を渡していること（#681・#683）。ホストでは定数が false で、`None`・`backup_exclusion_for(false)`
 /// と実行時に区別できない（iOS の実観測は #682）ため、`run_is_the_mobile_entry_point` と
-/// 同じくソースの文面で配線を固定する（空白を除いて照らし、rustfmt の改行に依らない）。
+/// 同じくソースの文面で配線を固定する。関数の本体の全体が、その 1 つの呼び出しと完全に一致する
+/// ことを照らす（空白を除き、rustfmt の改行・末尾カンマに依らない）。部分一致ではないため、
+/// ブロックコメント・到達しない分岐・余計な文・後置（`.and(None)` 等）に正しい呼び出しを
+/// 紛れ込ませても通らない。
 #[test]
 fn configure_with_passes_the_build_targets_backup_exclusion() {
     let path = manifest_dir().join("src/lib.rs");
     let source = fs::read_to_string(&path)
         .unwrap_or_else(|e| panic!("failed to read {}: {e}", path.display()));
-    // `pub fn configure_with<` の行から、次の行頭の `}` の行まで（関数の本体）。コメントは
-    // 落とす（正しい呼び出しをコメントに残したまま実の引数を変えても通らないように）。
-    let mut body = String::new();
+    // `pub fn configure_with<` の行から、関数を閉じる行頭の `}` の直前まで。行コメントは落とす。
+    let mut text = String::new();
     let mut inside = false;
     let mut closed = false;
     for line in source.lines() {
@@ -823,25 +825,28 @@ fn configure_with_passes_the_build_targets_backup_exclusion() {
             inside = true;
         }
         if inside {
-            body.push_str(line.split("//").next().unwrap_or(""));
-            body.push('\n');
             if line.starts_with('}') {
                 closed = true;
                 break;
             }
+            text.push_str(line.split("//").next().unwrap_or(""));
+            text.push('\n');
         }
     }
     assert!(
         closed,
         "src/lib.rs に pub fn configure_with< の関数（行頭の `}}` で閉じる）が見つからない"
     );
-    // 末尾カンマの有無に依らず、外側の呼び出しの閉じ括弧まで照らす（`.and(None)` 等の後置を拒む）。
+    // シグネチャの最初の `{` の直後からが本体。
+    let body = text
+        .split_once('{')
+        .map(|(_, rest)| rest)
+        .unwrap_or_else(|| panic!("configure_with のシグネチャに `{{` が無い: {text}"));
     let compact: String = body.chars().filter(|c| !c.is_whitespace()).collect::<String>().replace(",)", ")");
-    assert!(
-        compact.contains(
-            "configure_with_backup_exclusion(builder,secure_state,backup_exclusion_for(EXCLUDES_APP_DATA_FROM_BACKUP))"
-        ),
-        "configure_with が backup_exclusion_for(EXCLUDES_APP_DATA_FROM_BACKUP) を渡していない（#681・#683）: {body}"
+    assert_eq!(
+        compact,
+        "configure_with_backup_exclusion(builder,secure_state,backup_exclusion_for(EXCLUDES_APP_DATA_FROM_BACKUP))",
+        "configure_with の本体が backup_exclusion_for(EXCLUDES_APP_DATA_FROM_BACKUP) を渡す呼び出しだけになっていない（#681・#683）: {body}"
     );
 }
 
