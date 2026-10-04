@@ -804,6 +804,47 @@ fn run_is_the_mobile_entry_point() {
     );
 }
 
+/// 製品の `configure_with` が、ビルド対象の除外（`backup_exclusion_for(EXCLUDES_APP_DATA_FROM_BACKUP)`）
+/// を渡していること（#681・#683）。ホストでは定数が false で、`None`・`backup_exclusion_for(false)`
+/// と実行時に区別できない（iOS の実観測は #682）ため、`run_is_the_mobile_entry_point` と
+/// 同じくソースの文面で配線を固定する（空白を除いて照らし、rustfmt の改行に依らない）。
+#[test]
+fn configure_with_passes_the_build_targets_backup_exclusion() {
+    let path = manifest_dir().join("src/lib.rs");
+    let source = fs::read_to_string(&path)
+        .unwrap_or_else(|e| panic!("failed to read {}: {e}", path.display()));
+    // `pub fn configure_with<` の行から、次の行頭の `}` の行まで（関数の本体）。コメントは
+    // 落とす（正しい呼び出しをコメントに残したまま実の引数を変えても通らないように）。
+    let mut body = String::new();
+    let mut inside = false;
+    let mut closed = false;
+    for line in source.lines() {
+        if !inside && line.starts_with("pub fn configure_with<") {
+            inside = true;
+        }
+        if inside {
+            body.push_str(line.split("//").next().unwrap_or(""));
+            body.push('\n');
+            if line.starts_with('}') {
+                closed = true;
+                break;
+            }
+        }
+    }
+    assert!(
+        closed,
+        "src/lib.rs に pub fn configure_with< の関数（行頭の `}}` で閉じる）が見つからない"
+    );
+    // 末尾カンマの有無に依らず、外側の呼び出しの閉じ括弧まで照らす（`.and(None)` 等の後置を拒む）。
+    let compact: String = body.chars().filter(|c| !c.is_whitespace()).collect::<String>().replace(",)", ")");
+    assert!(
+        compact.contains(
+            "configure_with_backup_exclusion(builder,secure_state,backup_exclusion_for(EXCLUDES_APP_DATA_FROM_BACKUP))"
+        ),
+        "configure_with が backup_exclusion_for(EXCLUDES_APP_DATA_FROM_BACKUP) を渡していない（#681・#683）: {body}"
+    );
+}
+
 /// `gen/apple` のファイルから、`PRODUCT_BUNDLE_IDENTIFIER` の値をすべて取り出す
 /// （`project.yml` は `KEY: value`、`project.pbxproj` は `KEY = value;`）。
 fn product_bundle_identifiers(relative: &str) -> Vec<String> {

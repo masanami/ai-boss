@@ -586,7 +586,8 @@ pub fn configure_with<R: Runtime>(builder: tauri::Builder<R>, secure_state: Secu
 }
 
 /// [`configure_with`] の、アプリのデータをバックアップから外す処理を注入できる形（#681。
-/// 製品版は [`backup_exclusion_for`]`(`[`EXCLUDES_APP_DATA_FROM_BACKUP`]`)`。結合テスト
+/// 製品版は [`backup_exclusion_for`]`(`[`EXCLUDES_APP_DATA_FROM_BACKUP`]`)`（`configure_with` が
+/// これを渡すことは `tests/config_checks.rs` が固定する）。結合テスト
 /// `tests/backup_exclusion.rs` は記録する模擬・失敗する模擬を渡し、除外が plugin-sql の
 /// preload より前に走ること・外せなければ DB を作らずに組み立てが失敗することを確かめる）。
 pub fn configure_with_backup_exclusion<R: Runtime>(
@@ -806,8 +807,10 @@ mod tests {
 
     #[cfg(target_vendor = "apple")]
     #[test]
-    fn the_production_exclusion_on_the_host_leaves_the_directory_in_backup() {
-        // macOS（ホスト）の製品の経路は属性を付けない（除外は iOS だけ）。
+    fn the_host_builds_choice_leaves_the_app_config_dir_in_backup() {
+        // ホストのビルドが選ぶ除外（`backup_exclusion_for(EXCLUDES_APP_DATA_FROM_BACKUP)`）は
+        // 属性を付けない（除外は iOS だけ）。`configure_with` がこの除外を渡していること
+        // は tests/config_checks.rs の `configure_with_passes_the_build_targets_backup_exclusion` が固定する。
         let config_dir = tempfile::tempdir().unwrap();
         exclude_app_data_dir_from_backup(
             config_dir.path(),
