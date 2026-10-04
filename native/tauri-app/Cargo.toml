@@ -57,6 +57,19 @@ tauri-plugin-notification = { path = "../tauri-plugin-notification" }
 # 2.5.1 の macOS の実装を読んで組んだため `~2.5` に固定する（3 系は alpha）。
 tauri-plugin-single-instance = "~2.5"
 
+# #681（docs/features/ios-shell.md 仮定 A12）: iOS でアプリのデータのディレクトリに
+# `NSURLIsExcludedFromBackupKey` を付ける。どちらも tauri（tao・wry）が Apple の
+# ターゲットで既に依存している版で、新しい crate は Cargo.lock に増えない。macOS でも
+# コンパイルし、ホストの単体テストが実際に属性が付くことを確かめる（製品で呼ぶのは iOS だけ）。
+[target.'cfg(target_vendor = "apple")'.dependencies]
+objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSString", "NSURL", "NSValue", "NSError"] }
+
+[target.'cfg(target_vendor = "apple")'.dev-dependencies]
+# #681: 単体テストが属性（`com.apple.metadata:com_apple_backup_excludeItem`）を
+# `getxattr` で直接読む（macOS の `isExcludedFromBackup` は、除外された祖先の配下では
+# 自分に属性が無くても真を返す〔実測: シミュレータのデータコンテナ〕。付けた先そのものを見る）。
+libc = "0.2"
+
 [dev-dependencies]
 # #580 S2: 結合テスト（tests/sql_plugin.rs）と IPC の中継（examples/
 # sql-ipc-bridge.rs）が MockRuntime の上で器を組むため、`test` 機能は
