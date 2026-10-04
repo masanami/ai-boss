@@ -13,7 +13,11 @@ use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
+// #669 S1（機能仕様 docs/features/ios-shell.md 決定 1）: トレイはデスクトップだけに
+// ある（モバイルの tauri には `menu`・`tray` のモジュールが無い）。
+#[cfg(desktop)]
 use tauri::menu::{Menu, MenuItem};
+#[cfg(desktop)]
 use tauri::tray::TrayIconBuilder;
 use tauri::utils::config::{BackgroundThrottlingPolicy, WindowConfig};
 use tauri::{AppHandle, Emitter, EventTarget, Manager, RunEvent, Runtime, WebviewUrl, WindowEvent};
@@ -110,6 +114,8 @@ pub fn reopen_action(has_visible_windows: bool) -> Option<ShellAction> {
 fn show_main_window<R: Runtime>(app: &AppHandle<R>) {
     if let Some(window) = app.get_webview_window(MAIN_WINDOW_LABEL) {
         let _ = window.show();
+        // 最小化はデスクトップだけにある（#669 S1・決定 1）。
+        #[cfg(desktop)]
         let _ = window.unminimize();
         let _ = window.set_focus();
     }
@@ -132,7 +138,8 @@ pub fn on_second_instance<R: Runtime>(app: &AppHandle<R>) {
 /// （`configure`・`handle_run_event` では作らない — メニューは実際の macOS の
 /// メニュー〔muda〕でメインスレッドを要し、`MockRuntime` の結合テストが本物の
 /// ステータスアイテムを作らないように）。アイコンはアプリの既定のアイコン
-/// （仮定 S3-A5）。
+/// （仮定 S3-A5）。デスクトップだけ（#669 S1・決定 1）。
+#[cfg(desktop)]
 pub fn create_tray<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<()> {
     let items = tray_menu_items()
         .iter()

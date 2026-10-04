@@ -128,7 +128,9 @@ pub fn acquire_instance_lock(app_config_dir: &Path) -> io::Result<Option<Instanc
 /// 取れなければ初期化を失敗させ、後に登録したプラグイン（single-instance の
 /// ソケットの掃除・待ち受け、plugin-sql の DB の preload）と `setup`（刻みの送り手の
 /// 起動）へ進ませない。別の持ち手が持っているときの失敗の文言は
-/// [`INSTANCE_LOCK_HELD_MESSAGE`]。
+/// [`INSTANCE_LOCK_HELD_MESSAGE`]。デスクトップだけ（#669 S1・機能仕様
+/// `docs/features/ios-shell.md` 決定 1。iOS はアプリのプロセスを 1 つしか起動しない）。
+#[cfg(desktop)]
 fn instance_lock_plugin<R: Runtime>() -> tauri::plugin::TauriPlugin<R> {
     tauri::plugin::Builder::new(INSTANCE_LOCK_PLUGIN_NAME)
         .setup(|app, _api| match acquire_instance_lock(&app.path().app_config_dir()?)? {
@@ -297,7 +299,31 @@ fn build_main_window<R: Runtime, M: tauri::Manager<R>>(
 /// #579 S3: メニューバーのアイコンは `RunEvent::Ready` で作り、閉じる要求（メインの
 /// ウィンドウは隠す）・Dock の再表示の要求もここで処理する
 /// （`desktop_shell::handle_run_event`）。`configure` では作らない。
+///
+/// #669 S1（機能仕様 `docs/features/ios-shell.md` 決定 1）: iOS の入口
+/// （`mobile_entry_point`）もこの関数である。モバイルは多重起動の防止・トレイを組まない。
+#[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    #[cfg(desktop)]
+    run_desktop();
+    #[cfg(mobile)]
+    run_mobile();
+}
+
+/// モバイルの `run`（#669 S1・決定 1）。iOS はアプリのプロセスを 1 つしか起動しない
+/// ため、多重起動の防止（と錠の失敗の分岐）を持たない。実行イベントは
+/// `handle_run_event`（閉じる要求の処理）だけに渡す。
+#[cfg(mobile)]
+fn run_mobile() {
+    configure(tauri::Builder::default())
+        .build(context())
+        .unwrap_or_else(|error| panic!("error while building tauri application: {error}"))
+        .run(desktop_shell::handle_run_event);
+}
+
+/// デスクトップの `run`（#659・#664 の多重起動の防止と、#579 S3 のトレイ）。
+#[cfg(desktop)]
+fn run_desktop() {
     let context = context();
     #[cfg(target_os = "macos")]
     let socket = single_instance_socket_path(&context.config().identifier);
@@ -346,6 +372,9 @@ pub fn run() {
 ///
 /// `configure` には入れない: `MockRuntime` の結合テストは 1 つのプロセスで器を
 /// 何度も組むため、2 回目が 2 つ目の起動と判定されてテストのプロセスが終了する。
+///
+/// デスクトップだけ（#669 S1・決定 1。モバイルの single-instance には `init` が無い）。
+#[cfg(desktop)]
 pub fn with_single_instance<R: Runtime>(builder: tauri::Builder<R>) -> tauri::Builder<R> {
     builder
         .plugin(instance_lock_plugin())
@@ -404,6 +433,8 @@ pub fn configure_with<R: Runtime>(builder: tauri::Builder<R>, secure_state: Secu
             prepare_evidence_dir(&app.path().app_config_dir()?)?;
             build_main_window(app)?;
             // #579 S3: 毎分の刻みを WebView へ送る（ウィンドウを隠しても続く）。
+            // デスクトップだけ（#669 S1・決定 1。iOS は予約通知方式で、刻みの受け手がいない）。
+            #[cfg(desktop)]
             app.manage(desktop_shell::spawn_minute_ticker(app.handle().clone())?);
             Ok(())
         })

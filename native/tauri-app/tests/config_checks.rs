@@ -732,3 +732,111 @@ fn tauri_conf_frontend_dist_points_to_product_web_build_output() {
         .collect::<PathBuf>();
     assert_eq!(normalized, PathBuf::from("web/dist-app"));
 }
+
+// ---------------------------------------------------------------------------
+// iOS の器（#669 S1・機能仕様 docs/features/ios-shell.md 受入基準（S1））
+// ---------------------------------------------------------------------------
+
+/// デスクトップのターゲットだけの依存の表（決定 1）。
+const DESKTOP_ONLY_TARGET: &str = r#"cfg(not(any(target_os = "android", target_os = "ios")))"#;
+
+fn desktop_only_dependencies(cargo_toml: &toml::Value) -> &toml::value::Table {
+    cargo_toml["target"]
+        .get(DESKTOP_ONLY_TARGET)
+        .and_then(|target| target.get("dependencies"))
+        .and_then(|deps| deps.as_table())
+        .unwrap_or_else(|| {
+            panic!("Cargo.toml に [target.'{DESKTOP_ONLY_TARGET}'.dependencies] が無い")
+        })
+}
+
+#[test]
+fn single_instance_is_a_dependency_of_the_desktop_targets_only() {
+    let cargo_toml = load_cargo_toml();
+    assert!(
+        desktop_only_dependencies(&cargo_toml).contains_key("tauri-plugin-single-instance"),
+        "tauri-plugin-single-instance がデスクトップのターゲットの依存の表に無い"
+    );
+    assert!(
+        !cargo_toml["dependencies"]
+            .as_table()
+            .unwrap()
+            .contains_key("tauri-plugin-single-instance"),
+        "tauri-plugin-single-instance が共通の [dependencies] にある（モバイルでは init が無い）"
+    );
+}
+
+#[test]
+fn single_instance_stays_pinned_to_2_5() {
+    let cargo_toml = load_cargo_toml();
+    assert_eq!(
+        desktop_only_dependencies(&cargo_toml)["tauri-plugin-single-instance"].as_str(),
+        Some("~2.5")
+    );
+}
+
+#[test]
+fn tauri_dependency_keeps_the_tray_icon_feature() {
+    let cargo_toml = load_cargo_toml();
+    let features = cargo_toml["dependencies"]["tauri"]["features"]
+        .as_array()
+        .cloned()
+        .unwrap_or_default();
+    assert!(
+        features.iter().any(|f| f.as_str() == Some("tray-icon")),
+        "Cargo.toml の tauri の features に tray-icon が無い（macOS のメニューバー常駐）"
+    );
+}
+
+#[test]
+fn run_is_the_mobile_entry_point() {
+    let path = manifest_dir().join("src/lib.rs");
+    let source = fs::read_to_string(&path)
+        .unwrap_or_else(|e| panic!("failed to read {}: {e}", path.display()));
+    // 属性の直後の項目が `pub fn run()` であること（別の関数に付いていない）。
+    let lines: Vec<&str> = source.lines().map(str::trim).collect();
+    let found = lines.windows(2).any(|pair| {
+        pair[0] == "#[cfg_attr(mobile, tauri::mobile_entry_point)]" && pair[1] == "pub fn run() {"
+    });
+    assert!(
+        found,
+        "src/lib.rs の pub fn run() の直前に #[cfg_attr(mobile, tauri::mobile_entry_point)] が無い"
+    );
+}
+
+/// `gen/apple` のファイルから、`PRODUCT_BUNDLE_IDENTIFIER` の値をすべて取り出す
+/// （`project.yml` は `KEY: value`、`project.pbxproj` は `KEY = value;`）。
+fn product_bundle_identifiers(relative: &str) -> Vec<String> {
+    let path = manifest_dir().join("gen/apple").join(relative);
+    let text = fs::read_to_string(&path)
+        .unwrap_or_else(|e| panic!("failed to read {}: {e}", path.display()));
+    text.lines()
+        .filter_map(|line| line.trim().strip_prefix("PRODUCT_BUNDLE_IDENTIFIER"))
+        .map(|rest| {
+            rest.trim_start_matches([' ', ':', '='])
+                .trim_end_matches(';')
+                .trim()
+                .trim_matches('"')
+                .to_string()
+        })
+        .collect()
+}
+
+#[test]
+fn xcode_project_bundle_identifier_matches_tauri_conf() {
+    let conf = load_tauri_conf();
+    let identifier = conf["identifier"]
+        .as_str()
+        .expect("identifier が文字列でない");
+    for file in ["project.yml", "ai-boss-tauri-app.xcodeproj/project.pbxproj"] {
+        let found = product_bundle_identifiers(file);
+        assert!(
+            !found.is_empty(),
+            "gen/apple/{file} に PRODUCT_BUNDLE_IDENTIFIER が無い"
+        );
+        assert!(
+            found.iter().all(|value| value == identifier),
+            "gen/apple/{file} の PRODUCT_BUNDLE_IDENTIFIER {found:?} が tauri.conf.json の {identifier} と食い違う"
+        );
+    }
+}
