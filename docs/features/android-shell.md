@@ -1,6 +1,6 @@
 # 製品版の Android の器（Tauri の Android ターゲット・#669 から分離）
 
-> Issue #674。2026-10-04 に作成した。範囲と前提は、ADR 0011 の決定 5・12・14・19・20 と、オーナーの決定 P3（#669・2026-10-02・★。Android を #669 の範囲外とし、この Issue へ送った）に拠る。#669 S1（#676・PR #677。2026-10-04 時点で未マージ）が入れるデスクトップ専用部品の `cfg(desktop)`／`cfg(mobile)` の切り分け・`run_mobile`・`check:ios` を前提にする。**オーナーへの問い（A1・A2）と親への問い（Q1〜Q4）は未決**で、「未決」節に選択肢と推奨を書いた。決まったら同じ節を「決定」に書き換える。
+> Issue #674。2026-10-04 に作成した。範囲と前提は、ADR 0011 の決定 5・12・14・19・20 と、オーナーの決定 P3（#669・2026-10-02・★。Android を #669 の範囲外とし、この Issue へ送った）に拠る。#669 S1（#676・PR #677。2026-10-04 時点で未マージ）が入れるデスクトップ専用部品の `cfg(desktop)`／`cfg(mobile)` の切り分け・`run_mobile`・`check:ios` を前提にする。2026-10-04 に、通知の許可の体験（A1）・秘密情報の保管のスライス（A2）・Android の TLS（Q3）をオーナーが決め（★）、#585 S4 との境界（Q1）・`check:android` の必須ゲート（Q2）・Android のアプリのオリジン（Q4）を親が決めた（「決定（2026-10-04）」節）。
 
 ## 概要
 
@@ -124,9 +124,9 @@ Rust の依存と器のコードが Android 向けに通るかは、上の準備
 - [ ] Android のアプリを起動すると、製品版の画面（ダッシュボード）が出る（S1）
 - [ ] Android のアプリで、DB（plugin-sql の fork）が開き、データがアプリの再起動の後も残る（S1）
 - [ ] Android のアプリは、アプリのオリジン（`http://tauri.localhost`）の外へのナビゲーションを拒否する（S1）
-- [ ] Android のアプリで、BYOK のキーと中継のライセンストークンを Android Keystore で守って保存・削除でき、保存の有無を表示できる（**スライスは未決 A2**。推論の推奨は S2）
+- [ ] Android のアプリで、BYOK のキーと中継のライセンストークンを Android Keystore で守って保存・削除でき、保存の有無を表示できる（S2。決定 A2。S1 では保管の操作が「この端末では保管できない」と明示的に失敗する）
 - [ ] macOS の製品版と iOS の器の振る舞い（ビルド・検査・ナビゲーションの許可・保管）は変わらない（S1・S2）
-- [ ] Android のアプリは、通知の許可（`POST_NOTIFICATIONS`）を、決めた体験で求める。拒否されたときに案内する（S3。**体験は未決 A1**）
+- [ ] Android のアプリは、通知の許可（`POST_NOTIFICATIONS`）を iOS（#669 の O1〜O3）と同じ体験で求める。通知が許可された直後に、正確な時刻のアラームの許可（`SCHEDULE_EXACT_ALARM`）を説明して「アラームとリマインダー」の設定画面へ誘導する。正確な時刻のアラームの許可が無い間は、ダッシュボードの案内に「催促が最大 1 時間遅れることがある」と出す（S3。決定 A1）
 - [ ] 製品版の Android のアプリで、予約通知を通しで確かめる（S3。#585 S4 の後）
 
 ## 非機能要件
@@ -144,61 +144,71 @@ Rust の依存と器のコードが Android 向けに通るかは、上の準備
 
 ## クリティカル設計決定
 
-### 1. #669 の切り分けを Android にそのまま使い、Android に固有の分岐は `target_os = "android"` に付ける（作成者の提案・2026-10-04）
+### 1. #669 の切り分けを Android にそのまま使い、Android に固有の分岐は `target_os = "android"` に付ける（作成者の判断・2026-10-04。親の回答で変更の指示なし）
 
 - **#669 S1 の `cfg(desktop)`／`cfg(mobile)` はそのまま使う**。トレイ・多重起動の防止・毎分の刻み・`unminimize` は、Android でも組まない（Android も、アプリの前面・背面とプロセスは OS が管理する）。`run_mobile` は Android の入口でもある（`mobile_entry_point` は Android では JNI の入口を生成する）。
 - **Android に固有の分岐**（アプリのオリジン・保管の実装・TLS）は `cfg(target_os = "android")` に付ける。`mobile` に付けない（iOS の振る舞いを変えないため）。
 - **純粋関数は切り分けない**: ナビゲーションの判定は、オリジン（`tauri://localhost` か `http://tauri.localhost` か）を引数に取る純粋関数にし、どちらのオリジンの判定もホスト（macOS）の単体テストで確かめる。`cfg` は、どのオリジンを渡すかを選ぶ薄い部分だけに付ける。
 
-### 2. Android のアプリのオリジンを、Android でだけ許す（作成者の提案・2026-10-04。**親への問い Q4**）
+### 2. Android のアプリのオリジンを、Android でだけ許す（Q4・【決定】2026-10-04・親）
 
 - Android では、ナビゲーションの許可を `http://tauri.localhost`（スキーム `http`・ホスト `tauri.localhost`・ポート無し）に限る。`https://tauri.localhost`・`http://tauri.localhost.evil.example`・`http://tauri.localhost:8080`・`http://localhost`・`tauri://localhost` は拒否する。
 - 証跡の新しいウィンドウの接頭辞も、Android では `http://tauri.localhost/` にする（`blob:http://tauri.localhost/<uuid>` だけを許す）。
 - macOS・iOS は `tauri://localhost` のまま変えない。
-- `use_https_scheme` は既定（偽）のまま変えない。理由: リリースの後に変えると WebView のデータの置き場所が変わる（`tauri-utils` の説明）ため、最初から決めておく必要があり、`http` のままで ai-boss の WebView は外部へ `http` で接続しない（CSP の `connect-src` は `'self'` と IPC だけ）ので、`https` にする利点が無い。
+- **http のスキームを保つ**（`use_https_scheme` は既定の偽のまま変えない）。理由: リリースの後に変えると WebView のデータの置き場所が変わる（`tauri-utils` の説明）ため、最初から決めておく必要があり、`http` のままで ai-boss の WebView は外部へ `http` で接続しない（CSP の `connect-src` は `'self'` と IPC だけ）ので、`https` にする利点が無い。
 - **代替案**: (a) `use_https_scheme` を真にして `https://tauri.localhost` を許す（利点が無く、後で戻すとデータが読めなくなる）／(b) Android でもオリジンを問わず許す（ナビゲーションの境界を失う）。
 
-### 3. Android 向けのコンパイルの検査 `check:android`（作成者の提案・2026-10-04。必須ゲートに足すかは**親への問い Q2**）
+### 3. Android 向けのコンパイルの検査 `check:android` を足し、必須ゲートにする（Q2・【決定】2026-10-04・親）
 
 - 新しいスクリプト `check:android` を足す。器のライブラリを `aarch64-linux-android` で `cargo check` する。前段の `precheck:android` で製品版の web（`web/dist-app/`）をビルドする（`precheck:ios` と同じ形）。
 - `cargo check` でも `build.rs` が NDK の clang で C のコードをコンパイルするため、NDK の場所から `CC_aarch64_linux_android`・`AR_aarch64_linux_android`・`CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER` を組んで `cargo` を呼ぶ Node のスクリプト（`scripts/check-android.mjs`）にする。`quality-check-runner` が単一のコマンドで呼べるよう、`npm run check:android` 1 本にする。NDK が見つからないときは、その旨（`NDK_HOME` を設定する）を出して 0 以外で終わる。
 - Gradle でのビルド（`tauri android build`。Kotlin のプラグインのコンパイルと APK の作成）とエミュレータでの起動は、自動の検査に入れない（数分かかり、エミュレータの操作が要る）。手動の確認手順に置く。
+- **`check:android` を必須ゲートに足す**（決定 Q2。`check:ios`〔#669 決定 P2〕と同じ型）。リポジトリの `CLAUDE.md` の「品質方針」の必須ゲートの記述と「よく使うコマンド」は、**S1 の実装 PR で**書き換える（この仕様の PR では変えない）。書き換えには、開発機に Android の道具（「手動の確認手順（S1）」の準備）が要ることを含める。入っていないと `check:android` は準備の不足を示して落ちる。これは品質の失敗ではなく、開発機の準備の不足である。
+- **理由**: S1 の実装そのものに SDK・NDK・エミュレータが要るため、S1 に着手する時点で開発機は準備済みになる。デスクトップ・iOS の変更が Android のビルドを壊したことに、開発機で気づける。
 
-### 4. Gradle のプロジェクト（`gen/android`）をコミットする（作成者の提案・2026-10-04。#669 決定 2 と同じ型）
+### 4. Gradle のプロジェクト（`gen/android`）をコミットする（作成者の判断・2026-10-04。#669 決定 2 と同じ型。親の回答で変更の指示なし）
 
 - `tauri android init` で `native/tauri-app/gen/android` を作り、コミットする（毎回作り直すと、`AndroidManifest.xml`・`build.gradle.kts` に手で加えた設定が消える）。
 - #677 の後のルートの `.gitignore` は `gen/schemas/` だけを無視するため、`gen/android` は追跡の対象になる。**開発機に固有のファイル（`local.properties`。SDK の場所を書く）・ビルドの出力（`build/`・`.gradle/`）・署名の鍵（`*.jks`・`*.keystore`）は無視する**。`tauri android init` が作る `gen/android/.gitignore` で足りなければ、ルートの `.gitignore` に足す。
 - `eslint.config.js` は `native/tauri-app/gen/**` を既に無視している。
 
-### 5. #585 S4 との境界（作成者の提案・2026-10-04。**親への問い Q1**）
+### 5. #585 S4 との境界（Q1・【決定】2026-10-04・親）
 
 | 受け持つもの | この Issue（#674） | #585 S4 |
 |---|---|---|
 | 器のビルド・起動・オリジン・DB・TLS・`gen/android`・`check:android` | ○（S1） | |
-| 秘密情報の保管（Android Keystore） | ○（S1 か S2。未決 A2） | |
+| 秘密情報の保管（Android Keystore） | ○（S2。決定 A2） | |
 | 製品版のエントリのプラットフォームの判定を `android` へ広げる（`selectProductNudgeReplanning`） | | ○ |
 | 通知プラグインの fork の Android の差分（`show` の予約を `get_pending` と再起動の復元に載せる・過去の時刻を拒否で返す） | | ○ |
 | 正確な時刻の予約の権限（`SCHEDULE_EXACT_ALARM` の宣言・`canScheduleExactAlarms` の扱い）と、省電力（`allowWhileIdle`・`RTC_WAKEUP`） | | ○（スライス表の定義どおり） |
-| 通知の許可（`POST_NOTIFICATIONS`）の体験と、正確な時刻の予約の権限を利用者に求める画面 | ○（S3。体験は未決 A1） | |
+| 通知の許可（`POST_NOTIFICATIONS`）の体験と、正確な時刻の予約の権限を利用者に求める画面 | ○（S3。決定 A1） | |
 | 製品版の Android のアプリでの予約通知の通しの確認 | ○（S3。#585 S4 の後） | |
 
 - **理由**: #585 S4 の定義（「Android の実装〔正確な時刻の予約の権限・端末の省電力〕」）は予約の仕組みの話で、許可を求める画面（体験）は #669 と同じく器の側で決める（#585 決定 9 の S3-Q2 と同じ切り方）。プラットフォームの判定を広げるのは、Android の予約の仕組みが正しく動く（fork の差分が入る）のと同時でないと、予約が `get_pending` にも再起動の復元にも載らない状態で催促を出すことになるため、S4 に置く。
 - **S1・S2 の Android の催促**: プラットフォームの判定は `ios` のときだけ予約方式を組む（`start-product-nudge-replanning.ts:25`）ため、S1・S2 の Android のアプリはデスクトップの経路（毎分の検知の購読）に入る。毎分の刻みは `cfg(desktop)` だけで送る（#677）ため、**Android では検知が一度も走らず、催促は出ない**。S1・S2 はこれを受け入れ、#585 S4 で解く（「やらないこと」）。
+- **#585 S4 の見積もりの見直し**: スライス表の S4 の見積もり（3-8 ファイル）は、fork の Android の差分（Kotlin。`NotificationPlugin.kt`・`TauriNotificationManager.kt`・`AndroidManifest.xml`）が加わる分を含んでいない。#585 へ申し送った（2026-10-04 のコメント）。
 
-### 6. Android の TLS（作成者の提案・2026-10-04。**親への問い Q3**。API キーの取り扱い＝クリティカル箇所）
+### 6. Android の TLS（Q3 ★・【決定】2026-10-04・オーナー。API キーの取り扱い＝クリティカル箇所）
 
 - Android でだけ、`reqwest` の TLS を `rustls`（ルート証明書は `webpki-roots`）にする。Apple（macOS・iOS）は今の `default-tls`（Security.framework）のまま変えない。
-- `secure-transport/Cargo.toml` の `reqwest` の機能を、ターゲットごとの依存の表で分ける（`[target.'cfg(target_os = "android")'.dependencies]` で `rustls-tls` を足す）。Cargo の resolver 2（edition 2021 の既定）は、ビルドしないターゲットの依存の表の機能を有効にしないため、macOS・iOS のビルドに `rustls` は入らない（推論。S1 の受入基準で `cargo tree` により確かめる）。
+- `secure-transport/Cargo.toml` の `reqwest` の機能を、ターゲットごとの依存の表で分ける。共通の `[dependencies]` の `reqwest` からは TLS の機能を外し、`[target.'cfg(target_vendor = "apple")'.dependencies]` で `default-tls` を、`[target.'cfg(target_os = "android")'.dependencies]` で `rustls-tls`（`webpki-roots`）を足す。**共通の依存に `default-tls` を残すと、Android でも `native-tls` が有効のままになり OpenSSL への依存が消えない**（Cargo の機能は同じターゲットの中で合わさる）。一方、Cargo の resolver 2（edition 2021 の既定）は、ビルドしないターゲットの依存の表の機能を有効にしないため、macOS・iOS のビルドに `rustls` は入らない（推論。S1 の受入基準で `cargo tree` により確かめる）。
+- **今の依存の木（2026-10-04・`main` 316a464 と同じコードの `native/tauri-app`。`cargo tree -e normal -i <パッケージ> --target <ターゲット>`）**: `rustls` は `aarch64-apple-darwin`・`aarch64-apple-ios`・`aarch64-linux-android` のいずれでも依存の木に無い（`did not match any packages`）。`openssl-sys` は `aarch64-apple-darwin`・`aarch64-apple-ios` では出力が空、`aarch64-linux-android` では `openssl-sys v0.9.117 ← native-tls v0.2.18 ← hyper-tls v0.6.0 …` と出る。S1 の後に、Apple の 2 つで `rustls`・`openssl-sys` がともに出ず、Android で `openssl-sys` が出ないことを受入基準にする。
+- ルート証明書は同梱の `webpki-roots`（Mozilla の束）とし、端末に利用者が足した証明書は信頼しない。送信先（Anthropic・OpenAI・中継）は公開のルートで足りる見込みである（推論）。
 - **代替案**: (a) `native-tls` の `vendored`（Android 向けに OpenSSL をソースからビルドする。NDK に加えて perl 等が要り、ビルドが重い）／(b) `rustls` ＋ `rustls-platform-verifier`（端末の証明書ストアを使えるが、Android では Kotlin の部品の組み込みが要る）。
 
-### 7. 秘密情報の保管（**オーナーへの問い A2**。「未決」節）
+### 7. 秘密情報の保管（A2 ★・【決定】2026-10-04・オーナー）
 
-- 決まるまで、仕様は推奨（B: 保管の実装を S2 に分け、S1 の Android は保管の操作を明示的な失敗で返す）で書いておく。A を選んだ場合は、S2 の範囲を S1 へ移す。
+- **Android Keystore による保管は S2 で作る**（A2 = B）。S1 の Android の保管は、`set`・`delete`・`contains` のすべてを「この端末では保管できない」という明示的な失敗で返す（成功を装わない）。S1 の間、Android では BYOK も中継も使えない（LLM が使えない）ことを受け入れる。
+- S1 の失敗の値は、`StoreError` に Android の「保管できない」を表す値を足して返す形を第一候補とする（今の 3 つの値はいずれもこの意味に当たらない。実測）。値の名前と、器のコマンドのエラーの種類への写し方は S1 の実装で決める（仮定 H9）。
 - どちらでも、保管の実装は `secure-transport` のクレートの中に置く（`KeyStore` の封印により、外に置けない）。Android Keystore の鍵（AES-GCM・取り出し不可）で値を暗号化し、暗号文をアプリの専用の領域に置く形を第一候補とする（ADR 0002 の改訂の決定 2「平文でファイルに書かない」を満たす）。Keystore の Java の API を Rust から JNI で呼ぶか、器の Kotlin のプラグインを通すかは S2 の設計で決める（後者は `secure-transport` が Tauri 非依存であることと、封印との整合を取る必要がある）。
 
-### 8. 通知の許可の体験（**オーナーへの問い A1**。S3）
+### 8. 通知の許可の体験（A1 ★・【決定】2026-10-04・オーナー。S3）
 
-- 決まるまで、S3 の範囲は「許可の体験を作る」までとし、体験の中身は書かない。判断材料は「未決」節。
+- **iOS（#669 の O1〜O3）に揃える**: 初回起動の直後に、ボスの口調の自前の説明を先に出し、「許可する」で OS のダイアログ（`POST_NOTIFICATIONS`）を出す。説明では「あとで」を選べる。拒否されたら、ダッシュボードに常設の案内を出し、設定アプリのこのアプリの通知の設定へ誘導する。拒否の間も予約の登録を続ける（O3。#669 の S2 に残る O3 の見直しの論点〔O4〕は、Android でも同じ仕様の作成のときに合わせて扱う）。
+- **Android で足すもの**: 通知が許可された直後に、同じ口調で正確な時刻のアラームの許可（`SCHEDULE_EXACT_ALARM`）を説明し、「アラームとリマインダー」の設定画面（`ACTION_REQUEST_SCHEDULE_EXACT_ALARM`）へ誘導する。正確な時刻のアラームの許可が無い間は、ダッシュボードの案内に「催促が最大 1 時間遅れることがある」と出す。
+- **`USE_EXACT_ALARM` は使わない**。用途が限られ Google Play のポリシーの対象で、ai-boss は当たらない見込みである（**推論**。ポリシーの本文で確かめていない）。
+- Android は「許可しない」が 2 回で恒久的な拒否になるため、2 回目の要求の前に必ず説明を挟む（`shouldShowRequestPermissionRationale()`。「Android の文書で確かめたこと」）。
+- **S3 の設計で決めること**（決定を変えない範囲の具体）: 許可の要求・状態の問い合わせの経路（`platforms` を限った capability）、「アラームとリマインダー」の設定画面への誘導のネイティブの経路（#669 O3 と同じく、開く先を固定し引数を取らない最小の経路にし、受入基準で塞ぐ）、正確な時刻のアラームの許可の状態の問い合わせの経路、「あとで」の後の再表示の時期（#669 S2 で決めるものに揃える）。
 
 ## 機能全体の設計
 
@@ -218,14 +228,14 @@ Rust の依存と器のコードが Android 向けに通るかは、上の準備
 | Android で DB の準備が失敗する（保存先・preload） | web の起動は、DB の失敗を記録して「DB 未接続」で描画を続ける（既存。#580 S2）。開けることはエミュレータで確かめる（手動の確認手順 3・4。S1） |
 | Android の WebView で IPC・CSP が通らない（画面は出るが DB・コマンドが失敗する） | 自動では確かめられない。エミュレータで DB の読み書きを確かめる（手動の確認手順 3・4。S1） |
 | Android で通知プラグインの初期化が失敗する | 器の組み立ての失敗は起動の `panic` になる。エミュレータで起動して画面が出ることを確かめる（手動の確認手順 2。S1） |
-| Android で秘密情報の保管が動かない（Keystore の鍵の生成・暗号化の失敗） | S1（推奨 B）は、保管の操作を明示的な失敗で返し、画面に失敗を出す（黙って成功しない）。S2 で Keystore の実装と、エミュレータでの保存・再起動後の「登録済み」・削除を確かめる |
+| Android で秘密情報の保管が動かない（Keystore の鍵の生成・暗号化の失敗） | S1 は、保管の操作を明示的な失敗で返し、画面に失敗を出す（黙って成功しない）。S2 で Keystore の実装と、エミュレータでの保存・再起動後の「登録済み」・削除を確かめる |
 | Android の保管が、キーを平文でファイルに書く | S2。暗号文だけを書くことを、ホストで確かめられる単位（暗号化の前後の値の比較）と、エミュレータでのアプリの領域の中身の確認で塞ぐ（S2 の仕様で受入基準にする） |
 | Android で検知が一度も走らない（刻みはデスクトップだけ、予約方式は `ios` だけ） | S1・S2 は受け入れる（決定 5・「やらないこと」）。#585 S4 で解く |
 | 通知の許可が未決定・拒否のまま予約される（アラームは残るが表示されない。`get_pending` で確かめられない） | #585 S4（予約の仕組み）と S3（許可の体験）。「許可が未決定・拒否のときの予約」節 |
-| 正確な時刻の予約の権限が無い（新しいインストールの既定）。予約が最大 1 時間遅れる | #585 S4（権限の宣言と扱い）と S3（利用者に求める画面。体験は未決 A1） |
+| 正確な時刻の予約の権限が無い（新しいインストールの既定）。予約が最大 1 時間遅れる | #585 S4（権限の宣言と扱い）と S3（利用者に求める画面。決定 A1） |
 | 端末の省電力（Doze）で予約が遅れる（`allowWhileIdle: false`・`RTC`） | #585 S4（スライス表の「端末の省電力」） |
 | 端末の再起動で予約が失われる（`show` の予約は復元されない） | #585 S4（fork の Android の差分）。起動・前面への復帰で計画し直すため、アプリを開けば戻る |
-| 開発機に NDK・SDK が無く、`check:android` が落ちる | 品質の失敗ではなく準備の不足。スクリプトが不足を示して終わる（決定 3）。必須ゲートにするかは親への問い Q2 |
+| 開発機に NDK・SDK が無く、`check:android` が落ちる | 品質の失敗ではなく準備の不足。スクリプトが不足を示して終わる（決定 3）。S1 の出荷条件に、開発機の準備を書く（決定 Q2） |
 
 ### 実装計画（S1 のチケット分解の見通し）
 
@@ -242,9 +252,9 @@ S1 は 1 チケットで足りる見込み（触るファイルは 8〜12。`gen
 
 | スライス | 内容 | 触るファイル数（概算） | 出荷条件 |
 |---|---|---|---|
-| S1（最小） | Android の器のビルド。<br>・アプリのオリジンの許可（決定 2）<br>・Android の TLS（決定 6）<br>・Android の保管の選択（推奨 B では、明示的に失敗する保管。決定 7）<br>・`gen/android` のコミット（決定 4）<br>・`check:android`（決定 3）<br>エミュレータで起動して画面が出ること、DB が動きデータが再起動の後も残ること、外部へのナビゲーションが拒否されることを、手動の確認手順で確かめる。macOS の製品版と iOS の器の振る舞いは変えない。**催促は出ない**（決定 5）。**通知の許可は求めない**（S3） | 8-12（`gen/android` の生成物を除く） | **#677（#669 S1）がマージされてから**（`cfg(desktop)`／`cfg(mobile)`・`run_mobile`・`.gitignore` の `gen/schemas/` への絞り込みの上に作る）。**開発機に Android の SDK・NDK・JDK 17 以上・エミュレータが入ってから**（オーナーが導入する）。未決 A2・Q1〜Q4 が決まってから |
-| S2 | Android Keystore による秘密情報の保管（BYOK のキー・中継のライセンストークン）。**API キーの取り扱いのため、PR は人間レビュー必須**（未決 A2 で A を選んだら S1 に入れる） | 未見積もり | S1 がマージされてから |
-| S3 | 通知の許可（`POST_NOTIFICATIONS`）の体験と、正確な時刻の予約の権限を求める画面（体験は未決 A1）と、製品版の Android のアプリでの予約通知の通しの確認。**通知の実行系のため、PR は人間レビュー必須** | 未見積もり | S2 と #585 S4 がマージされてから。体験を iOS に揃えるなら #669 S2 の後 |
+| S1（最小） | Android の器のビルド。<br>・アプリのオリジンの許可（決定 2）<br>・Android の TLS（決定 6）<br>・Android の保管の選択（明示的に失敗する保管。決定 7・A2）<br>・`gen/android` のコミット（決定 4）<br>・`check:android` と、それを必須ゲートに足すこと（決定 3・Q2）<br>エミュレータで起動して画面が出ること、DB が動きデータが再起動の後も残ること、外部へのナビゲーションが拒否されることを、手動の確認手順で確かめる。macOS の製品版と iOS の器の振る舞いは変えない。**催促は出ない**（決定 5）。**通知の許可は求めない**（S3） | 8-12（`gen/android` の生成物を除く） | **#677（#669 S1）がマージされてから**（`cfg(desktop)`／`cfg(mobile)`・`run_mobile`・`.gitignore` の `gen/schemas/` への絞り込みの上に作る）。**開発機に Android の道具が入ってから**（Rust の Android のターゲット `aarch64-linux-android`・NDK・SDK の platform android-36・JDK 17 以上・arm64 のエミュレータのイメージと AVD。オーナーが導入する。手順は「手動の確認手順（S1）」の準備）。**この仕様の PR がマージされてから** |
+| S2 | Android Keystore による秘密情報の保管（BYOK のキー・中継のライセンストークン）。**API キーの取り扱いのため、PR は人間レビュー必須**（決定 A2） | 未見積もり | S1 がマージされてから |
+| S3 | 通知の許可（`POST_NOTIFICATIONS`）の体験（iOS の O1〜O3 に揃える）と、通知が許可された直後の正確な時刻のアラームの許可の説明と「アラームとリマインダー」の設定画面への誘導、許可が無い間のダッシュボードの「催促が最大 1 時間遅れることがある」の案内（決定 A1）と、製品版の Android のアプリでの予約通知の通しの確認。**通知の実行系のため、PR は人間レビュー必須** | 未見積もり | S2 と #585 S4 と #669 S2 がマージされてから（体験を iOS に揃えるため） |
 
 実装対象: S1
 
@@ -254,14 +264,12 @@ S1 は 1 チケットで足りる見込み（触るファイルは 8〜12。`gen
 - 実機での確認・実機と配布用の署名・Google Play への申請（理由: ADR 0011「未決」でオーナーが製品化の後のフェーズとした。署名と申請は #587）
 - スマホ向けの画面レイアウト（理由: #586。S1 では今の画面がエミュレータに出ることだけを確かめる）
 - Android でのトレイ・多重起動の防止・閉じる要求で隠す動き・毎分の刻みの代わりの部品（理由: #669 決定 1 と同じ。Android もアプリの前面・背面とプロセスは OS が管理する）
-- x86_64 の Android（エミュレータ・端末）向けのビルドの検査（理由: Apple Silicon の開発機のエミュレータは arm64 を使う。x86_64 の端末の扱いは配布の判断〔#587〕で決める。仮定 A3）
+- x86_64 の Android（エミュレータ・端末）向けのビルドの検査（理由: Apple Silicon の開発機のエミュレータは arm64 を使う。x86_64 の端末の扱いは配布の判断〔#587〕で決める。仮定 H3）
 - Android での LLM の実際の送信の確認（BYOK・中継）（理由: #669 の決定 P1 と同じ。外部への送信で、資格情報が要る。S1 は通信層が Android 向けにコンパイルできること〔`check:android`〕まで）
 - 証跡の新しいウィンドウを Android で開けるようにすること（理由: #669 と同じく、S1 では結果を記録するだけにする。直すなら表示の方式を変える判断になる）
 - 通知プラグインの上流への PR（理由: #585 決定 6。組織外への送信で、オーナーの承認を得て別に行う）
 
 ## 受入基準（S1）
-
-> 推奨の回答（A2 = B・Q1〜Q4 は推奨どおり）を前提に書いた。回答が違えば書き直す。
 
 検査は、ホスト（macOS）の `cargo test`・`cargo tree`・`node --test`・`npm run`・`git` で行う。エミュレータでしか見られないもの（ビルド・起動・画面・DB・ナビゲーション）は「手動の確認手順（S1）」に置く（機能要件の S1 の Android の項目は、手順 1〜6 が受け持つ）。
 
@@ -270,6 +278,7 @@ S1 は 1 チケットで足りる見込み（触るファイルは 8〜12。`gen
 Android 向けのビルド（コンパイルの検査）:
 
 - [ ] `npm run check:android` が合格する（器のライブラリの `cargo check`。ターゲットは `aarch64-linux-android`。開発機に NDK と `rustup target add aarch64-linux-android` を済ませてから走らせる）
+- [ ] リポジトリの `CLAUDE.md` の「品質方針」の必須ゲートに、`check:android` が載っている（決定 Q2）
 - [ ] NDK の場所が分からないとき、`npm run check:android` は 0 以外で終わり、`NDK_HOME` を含む案内を標準エラーに出す（`scripts/check-android.mjs` の単体テストで、NDK の場所の解決を純粋関数として確かめる）
 
 アプリのオリジン（`lib.rs` の単体テスト・ホスト）:
@@ -283,16 +292,20 @@ Android 向けのビルド（コンパイルの検査）:
 - [ ] Android のオリジンの新しいウィンドウの判定は、`blob:http://tauri.localhost/<uuid>` を許し、`blob:tauri://localhost/<uuid>`・`blob:http://tauri.localhost.evil.example/<uuid>` を拒否する
 - [ ] Android で器が判定に渡すオリジンは `http://tauri.localhost` である（`cfg(target_os = "android")` の分岐。`check:android` でコンパイルし、選ぶ関数の単体テストで値を確かめる）
 
-秘密情報の保管（S1 は明示的に失敗する保管。推奨 B）:
+秘密情報の保管（S1 は明示的に失敗する保管。決定 A2）:
 
 - [ ] Android の保管の `set`・`delete`・`contains` は、いずれも「この端末では保管できない」ことを示す失敗を返す（`secure-transport` の単体テスト。ホストでその実装を組んで確かめる）
+- [ ] Android の保管の `contains` は、偽（未登録）を返さず失敗を返す（「未登録」と「保管できない」を画面が区別できる）
 - [ ] Android の保管の失敗は、器のコマンドのエラーとして WebView へ返る（`secure_commands.rs` の単体テストで、その失敗が対応するエラーの種類に写ることを確かめる）
 
-TLS（`cargo tree`）:
+TLS（`cargo tree -e normal`。決定 6・Q3。「出ない」は、出力に `<パッケージ> v` で始まる行が無いことで判定する。パッケージが Cargo.lock に無いときの `did not match any packages` も「出ない」と読む）:
 
-- [ ] `cargo tree --manifest-path native/secure-transport/Cargo.toml --target aarch64-linux-android -i openssl-sys` が、`openssl-sys` が依存の木に無いことを示して終わる
-- [ ] `cargo tree --manifest-path native/tauri-app/Cargo.toml --target aarch64-apple-darwin -i rustls` が、`rustls` が依存の木に無いことを示して終わる（macOS の TLS を変えない）
-- [ ] `cargo tree --manifest-path native/tauri-app/Cargo.toml --target aarch64-apple-ios -i rustls` が、`rustls` が依存の木に無いことを示して終わる（iOS の TLS を変えない）
+- [ ] `cargo tree --manifest-path native/tauri-app/Cargo.toml --target aarch64-linux-android -e normal -i openssl-sys` に、`openssl-sys` が出ない
+- [ ] `cargo tree --manifest-path native/tauri-app/Cargo.toml --target aarch64-linux-android -e normal -i rustls` に、`rustls` が出る（Android の TLS が rustls である）
+- [ ] `cargo tree --manifest-path native/tauri-app/Cargo.toml --target aarch64-apple-darwin -e normal -i rustls` に、`rustls` が出ない（macOS の TLS を変えない）
+- [ ] `cargo tree --manifest-path native/tauri-app/Cargo.toml --target aarch64-apple-ios -e normal -i rustls` に、`rustls` が出ない（iOS の TLS を変えない）
+- [ ] `cargo tree --manifest-path native/tauri-app/Cargo.toml --target aarch64-apple-darwin -e normal -i native-tls` に、`native-tls` が出る（macOS は今の TLS のまま）
+- [ ] `cargo tree --manifest-path native/tauri-app/Cargo.toml --target aarch64-apple-ios -e normal -i native-tls` に、`native-tls` が出る（iOS は今の TLS のまま）
 
 `gen/android`（設定の検査・`.gitignore` の検査）:
 
@@ -334,12 +347,17 @@ macOS の製品版と iOS の器の振る舞いが変わらないこと:
 
 ## 手動の確認手順（S1）
 
-**準備**（開発機。オーナーが導入する）:
+**準備**（開発機。オーナーが導入する。この仕様の作成では導入していない。S1 の出荷条件）:
 
-- Android SDK（android-36 のプラットフォーム・build-tools・platform-tools・emulator・arm64 のシステムイメージ）と NDK。`ANDROID_HOME`・`NDK_HOME` を設定する
-- JDK 17 以上（`JAVA_HOME`）
-- `rustup target add aarch64-linux-android`
-- AVD を 1 つ作り（例: Pixel 系・Android 16・arm64）、起動しておく（`emulator -avd <名前>`）
+| 道具 | 導入の手順（例） | 確かめ方 |
+|---|---|---|
+| Rust の Android のターゲット | `rustup target add aarch64-linux-android` | `rustup target list --installed` に `aarch64-linux-android` が出る |
+| JDK 17 以上 | Android Studio に同梱の JDK を使うか、Homebrew 等で JDK 17 以上を入れ、`JAVA_HOME` をそれに向ける（今の開発機は JDK 15・11 だけ） | `"$JAVA_HOME/bin/java" -version` が 17 以上 |
+| Android SDK | Android Studio（または command-line tools の最新）を入れ、`ANDROID_HOME` を SDK の場所（例 `~/Library/Android/sdk`）に向ける。`sdkmanager "platforms;android-36" "platform-tools" "emulator" "build-tools;<最新>"` | `ls "$ANDROID_HOME/platforms"` に `android-36` が出る。`"$ANDROID_HOME/platform-tools/adb" version` が動く |
+| NDK | `sdkmanager "ndk;<版>"`（版は Tauri 2 の前提に従う。導入のときに Tauri の文書で確かめる）。`NDK_HOME` を `$ANDROID_HOME/ndk/<版>` に向ける | `ls "$NDK_HOME/toolchains/llvm/prebuilt"` が出る |
+| arm64 のエミュレータのイメージと AVD | `sdkmanager "system-images;android-36;google_apis;arm64-v8a"` の後、`avdmanager create avd -n aiboss -k "system-images;android-36;google_apis;arm64-v8a"` | `"$ANDROID_HOME/emulator/emulator" -list-avds` に出る |
+
+sdkmanager のパッケージ名と版は、導入のときの最新に合わせてよい（上は例。推論）。導入した版は S1 の PR に記録する。AVD を起動しておく（`emulator -avd aiboss`）。
 
 | # | 操作 | 期待する結果 |
 |---|---|---|
@@ -348,91 +366,35 @@ macOS の製品版と iOS の器の振る舞いが変わらないこと:
 | 3 | Chrome の `chrome://inspect/#devices` で WebView のコンソールを開き、`location.origin` を実行する。続けて `await window.__TAURI_INTERNALS__.invoke("plugin:sql\|select", { db: "sqlite:ai-boss.db", query: "SELECT COUNT(*) AS n FROM tasks", values: [] })` を実行する | `location.origin` が `http://tauri.localhost` である。`select` が `n` を持つ行を 1 つ返す（DB が開き、IPC が通る） |
 | 4 | タスクを 1 件作り、`adb shell am force-stop dev.aiboss.app` でアプリを終えて、再び起動する | 作ったタスクが残っている |
 | 5 | コンソールで `location.href = "https://example.com"` を実行する | 移動しない（`location.origin` が `http://tauri.localhost` のまま。画面がダッシュボードのまま） |
-| 6 | 設定の画面で BYOK のキー（ダミーの値でよい）を保存する | 保存の失敗が画面に表示される（S1 は保管を S2 で作るため。推奨 B）。キーの状態は「未登録」のまま |
+| 6 | 設定の画面で BYOK のキー（ダミーの値でよい）を保存する | 保存の失敗が画面に表示される（S1 は保管を S2 で作るため。決定 A2）。キーの状態は「登録済み」と表示されない（`contains` も失敗を返すため、`ByokKeySection.tsx` は状態を「確認中…」のまま、失敗を `role="alert"` の段落に出す〔実コード〕。表示された文言を PR に記録する） |
 | 7 | 証跡ファイルを 1 つ添えて保存し、表示を試みる | 保存できることを確かめる。表示（新しいウィンドウ）は、開くか開かないかを記録する（期待値は定めない。「やらないこと」） |
 | 8 | 手順 3 のコンソールで `await window.__TAURI_INTERNALS__.invoke("plugin:sql\|select", { db: "sqlite:ai-boss.db", query: "SELECT COUNT(*) AS n FROM nudge_reservations", values: [] })` を実行する | 結果を記録する（S1 の Android は予約方式に入らないため、`n` は 0 の見込み。決定 5。合否の条件にはしない） |
 | 9 | 手順 1 の後に `npm run lint` を実行し、`git status --short` を見る | lint が合格し、`gen/android` のビルドの出力・`local.properties` が未追跡のファイルとして出ない |
 | 10 | macOS で `npm run build:tauri` の `.app` を起動する | 既存の手動の確認（#579 S3・#659）の結果が変わらない（メニューバーのアイコンの「開く」「終了」・閉じても終わらない・Dock での再表示・2 つ目の起動で既存のウィンドウが前面に出る） |
 | 11 | iOS シミュレータで `npm run build:tauri:ios-sim` の `.app` を起動する（`ios-shell.md` の手動の確認手順 1・2） | 製品版のダッシュボードが表示される（iOS の器を壊していない） |
 
-## 未決（2026-10-04 時点）
+## 決定（2026-10-04）
 
-### オーナーへの問い
+作成時点の未決（オーナーへの問い A1・A2、親への問い Q1〜Q4）への回答。Q3 は安全性（API キーの取り扱い）に関わるため、親がオーナーへ上げた。判断材料（Android の文書・コード）は「実コードの実測」に残した。
 
-#### A1. 通知の許可（`POST_NOTIFICATIONS`）の体験を、iOS（#669 の O1〜O3）に揃えるか（S3）
-
-iOS の決定: 初回起動の直後に、ボスの口調の自前の説明 →「許可する」で OS のダイアログ（「あとで」を選べる）。拒否されたら、ダッシュボードに常設の案内と設定アプリへの誘導。拒否の間も予約を続ける（O3。2026-10-04 の O4 で見直しの論点が S2 に残っている）。
-
-判断材料（Android に固有の差。「Android の文書で確かめたこと」）:
-
-- **ダイアログを出せる回数**: iOS は初回だけ。Android は「許可しない」が 2 回で恒久的な拒否になる（1 回目の拒否の後に、もう 1 回だけ求められる）。2 回目の前に `shouldShowRequestPermissionRationale()` が真になり、説明を出すよう勧められている。
-- **もう 1 つの許可がある**: 予約を時刻どおりに届けるには、正確な時刻の予約の権限（`SCHEDULE_EXACT_ALARM`）が別に要る。これは**実行時のダイアログではなく、設定の「アラームとリマインダー」の画面**で利用者が与える。Android 14 以上の新しいインストールでは与えられていない。無いと、予約は**最大 1 時間遅れる**（Android 12 以上の `set()`）。`USE_EXACT_ALARM`（自動で与えられる）は用途が限られ、Google Play のポリシーの対象で、ai-boss が当たるかは確かめていない（推論: 目覚まし時計・カレンダーの類に当たらない見込み）。
-- **拒否の間の予約**: Android ではアラームは残り、表示だけされない（推論）。iOS の O4（OS が予約を保持しない）と違い、許可に戻せば次の予約時刻から届く見込みである（推論）。
-- **12L 以下を対象にしたアプリ**は、OS が勝手に起動時にダイアログを出す。Tauri 2 の Android のテンプレートが対象にする版（`targetSdk`）は確かめていない（推論: 13 以上）。
-
-選択肢:
-
-- **A（推奨）**: iOS に揃える（初回起動の直後・ボスの口調の説明・「あとで」・拒否時は常設の案内と設定アプリへの誘導・拒否中も予約を続ける）。**加えて**、Android では通知の許可の直後に、同じ口調で正確な時刻の予約の権限を説明し、「アラームとリマインダー」の設定画面へ誘導する。権限が無い間は、ダッシュボードの常設の案内に「催促が最大 1 時間遅れる」ことを出す。2 回目の拒否で恒久的な拒否になる前に、説明を必ず挟む。
-  - 理由: 体験を端末で揃えられ（ADR 0011 決定 20 の「同等の全機能」）、S2 の文面の確認も 1 回で済む。正確な時刻の権限が無いと、催促が「黙って遅れる」ため、案内が要る。
-- B: iOS に揃えるが、正確な時刻の予約の権限は求めない（予約は最大 1 時間遅れることを受け入れる）。
-- C: Android は別の体験にする（例: 最初の催促が予約される直前に求める・設定画面で有効にしたときだけ求める）。
-
-#### A2. 秘密情報（BYOK のキー・中継のライセンストークン）の保管を、どのスライスで作るか
-
-判断材料:
-
-- ADR 0002 の改訂は、Android の保管先を Keystore とし、キーを平文でファイルに書かないとした。Keystore は**鍵だけ**を入れる仕組みで、API キーの文字列はそのまま入らない。Keystore の鍵（取り出し不可）で暗号化し、暗号文をアプリの領域に置く実装になる（推論）。Apple のキーチェーン（値をそのまま入れられる）より実装が大きい。
-- 実装は `secure-transport` のクレートの中に置く必要がある（`KeyStore` の封印。実測）。Rust から Keystore の Java の API を JNI で呼ぶ実装か、器の Kotlin のプラグインを通す実装になる。後者は、クレートが Tauri 非依存であることと封印に手を入れる。
-- 中継のライセンストークンも同じ保管を使う（`Provider::RelayLicense`）。**保管が無い間、Android では BYOK も中継も使えず、LLM がまったく使えない**。
-- 器の `SecureState::production()` は Apple の保管を無条件に使うため、**何らかの Android の保管を選ばないと、器が Android 向けにコンパイルできない**（S1 の時点で手当てが要る）。
-- iOS（#669 P4）では、キーチェーンを S1 の必須の機能にした。iOS のキーチェーンは追加のコード無しで動く見込みだった（同じ実装）のに対し、Android は新しい暗号のコードを書く。
-- API キーの取り扱いはクリティカル箇所（PR は人間レビュー必須）。
-
-選択肢:
-
-- A: S1 に含める（S1 で Android が全機能に近づく。S1 の PR が大きくなり、器のビルドとクリティカル箇所のレビューが 1 本に混ざる）
-- **B（推奨）**: S2 に分ける。S1 の Android は、保管の操作を「この端末では保管できない」という明示的な失敗で返す実装を選ぶ（画面に失敗が出る。黙って成功しない）。S2 で Keystore の実装を作る
-  - 理由: S1 の器のビルド（オリジン・TLS・Gradle）と、新しい暗号のコード（クリティカル箇所）を別の PR で見られる。S1 の間に LLM が使えないことは、Android の製品のリリースが S2 の後であれば利用者に影響しない
-- C: 別の手段（例: `keyring` クレートの Android の保管。`secure-transport-byok.md` は macOS でアクセシビリティ・同期可否を指定できないことを理由に退けたが、Android に限って使う余地はある。推論: Android の実装の中身〔Keystore で包むか〕は確かめていない）
-
-### 親への問い
-
-#### Q1. #585 S4 との境界（決定 5）
-
-- 推奨: 決定 5 の表のとおり。プラットフォームの判定を `android` へ広げることと、fork の Android の差分（`show` の予約を `get_pending` と再起動の復元に載せる・過去の時刻を拒否で返す）・正確な時刻の予約の権限の宣言と扱い・省電力（`allowWhileIdle`・`RTC_WAKEUP`）は #585 S4 に置く。許可を求める画面（`POST_NOTIFICATIONS` と「アラームとリマインダー」への誘導）と通しの確認は、この Issue の S3 に置く。
-- 判断材料: #585 S4 の定義（スライス表の 249 行「Android の実装〔正確な時刻の予約の権限・端末の省電力〕」）、#585 決定 9 の S3-Q2（許可の体験は器の Issue で決める）。判定だけを先に広げると、`get_pending` に載らず再起動で消える予約で催促を出すことになる（実測のコード）。
-- 代替案: プラットフォームの判定を広げるのを S1 に入れる（S1 で催促が「出る」ようになるが、上の不具合を抱えたまま出る）。
-- **#585 S4 の見積もり（3-8 ファイル）への影響**: fork の Android の差分（Kotlin）が加わる。S4 を仕様にするときに見積もり直しが要る（新しい論点）。
-
-#### Q2. `check:android` を必須ゲートに足すか（決定 3）
-
-- 事実: このホストには NDK・Android のターゲットが無く、`check:android` は今は走らない。足すと、オーナーが開発機に NDK（1 GB 程度。推論）と Android のターゲットを入れるまで、すべての品質ゲートの判定が落ちる。CI は無い。
-- 推奨: **S1 の実装 PR で足す**（`check:ios` と同じ。決定 P2 の型）。S1 の実装そのものに SDK・NDK・エミュレータが要るため、S1 に着手する時点で開発機は準備済みになる。`CLAUDE.md` の必須ゲートの記述は S1 の実装 PR で変える。
-- 代替案: 足さない（手動の確認の前の任意の検査にする）／S1 の後で足す。
-
-#### Q3. Android の TLS（決定 6。API キーの取り扱い＝クリティカル箇所）
-
-- 推奨: Android でだけ `rustls`（`webpki-roots`）。Apple は `default-tls` のまま。
-- 判断材料: `native-tls` は Android では OpenSSL（`openssl-sys`。`vendored` 無し）に依存する（`Cargo.lock`）。`webpki-roots` は Mozilla のルート証明書の束をバイナリに入れるため、端末に利用者が足した証明書は信頼しない（ai-boss の送信先は Anthropic・OpenAI・中継の 3 つで、いずれも公開のルートで足りる見込み。推論）。
-- 代替案: `native-tls` の `vendored`（OpenSSL をソースからビルド）／`rustls-platform-verifier`（端末の証明書ストア。Kotlin の部品が要る）。
-
-#### Q4. Android のアプリのオリジンを Android でだけ許す（決定 2。ナビゲーションの境界）
-
-- 推奨: 決定 2 のとおり（`http://tauri.localhost` だけを、Android でだけ許す。`use_https_scheme` は偽のまま）。
-- 判断材料: Tauri 2.12.0 のソースのテストが、Android のアプリの URL を `http://tauri.localhost/` と固定している。`use_https_scheme` を後で変えると WebView のデータが読めなくなる（`tauri-utils` の説明）。
-- 代替案: `use_https_scheme` を真にして `https://tauri.localhost` を許す。
-
-### 前提として置いたこと（親が確認するなら回答を）
-
-- 実機での確認は、ADR 0011「未決」のとおり製品化の後のフェーズとする（この仕様の手動の確認はエミュレータだけ）。
+| ID | 論点 | 決定 | 決めた人 | 反映先 |
+|---|---|---|---|---|
+| A1 | 通知の許可（`POST_NOTIFICATIONS`）の体験を iOS に揃えるか | **A: iOS（#669 の O1〜O3）に揃える**。加えて、通知が許可された直後に正確な時刻のアラームの許可を説明し、「アラームとリマインダー」の設定画面へ誘導する。許可が無い間は、ダッシュボードの案内に「催促が最大 1 時間遅れることがある」と出す。`USE_EXACT_ALARM` は使わない（Google Play のポリシーに ai-boss が当たらない見込みは**推論**のまま）。代替案: B iOS に揃え、正確な時刻のアラームの許可は求めない（最大 1 時間の遅れを受け入れる）／C Android は別の体験にする | ★オーナー | 決定 8・機能要件・スライス S3 |
+| A2 | 秘密情報（BYOK のキー・中継のライセンストークン）の保管を、どのスライスで作るか | **B: Android Keystore による保管は S2**。S1 の Android の保管は、操作を「この端末では保管できない」と明示的に失敗させる（成功を装わない）。代替案: A S1 に含める／C `keyring` クレート等の別の手段 | ★オーナー | 決定 7・機能要件・スライス S1・S2・失敗の経路・受入基準（S1）・手動の確認手順（S1）の 6 |
+| Q1 | #585 S4 との境界 | **推奨どおり**: 予約方式の経路を `android` でも有効にすること・fork の Android の修正（予約一覧・再起動の後の復元・過去の時刻の拒否）・正確なアラームの宣言・idle と起床は #585 S4。この Issue は許可の画面と通しの確認（S3）。S4 の見積もり（3-8 ファイル）の見直しが要ることを #585 へ申し送る。代替案: プラットフォームの判定を広げるのを S1 に入れる | 親 | 決定 5・やらないこと |
+| Q2 | `check:android` を必須ゲートに足すか | **推奨どおり**: S1 の実装 PR で必須ゲートに足す。S1 の出荷条件に、開発機の Android の道具を書き、導入の手順を仕様に置く。代替案: 足さない／S1 の後で足す | 親 | 決定 3・スライス S1・失敗の経路・受入基準（S1）・手動の確認手順（S1）の準備 |
+| Q3 | Android の TLS | **rustls（Android だけ）と同梱のルート証明書**（`webpki-roots`）。Apple は今の TLS（`default-tls`）のまま。`cargo tree` で確かめた今の依存の木を仕様に記録する。代替案: `native-tls` の `vendored`／`rustls-platform-verifier` | ★オーナー（親が安全性のため上げた） | 決定 6・受入基準（S1） |
+| Q4 | Android のアプリのオリジン | **推奨どおり**: Android だけ `http://tauri.localhost` を許し、http のスキームを保つ（`use_https_scheme` を偽のまま。後で変えると WebView のデータが読めなくなるため、最初に決める）。代替案: `use_https_scheme` を真にして `https://tauri.localhost` を許す | 親 | 決定 2・受入基準（S1） |
+| — | 実機での確認 | **製品化の後のフェーズのまま**（ADR 0011「未決」）。この仕様の手動の確認はエミュレータだけ | 親（オーナーの既存の判断の確認） | やらないこと |
 
 ## 仮定（軽微・可逆）
 
-- A1: 仕様のファイル名は `docs/features/android-shell.md` とする（`ios-shell.md` に揃える）。
-- A2: スライスを 3 つ（S1 器・S2 保管・S3 許可の体験と通しの確認）に切る。S2 は未決 A2 で A を選べば S1 に入れる。
-- A3: Android の Rust のターゲットは `aarch64-linux-android` の 1 つから始める（Apple Silicon の開発機のエミュレータは arm64）。`check:android` もこの 1 つを検査する。
-- A4: エミュレータ向けのビルドのスクリプト名は `build:tauri:android-emu` とする（`build:tauri:ios-sim` に揃える）。中身は `cd native/tauri-app && npx @tauri-apps/cli android build --debug --target aarch64 --apk`。
-- A5: `check:android` は、器のライブラリだけを検査する（`--lib`）。NDK の環境変数の組み立ては `scripts/check-android.mjs` に置く（`check:ios` の `&&` の連結と違い、環境変数を組むため）。
-- A6: Android のオリジンの判定は、`is_allowed_navigation` の中身をオリジンを引数に取る関数へ移し、`is_allowed_navigation` の名前と既存の単体テストは残す（既存のテストの名前を変えない）。
-- A7: `.gitignore` の検査は、`scripts/*.test.mjs`（`npm test` の `test:scripts`）に置く（`ios-shell.md` の A7 と同じ）。
-- A8: 手動の確認手順で WebView のコンソールから `window.__TAURI_INTERNALS__.invoke` を呼べる見込みである（推論。`ios-shell.md` の A8 と同じ）。デバッグのビルドでは Chrome の `chrome://inspect` で WebView を調べられる（`tauri-utils` の `devtools` の説明: Android は `chrome://inspect/#devices`）。
+- H1: 仕様のファイル名は `docs/features/android-shell.md` とする（`ios-shell.md` に揃える）。
+- H2: スライスを 3 つ（S1 器・S2 保管・S3 許可の体験と通しの確認）に切る。S2 は決定 A2 による。
+- H3: Android の Rust のターゲットは `aarch64-linux-android` の 1 つから始める（Apple Silicon の開発機のエミュレータは arm64）。`check:android` もこの 1 つを検査する。
+- H4: エミュレータ向けのビルドのスクリプト名は `build:tauri:android-emu` とする（`build:tauri:ios-sim` に揃える）。中身は `cd native/tauri-app && npx @tauri-apps/cli android build --debug --target aarch64 --apk`。
+- H5: `check:android` は、器のライブラリだけを検査する（`--lib`）。NDK の環境変数の組み立ては `scripts/check-android.mjs` に置く（`check:ios` の `&&` の連結と違い、環境変数を組むため）。
+- H6: Android のオリジンの判定は、`is_allowed_navigation` の中身をオリジンを引数に取る関数へ移し、`is_allowed_navigation` の名前と既存の単体テストは残す（既存のテストの名前を変えない）。
+- H7: `.gitignore` の検査は、`scripts/*.test.mjs`（`npm test` の `test:scripts`）に置く（`ios-shell.md` の仮定 A7 と同じ）。
+- H8: 手動の確認手順で WebView のコンソールから `window.__TAURI_INTERNALS__.invoke` を呼べる見込みである（推論。`ios-shell.md` の仮定 A8 と同じ）。デバッグのビルドでは Chrome の `chrome://inspect` で WebView を調べられる（`tauri-utils` の `devtools` の説明: Android は `chrome://inspect/#devices`）。
+- H9: S1 の Android の保管の失敗は、`StoreError` に新しい値（例: `Unsupported`）を足して表す。名前と、器のコマンドのエラーの種類（`secure_commands.rs` の `CommandError`）への写し方は S1 の実装で決める。表示の文言は既存の保管の失敗の表示を使う（画面〔`web/src/`〕は変えない）。
