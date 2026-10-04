@@ -32,7 +32,7 @@ AI が「上司（ボス）」を演じるセルフマネジメント支援ア�
 | DB | SQLite（better-sqlite3、完全ローカル保存） |
 | LLM | 既定: Claude Code（`@anthropic-ai/claude-agent-sdk`、サブスクリプション認証・`ANTHROPIC_API_KEY` 不要）。`LLM_BACKEND=api` で Claude API（`@anthropic-ai/sdk`、従量課金）へ切替可（既定モデル claude-sonnet-5・設定で変更可、両バックエンド共通） |
 | Native（製品版の通信層） | Rust（`native/secure-transport/`。BYOK キーのキーチェーン保管とキーを付与する HTTP 転送。Tauri 非依存のライブラリ） |
-| Native（製品版の器） | Tauri 2（macOS。`native/tauri-app/`。WebView 内で `server/src/core-app.ts` の Hono アプリを動かす。DB・LLM・通知は S2 では未配線。機能仕様 `docs/features/tauri-in-app-runtime.md`） |
+| Native（製品版の器） | Tauri 2（macOS・iOS。`native/tauri-app/`。iOS の Xcode のプロジェクトは `gen/apple`（コミットする）。WebView 内で `server/src/core-app.ts` の Hono アプリを動かす。DB・LLM・通知は S2 では未配線。機能仕様 `docs/features/tauri-in-app-runtime.md`） |
 | Test | Vitest（unit / integration）、Rust は `cargo test`（`npm run test:rust`・`npm run test:tauri`） |
 | Infra | macOS ローカル実行のみ。通知は terminal-notifier 優先 / osascript フォールバック |
 | Package | npm（workspaces: `server/` + `web/`） |
@@ -101,7 +101,7 @@ AI が「上司（ボス）」を演じるセルフマネジメント支援ア�
 ## 品質方針
 
 ```text
-- 必須ゲート: lint / typecheck / test / test:rust / test:tauri の全通過（/quality-check が機械可読で pass を返すこと）。`npm test` は `cargo` を呼ばない（Rust のツールチェーンが無くても動く）ため、`npm run test:rust`・`npm run test:tauri` は別に実行する。`test:tauri` は `native/tauri-app/`（Tauri 2 の器。機能仕様 docs/features/tauri-in-app-runtime.md S2）の `cargo test` で、実行前に製品版の web（`web/dist-app/`）のビルドを要する（`pretest:tauri` が自動で行う）
+- 必須ゲート: lint / typecheck / test / test:rust / test:tauri / check:ios の全通過（/quality-check が機械可読で pass を返すこと）。`npm test` は `cargo` を呼ばない（Rust のツールチェーンが無くても動く）ため、`npm run test:rust`・`npm run test:tauri`・`npm run check:ios` は別に実行する。`test:tauri` は `native/tauri-app/`（Tauri 2 の器。機能仕様 docs/features/tauri-in-app-runtime.md S2）の `cargo test` で、実行前に製品版の web（`web/dist-app/`）のビルドを要する（`pretest:tauri` が自動で行う）。`check:ios` は器のライブラリを iOS 向け（`aarch64-apple-ios-sim`・`aarch64-apple-ios`）に `cargo check` し、デスクトップの変更が iOS のビルドを壊したことに気づくための検査（機能仕様 docs/features/ios-shell.md 決定 3）。開発機に `rustup target add aarch64-apple-ios aarch64-apple-ios-sim` を要する（無いとターゲットが無いエラーで落ちる。品質の失敗ではなく準備の不足）。web のビルドは `precheck:ios` が自動で行う
 - クリティカル箇所（変更時は人間レビュー必須）: Claude API 連携・DB スキーマ・API キーの取り扱い・通知の実行系
 - サボり検知の閾値・エスカレーションはユニットテストが仕様の正本（[ADR 0004](docs/adr/0004-deterministic-detection-engine.md)）。閾値を変える PR はテストを同時に変える
 ```
@@ -135,6 +135,9 @@ npm run test:rust:keychain
 # Tauri の器（native/tauri-app/）のテスト（必須ゲート。web/dist-app/ のビルドを自動で先に行う）
 npm run test:tauri
 
+# Tauri の器の iOS 向けのコンパイルの検査（必須ゲート。要 rustup target add aarch64-apple-ios aarch64-apple-ios-sim）
+npm run check:ios
+
 # ビルド
 npm run build
 
@@ -148,4 +151,8 @@ npm run verify:tauri-bundle
 # 値は環境変数で渡し、リポジトリに書かない。未署名の build:tauri ではキーの登録が OSStatus -34018 になる。
 # 手順は docs/features/secure-transport-byok.md「手動の確認手順（S3）」）
 APPLE_SIGNING_IDENTITY="Apple Development: <名前> (<ID>)" APPLE_TEAM_ID=<チーム ID> npm run build:tauri:signed
+
+# 製品版の iOS シミュレータ向けの .app をビルド（Xcode・xcodegen・cocoapods が要る。
+# 出力は native/tauri-app/gen/apple/build/arm64-sim/ai-boss.app。手順は docs/features/ios-shell.md「手動の確認手順（S1）」）
+npm run build:tauri:ios-sim
 ```

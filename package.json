@@ -30,6 +30,10 @@
     "build": "npm run build --workspaces --if-present",
     "build:tauri": "cd native/tauri-app && npx @tauri-apps/cli build --bundles app",
     "build:tauri:signed": "node scripts/build-tauri-signed.mjs",
+    "tauri": "cd native/tauri-app && tauri",
+    "build:tauri:ios-sim": "cd native/tauri-app && npx @tauri-apps/cli ios build --target aarch64-sim --ci",
+    "precheck:ios": "npm run build:app --workspace web",
+    "check:ios": "cargo check --manifest-path native/tauri-app/Cargo.toml --lib --target aarch64-apple-ios-sim && cargo check --manifest-path native/tauri-app/Cargo.toml --lib --target aarch64-apple-ios",
     "verify:tauri-bundle": "node scripts/verify-tauri-bundle.mjs"
   },
   "devDependencies": {

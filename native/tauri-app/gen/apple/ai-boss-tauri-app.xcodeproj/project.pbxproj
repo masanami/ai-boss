@@ -1,0 +1,466 @@
+// !$*UTF8*$!
+{
+	archiveVersion = 1;
+	classes = {
+	};
+	objectVersion = 77;
+	objects = {
+
+/* Begin PBXBuildFile section */
+		0656DE7A9DA394F7EC03288B /* assets in Resources */ = {isa = PBXBuildFile; fileRef = E832A2170A00AD9B779D061B /* assets */; };
+		228906FFAE10689A633CA064 /* MetalKit.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = E41E22335F507FBE644F36BE /* MetalKit.framework */; };
+		2AD1D1A1A9E46E01A007914D /* LaunchScreen.storyboard in Resources */ = {isa = PBXBuildFile; fileRef = 9F6790AF31D52DD18930ECAF /* LaunchScreen.storyboard */; };
+		5E93FF9E48C393D7C462BF29 /* UIKit.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 2C92469813AC9AFC8B5B15F2 /* UIKit.framework */; };
+		6782A03015248D7170AC5EAE /* QuartzCore.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 2BF36C0D521EC299755A382A /* QuartzCore.framework */; };
+		6E137F0364B5CDF0D69D2B4B /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = B268F8CE1D47B5D17CCEA71A /* Assets.xcassets */; };
+		8CECC16C8880367AE281B81B /* main.mm in Sources */ = {isa = PBXBuildFile; fileRef = 9D673A1B645CAF588CB75478 /* main.mm */; };
+		B0027B91C334D538B3B01D30 /* libapp.a in Frameworks */ = {isa = PBXBuildFile; fileRef = CEF64F7199C75F326EDF5ECC /* libapp.a */; };
+		D25ED569F027AD1CA3499782 /* Metal.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = B76D84445192C1B65C803275 /* Metal.framework */; };
+		DC02C5F928E53C34954B26CA /* WebKit.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = B3772DC698DCB4EAE03A33F5 /* WebKit.framework */; };
+		E2BFDBBB3D0BB15F17D9F3A5 /* Security.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 120486E4D2A5C35FD1B1ECCB /* Security.framework */; };
+		E4CA7BBBDF39E0EEBE203CAC /* CoreGraphics.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 9259B54C56B7BAF0ACA7DD9E /* CoreGraphics.framework */; };
+/* End PBXBuildFile section */
+
+/* Begin PBXFileReference section */
+		120486E4D2A5C35FD1B1ECCB /* Security.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = Security.framework; path = System/Library/Frameworks/Security.framework; sourceTree = SDKROOT; };
+		2BF36C0D521EC299755A382A /* QuartzCore.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = QuartzCore.framework; path = System/Library/Frameworks/QuartzCore.framework; sourceTree = SDKROOT; };
+		2C92469813AC9AFC8B5B15F2 /* UIKit.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = UIKit.framework; path = System/Library/Frameworks/UIKit.framework; sourceTree = SDKROOT; };
+		33E97E4C01D04F8B1130144D /* desktop_shell.rs */ = {isa = PBXFileReference; path = desktop_shell.rs; sourceTree = "<group>"; };
+		34FCFD45A987F0226BB3790D /* ai-boss-tauri-app_iOS.app */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.application; path = "ai-boss-tauri-app_iOS.app"; sourceTree = BUILT_PRODUCTS_DIR; };
+		50F6B4C8E0E0D7974C09A966 /* main.rs */ = {isa = PBXFileReference; path = main.rs; sourceTree = "<group>"; };
+		7FF6836E6131459319066C23 /* lib.rs */ = {isa = PBXFileReference; path = lib.rs; sourceTree = "<group>"; };
+		818D66A3F007A30AEF643218 /* app_commands.rs */ = {isa = PBXFileReference; path = app_commands.rs; sourceTree = "<group>"; };
+		9259B54C56B7BAF0ACA7DD9E /* CoreGraphics.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = CoreGraphics.framework; path = System/Library/Frameworks/CoreGraphics.framework; sourceTree = SDKROOT; };
+		9D673A1B645CAF588CB75478 /* main.mm */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.objcpp; path = main.mm; sourceTree = "<group>"; };
+		9F6790AF31D52DD18930ECAF /* LaunchScreen.storyboard */ = {isa = PBXFileReference; lastKnownFileType = file.storyboard; path = LaunchScreen.storyboard; sourceTree = "<group>"; };
+		AE24EEF9E3A3DC9565D14A5C /* bindings.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = bindings.h; sourceTree = "<group>"; };
+		B268F8CE1D47B5D17CCEA71A /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
+		B3772DC698DCB4EAE03A33F5 /* WebKit.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = WebKit.framework; path = System/Library/Frameworks/WebKit.framework; sourceTree = SDKROOT; };
+		B76D84445192C1B65C803275 /* Metal.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = Metal.framework; path = System/Library/Frameworks/Metal.framework; sourceTree = SDKROOT; };
+		BA2C93B22A805F58A0B9F9CA /* secure_commands.rs */ = {isa = PBXFileReference; path = secure_commands.rs; sourceTree = "<group>"; };
+		CEF64F7199C75F326EDF5ECC /* libapp.a */ = {isa = PBXFileReference; lastKnownFileType = archive.ar; path = libapp.a; sourceTree = "<group>"; };
+		D485E9BAD3307D197A717AB7 /* ai-boss-tauri-app_iOS.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = "ai-boss-tauri-app_iOS.entitlements"; sourceTree = "<group>"; };
+		DEDFBDBE966DF48B6757976A /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
+		E41E22335F507FBE644F36BE /* MetalKit.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = MetalKit.framework; path = System/Library/Frameworks/MetalKit.framework; sourceTree = SDKROOT; };
+		E832A2170A00AD9B779D061B /* assets */ = {isa = PBXFileReference; lastKnownFileType = folder; path = assets; sourceTree = SOURCE_ROOT; };
+/* End PBXFileReference section */
+
+/* Begin PBXFrameworksBuildPhase section */
+		27A3AD79C0ED8BEE5B9FE830 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				B0027B91C334D538B3B01D30 /* libapp.a in Frameworks */,
+				E4CA7BBBDF39E0EEBE203CAC /* CoreGraphics.framework in Frameworks */,
+				D25ED569F027AD1CA3499782 /* Metal.framework in Frameworks */,
+				228906FFAE10689A633CA064 /* MetalKit.framework in Frameworks */,
+				6782A03015248D7170AC5EAE /* QuartzCore.framework in Frameworks */,
+				E2BFDBBB3D0BB15F17D9F3A5 /* Security.framework in Frameworks */,
+				5E93FF9E48C393D7C462BF29 /* UIKit.framework in Frameworks */,
+				DC02C5F928E53C34954B26CA /* WebKit.framework in Frameworks */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXFrameworksBuildPhase section */
+
+/* Begin PBXGroup section */
+		519E4DC25A63E90E68AAEFBE /* Frameworks */ = {
+			isa = PBXGroup;
+			children = (
+				9259B54C56B7BAF0ACA7DD9E /* CoreGraphics.framework */,
+				CEF64F7199C75F326EDF5ECC /* libapp.a */,
+				B76D84445192C1B65C803275 /* Metal.framework */,
+				E41E22335F507FBE644F36BE /* MetalKit.framework */,
+				2BF36C0D521EC299755A382A /* QuartzCore.framework */,
+				120486E4D2A5C35FD1B1ECCB /* Security.framework */,
+				2C92469813AC9AFC8B5B15F2 /* UIKit.framework */,
+				B3772DC698DCB4EAE03A33F5 /* WebKit.framework */,
+			);
+			name = Frameworks;
+			sourceTree = "<group>";
+		};
+		625B086F459437E40CD841FB /* bindings */ = {
+			isa = PBXGroup;
+			children = (
+				AE24EEF9E3A3DC9565D14A5C /* bindings.h */,
+			);
+			path = bindings;
+			sourceTree = "<group>";
+		};
+		72D4F5BB11F1C2CE76D248A7 /* ai-boss-tauri-app_iOS */ = {
+			isa = PBXGroup;
+			children = (
+				D485E9BAD3307D197A717AB7 /* ai-boss-tauri-app_iOS.entitlements */,
+				DEDFBDBE966DF48B6757976A /* Info.plist */,
+			);
+			path = "ai-boss-tauri-app_iOS";
+			sourceTree = "<group>";
+		};
+		947742BBA8D997BCDE0FDE6F /* Externals */ = {
+			isa = PBXGroup;
+			children = (
+			);
+			path = Externals;
+			sourceTree = "<group>";
+		};
+		B4F432F7392F0FB8762F78A4 = {
+			isa = PBXGroup;
+			children = (
+				E832A2170A00AD9B779D061B /* assets */,
+				B268F8CE1D47B5D17CCEA71A /* Assets.xcassets */,
+				9F6790AF31D52DD18930ECAF /* LaunchScreen.storyboard */,
+				72D4F5BB11F1C2CE76D248A7 /* ai-boss-tauri-app_iOS */,
+				947742BBA8D997BCDE0FDE6F /* Externals */,
+				EFF74A2F5466F54EC2778877 /* Sources */,
+				EA15E05BCC86890164A8C110 /* src */,
+				519E4DC25A63E90E68AAEFBE /* Frameworks */,
+				C474EA9CA2440CB11037EFAA /* Products */,
+			);
+			sourceTree = "<group>";
+		};
+		C474EA9CA2440CB11037EFAA /* Products */ = {
+			isa = PBXGroup;
+			children = (
+				34FCFD45A987F0226BB3790D /* ai-boss-tauri-app_iOS.app */,
+			);
+			name = Products;
+			sourceTree = "<group>";
+		};
+		D6F0529DFB5F407A15CA4E22 /* ai-boss-tauri-app */ = {
+			isa = PBXGroup;
+			children = (
+				9D673A1B645CAF588CB75478 /* main.mm */,
+				625B086F459437E40CD841FB /* bindings */,
+			);
+			path = "ai-boss-tauri-app";
+			sourceTree = "<group>";
+		};
+		EA15E05BCC86890164A8C110 /* src */ = {
+			isa = PBXGroup;
+			children = (
+				818D66A3F007A30AEF643218 /* app_commands.rs */,
+				33E97E4C01D04F8B1130144D /* desktop_shell.rs */,
+				7FF6836E6131459319066C23 /* lib.rs */,
+				50F6B4C8E0E0D7974C09A966 /* main.rs */,
+				BA2C93B22A805F58A0B9F9CA /* secure_commands.rs */,
+			);
+			name = src;
+			path = ../../src;
+			sourceTree = "<group>";
+		};
+		EFF74A2F5466F54EC2778877 /* Sources */ = {
+			isa = PBXGroup;
+			children = (
+				D6F0529DFB5F407A15CA4E22 /* ai-boss-tauri-app */,
+			);
+			path = Sources;
+			sourceTree = "<group>";
+		};
+/* End PBXGroup section */
+
+/* Begin PBXNativeTarget section */
+		EB435F810CCEE6BA22838A79 /* ai-boss-tauri-app_iOS */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = CB19F78245877E7C5BB7207E /* Build configuration list for PBXNativeTarget "ai-boss-tauri-app_iOS" */;
+			buildPhases = (
+				44F15F923A6642EA2278DEA2 /* Build Rust Code */,
+				58C9DED3E444E4A16B568B32 /* Sources */,
+				A3A7E86CF63F1B0F8DCA6B95 /* Resources */,
+				27A3AD79C0ED8BEE5B9FE830 /* Frameworks */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			name = "ai-boss-tauri-app_iOS";
+			packageProductDependencies = (
+			);
+			productName = "ai-boss-tauri-app_iOS";
+			productReference = 34FCFD45A987F0226BB3790D /* ai-boss-tauri-app_iOS.app */;
+			productType = "com.apple.product-type.application";
+		};
+/* End PBXNativeTarget section */
+
+/* Begin PBXProject section */
+		F7A71D394B4DDD0BFEA9458D /* Project object */ = {
+			isa = PBXProject;
+			attributes = {
+				BuildIndependentTargetsInParallel = YES;
+				LastUpgradeCheck = 1430;
+				TargetAttributes = {
+				};
+			};
+			buildConfigurationList = AA3568462B08E010DAA824EC /* Build configuration list for PBXProject "ai-boss-tauri-app" */;
+			developmentRegion = en;
+			hasScannedForEncodings = 0;
+			knownRegions = (
+				Base,
+				en,
+			);
+			mainGroup = B4F432F7392F0FB8762F78A4;
+			minimizedProjectReferenceProxies = 1;
+			preferredProjectObjectVersion = 77;
+			productRefGroup = C474EA9CA2440CB11037EFAA /* Products */;
+			projectDirPath = "";
+			projectRoot = "";
+			targets = (
+				EB435F810CCEE6BA22838A79 /* ai-boss-tauri-app_iOS */,
+			);
+		};
+/* End PBXProject section */
+
+/* Begin PBXResourcesBuildPhase section */
+		A3A7E86CF63F1B0F8DCA6B95 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				6E137F0364B5CDF0D69D2B4B /* Assets.xcassets in Resources */,
+				2AD1D1A1A9E46E01A007914D /* LaunchScreen.storyboard in Resources */,
+				0656DE7A9DA394F7EC03288B /* assets in Resources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXResourcesBuildPhase section */
+
+/* Begin PBXShellScriptBuildPhase section */
+		44F15F923A6642EA2278DEA2 /* Build Rust Code */ = {
+			isa = PBXShellScriptBuildPhase;
+			alwaysOutOfDate = 1;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			inputFileListPaths = (
+			);
+			inputPaths = (
+			);
+			name = "Build Rust Code";
+			outputFileListPaths = (
+			);
+			outputPaths = (
+				"$(SRCROOT)/Externals/x86_64/${CONFIGURATION}/libapp.a",
+				"$(SRCROOT)/Externals/arm64/${CONFIGURATION}/libapp.a",
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+			shellPath = /bin/sh;
+			shellScript = "npm run -- tauri ios xcode-script -v --platform \"${PLATFORM_DISPLAY_NAME:?}\" --sdk-root \"${SDKROOT:?}\" --framework-search-paths \"${FRAMEWORK_SEARCH_PATHS:?}\" --header-search-paths \"${HEADER_SEARCH_PATHS:?}\" --gcc-preprocessor-definitions \"${GCC_PREPROCESSOR_DEFINITIONS:-}\" --configuration \"${CONFIGURATION:?}\" ${FORCE_COLOR} ${ARCHS:?}\n";
+		};
+/* End PBXShellScriptBuildPhase section */
+
+/* Begin PBXSourcesBuildPhase section */
+		58C9DED3E444E4A16B568B32 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				8CECC16C8880367AE281B81B /* main.mm in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXSourcesBuildPhase section */
+
+/* Begin XCBuildConfiguration section */
+		1BFC64DC5359015E3AB1B715 /* release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_EMBED_SWIFT_STANDARD_LIBRARIES = YES;
+				ARCHS = (
+					arm64,
+				);
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				CODE_SIGN_ENTITLEMENTS = "ai-boss-tauri-app_iOS/ai-boss-tauri-app_iOS.entitlements";
+				CODE_SIGN_IDENTITY = "iPhone Developer";
+				ENABLE_BITCODE = NO;
+				"EXCLUDED_ARCHS[sdk=iphoneos*]" = x86_64;
+				FRAMEWORK_SEARCH_PATHS = (
+					"$(inherited)",
+					"\".\"",
+				);
+				INFOPLIST_FILE = "ai-boss-tauri-app_iOS/Info.plist";
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+				);
+				"LIBRARY_SEARCH_PATHS[arch=arm64]" = "$(inherited) $(PROJECT_DIR)/Externals/arm64/$(CONFIGURATION) $(SDKROOT)/usr/lib/swift $(DEVELOPER_DIR)/Toolchains/XcodeDefault.xctoolchain/usr/lib/swift/$(PLATFORM_NAME) $(DEVELOPER_DIR)/Toolchains/XcodeDefault.xctoolchain/usr/lib/swift-5.0/$(PLATFORM_NAME)";
+				"LIBRARY_SEARCH_PATHS[arch=x86_64]" = "$(inherited) $(PROJECT_DIR)/Externals/x86_64/$(CONFIGURATION) $(SDKROOT)/usr/lib/swift $(DEVELOPER_DIR)/Toolchains/XcodeDefault.xctoolchain/usr/lib/swift/$(PLATFORM_NAME) $(DEVELOPER_DIR)/Toolchains/XcodeDefault.xctoolchain/usr/lib/swift-5.0/$(PLATFORM_NAME)";
+				PRODUCT_BUNDLE_IDENTIFIER = dev.aiboss.app;
+				PRODUCT_NAME = "ai-boss";
+				SDKROOT = iphoneos;
+				TARGETED_DEVICE_FAMILY = "1,2";
+				VALID_ARCHS = arm64;
+			};
+			name = release;
+		};
+		25D4D2ECCC1881BC089D3F8E /* debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				CLANG_ANALYZER_NONNULL = YES;
+				CLANG_ANALYZER_NUMBER_OBJECT_CONVERSION = YES_AGGRESSIVE;
+				CLANG_CXX_LANGUAGE_STANDARD = "gnu++14";
+				CLANG_CXX_LIBRARY = "libc++";
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				CLANG_ENABLE_OBJC_WEAK = YES;
+				CLANG_WARN_BLOCK_CAPTURE_AUTORELEASING = YES;
+				CLANG_WARN_BOOL_CONVERSION = YES;
+				CLANG_WARN_COMMA = YES;
+				CLANG_WARN_CONSTANT_CONVERSION = YES;
+				CLANG_WARN_DEPRECATED_OBJC_IMPLEMENTATIONS = YES;
+				CLANG_WARN_DIRECT_OBJC_ISA_USAGE = YES_ERROR;
+				CLANG_WARN_DOCUMENTATION_COMMENTS = YES;
+				CLANG_WARN_EMPTY_BODY = YES;
+				CLANG_WARN_ENUM_CONVERSION = YES;
+				CLANG_WARN_INFINITE_RECURSION = YES;
+				CLANG_WARN_INT_CONVERSION = YES;
+				CLANG_WARN_NON_LITERAL_NULL_CONVERSION = YES;
+				CLANG_WARN_OBJC_IMPLICIT_RETAIN_SELF = YES;
+				CLANG_WARN_OBJC_LITERAL_CONVERSION = YES;
+				CLANG_WARN_OBJC_ROOT_CLASS = YES_ERROR;
+				CLANG_WARN_QUOTED_INCLUDE_IN_FRAMEWORK_HEADER = YES;
+				CLANG_WARN_RANGE_LOOP_ANALYSIS = YES;
+				CLANG_WARN_STRICT_PROTOTYPES = YES;
+				CLANG_WARN_SUSPICIOUS_MOVE = YES;
+				CLANG_WARN_UNGUARDED_AVAILABILITY = YES_AGGRESSIVE;
+				CLANG_WARN_UNREACHABLE_CODE = YES;
+				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
+				COPY_PHASE_STRIP = NO;
+				DEBUG_INFORMATION_FORMAT = dwarf;
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				ENABLE_TESTABILITY = YES;
+				GCC_C_LANGUAGE_STANDARD = gnu11;
+				GCC_DYNAMIC_NO_PIC = NO;
+				GCC_NO_COMMON_BLOCKS = YES;
+				GCC_OPTIMIZATION_LEVEL = 0;
+				GCC_PREPROCESSOR_DEFINITIONS = (
+					"$(inherited)",
+					"DEBUG=1",
+				);
+				GCC_WARN_64_TO_32_BIT_CONVERSION = YES;
+				GCC_WARN_ABOUT_RETURN_TYPE = YES_ERROR;
+				GCC_WARN_UNDECLARED_SELECTOR = YES;
+				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
+				GCC_WARN_UNUSED_FUNCTION = YES;
+				GCC_WARN_UNUSED_VARIABLE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 15.0;
+				MTL_ENABLE_DEBUG_INFO = INCLUDE_SOURCE;
+				MTL_FAST_MATH = YES;
+				ONLY_ACTIVE_ARCH = YES;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = iphoneos;
+				SWIFT_ACTIVE_COMPILATION_CONDITIONS = DEBUG;
+				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
+				SWIFT_VERSION = 5.0;
+			};
+			name = debug;
+		};
+		406E5B0763B6DDCCBE002587 /* release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				CLANG_ANALYZER_NONNULL = YES;
+				CLANG_ANALYZER_NUMBER_OBJECT_CONVERSION = YES_AGGRESSIVE;
+				CLANG_CXX_LANGUAGE_STANDARD = "gnu++14";
+				CLANG_CXX_LIBRARY = "libc++";
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				CLANG_ENABLE_OBJC_WEAK = YES;
+				CLANG_WARN_BLOCK_CAPTURE_AUTORELEASING = YES;
+				CLANG_WARN_BOOL_CONVERSION = YES;
+				CLANG_WARN_COMMA = YES;
+				CLANG_WARN_CONSTANT_CONVERSION = YES;
+				CLANG_WARN_DEPRECATED_OBJC_IMPLEMENTATIONS = YES;
+				CLANG_WARN_DIRECT_OBJC_ISA_USAGE = YES_ERROR;
+				CLANG_WARN_DOCUMENTATION_COMMENTS = YES;
+				CLANG_WARN_EMPTY_BODY = YES;
+				CLANG_WARN_ENUM_CONVERSION = YES;
+				CLANG_WARN_INFINITE_RECURSION = YES;
+				CLANG_WARN_INT_CONVERSION = YES;
+				CLANG_WARN_NON_LITERAL_NULL_CONVERSION = YES;
+				CLANG_WARN_OBJC_IMPLICIT_RETAIN_SELF = YES;
+				CLANG_WARN_OBJC_LITERAL_CONVERSION = YES;
+				CLANG_WARN_OBJC_ROOT_CLASS = YES_ERROR;
+				CLANG_WARN_QUOTED_INCLUDE_IN_FRAMEWORK_HEADER = YES;
+				CLANG_WARN_RANGE_LOOP_ANALYSIS = YES;
+				CLANG_WARN_STRICT_PROTOTYPES = YES;
+				CLANG_WARN_SUSPICIOUS_MOVE = YES;
+				CLANG_WARN_UNGUARDED_AVAILABILITY = YES_AGGRESSIVE;
+				CLANG_WARN_UNREACHABLE_CODE = YES;
+				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
+				COPY_PHASE_STRIP = NO;
+				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
+				ENABLE_NS_ASSERTIONS = NO;
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				GCC_C_LANGUAGE_STANDARD = gnu11;
+				GCC_NO_COMMON_BLOCKS = YES;
+				GCC_WARN_64_TO_32_BIT_CONVERSION = YES;
+				GCC_WARN_ABOUT_RETURN_TYPE = YES_ERROR;
+				GCC_WARN_UNDECLARED_SELECTOR = YES;
+				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
+				GCC_WARN_UNUSED_FUNCTION = YES;
+				GCC_WARN_UNUSED_VARIABLE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 15.0;
+				MTL_ENABLE_DEBUG_INFO = NO;
+				MTL_FAST_MATH = YES;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = iphoneos;
+				SWIFT_COMPILATION_MODE = wholemodule;
+				SWIFT_OPTIMIZATION_LEVEL = "-O";
+				SWIFT_VERSION = 5.0;
+			};
+			name = release;
+		};
+		E7AF837AFF07DB13129733E6 /* debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_EMBED_SWIFT_STANDARD_LIBRARIES = YES;
+				ARCHS = (
+					arm64,
+				);
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				CODE_SIGN_ENTITLEMENTS = "ai-boss-tauri-app_iOS/ai-boss-tauri-app_iOS.entitlements";
+				CODE_SIGN_IDENTITY = "iPhone Developer";
+				ENABLE_BITCODE = NO;
+				"EXCLUDED_ARCHS[sdk=iphoneos*]" = x86_64;
+				FRAMEWORK_SEARCH_PATHS = (
+					"$(inherited)",
+					"\".\"",
+				);
+				INFOPLIST_FILE = "ai-boss-tauri-app_iOS/Info.plist";
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+				);
+				"LIBRARY_SEARCH_PATHS[arch=arm64]" = "$(inherited) $(PROJECT_DIR)/Externals/arm64/$(CONFIGURATION) $(SDKROOT)/usr/lib/swift $(DEVELOPER_DIR)/Toolchains/XcodeDefault.xctoolchain/usr/lib/swift/$(PLATFORM_NAME) $(DEVELOPER_DIR)/Toolchains/XcodeDefault.xctoolchain/usr/lib/swift-5.0/$(PLATFORM_NAME)";
+				"LIBRARY_SEARCH_PATHS[arch=x86_64]" = "$(inherited) $(PROJECT_DIR)/Externals/x86_64/$(CONFIGURATION) $(SDKROOT)/usr/lib/swift $(DEVELOPER_DIR)/Toolchains/XcodeDefault.xctoolchain/usr/lib/swift/$(PLATFORM_NAME) $(DEVELOPER_DIR)/Toolchains/XcodeDefault.xctoolchain/usr/lib/swift-5.0/$(PLATFORM_NAME)";
+				PRODUCT_BUNDLE_IDENTIFIER = dev.aiboss.app;
+				PRODUCT_NAME = "ai-boss";
+				SDKROOT = iphoneos;
+				TARGETED_DEVICE_FAMILY = "1,2";
+				VALID_ARCHS = arm64;
+			};
+			name = debug;
+		};
+/* End XCBuildConfiguration section */
+
+/* Begin XCConfigurationList section */
+		AA3568462B08E010DAA824EC /* Build configuration list for PBXProject "ai-boss-tauri-app" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				25D4D2ECCC1881BC089D3F8E /* debug */,
+				406E5B0763B6DDCCBE002587 /* release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = debug;
+		};
+		CB19F78245877E7C5BB7207E /* Build configuration list for PBXNativeTarget "ai-boss-tauri-app_iOS" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				E7AF837AFF07DB13129733E6 /* debug */,
+				1BFC64DC5359015E3AB1B715 /* release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = debug;
+		};
+/* End XCConfigurationList section */
+	};
+	rootObject = F7A71D394B4DDD0BFEA9458D /* Project object */;
+}
