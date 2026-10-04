@@ -72,6 +72,99 @@ pub fn prepare_evidence_dir(app_config_dir: &Path) -> io::Result<PathBuf> {
     }
 }
 
+/// このビルドでアプリのデータ（`app_config_dir` 配下）を OS のバックアップから外すか
+/// （#681・機能仕様 `docs/features/ios-shell.md` 仮定 A12）。iOS だけ。macOS・Android の
+/// 経路は変えない（Android は manifest でバックアップを拒否する。`android-shell.md` 仮定 I6）。
+pub const EXCLUDES_APP_DATA_FROM_BACKUP: bool = cfg!(target_os = "ios");
+
+// 付け先をターゲットごとのコンパイルで固定する（iOS は `check:ios`、macOS は
+// `test:tauri`・`build:tauri`、Android は `check:android` がコンパイルする）。`cfg!` の
+// 付け先を誤ると（例: `mobile`・`target_vendor = "apple"`）、どれかのターゲットで落ちる。
+#[cfg(target_os = "ios")]
+const _: () = assert!(EXCLUDES_APP_DATA_FROM_BACKUP);
+#[cfg(not(target_os = "ios"))]
+const _: () = assert!(!EXCLUDES_APP_DATA_FROM_BACKUP);
+
+/// パスを OS のバックアップから外す処理（[`exclude_from_backup`]。テストは記録する模擬を渡す）。
+pub type BackupExclusion = fn(&Path) -> io::Result<()>;
+
+/// バックアップから外すかどうかに応じた処理を選ぶ（純粋関数。どちらの値もホストの
+/// 単体テストで確かめる）。
+pub fn backup_exclusion_for(exclude: bool) -> Option<BackupExclusion> {
+    if exclude {
+        Some(exclude_from_backup)
+    } else {
+        None
+    }
+}
+
+/// `path` に `NSURLIsExcludedFromBackupKey` を付ける（#681）。ディレクトリに付ければ、
+/// 後から作られる配下のファイル（DB・`evidence/`）も含めて iCloud・端末のバックアップの
+/// 対象から外れる。Apple のどのターゲットでも同じ API で付く（ホストの macOS の単体テストが
+/// 実際に付くことを確かめる）が、製品で呼ぶのは iOS だけ（[`EXCLUDES_APP_DATA_FROM_BACKUP`]）。
+#[cfg(target_vendor = "apple")]
+pub fn exclude_from_backup(path: &Path) -> io::Result<()> {
+    use objc2_foundation::{NSNumber, NSString, NSURL, NSURLIsExcludedFromBackupKey};
+
+    let url = NSURL::fileURLWithPath_isDirectory(&NSString::from_str(&path.to_string_lossy()), path.is_dir());
+    let value = NSNumber::numberWithBool(true);
+    // SAFETY: `NSURLIsExcludedFromBackupKey` の値は真偽の `NSNumber`（Apple の文書）。
+    unsafe { url.setResourceValue_forKey_error(Some(&value), NSURLIsExcludedFromBackupKey) }.map_err(|error| {
+        io::Error::other(format!(
+            "failed to exclude {} from backup: {}",
+            path.display(),
+            error.localizedDescription()
+        ))
+    })
+}
+
+/// Apple 以外では呼ばれない（[`backup_exclusion_for`] は iOS でだけ `true` を受ける）。
+#[cfg(not(target_vendor = "apple"))]
+pub fn exclude_from_backup(path: &Path) -> io::Result<()> {
+    Err(io::Error::new(
+        io::ErrorKind::Unsupported,
+        format!("excluding from backup is only implemented for Apple targets: {}", path.display()),
+    ))
+}
+
+/// アプリのデータの置き場所（`app_config_dir`）を OS のバックアップから外す（#681）。
+/// `exclusion` があれば、ディレクトリを作ってから（新規のインストールではまだ無い）
+/// ディレクトリそのものに属性を付ける。属性はディレクトリに付けるため、後から作られる
+/// 配下（DB〔`-wal`・`-shm`〕・`evidence/`）にも効く。外せなければ失敗させる。
+/// `exclusion` が無ければ何もしない（macOS・Android の経路は変えない）。
+pub fn exclude_app_data_dir_from_backup(
+    app_config_dir: &Path,
+    exclusion: Option<BackupExclusion>,
+) -> io::Result<()> {
+    if let Some(exclude) = exclusion {
+        std::fs::create_dir_all(app_config_dir)?;
+        exclude(app_config_dir)?;
+    }
+    Ok(())
+}
+
+/// アプリのデータをバックアップから外すプラグインの名前（#681）。外せないとき、器の
+/// 組み立ては `tauri::Error::PluginInitialization` にこの名前を載せて失敗する。
+pub const APP_DATA_BACKUP_EXCLUSION_PLUGIN_NAME: &str = "app-data-backup-exclusion";
+
+/// アプリのデータをバックアップから外すプラグイン（#681・機能仕様
+/// `docs/features/ios-shell.md` 仮定 A12）。**plugin-sql より先に登録する**: plugin-sql は
+/// 自分の初期化（`tauri.conf.json` の `plugins.sql.preload`）で `app_config_dir` と DB を
+/// 作って開く。Tauri（2.12）はプラグインを登録順に初期化し（`PluginStore::initialize_all`
+/// の `try_for_each`）、失敗したら以降のプラグインもアプリの `setup` も走らせない。
+/// アプリの `setup` で外すと、DB が除外より先に作られ、preload が失敗したときは
+/// 除外を試みもせずに終わる。ここで外せなければ DB を開く前に器の起動を止める。
+fn app_data_backup_exclusion_plugin<R: Runtime>(
+    exclusion: Option<BackupExclusion>,
+) -> tauri::plugin::TauriPlugin<R> {
+    tauri::plugin::Builder::new(APP_DATA_BACKUP_EXCLUSION_PLUGIN_NAME)
+        .setup(move |app, _api| {
+            exclude_app_data_dir_from_backup(&app.path().app_config_dir()?, exclusion)?;
+            Ok(())
+        })
+        .build()
+}
+
 /// 多重起動の排他の錠のファイル名（`app_config_dir` の直下。DB と同じ場所）。
 const INSTANCE_LOCK_FILE_NAME: &str = "ai-boss.lock";
 
@@ -485,7 +578,25 @@ pub fn configure<R: Runtime>(builder: tauri::Builder<R>) -> tauri::Builder<R> {
 /// Android は S1 では保管できない保管〔#674〕）、テストは
 /// 模擬の宛先の表とメモリの保管を渡す。
 pub fn configure_with<R: Runtime>(builder: tauri::Builder<R>, secure_state: SecureState) -> tauri::Builder<R> {
+    configure_with_backup_exclusion(
+        builder,
+        secure_state,
+        backup_exclusion_for(EXCLUDES_APP_DATA_FROM_BACKUP),
+    )
+}
+
+/// [`configure_with`] の、アプリのデータをバックアップから外す処理を注入できる形（#681。
+/// 製品版は [`backup_exclusion_for`]`(`[`EXCLUDES_APP_DATA_FROM_BACKUP`]`)`。結合テスト
+/// `tests/backup_exclusion.rs` は記録する模擬・失敗する模擬を渡し、除外が plugin-sql の
+/// preload より前に走ること・外せなければ DB を作らずに組み立てが失敗することを確かめる）。
+pub fn configure_with_backup_exclusion<R: Runtime>(
+    builder: tauri::Builder<R>,
+    secure_state: SecureState,
+    exclusion: Option<BackupExclusion>,
+) -> tauri::Builder<R> {
     builder
+        // #681: plugin-sql（DB の preload）より先（[`app_data_backup_exclusion_plugin`]）。
+        .plugin(app_data_backup_exclusion_plugin(exclusion))
         .plugin(tauri_plugin_sql::Builder::new().build())
         .plugin(tauri_plugin_fs::init())
         // #579 S3: 通知の送信（`plugin:notification|notify`。WebView には
@@ -601,6 +712,113 @@ mod tests {
         // リンク切れの先を作らない（`create_dir_all` がリンクを辿ると作ってしまう）。
         assert!(!missing.exists());
     }
+
+    // --- exclude_app_data_dir_from_backup（#681: iOS でアプリのデータをバックアップから外す） ----
+
+    /// `path` そのものに付いた除外の属性（Apple の `NSURLIsExcludedFromBackupKey` が書く
+    /// 拡張属性）があるか。祖先の除外は見ない。
+    #[cfg(target_vendor = "apple")]
+    fn has_backup_exclusion_attribute(path: &Path) -> bool {
+        use std::os::unix::ffi::OsStrExt;
+        let path = std::ffi::CString::new(path.as_os_str().as_bytes()).unwrap();
+        let name = c"com.apple.metadata:com_apple_backup_excludeItem";
+        // SAFETY: どちらも NUL 終端の文字列。値の大きさだけを問い合わせる（バッファ無し）。
+        let size = unsafe { libc::getxattr(path.as_ptr(), name.as_ptr(), std::ptr::null_mut(), 0, 0, 0) };
+        size >= 0
+    }
+
+    #[test]
+    fn the_host_build_does_not_exclude_app_data_from_backup() {
+        // ホスト（macOS）の `cargo test` は iOS の分岐に入らない。
+        assert!(!EXCLUDES_APP_DATA_FROM_BACKUP);
+    }
+
+    #[test]
+    fn no_exclusion_is_chosen_when_not_excluding() {
+        assert!(backup_exclusion_for(false).is_none());
+    }
+
+    #[cfg(target_vendor = "apple")]
+    #[test]
+    fn the_chosen_exclusion_sets_the_backup_exclusion_attribute_on_a_directory() {
+        let dir = tempfile::tempdir().unwrap();
+        assert!(!has_backup_exclusion_attribute(dir.path()), "a fresh directory has no exclusion");
+
+        let exclude = backup_exclusion_for(true).expect("an exclusion is chosen when excluding");
+        exclude(dir.path()).unwrap();
+
+        assert!(has_backup_exclusion_attribute(dir.path()));
+    }
+
+    #[cfg(target_vendor = "apple")]
+    #[test]
+    fn exclude_from_backup_fails_for_a_path_that_does_not_exist() {
+        let dir = tempfile::tempdir().unwrap();
+        assert!(exclude_from_backup(&dir.path().join("missing")).is_err());
+    }
+
+    static EXCLUDED: std::sync::Mutex<Vec<PathBuf>> = std::sync::Mutex::new(Vec::new());
+
+    fn record_exclusion(path: &Path) -> io::Result<()> {
+        assert!(path.is_dir(), "the directory exists when it is excluded: {}", path.display());
+        EXCLUDED.lock().unwrap_or_else(|e| e.into_inner()).push(path.to_path_buf());
+        Ok(())
+    }
+
+    fn fail_exclusion(_path: &Path) -> io::Result<()> {
+        Err(io::Error::other("exclusion failed"))
+    }
+
+    #[test]
+    fn exclude_app_data_dir_from_backup_creates_and_excludes_the_app_config_dir_itself() {
+        let _serial = EXCLUSION_TESTS.lock().unwrap_or_else(|e| e.into_inner());
+        EXCLUDED.lock().unwrap_or_else(|e| e.into_inner()).clear();
+        let root = tempfile::tempdir().unwrap();
+        // 新規のインストール: まだ無いディレクトリを作ってから外す。
+        let config_dir = root.path().join("dev.aiboss.app");
+
+        exclude_app_data_dir_from_backup(&config_dir, Some(record_exclusion)).unwrap();
+
+        // 配下の DB・evidence/・錠に効くよう、`app_config_dir` そのもの（だけ）に付ける。
+        assert_eq!(*EXCLUDED.lock().unwrap_or_else(|e| e.into_inner()), vec![config_dir]);
+    }
+
+    #[test]
+    fn exclude_app_data_dir_from_backup_does_nothing_without_an_exclusion() {
+        let _serial = EXCLUSION_TESTS.lock().unwrap_or_else(|e| e.into_inner());
+        EXCLUDED.lock().unwrap_or_else(|e| e.into_inner()).clear();
+        let root = tempfile::tempdir().unwrap();
+        let config_dir = root.path().join("dev.aiboss.app");
+
+        exclude_app_data_dir_from_backup(&config_dir, None).unwrap();
+
+        assert!(EXCLUDED.lock().unwrap_or_else(|e| e.into_inner()).is_empty());
+        // macOS・Android の経路は変えない（ディレクトリも作らない）。
+        assert!(!config_dir.exists());
+    }
+
+    #[test]
+    fn exclude_app_data_dir_from_backup_fails_when_the_exclusion_fails() {
+        let config_dir = tempfile::tempdir().unwrap();
+        let error = exclude_app_data_dir_from_backup(config_dir.path(), Some(fail_exclusion)).unwrap_err();
+        assert_eq!(error.to_string(), "exclusion failed");
+    }
+
+    #[cfg(target_vendor = "apple")]
+    #[test]
+    fn the_production_exclusion_on_the_host_leaves_the_directory_in_backup() {
+        // macOS（ホスト）の製品の経路は属性を付けない（除外は iOS だけ）。
+        let config_dir = tempfile::tempdir().unwrap();
+        exclude_app_data_dir_from_backup(
+            config_dir.path(),
+            backup_exclusion_for(EXCLUDES_APP_DATA_FROM_BACKUP),
+        )
+        .unwrap();
+        assert!(!has_backup_exclusion_attribute(config_dir.path()));
+    }
+
+    /// `EXCLUDED` を共有するテストを直列にする。
+    static EXCLUSION_TESTS: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
     // --- acquire_instance_lock（#659: 多重起動の原子的な排他） ------------------
 
