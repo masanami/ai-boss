@@ -9,7 +9,8 @@ use std::time::Duration;
 use secrecy::SecretString;
 use secure_transport::{
     is_valid_relay_url, Credential, Destination, DestinationTable, KeyStore, MemoryKeyStore, Provider, ResponseStream,
-    SecureTransport, SendRequest, TransportError, ANTHROPIC_MESSAGES, OPENAI_RESPONSES, RELAY_MESSAGES,
+    SecureTransport, SendRequest, StoreError, TransportError, UnsupportedKeyStore, ANTHROPIC_MESSAGES,
+    OPENAI_RESPONSES, RELAY_MESSAGES,
 };
 use support::{Gate, MockResponse, MockServer};
 
@@ -784,4 +785,60 @@ async fn license_does_not_appear_in_debug_or_error_values() {
     assert_eq!(error, TransportError::KeyStore(secure_transport::StoreError::InvalidKeyFormat));
     assert_no_secret(&format!("{error:?}"), LICENSE);
     assert_no_secret(&error.to_string(), LICENSE);
+}
+
+// ---- 保管できない端末（#674 S1 の Android。docs/features/android-shell.md 決定 7・受入基準（S1）「秘密情報の保管」）----
+
+/// 3 つの宛先を模擬サーバーにし、保管は [`UnsupportedKeyStore`] にする。
+async fn unsupported_transport() -> TriTransport {
+    let anthropic = MockServer::start(MockResponse::new(200).chunk(b"ok")).await;
+    let openai = MockServer::start(MockResponse::new(200).chunk(b"ok")).await;
+    let relay = MockServer::start(MockResponse::new(200).chunk(b"ok")).await;
+    let table = DestinationTable::from_entries([
+        (ANTHROPIC_MESSAGES, Destination::anthropic_messages(anthropic.url("/v1/messages"))),
+        (OPENAI_RESPONSES, Destination::openai_responses(openai.url("/v1/responses"))),
+        (RELAY_MESSAGES, Destination::relay_messages(relay.url("/v1/messages"))),
+    ]);
+    let transport = SecureTransport::new(table, Arc::new(UnsupportedKeyStore::new())).unwrap();
+    TriTransport { transport, anthropic, openai, relay }
+}
+
+#[tokio::test]
+async fn with_an_unsupported_store_every_credential_fails_as_a_store_failure_not_as_key_not_registered() {
+    let tri = unsupported_transport().await;
+    for destination in [ANTHROPIC_MESSAGES, OPENAI_RESPONSES, RELAY_MESSAGES] {
+        let request = SendRequest {
+            request_id: format!("req-{destination}"),
+            destination: destination.to_owned(),
+            headers: Vec::new(),
+            body: BODY.to_owned(),
+        };
+        let error = within(tri.transport.send(request)).await.unwrap_err();
+        assert_eq!(error, TransportError::KeyStore(StoreError::Unsupported), "{destination}");
+    }
+}
+
+#[tokio::test]
+async fn with_an_unsupported_store_no_request_reaches_any_destination() {
+    let tri = unsupported_transport().await;
+    for destination in [ANTHROPIC_MESSAGES, OPENAI_RESPONSES, RELAY_MESSAGES] {
+        let request = SendRequest {
+            request_id: format!("req-{destination}"),
+            destination: destination.to_owned(),
+            headers: Vec::new(),
+            body: BODY.to_owned(),
+        };
+        let _ = within(tri.transport.send(request)).await;
+    }
+    assert!(tri.anthropic.requests().is_empty());
+    assert!(tri.openai.requests().is_empty());
+    assert!(tri.relay.requests().is_empty());
+}
+
+#[test]
+fn an_unsupported_store_fails_set_delete_and_contains_through_the_public_port() {
+    let store = UnsupportedKeyStore::new();
+    assert_eq!(store.set(Provider::Anthropic, SecretString::from(KEY)), Err(StoreError::Unsupported));
+    assert_eq!(store.delete(Provider::OpenAi), Err(StoreError::Unsupported));
+    assert_eq!(store.contains(Provider::RelayLicense), Err(StoreError::Unsupported));
 }

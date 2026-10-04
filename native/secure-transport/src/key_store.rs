@@ -84,6 +84,8 @@ pub enum StoreError {
     InvalidEncoding,
     /// 保管されている値が HTTP のヘッダ値として使えない（改行・制御文字など）。
     InvalidKeyFormat,
+    /// この端末では保管できない（#674 S1 の Android。Android Keystore の保管は S2）。
+    Unsupported,
 }
 
 impl fmt::Display for StoreError {
@@ -94,6 +96,7 @@ impl fmt::Display for StoreError {
             }
             StoreError::InvalidEncoding => write!(f, "stored key is not valid UTF-8"),
             StoreError::InvalidKeyFormat => write!(f, "stored key is not a valid header value"),
+            StoreError::Unsupported => write!(f, "secure storage is not available on this device"),
         }
     }
 }
