@@ -80,6 +80,7 @@ pub const EXCLUDES_APP_DATA_FROM_BACKUP: bool = cfg!(target_os = "ios");
 // 付け先をターゲットごとのコンパイルで固定する（iOS は `check:ios`、macOS は
 // `test:tauri`・`build:tauri`、Android は `check:android` がコンパイルする）。`cfg!` の
 // 付け先を誤ると（例: `mobile`・`target_vendor = "apple"`）、どれかのターゲットで落ちる。
+// ホスト（macOS）の `cargo test` が iOS の分岐に入らないことも、下の 2 行目が固定する。
 #[cfg(target_os = "ios")]
 const _: () = assert!(EXCLUDES_APP_DATA_FROM_BACKUP);
 #[cfg(not(target_os = "ios"))]
@@ -754,13 +755,6 @@ mod tests {
         let size =
             unsafe { libc::getxattr(path.as_ptr(), name.as_ptr(), std::ptr::null_mut(), 0, 0, 0) };
         size >= 0
-    }
-
-    #[test]
-    fn the_host_build_does_not_exclude_app_data_from_backup() {
-        // ホスト（macOS）の `cargo test` は iOS の分岐に入らない。定数なのでコンパイル時に
-        // 確かめる（clippy の `assertions_on_constants`。偽ならテストのビルドが落ちる）。
-        const { assert!(!EXCLUDES_APP_DATA_FROM_BACKUP) };
     }
 
     #[test]
