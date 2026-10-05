@@ -24,7 +24,11 @@ pub struct ReceivedRequest {
 
 impl ReceivedRequest {
     pub fn header_values(&self, name: &str) -> Vec<&str> {
-        self.headers.iter().filter(|(n, _)| n == name).map(|(_, v)| v.as_str()).collect()
+        self.headers
+            .iter()
+            .filter(|(n, _)| n == name)
+            .map(|(_, v)| v.as_str())
+            .collect()
     }
 }
 
@@ -70,7 +74,13 @@ pub struct MockResponse {
 
 impl MockResponse {
     pub fn new(status: u16) -> Self {
-        Self { status, headers: Vec::new(), chunks: Vec::new(), gate: None, hold_head: false }
+        Self {
+            status,
+            headers: Vec::new(),
+            chunks: Vec::new(),
+            gate: None,
+            hold_head: false,
+        }
     }
 
     pub fn header(mut self, name: &str, value: &str) -> Self {
@@ -108,7 +118,9 @@ impl MockServer {
         let recorded = Arc::clone(&requests);
         tokio::spawn(async move {
             loop {
-                let Ok((socket, _)) = listener.accept().await else { return };
+                let Ok((socket, _)) = listener.accept().await else {
+                    return;
+                };
                 let recorded = Arc::clone(&recorded);
                 let response = response.clone();
                 tokio::spawn(async move { serve(socket, response, recorded).await });
@@ -130,8 +142,14 @@ impl MockServer {
     }
 }
 
-async fn serve(mut socket: TcpStream, response: MockResponse, recorded: Arc<Mutex<Vec<ReceivedRequest>>>) {
-    let Some(request) = read_request(&mut socket).await else { return };
+async fn serve(
+    mut socket: TcpStream,
+    response: MockResponse,
+    recorded: Arc<Mutex<Vec<ReceivedRequest>>>,
+) {
+    let Some(request) = read_request(&mut socket).await else {
+        return;
+    };
     recorded.lock().unwrap().push(request);
 
     if let (true, Some(gate)) = (response.hold_head, &response.gate) {
@@ -141,7 +159,10 @@ async fn serve(mut socket: TcpStream, response: MockResponse, recorded: Arc<Mute
         }
     }
 
-    let mut head = format!("HTTP/1.1 {} Mock\r\ntransfer-encoding: chunked\r\nconnection: close\r\n", response.status);
+    let mut head = format!(
+        "HTTP/1.1 {} Mock\r\ntransfer-encoding: chunked\r\nconnection: close\r\n",
+        response.status
+    );
     for (name, value) in &response.headers {
         head.push_str(&format!("{name}: {value}\r\n"));
     }
@@ -219,5 +240,10 @@ async fn read_request(socket: &mut TcpStream) -> Option<ReceivedRequest> {
         }
         body.extend_from_slice(&chunk[..read]);
     }
-    Some(ReceivedRequest { method, path, headers, body })
+    Some(ReceivedRequest {
+        method,
+        path,
+        headers,
+        body,
+    })
 }

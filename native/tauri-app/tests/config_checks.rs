@@ -51,7 +51,8 @@ fn csp_directive(conf: &serde_json::Value, directive: &str) -> Vec<String> {
 // ---------------------------------------------------------------------------
 
 #[test]
-fn capabilities_grant_only_sql_the_five_secure_commands_the_evidence_fs_and_the_s3_desktop_permissions_to_the_main_window() {
+fn capabilities_grant_only_sql_the_five_secure_commands_the_evidence_fs_and_the_s3_desktop_permissions_to_the_main_window(
+) {
     // #581 S3（docs/features/secure-transport-byok.md S3-C3・S3-C5）: 通信層の
     // コマンド 5 つの `allow-*` を足した（使うスライスが最小の単位で足す——
     // #579 の仕様「権限と到達経路の境界」）。`core:default` 等は足さない。
@@ -133,7 +134,9 @@ fn fs_permission_objects() -> Vec<serde_json::Value> {
         .iter()
         .filter(|p| {
             p.as_str().is_some_and(|s| s.starts_with("fs:"))
-                || p["identifier"].as_str().is_some_and(|s| s.starts_with("fs:"))
+                || p["identifier"]
+                    .as_str()
+                    .is_some_and(|s| s.starts_with("fs:"))
         })
         .cloned()
         .collect()
@@ -207,9 +210,16 @@ fn ac_s4_8_cargo_lock_resolves_tauri_plugin_fs_to_2_6() {
         .iter()
         .filter(|p| p["name"].as_str() == Some("tauri-plugin-fs"))
         .collect();
-    assert_eq!(fs_plugin.len(), 1, "tauri-plugin-fs は 1 件だけ: {fs_plugin:?}");
+    assert_eq!(
+        fs_plugin.len(),
+        1,
+        "tauri-plugin-fs は 1 件だけ: {fs_plugin:?}"
+    );
     let version = fs_plugin[0]["version"].as_str().unwrap();
-    assert!(version.starts_with("2.6."), "tauri-plugin-fs が 2.6 系でない: {version}");
+    assert!(
+        version.starts_with("2.6."),
+        "tauri-plugin-fs が 2.6 系でない: {version}"
+    );
 }
 
 #[test]
@@ -345,8 +355,10 @@ fn notification_fork_dir() -> PathBuf {
     manifest_dir().join("../tauri-plugin-notification")
 }
 
-const MOBILE_ONLY_NOTIFICATION_PERMISSIONS: [&str; 2] =
-    ["notification:allow-cancel", "notification:allow-get-pending"];
+const MOBILE_ONLY_NOTIFICATION_PERMISSIONS: [&str; 2] = [
+    "notification:allow-cancel",
+    "notification:allow-get-pending",
+];
 
 fn load_capability(path: &Path) -> serde_json::Value {
     serde_json::from_str(&fs::read_to_string(path).unwrap()).unwrap()
@@ -382,7 +394,10 @@ fn tauri_plugin_notification_is_the_in_repo_fork_via_path_dependency() {
     let cargo = load_cargo_toml();
     let dep = &cargo["dependencies"]["tauri-plugin-notification"];
     assert_eq!(dep["path"].as_str(), Some("../tauri-plugin-notification"));
-    assert!(dep.get("version").is_none(), "crates.io の版を併記しない: {dep:?}");
+    assert!(
+        dep.get("version").is_none(),
+        "crates.io の版を併記しない: {dep:?}"
+    );
 }
 
 #[test]
@@ -395,7 +410,11 @@ fn cargo_lock_has_no_crates_io_tauri_plugin_notification() {
         .iter()
         .filter(|p| p["name"].as_str() == Some("tauri-plugin-notification"))
         .collect();
-    assert_eq!(notification.len(), 1, "tauri-plugin-notification は fork の 1 件だけ: {notification:?}");
+    assert_eq!(
+        notification.len(),
+        1,
+        "tauri-plugin-notification は fork の 1 件だけ: {notification:?}"
+    );
     assert!(
         notification[0].get("source").is_none(),
         "tauri-plugin-notification が crates.io 等の外部の source から来ている: {:?}",
@@ -406,7 +425,10 @@ fn cargo_lock_has_no_crates_io_tauri_plugin_notification() {
 #[test]
 fn notification_fork_keeps_upstream_license_files() {
     for name in ["LICENSE_MIT", "LICENSE_APACHE-2.0", "LICENSE.spdx"] {
-        assert!(notification_fork_dir().join(name).is_file(), "fork に上流の {name} が無い");
+        assert!(
+            notification_fork_dir().join(name).is_file(),
+            "fork に上流の {name} が無い"
+        );
     }
 }
 
@@ -418,13 +440,23 @@ fn notification_fork_md_records_the_origin_and_the_two_differences() {
         text.contains("a2364a5f216324439feedeb25b2db74e7b1eba90"),
         "FORK.md に上流のコミットが無い"
     );
-    assert!(text.contains("差分 1: iOS の予約時刻を UTC として読む"), "FORK.md に差分 1 が無い");
-    assert!(text.contains("差分 2: iOS の `show` は"), "FORK.md に差分 2 が無い");
+    assert!(
+        text.contains("差分 1: iOS の予約時刻を UTC として読む"),
+        "FORK.md に差分 1 が無い"
+    );
+    assert!(
+        text.contains("差分 2: iOS の `show` は"),
+        "FORK.md に差分 2 が無い"
+    );
     for needle in ["UTC", "UNUserNotificationCenter.add", "拒否"] {
-        assert!(text.contains(needle), "FORK.md に「{needle}」が無い（差分 1・2）");
+        assert!(
+            text.contains(needle),
+            "FORK.md に「{needle}」が無い（差分 1・2）"
+        );
     }
     let fork: toml::Value =
-        toml::from_str(&fs::read_to_string(notification_fork_dir().join("Cargo.toml")).unwrap()).unwrap();
+        toml::from_str(&fs::read_to_string(notification_fork_dir().join("Cargo.toml")).unwrap())
+            .unwrap();
     assert_eq!(fork["package"]["version"].as_str(), Some("2.5.0"));
 }
 
@@ -442,7 +474,10 @@ fn mobile_only_notification_permissions_are_in_a_capability_limited_to_ios_and_a
         Some(vec!["android".to_string(), "iOS".to_string()]),
         "platforms は iOS・Android だけ"
     );
-    assert_eq!(permission_identifiers(&capability), MOBILE_ONLY_NOTIFICATION_PERMISSIONS);
+    assert_eq!(
+        permission_identifiers(&capability),
+        MOBILE_ONLY_NOTIFICATION_PERMISSIONS
+    );
 }
 
 #[test]
@@ -452,7 +487,10 @@ fn cancel_and_get_pending_are_granted_only_by_capabilities_limited_to_ios_and_an
         let capability = load_capability(&path);
         let granted: Vec<String> = permission_identifiers(&capability)
             .into_iter()
-            .filter(|id| MOBILE_ONLY_NOTIFICATION_PERMISSIONS.contains(&id.as_str()) || id == "notification:default")
+            .filter(|id| {
+                MOBILE_ONLY_NOTIFICATION_PERMISSIONS.contains(&id.as_str())
+                    || id == "notification:default"
+            })
             .collect();
         if granted.is_empty() {
             continue;
@@ -474,7 +512,10 @@ fn cancel_and_get_pending_are_granted_only_by_capabilities_limited_to_ios_and_an
 #[test]
 fn default_capability_applies_to_every_platform_and_grants_only_notify_for_notifications() {
     let capability = load_capability(&manifest_dir().join("capabilities/default.json"));
-    assert!(capability.get("platforms").is_none(), "default.json は platforms を指定しない（macOS に効く）");
+    assert!(
+        capability.get("platforms").is_none(),
+        "default.json は platforms を指定しない（macOS に効く）"
+    );
     let notification: Vec<String> = permission_identifiers(&capability)
         .into_iter()
         .filter(|id| id.starts_with("notification:"))
@@ -796,7 +837,10 @@ fn load_lib_rs() -> String {
 
 /// 空白を除き、rustfmt の末尾カンマ（`,)`）を `)` に寄せる。rustfmt の改行・末尾カンマに依らずに比べるため。
 fn compact(text: &str) -> String {
-    text.chars().filter(|c| !c.is_whitespace()).collect::<String>().replace(",)", ")")
+    text.chars()
+        .filter(|c| !c.is_whitespace())
+        .collect::<String>()
+        .replace(",)", ")")
 }
 
 /// `source` の中の関数 `name` を 1 つだけ取り出し、正規化したシグネチャ（最初の `{` の手前まで）と
@@ -1178,8 +1222,7 @@ fn configure_with_passes_the_build_targets_backup_exclusion() {
 fn configure_routes_through_configure_with() {
     let (signature, body) = top_level_fn(&load_lib_rs(), "configure");
     assert_eq!(
-        signature,
-        "pubfnconfigure<R:Runtime>(builder:tauri::Builder<R>)->tauri::Builder<R>",
+        signature, "pubfnconfigure<R:Runtime>(builder:tauri::Builder<R>)->tauri::Builder<R>",
         "configure のシグネチャが変わった（#685）"
     );
     assert_eq!(

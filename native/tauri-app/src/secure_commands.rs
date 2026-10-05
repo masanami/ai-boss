@@ -18,8 +18,8 @@ use std::sync::Arc;
 
 use secrecy::{ExposeSecret, SecretString};
 use secure_transport::{
-    DestinationTable, KeyStore, Provider, ResponseHead, ResponseStream, SecureTransport, SendRequest,
-    StoreError, TransportError,
+    DestinationTable, KeyStore, Provider, ResponseHead, ResponseStream, SecureTransport,
+    SendRequest, StoreError, TransportError,
 };
 use serde::Serialize;
 use tauri::ipc::Channel;
@@ -38,19 +38,26 @@ pub struct CommandError {
 
 impl CommandError {
     fn of(kind: &'static str) -> Self {
-        Self { kind, status: None, os_status: None }
+        Self {
+            kind,
+            status: None,
+            os_status: None,
+        }
     }
 }
 
 impl From<StoreError> for CommandError {
     fn from(error: StoreError) -> Self {
         match error {
-            StoreError::Keychain { status } => Self { os_status: Some(status), ..Self::of("key-store-failure") },
+            StoreError::Keychain { status } => Self {
+                os_status: Some(status),
+                ..Self::of("key-store-failure")
+            },
             // `Unsupported`（#674 S1 の Android。保管は S2）も、既存の保管の失敗の表示へ写す
             // （`key-not-registered` にしない。画面〔web/src/〕は変えない）。
-            StoreError::InvalidEncoding | StoreError::InvalidKeyFormat | StoreError::Unsupported => {
-                Self::of("key-store-failure")
-            }
+            StoreError::InvalidEncoding
+            | StoreError::InvalidKeyFormat
+            | StoreError::Unsupported => Self::of("key-store-failure"),
         }
     }
 }
@@ -65,7 +72,10 @@ impl From<TransportError> for CommandError {
             TransportError::DuplicateRequestId => Self::of("duplicate-request-id"),
             TransportError::Connection => Self::of("connection"),
             TransportError::Cancelled => Self::of("cancelled"),
-            TransportError::RedirectRefused { status } => Self { status: Some(status), ..Self::of("redirect-refused") },
+            TransportError::RedirectRefused { status } => Self {
+                status: Some(status),
+                ..Self::of("redirect-refused")
+            },
         }
     }
 }
@@ -105,9 +115,13 @@ impl From<&ResponseHead> for SendResponse {
 #[serde(tag = "event", rename_all = "lowercase")]
 pub enum StreamEvent {
     /// 本文の断片（仮定 A17: JSON の数値の配列）。
-    Chunk { data: Vec<u8> },
+    Chunk {
+        data: Vec<u8>,
+    },
     End,
-    Error { error: CommandError },
+    Error {
+        error: CommandError,
+    },
 }
 
 /// コマンドの状態（転送と保管）。
@@ -118,7 +132,10 @@ pub struct SecureState {
 
 impl SecureState {
     /// 宛先の表と保管を注入して組む（テストは模擬の表とメモリの保管を渡す）。
-    pub fn new(destinations: DestinationTable, store: Arc<dyn KeyStore>) -> Result<Self, CommandError> {
+    pub fn new(
+        destinations: DestinationTable,
+        store: Arc<dyn KeyStore>,
+    ) -> Result<Self, CommandError> {
         let transport = SecureTransport::new(destinations, Arc::clone(&store))?;
         Ok(Self { transport, store })
     }
@@ -190,7 +207,10 @@ fn parse_provider(provider: &str) -> Result<Provider, CommandError> {
 /// 空でなく、HTTP のヘッダ値として使える（制御文字・DEL を含まない）値だけを
 /// キーとして受け付ける（S1 の送信時の `HeaderValue::from_str` と同じ基準）。
 fn is_valid_key(key: &str) -> bool {
-    !key.is_empty() && key.bytes().all(|byte| (byte >= 0x20 || byte == b'\t') && byte != 0x7f)
+    !key.is_empty()
+        && key
+            .bytes()
+            .all(|byte| (byte >= 0x20 || byte == b'\t') && byte != 0x7f)
 }
 
 async fn relay<F>(mut stream: ResponseStream, sink: F)
@@ -200,13 +220,17 @@ where
     loop {
         match stream.next_chunk().await {
             Some(Ok(chunk)) => {
-                if !sink(StreamEvent::Chunk { data: chunk.to_vec() }) {
+                if !sink(StreamEvent::Chunk {
+                    data: chunk.to_vec(),
+                }) {
                     // `stream` を落として応答を捨てる（接続が切れる）。
                     return;
                 }
             }
             Some(Err(error)) => {
-                sink(StreamEvent::Error { error: error.into() });
+                sink(StreamEvent::Error {
+                    error: error.into(),
+                });
                 return;
             }
             None => {
@@ -226,27 +250,47 @@ pub async fn secure_send(
     body: String,
     on_event: Channel<StreamEvent>,
 ) -> Result<SendResponse, CommandError> {
-    let request = SendRequest { request_id, destination, headers: headers.into_iter().collect(), body };
-    state.send(request, move |event| on_event.send(event).is_ok()).await
+    let request = SendRequest {
+        request_id,
+        destination,
+        headers: headers.into_iter().collect(),
+        body,
+    };
+    state
+        .send(request, move |event| on_event.send(event).is_ok())
+        .await
 }
 
 #[tauri::command]
-pub async fn secure_cancel(state: State<'_, SecureState>, request_id: String) -> Result<bool, CommandError> {
+pub async fn secure_cancel(
+    state: State<'_, SecureState>,
+    request_id: String,
+) -> Result<bool, CommandError> {
     Ok(state.cancel(&request_id))
 }
 
 #[tauri::command]
-pub async fn byok_key_set(state: State<'_, SecureState>, provider: String, key: String) -> Result<(), CommandError> {
+pub async fn byok_key_set(
+    state: State<'_, SecureState>,
+    provider: String,
+    key: String,
+) -> Result<(), CommandError> {
     state.key_set(&provider, key)
 }
 
 #[tauri::command]
-pub async fn byok_key_delete(state: State<'_, SecureState>, provider: String) -> Result<(), CommandError> {
+pub async fn byok_key_delete(
+    state: State<'_, SecureState>,
+    provider: String,
+) -> Result<(), CommandError> {
     state.key_delete(&provider)
 }
 
 #[tauri::command]
-pub async fn byok_key_status(state: State<'_, SecureState>, provider: String) -> Result<bool, CommandError> {
+pub async fn byok_key_status(
+    state: State<'_, SecureState>,
+    provider: String,
+) -> Result<bool, CommandError> {
     state.key_status(&provider)
 }
 
@@ -257,7 +301,14 @@ mod tests {
     #[test]
     fn keychain_failure_maps_to_key_store_failure_with_the_os_status() {
         let error: CommandError = StoreError::Keychain { status: -34018 }.into();
-        assert_eq!(error, CommandError { kind: "key-store-failure", status: None, os_status: Some(-34018) });
+        assert_eq!(
+            error,
+            CommandError {
+                kind: "key-store-failure",
+                status: None,
+                os_status: Some(-34018)
+            }
+        );
         assert_eq!(
             serde_json::to_value(&error).unwrap(),
             serde_json::json!({ "kind": "key-store-failure", "osStatus": -34018 })
@@ -268,10 +319,27 @@ mod tests {
     fn unsupported_store_maps_to_key_store_failure_without_an_os_status() {
         // #674 S1（docs/features/android-shell.md 決定 7）: 画面は既存の保管の失敗の表示を使う。
         let error: CommandError = StoreError::Unsupported.into();
-        assert_eq!(error, CommandError { kind: "key-store-failure", status: None, os_status: None });
+        assert_eq!(
+            error,
+            CommandError {
+                kind: "key-store-failure",
+                status: None,
+                os_status: None
+            }
+        );
         let error: CommandError = TransportError::KeyStore(StoreError::Unsupported).into();
-        assert_eq!(error, CommandError { kind: "key-store-failure", status: None, os_status: None });
-        assert_eq!(serde_json::to_value(&error).unwrap(), serde_json::json!({ "kind": "key-store-failure" }));
+        assert_eq!(
+            error,
+            CommandError {
+                kind: "key-store-failure",
+                status: None,
+                os_status: None
+            }
+        );
+        assert_eq!(
+            serde_json::to_value(&error).unwrap(),
+            serde_json::json!({ "kind": "key-store-failure" })
+        );
     }
 
     #[test]
@@ -279,17 +347,26 @@ mod tests {
         let cases = [
             (TransportError::UnknownDestination, "unknown-destination"),
             (TransportError::KeyNotRegistered, "key-not-registered"),
-            (TransportError::KeyStore(StoreError::InvalidKeyFormat), "key-store-failure"),
+            (
+                TransportError::KeyStore(StoreError::InvalidKeyFormat),
+                "key-store-failure",
+            ),
             (TransportError::InvalidHeader, "invalid-header"),
             (TransportError::DuplicateRequestId, "duplicate-request-id"),
             (TransportError::Connection, "connection"),
             (TransportError::Cancelled, "cancelled"),
-            (TransportError::RedirectRefused { status: 307 }, "redirect-refused"),
+            (
+                TransportError::RedirectRefused { status: 307 },
+                "redirect-refused",
+            ),
         ];
         for (error, kind) in cases {
             assert_eq!(CommandError::from(error).kind, kind);
         }
-        assert_eq!(CommandError::from(TransportError::RedirectRefused { status: 307 }).status, Some(307));
+        assert_eq!(
+            CommandError::from(TransportError::RedirectRefused { status: 307 }).status,
+            Some(307)
+        );
     }
 
     #[test]
@@ -312,9 +389,15 @@ mod tests {
             serde_json::to_value(StreamEvent::Chunk { data: vec![1, 2] }).unwrap(),
             serde_json::json!({ "event": "chunk", "data": [1, 2] })
         );
-        assert_eq!(serde_json::to_value(StreamEvent::End).unwrap(), serde_json::json!({ "event": "end" }));
         assert_eq!(
-            serde_json::to_value(StreamEvent::Error { error: CommandError::of("cancelled") }).unwrap(),
+            serde_json::to_value(StreamEvent::End).unwrap(),
+            serde_json::json!({ "event": "end" })
+        );
+        assert_eq!(
+            serde_json::to_value(StreamEvent::Error {
+                error: CommandError::of("cancelled")
+            })
+            .unwrap(),
             serde_json::json!({ "event": "error", "error": { "kind": "cancelled" } })
         );
     }

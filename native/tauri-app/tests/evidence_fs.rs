@@ -169,22 +169,48 @@ fn urlencoding_encode(text: &str) -> String {
     let mut out = String::new();
     for byte in text.bytes() {
         match byte {
-            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'!' | b'~' | b'*'
-            | b'\'' | b'(' | b')' => out.push(byte as char),
+            b'A'..=b'Z'
+            | b'a'..=b'z'
+            | b'0'..=b'9'
+            | b'-'
+            | b'_'
+            | b'.'
+            | b'!'
+            | b'~'
+            | b'*'
+            | b'\''
+            | b'('
+            | b')' => out.push(byte as char),
             _ => out.push_str(&format!("%{byte:02X}")),
         }
     }
     out
 }
 
-fn exists(window: &WebviewWindow<MockRuntime>, path: &str, base_dir: Option<u32>) -> Result<Value, Value> {
+fn exists(
+    window: &WebviewWindow<MockRuntime>,
+    path: &str,
+    base_dir: Option<u32>,
+) -> Result<Value, Value> {
     let options = base_dir.map(|b| json!({ "baseDir": b }));
-    invoke_json(window, "plugin:fs|exists", json!({ "path": path, "options": options }))
+    invoke_json(
+        window,
+        "plugin:fs|exists",
+        json!({ "path": path, "options": options }),
+    )
 }
 
-fn remove(window: &WebviewWindow<MockRuntime>, path: &str, base_dir: Option<u32>) -> Result<Value, Value> {
+fn remove(
+    window: &WebviewWindow<MockRuntime>,
+    path: &str,
+    base_dir: Option<u32>,
+) -> Result<Value, Value> {
     let options = base_dir.map(|b| json!({ "baseDir": b }));
-    invoke_json(window, "plugin:fs|remove", json!({ "path": path, "options": options }))
+    invoke_json(
+        window,
+        "plugin:fs|remove",
+        json!({ "path": path, "options": options }),
+    )
 }
 
 fn evidence_path(name: &str) -> String {
@@ -211,7 +237,10 @@ fn outside_file(label: &str, name: &str, content: &[u8]) -> PathBuf {
 }
 
 fn assert_denied<T: std::fmt::Debug>(result: &Result<T, Value>, what: &str) {
-    assert!(result.is_err(), "{what} should be denied, but it was allowed: {result:?}");
+    assert!(
+        result.is_err(),
+        "{what} should be denied, but it was allowed: {result:?}"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -253,7 +282,10 @@ fn ac_s4_2_setup_fails_when_evidence_is_a_symlink_to_a_directory_outside_the_app
     let message = panic_message(result.expect_err("setup should fail"));
     assert!(message.contains("Failed to setup app"), "{message}");
     assert!(message.contains("evidence"), "{message}");
-    assert!(app.get_webview_window("main").is_none(), "the window must not be created");
+    assert!(
+        app.get_webview_window("main").is_none(),
+        "the window must not be created"
+    );
     assert_eq!(
         std::fs::read_dir(&outside).unwrap().count(),
         0,
@@ -287,7 +319,10 @@ fn ac_s4_3_setup_fails_when_evidence_is_a_regular_file() {
     let message = panic_message(result.expect_err("setup should fail"));
     assert!(message.contains("Failed to setup app"), "{message}");
     assert!(app.get_webview_window("main").is_none());
-    assert_eq!(std::fs::read(config.join("evidence")).unwrap(), b"not a directory");
+    assert_eq!(
+        std::fs::read(config.join("evidence")).unwrap(),
+        b"not a directory"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -360,8 +395,15 @@ fn ac_s4_11_commands_other_than_the_four_are_denied_even_inside_the_evidence_dir
         assert_denied(&result, cmd);
     }
 
-    assert_eq!(evidence_listing(&app), vec![name.clone()], "nothing may be created or moved");
-    assert_eq!(std::fs::read(evidence_dir(&app).join(&name)).unwrap(), b"original");
+    assert_eq!(
+        evidence_listing(&app),
+        vec![name.clone()],
+        "nothing may be created or moved"
+    );
+    assert_eq!(
+        std::fs::read(evidence_dir(&app).join(&name)).unwrap(),
+        b"original"
+    );
 }
 
 /// 実測（2026-09-29・オーナーの決定で AC-S4-11 の対象から `open` を外した）:
@@ -372,7 +414,13 @@ fn ac_s4_11_commands_other_than_the_four_are_denied_even_inside_the_evidence_dir
 fn observed_open_is_allowed_inside_the_evidence_dir() {
     let (_app, window) = build_app("observed-open-inside");
     let name = format!("{UUID_A}.png");
-    write_file(&window, &evidence_path(&name), Some(APP_CONFIG), b"original").unwrap();
+    write_file(
+        &window,
+        &evidence_path(&name),
+        Some(APP_CONFIG),
+        b"original",
+    )
+    .unwrap();
 
     let result = invoke_json(
         &window,
@@ -380,7 +428,10 @@ fn observed_open_is_allowed_inside_the_evidence_dir() {
         json!({ "path": evidence_path(&name), "options": { "read": true, "baseDir": APP_CONFIG } }),
     );
 
-    assert!(result.is_ok(), "open inside the evidence dir is allowed by fs:allow-write-file: {result:?}");
+    assert!(
+        result.is_ok(),
+        "open inside the evidence dir is allowed by fs:allow-write-file: {result:?}"
+    );
 }
 
 /// 実測: `open` は許可されるが、`fs:allow-write-file` のスコープ（保存先の直下の
@@ -471,10 +522,20 @@ fn ac_s4_12_parent_directory_components_are_denied_for_read_and_write() {
         assert_denied(&write, &format!("write_file {path}"));
     }
 
-    assert_eq!(std::fs::read(&db).unwrap(), db_before, "the DB file must not change");
+    assert_eq!(
+        std::fs::read(&db).unwrap(),
+        db_before,
+        "the DB file must not change"
+    );
     assert_eq!(std::fs::read(&outside).unwrap(), b"owner data");
-    assert_eq!(std::fs::read(evidence_dir(&app).join("y.png")).unwrap(), b"inside");
-    assert_eq!(evidence_listing(&app), vec!["x".to_string(), "y.png".to_string()]);
+    assert_eq!(
+        std::fs::read(evidence_dir(&app).join("y.png")).unwrap(),
+        b"inside"
+    );
+    assert_eq!(
+        evidence_listing(&app),
+        vec!["x".to_string(), "y.png".to_string()]
+    );
 }
 
 #[test]
@@ -488,10 +549,18 @@ fn ac_s4_12_percent_encoded_dot_segments_are_literal_names_and_stay_outside_the_
     let literal_dir = evidence_dir(&app).join("%2e%2e");
     std::fs::create_dir(&literal_dir).unwrap();
 
-    let result = write_file(&window, "evidence/%2e%2e/ai-boss.db", Some(APP_CONFIG), b"overwritten");
+    let result = write_file(
+        &window,
+        "evidence/%2e%2e/ai-boss.db",
+        Some(APP_CONFIG),
+        b"overwritten",
+    );
 
     assert_denied(&result, "write_file evidence/%2e%2e/ai-boss.db");
-    assert_eq!(std::fs::read(config_dir(&app).join("ai-boss.db")).unwrap(), db_before);
+    assert_eq!(
+        std::fs::read(config_dir(&app).join("ai-boss.db")).unwrap(),
+        db_before
+    );
     assert_eq!(std::fs::read_dir(&literal_dir).unwrap().count(), 0);
 }
 
@@ -507,11 +576,20 @@ fn ac_s4_13_absolute_paths_outside_the_app_are_denied_with_and_without_base_dir(
 
     for base_dir in [Some(APP_CONFIG), None] {
         let read = read_file(&window, absolute, base_dir);
-        assert_denied(&read, &format!("read_file {absolute} (baseDir {base_dir:?})"));
+        assert_denied(
+            &read,
+            &format!("read_file {absolute} (baseDir {base_dir:?})"),
+        );
         let write = write_file(&window, absolute, base_dir, b"overwritten");
-        assert_denied(&write, &format!("write_file {absolute} (baseDir {base_dir:?})"));
+        assert_denied(
+            &write,
+            &format!("write_file {absolute} (baseDir {base_dir:?})"),
+        );
         let removal = remove(&window, absolute, base_dir);
-        assert_denied(&removal, &format!("remove {absolute} (baseDir {base_dir:?})"));
+        assert_denied(
+            &removal,
+            &format!("remove {absolute} (baseDir {base_dir:?})"),
+        );
     }
 
     assert_eq!(std::fs::read(&outside).unwrap(), b"owner data");
@@ -571,7 +649,12 @@ fn ac_s4_15_a_dangling_symlink_in_the_evidence_dir_is_denied_and_its_target_is_n
 
     // read_file はリンク先が無いのでスコープの判定が無くても失敗する（意味を持つのは
     // 書き込みと「リンク先が作られない」こと）。
-    let write = write_file(&window, &path, Some(APP_CONFIG), b"created through the link");
+    let write = write_file(
+        &window,
+        &path,
+        Some(APP_CONFIG),
+        b"created through the link",
+    );
 
     assert_denied(&write, "write_file through the dangling link");
     assert!(!target.exists(), "the link target must not be created");
@@ -609,7 +692,9 @@ fn ac_s4_15_a_symlink_in_the_evidence_dir_to_the_db_file_is_denied() {
 #[test]
 fn observed_a_two_hop_symlink_chain_escapes_the_evidence_dir() {
     let (app, window) = build_app("observed-two-hop");
-    let target = test_home().join("outside").join("observed-two-hop-target.txt");
+    let target = test_home()
+        .join("outside")
+        .join("observed-two-hop-target.txt");
     std::fs::create_dir_all(target.parent().unwrap()).unwrap();
     let _ = std::fs::remove_file(&target);
     let hop2 = evidence_dir(&app).join(format!("{UUID_B}.png"));
@@ -617,9 +702,17 @@ fn observed_a_two_hop_symlink_chain_escapes_the_evidence_dir() {
     std::os::unix::fs::symlink(&target, &hop2).unwrap();
     std::os::unix::fs::symlink(&hop2, &hop1).unwrap();
 
-    let write = write_file(&window, &evidence_path(&format!("{UUID_A}.png")), Some(APP_CONFIG), b"escaped");
+    let write = write_file(
+        &window,
+        &evidence_path(&format!("{UUID_A}.png")),
+        Some(APP_CONFIG),
+        b"escaped",
+    );
 
-    assert!(write.is_ok(), "the upstream scope check follows only one hop: {write:?}");
+    assert!(
+        write.is_ok(),
+        "the upstream scope check follows only one hop: {write:?}"
+    );
     assert_eq!(std::fs::read(&target).unwrap(), b"escaped");
     std::fs::remove_file(&target).unwrap();
 }
@@ -656,7 +749,10 @@ fn ac_s4_16_the_db_file_next_to_the_evidence_dir_cannot_be_read_written_or_remov
     let (app, window) = build_app("ac16");
     let db = config_dir(&app).join("ai-boss.db");
     let db_before = std::fs::read(&db).unwrap();
-    assert!(!db_before.is_empty(), "the preloaded DB should have content");
+    assert!(
+        !db_before.is_empty(),
+        "the preloaded DB should have content"
+    );
 
     let read = read_file(&window, "ai-boss.db", Some(APP_CONFIG));
     let write = write_file(&window, "ai-boss.db", Some(APP_CONFIG), b"overwritten");
@@ -668,7 +764,11 @@ fn ac_s4_16_the_db_file_next_to_the_evidence_dir_cannot_be_read_written_or_remov
     assert_denied(&write, "write_file ai-boss.db");
     assert_denied(&removal, "remove ai-boss.db");
     assert_denied(&read_absolute, "read_file <absolute>/ai-boss.db");
-    assert_eq!(std::fs::read(&db).unwrap(), db_before, "the DB file must not change");
+    assert_eq!(
+        std::fs::read(&db).unwrap(),
+        db_before,
+        "the DB file must not change"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -684,20 +784,33 @@ fn ac_s4_17_a_file_in_a_subdirectory_of_the_evidence_dir_cannot_be_written() {
     let result = write_file(&window, "evidence/sub/x.png", Some(APP_CONFIG), b"nested");
 
     assert_denied(&result, "write_file evidence/sub/x.png");
-    assert_eq!(std::fs::read_dir(evidence_dir(&app).join("sub")).unwrap().count(), 0);
+    assert_eq!(
+        std::fs::read_dir(evidence_dir(&app).join("sub"))
+            .unwrap()
+            .count(),
+        0
+    );
 }
 
 #[test]
 fn ac_s4_18_the_evidence_dir_itself_cannot_be_removed() {
     let (app, window) = build_app("ac18");
-    write_file(&window, &evidence_path(&format!("{UUID_A}.png")), Some(APP_CONFIG), b"kept").unwrap();
+    write_file(
+        &window,
+        &evidence_path(&format!("{UUID_A}.png")),
+        Some(APP_CONFIG),
+        b"kept",
+    )
+    .unwrap();
 
     for path in ["evidence", "evidence/"] {
         let result = remove(&window, path, Some(APP_CONFIG));
         assert_denied(&result, &format!("remove {path}"));
     }
 
-    assert!(std::fs::symlink_metadata(evidence_dir(&app)).unwrap().is_dir());
+    assert!(std::fs::symlink_metadata(evidence_dir(&app))
+        .unwrap()
+        .is_dir());
     assert_eq!(evidence_listing(&app), vec![format!("{UUID_A}.png")]);
 }
 
