@@ -586,8 +586,10 @@ pub fn configure_with<R: Runtime>(builder: tauri::Builder<R>, secure_state: Secu
 }
 
 /// [`configure_with`] の、アプリのデータをバックアップから外す処理を注入できる形（#681。
-/// 製品版は [`backup_exclusion_for`]`(`[`EXCLUDES_APP_DATA_FROM_BACKUP`]`)`（`configure_with` が
-/// これを渡すことは `tests/config_checks.rs` が固定する）。結合テスト
+/// 製品版は [`backup_exclusion_for`]`(`[`EXCLUDES_APP_DATA_FROM_BACKUP`]`)`（[`configure`] が
+/// `configure_with` を通り、`configure_with` がこれを渡すことは `tests/config_checks.rs` が
+/// ソースの照合で固定する〔#683・#685〕。`run_mobile`・`run_desktop` が `configure` を呼ぶことは
+/// 固定の範囲外）。結合テスト
 /// `tests/backup_exclusion.rs` は記録する模擬・失敗する模擬を渡し、除外が plugin-sql の
 /// preload より前に走ること・外せなければ DB を作らずに組み立てが失敗することを確かめる）。
 pub fn configure_with_backup_exclusion<R: Runtime>(

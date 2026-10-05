@@ -788,11 +788,72 @@ fn tauri_dependency_keeps_the_tray_icon_feature() {
     );
 }
 
+/// `src/lib.rs` の本文。
+fn load_lib_rs() -> String {
+    let path = manifest_dir().join("src/lib.rs");
+    fs::read_to_string(&path).unwrap_or_else(|e| panic!("failed to read {}: {e}", path.display()))
+}
+
+/// 空白を除き、rustfmt の末尾カンマ（`,)`）を `)` に寄せる。rustfmt の改行・末尾カンマに依らずに比べるため。
+fn compact(text: &str) -> String {
+    text.chars().filter(|c| !c.is_whitespace()).collect::<String>().replace(",)", ")")
+}
+
+/// `source` の中の関数 `name` を 1 つだけ取り出し、正規化したシグネチャ（最初の `{` の手前まで）と
+/// 本体（最初の `{` の直後から、関数を閉じる行頭の `}` の直前まで）を返す（#683・#685）。
+/// 行コメントは落とす。次のいずれかなら panic する（配線のすり替えの抜け道を塞ぐ）:
+/// - `fn name<` / `fn name(` が（入れ子・`pub` の有無を問わず）ちょうど 1 回ではない
+///   （`#[cfg(target_os = "ios")]` 側だけ別の定義を並べると、ホストでは片方しか照らせない）
+/// - その定義が行頭の `pub fn name` ではない（`mod` の中など）
+/// - 直前の属性・doc コメントの並び（前の項目の終わりまで。空行を挟んでも続けて見る）に `cfg` がある
+fn top_level_fn(source: &str, name: &str) -> (String, String) {
+    let lines: Vec<&str> = source.lines().map(|line| line.split("//").next().unwrap_or("")).collect();
+    let is_definition = |line: &&str| {
+        line.contains(&format!("fn {name}<")) || line.contains(&format!("fn {name}("))
+    };
+    let definitions: Vec<usize> =
+        lines.iter().enumerate().filter(|(_, line)| is_definition(line)).map(|(i, _)| i).collect();
+    assert_eq!(
+        definitions.len(),
+        1,
+        "src/lib.rs の fn {name} の定義がちょうど 1 つではない（cfg で分けた定義はホストでは片方しか照らせない）: 行 {:?}",
+        definitions.iter().map(|i| i + 1).collect::<Vec<_>>()
+    );
+    let start = definitions[0];
+    assert!(
+        lines[start].starts_with(&format!("pub fn {name}")),
+        "src/lib.rs の fn {name} が行頭の pub fn ではない: {}",
+        lines[start]
+    );
+    // 直前の属性の並び。前の項目の終わり（行頭の `}` か、行頭から始まる `;` で終わる行）まで遡る。
+    // doc コメントはこの照合の前に落ちている（`///` も `//` で始まる）。
+    let preceding: Vec<&str> = lines[..start]
+        .iter()
+        .rev()
+        .take_while(|line| {
+            !(line.starts_with('}') || (!line.starts_with([' ', '#']) && line.trim_end().ends_with(';')))
+        })
+        .copied()
+        .collect();
+    assert!(
+        preceding.iter().all(|line| !line.contains("cfg")),
+        "src/lib.rs の fn {name} の直前に cfg の属性がある（ビルド対象ごとに定義を差し替えられる）: {preceding:?}"
+    );
+    let end = lines[start..]
+        .iter()
+        .position(|line| line.starts_with('}'))
+        .map(|offset| start + offset)
+        .unwrap_or_else(|| panic!("src/lib.rs の fn {name} を閉じる行頭の `}}` が無い"));
+    let text = lines[start..end].join("\n");
+    let (signature, body) = text
+        .split_once('{')
+        .unwrap_or_else(|| panic!("fn {name} のシグネチャに `{{` が無い: {text}"));
+    (compact(signature), compact(body))
+}
+
 #[test]
 fn run_is_the_mobile_entry_point() {
-    let path = manifest_dir().join("src/lib.rs");
-    let source = fs::read_to_string(&path)
-        .unwrap_or_else(|e| panic!("failed to read {}: {e}", path.display()));
+    let source = load_lib_rs();
     // 属性の直後の項目が `pub fn run()` であること（別の関数に付いていない）。
     let lines: Vec<&str> = source.lines().map(str::trim).collect();
     let found = lines.windows(2).any(|pair| {
@@ -805,48 +866,49 @@ fn run_is_the_mobile_entry_point() {
 }
 
 /// 製品の `configure_with` が、ビルド対象の除外（`backup_exclusion_for(EXCLUDES_APP_DATA_FROM_BACKUP)`）
-/// を渡していること（#681・#683）。ホストでは定数が false で、`None`・`backup_exclusion_for(false)`
+/// を渡していること（#681・#683・#685）。ホストでは定数が false で、`None`・`backup_exclusion_for(false)`
 /// と実行時に区別できない（iOS の実観測は #682）ため、`run_is_the_mobile_entry_point` と
 /// 同じくソースの文面で配線を固定する。関数の本体の全体が、その 1 つの呼び出しと完全に一致する
 /// ことを照らす（空白を除き、rustfmt の改行・末尾カンマに依らない）。部分一致ではないため、
 /// ブロックコメント・到達しない分岐・余計な文・後置（`.and(None)` 等）に正しい呼び出しを
-/// 紛れ込ませても通らない。
+/// 紛れ込ませても通らない。シグネチャも完全一致で照らし（引数・const generic を足して呼び出し側で
+/// 値を差し替える形を塞ぐ）、定義がちょうど 1 つで cfg の属性が付いていないことも確かめる
+/// （iOS 側だけ `None` を渡す定義を並べる形を塞ぐ。[`top_level_fn`]）。
+///
+/// 製品の経路のうち固定するのは `configure`（`configure_routes_through_configure_with`）→
+/// `configure_with` → `configure_with_backup_exclusion` まで。`run_mobile`・`run_desktop` が
+/// `configure` を呼ぶことは固定しない（担保の範囲外）。
 #[test]
 fn configure_with_passes_the_build_targets_backup_exclusion() {
-    let path = manifest_dir().join("src/lib.rs");
-    let source = fs::read_to_string(&path)
-        .unwrap_or_else(|e| panic!("failed to read {}: {e}", path.display()));
-    // `pub fn configure_with<` の行から、関数を閉じる行頭の `}` の直前まで。行コメントは落とす。
-    let mut text = String::new();
-    let mut inside = false;
-    let mut closed = false;
-    for line in source.lines() {
-        if !inside && line.starts_with("pub fn configure_with<") {
-            inside = true;
-        }
-        if inside {
-            if line.starts_with('}') {
-                closed = true;
-                break;
-            }
-            text.push_str(line.split("//").next().unwrap_or(""));
-            text.push('\n');
-        }
-    }
-    assert!(
-        closed,
-        "src/lib.rs に pub fn configure_with< の関数（行頭の `}}` で閉じる）が見つからない"
-    );
-    // シグネチャの最初の `{` の直後からが本体。
-    let body = text
-        .split_once('{')
-        .map(|(_, rest)| rest)
-        .unwrap_or_else(|| panic!("configure_with のシグネチャに `{{` が無い: {text}"));
-    let compact: String = body.chars().filter(|c| !c.is_whitespace()).collect::<String>().replace(",)", ")");
+    let (signature, body) = top_level_fn(&load_lib_rs(), "configure_with");
     assert_eq!(
-        compact,
+        signature,
+        "pubfnconfigure_with<R:Runtime>(builder:tauri::Builder<R>,secure_state:SecureState)->tauri::Builder<R>",
+        "configure_with のシグネチャが変わった（#685。引数・generic を足すと呼び出し側で除外を差し替えられる）"
+    );
+    assert_eq!(
+        body,
         "configure_with_backup_exclusion(builder,secure_state,backup_exclusion_for(EXCLUDES_APP_DATA_FROM_BACKUP))",
-        "configure_with の本体が backup_exclusion_for(EXCLUDES_APP_DATA_FROM_BACKUP) を渡す呼び出しだけになっていない（#681・#683）: {body}"
+        "configure_with の本体が backup_exclusion_for(EXCLUDES_APP_DATA_FROM_BACKUP) を渡す呼び出しだけになっていない（#681・#683）"
+    );
+}
+
+/// 製品の `configure` が、製品版の通信層の状態を作って `configure_with` を通ること（#685）。
+/// `configure_with` を飛ばして `configure_with_backup_exclusion` を直接呼ぶと、上の照合が
+/// 効かない経路で除外を差し替えられるため、同じ方法（定義が 1 つ・cfg 無し・シグネチャと本体の
+/// 完全一致）で固定する。
+#[test]
+fn configure_routes_through_configure_with() {
+    let (signature, body) = top_level_fn(&load_lib_rs(), "configure");
+    assert_eq!(
+        signature,
+        "pubfnconfigure<R:Runtime>(builder:tauri::Builder<R>)->tauri::Builder<R>",
+        "configure のシグネチャが変わった（#685）"
+    );
+    assert_eq!(
+        body,
+        "letsecure_state=SecureState::production().expect(\"failedtobuildthesecuretransport\");configure_with(builder,secure_state)",
+        "configure の本体が SecureState::production() を作って configure_with を呼ぶだけになっていない（#685）"
     );
 }
 
