@@ -800,19 +800,26 @@ fn compact(text: &str) -> String {
 }
 
 /// `source` の中の関数 `name` を 1 つだけ取り出し、正規化したシグネチャ（最初の `{` の手前まで）と
-/// 本体（最初の `{` の直後から、関数を閉じる行頭の `}` の直前まで）を返す（#683・#685）。
-/// 行コメントは落とす。次のいずれかなら panic する（配線のすり替えの抜け道を塞ぐ）:
-/// - `fn name<` / `fn name(` が（入れ子・`pub` の有無を問わず）ちょうど 1 回ではない
-///   （`#[cfg(target_os = "ios")]` 側だけ別の定義を並べると、ホストでは片方しか照らせない）
-/// - その定義が行頭の `pub fn name` ではない（`mod` の中など）
-/// - 直前の属性・doc コメントの並び（前の項目の終わりまで。空行を挟んでも続けて見る）に `cfg` がある
+/// 本体（最初の `{` の直後から、関数を閉じる行頭の `}` の直前まで）を返す（#683・#685・#687）。
+/// 照らす前にコメント（`//`・`///`・入れ子を含む `/* */`）を字句として取り除き（文字列・文字の
+/// リテラルの中の `//`・`/*` はコメントとみなさない）、生の識別子 `r#name` を `name` に寄せる。
+/// 次のいずれかなら panic する（配線のすり替えの抜け道を塞ぐ）:
+/// - `fn name<` / `fn name(` が（入れ子・`pub` の有無・`r#` の有無・間の空白やコメントを問わず）
+///   ちょうど 1 回ではない（`#[cfg(target_os = "ios")]` 側だけ別の定義を並べると、ホストでは片方しか
+///   照らせない。[`definition_lines`]）
+/// - その定義が行頭の `pub fn name` ではない、または `{ }` のブロックの中にある（`mod`・`cfg_if!`
+///   等。字下げに依らず、手前の `{` と `}` の数の差で見る）
+/// - その定義に付いた外側の属性（直前に空白・コメントだけを挟んで連なる `#[...]` の並び。
+///   複数行の属性を含む）に `cfg` がある。並びは前の項目の終わりの `}`・`;`（1 行で閉じる項目を
+///   含む）で止まり、それより前の項目の属性は見ない（[`outer_attributes`]）
+///
+/// コメントを先に取り除くため、ブロックコメントの中の `}`・`;` で並びの遡りが止まることはない
+/// （#687 low (a)）。doc コメントは属性だが中身を照らさない（`cfg` の語を含む説明を書けるように）。
+/// マクロ・`include!` で生成される定義は対象外（ソースの文面に現れないため）。
 fn top_level_fn(source: &str, name: &str) -> (String, String) {
-    let lines: Vec<&str> = source.lines().map(|line| line.split("//").next().unwrap_or("")).collect();
-    let is_definition = |line: &&str| {
-        line.contains(&format!("fn {name}<")) || line.contains(&format!("fn {name}("))
-    };
-    let definitions: Vec<usize> =
-        lines.iter().enumerate().filter(|(_, line)| is_definition(line)).map(|(i, _)| i).collect();
+    let code = strip_comments(source, false);
+    let lines: Vec<&str> = code.lines().collect();
+    let definitions = definition_lines(&code, name);
     assert_eq!(
         definitions.len(),
         1,
@@ -825,19 +832,22 @@ fn top_level_fn(source: &str, name: &str) -> (String, String) {
         "src/lib.rs の fn {name} が行頭の pub fn ではない: {}",
         lines[start]
     );
-    // 直前の属性の並び。前の項目の終わり（行頭の `}` か、行頭から始まる `;` で終わる行）まで遡る。
-    // doc コメントはこの照合の前に落ちている（`///` も `//` で始まる）。
-    let preceding: Vec<&str> = lines[..start]
-        .iter()
-        .rev()
-        .take_while(|line| {
-            !(line.starts_with('}') || (!line.starts_with([' ', '#']) && line.trim_end().ends_with(';')))
-        })
-        .copied()
-        .collect();
+    let blanked = strip_comments(source, true);
+    let offset: usize = blanked
+        .split_inclusive('\n')
+        .take(start)
+        .map(str::len)
+        .sum();
+    let depth = blanked[..offset].matches('{').count() as isize
+        - blanked[..offset].matches('}').count() as isize;
+    assert_eq!(
+        depth, 0,
+        "src/lib.rs の fn {name} が `{{ }}` のブロックの中にある（mod・cfg_if! 等の cfg で定義を差し替えられる）"
+    );
+    let attributes = outer_attributes(&blanked[..offset]);
     assert!(
-        preceding.iter().all(|line| !line.contains("cfg")),
-        "src/lib.rs の fn {name} の直前に cfg の属性がある（ビルド対象ごとに定義を差し替えられる）: {preceding:?}"
+        attributes.iter().all(|attribute| !attribute.contains("cfg")),
+        "src/lib.rs の fn {name} に cfg の属性がある（ビルド対象ごとに定義を差し替えられる）: {attributes:?}"
     );
     let end = lines[start..]
         .iter()
@@ -849,6 +859,263 @@ fn top_level_fn(source: &str, name: &str) -> (String, String) {
         .split_once('{')
         .unwrap_or_else(|| panic!("fn {name} のシグネチャに `{{` が無い: {text}"));
     (compact(signature), compact(body))
+}
+
+/// Rust のソースからコメント（`//`・入れ子を含む `/* */`）を取り除き、生の識別子 `r#name` を `name` に
+/// 寄せる（#687）。改行は残す（行の番号を変えない）。文字列（生の文字列を含む）・文字のリテラルは
+/// 字句として読み飛ばし、`blank_literals` なら中身を空白に置き換える（属性の括弧の対応を、
+/// リテラルの中の `[`・`]` に惑わされずに数えるため）。ライフタイムの `'a` は文字のリテラルと区別する。
+fn strip_comments(source: &str, blank_literals: bool) -> String {
+    let chars: Vec<char> = source.chars().collect();
+    let is_ident = |c: char| c.is_alphanumeric() || c == '_';
+    let literal = |out: &mut String, c: char| {
+        out.push(if blank_literals && c != '\n' { ' ' } else { c });
+    };
+    let mut out = String::with_capacity(source.len());
+    let mut i = 0;
+    while i < chars.len() {
+        let c = chars[i];
+        let next = chars.get(i + 1).copied();
+        let after_ident = i > 0 && is_ident(chars[i - 1]);
+        if c == '/' && next == Some('/') {
+            while i < chars.len() && chars[i] != '\n' {
+                i += 1;
+            }
+        } else if c == '/' && next == Some('*') {
+            let mut depth = 0;
+            while i < chars.len() {
+                if chars[i] == '/' && chars.get(i + 1) == Some(&'*') {
+                    depth += 1;
+                    i += 2;
+                } else if chars[i] == '*' && chars.get(i + 1) == Some(&'/') {
+                    depth -= 1;
+                    i += 2;
+                    if depth == 0 {
+                        break;
+                    }
+                } else {
+                    if chars[i] == '\n' {
+                        out.push('\n');
+                    }
+                    i += 1;
+                }
+            }
+            out.push(' ');
+        } else if c == 'r'
+            && (!after_ident
+                || (matches!(chars[i - 1], 'b' | 'c') && (i < 2 || !is_ident(chars[i - 2]))))
+            && matches!(next, Some('#' | '"'))
+        {
+            let hashes = chars[i + 1..].iter().take_while(|&&h| h == '#').count();
+            if chars.get(i + 1 + hashes) == Some(&'"') {
+                // 生の文字列 `r#"..."#`（`br"..."`・`cr"..."` を含む）。閉じる `"` と同じ数の `#` まで。
+                let open = i + 2 + hashes;
+                out.extend(&chars[i..open]);
+                let close = (open..chars.len())
+                    .find(|&j| {
+                        chars[j] == '"'
+                            && chars[j + 1..].iter().take_while(|&&h| h == '#').count() >= hashes
+                    })
+                    .unwrap_or(chars.len());
+                for &ch in &chars[open..close] {
+                    literal(&mut out, ch);
+                }
+                let end = (close + 1 + hashes).min(chars.len());
+                out.extend(&chars[close.min(end)..end]);
+                i = end;
+            } else if hashes == 1 && chars.get(i + 2).is_some_and(|&ch| is_ident(ch)) {
+                // 生の識別子 `r#name` は `name` と同じ名前。
+                i += 2;
+            } else {
+                out.push(c);
+                i += 1;
+            }
+        } else if c == '"' {
+            out.push(c);
+            i += 1;
+            while i < chars.len() {
+                let ch = chars[i];
+                if ch == '\\' {
+                    literal(&mut out, ch);
+                    if let Some(&escaped) = chars.get(i + 1) {
+                        literal(&mut out, escaped);
+                    }
+                    i += 2;
+                } else {
+                    i += 1;
+                    if ch == '"' {
+                        out.push(ch);
+                        break;
+                    }
+                    literal(&mut out, ch);
+                }
+            }
+        } else if c == '\'' && (next == Some('\\') || chars.get(i + 2) == Some(&'\'')) {
+            // 文字のリテラル（`'x'`・`'\n'`・`'\u{..}'`）。ライフタイム（`'a`）はここに来ない。
+            let first = if next == Some('\\') { i + 3 } else { i + 2 };
+            let close = (first..chars.len())
+                .find(|&j| chars[j] == '\'')
+                .unwrap_or(chars.len() - 1);
+            out.push(c);
+            for &ch in &chars[i + 1..close] {
+                literal(&mut out, ch);
+            }
+            out.push('\'');
+            i = close + 1;
+        } else {
+            out.push(c);
+            i += 1;
+        }
+    }
+    out
+}
+
+/// 項目の手前までのソース `before`（[`strip_comments`] でリテラルの中身を空白にしたもの）の末尾に
+/// 連なる外側の属性（`#[...]`）を、近い順に返す（#687）。末尾から空白を飛ばし、`]` で終わる属性
+/// だけを括弧の対応で遡り、前の項目の終わり（`}`・`;`）かファイルの先頭で止まる。`#` の付かない
+/// `]` や、それ以外の文字で止まる形は項目の間に現れないため、照らせない形として panic する
+/// （安全側に倒す）。
+fn outer_attributes(before: &str) -> Vec<String> {
+    let mut before = before.trim_end();
+    let mut attributes = Vec::new();
+    while let Some(rest) = before.strip_suffix(']') {
+        let mut depth = 1;
+        let open = rest
+            .char_indices()
+            .rev()
+            .find(|&(_, c)| {
+                match c {
+                    ']' => depth += 1,
+                    '[' => depth -= 1,
+                    _ => {}
+                }
+                depth == 0
+            })
+            .map(|(index, _)| index)
+            .unwrap_or_else(|| panic!("属性の `[` が見つからない: {before}"));
+        attributes.push(format!("{}]", &rest[open..]));
+        let head = rest[..open].trim_end();
+        let head = head.strip_suffix('!').map_or(head, str::trim_end);
+        before = head
+            .strip_suffix('#')
+            .unwrap_or_else(|| panic!("項目の直前に `#` の付かない `]` がある: {}", &rest[open..]))
+            .trim_end();
+    }
+    assert!(
+        before.is_empty() || before.ends_with(['}', ';']),
+        "項目の属性の並びの手前が前の項目の終わり（`}}`・`;`）ではない: {:?}",
+        &before[before.len().saturating_sub(40)..]
+    );
+    attributes
+}
+
+/// `code`（[`strip_comments`] を通したもの）の中で、`fn` の直後に空白を挟んで `name` が続き、さらに
+/// 空白を挟んで `<`・`(` が続く箇所の、`fn` のある行の番号（0 始まり）を返す。字句の単位で照らす
+/// ため、`fn  name (`・コメントを挟んだ `fn /**/name(`・改行をまたぐ形も数える（#687）。
+fn definition_lines(code: &str, name: &str) -> Vec<usize> {
+    let is_ident = |c: char| c.is_alphanumeric() || c == '_';
+    let mut words = Vec::new();
+    let mut word_start = None;
+    for (i, c) in code.char_indices().chain([(code.len(), ' ')]) {
+        match (is_ident(c), word_start) {
+            (true, None) => word_start = Some(i),
+            (false, Some(s)) => {
+                words.push((s, i));
+                word_start = None;
+            }
+            _ => {}
+        }
+    }
+    words
+        .windows(2)
+        .filter(|pair| {
+            let [(fn_start, fn_end), (name_start, name_end)] = [pair[0], pair[1]];
+            &code[fn_start..fn_end] == "fn"
+                && &code[name_start..name_end] == name
+                && code[fn_end..name_start].trim().is_empty()
+                && code[name_end..].trim_start().starts_with(['<', '('])
+        })
+        .map(|pair| code[..pair[0].0].matches('\n').count())
+        .collect()
+}
+
+// `top_level_fn` 自体の検査（#687）。製品の `lib.rs` では起きない形を、合成したソースで固定する。
+
+#[test]
+#[should_panic(expected = "ちょうど 1 つではない")]
+fn top_level_fn_sees_through_a_block_comment_and_a_raw_identifier() {
+    // #687 low (a): ブロックコメントの中の `}`・`note;` で遡りを止め、iOS 側を `r#` で定義する迂回。
+    let source = "#[cfg(not(target_os = \"ios\"))]\n/*\n}\nnote;\n*/\npub fn f() {\n    good()\n}\n\n#[cfg(target_os = \"ios\")]\npub fn r#f() {\n    bad()\n}\n";
+    top_level_fn(source, "f");
+}
+
+#[test]
+#[should_panic(expected = "cfg の属性がある")]
+fn top_level_fn_sees_a_cfg_hidden_behind_a_block_comment() {
+    // #687 low (a): 同じ迂回の、iOS 側を `use` で差し替える形。定義は 1 つなので cfg で落とす。
+    let source = "#[cfg(not(target_os = \"ios\"))]\n/*\n}\nnote;\n*/\npub fn f() {\n    good()\n}\n\n#[cfg(target_os = \"ios\")]\nuse other_mod::f;\n";
+    top_level_fn(source, "f");
+}
+
+#[test]
+#[should_panic(expected = "cfg の属性がある")]
+fn top_level_fn_sees_a_cfg_split_over_lines() {
+    let source = "fn before() {\n}\n\n#[doc = \"]\"]\n# [cfg(\n    not(target_os = \"ios\")\n)]\npub fn f() {\n    good()\n}\n";
+    top_level_fn(source, "f");
+}
+
+#[test]
+#[should_panic(expected = "ブロックの中にある")]
+fn top_level_fn_sees_a_cfg_on_an_unindented_enclosing_mod() {
+    // 字下げしない `mod` の中に置き、cfg を `mod` に付けて iOS 側を再エクスポートで差し替える形。
+    let source = "#[cfg(not(target_os = \"ios\"))]\nmod imp {\npub fn f() {\n    good()\n}\n}\n#[cfg(target_os = \"ios\")]\npub use ios::f;\n";
+    top_level_fn(source, "f");
+}
+
+#[test]
+#[should_panic(expected = "ブロックの中にある")]
+fn top_level_fn_sees_a_cfg_if_block_around_it() {
+    // `cfg_if!` の分岐は rustfmt が整形しないため、字下げせずに書ける。
+    let source = "cfg_if::cfg_if! {\nif #[cfg(not(target_os = \"ios\"))] {\npub fn f() {\n    good()\n}\n} else {\npub use ios::f;\n}\n}\n";
+    top_level_fn(source, "f");
+}
+
+#[test]
+#[should_panic(expected = "ちょうど 1 つではない")]
+fn top_level_fn_counts_a_definition_split_by_a_comment_or_spaces() {
+    let source = "pub fn f() {\n    good()\n}\n\n#[cfg(target_os = \"ios\")]\npub fn /**/f () {\n    bad()\n}\n";
+    top_level_fn(source, "f");
+}
+
+#[test]
+#[should_panic(expected = "cfg の属性がある")]
+fn top_level_fn_reads_a_raw_c_string_as_raw() {
+    // `cr"\"` の `\` はエスケープではない。エスケープと読むと続く `"` までを文字列に飲み込み、cfg を見落とす。
+    let source = "const C: &core::ffi::CStr = cr\"\\\";\n#[cfg(not(target_os = \"ios\"))]\npub fn f() {\n    g(\"x\")\n}\n";
+    top_level_fn(source, "f");
+}
+
+#[test]
+fn top_level_fn_stops_at_a_one_line_item_before_it() {
+    // #687 low (b): 1 行で閉じる直前の項目を項目の終わりとして扱い、さらに前の cfg を見ない。
+    let source = "#[cfg(not(target_os = \"ios\"))]\nfn before() {\n}\n\n#[cfg(desktop)] fn noop() {}\n/// cfg の説明\n#[inline]\npub fn f() {\n    good()\n}\n";
+    assert_eq!(
+        top_level_fn(source, "f"),
+        ("pubfnf()".to_string(), "good()".to_string())
+    );
+}
+
+#[test]
+fn top_level_fn_keeps_comment_markers_inside_literals() {
+    // 文字列・文字のリテラルの中の `//`・`/*` はコメントではない（照合の対象に残す）。
+    let source = "/// `$APPCONFIG/evidence/*` の直下\npub fn f<'a>() {\n    call(\"a//b /* c */\", r#\"//\"#, '\"', '/', '\\'', '[') // note\n}\n";
+    assert_eq!(
+        top_level_fn(source, "f"),
+        (
+            "pubfnf<'a>()".to_string(),
+            "call(\"a//b/*c*/\",r#\"//\"#,'\"','/','\\'','[')".to_string()
+        )
+    );
 }
 
 #[test]
