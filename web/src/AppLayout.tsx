@@ -1,4 +1,4 @@
-import { useCallback, useState } from "react";
+import { useState } from "react";
 import type { CSSProperties, KeyboardEvent, PointerEvent } from "react";
 import ChatView from "./ChatView";
 import CheckinPanel from "./CheckinPanel";
@@ -6,6 +6,7 @@ import ConnectionStatus from "./ConnectionStatus";
 import Dashboard from "./Dashboard";
 import DailyReportView from "./DailyReportView";
 import DecisionLog from "./DecisionLog";
+import type { DecisionLogFilterTask } from "./DecisionLog";
 import SettingsView from "./SettingsView";
 import {
   SIDE_PANEL_MIN_WIDTH,
@@ -128,39 +129,33 @@ function AppLayout() {
     onStartMentoring !== null,
   );
 
-  // タスクカードの振り返り導線（Issue #557 / S2a, 親 #438 決定14・決定15）。
-  // 決定ログへ切り替えると同時に「どのタスクのセクションへ寄せるか」を持ち、
-  // `DecisionLog` へ prop で渡す。ハッシュフラグメントにしないのは、
-  // `DecisionLog` が条件レンダリングで、押した時点では移動先の DOM がまだ
-  // 無いためである（ルーティングも無いので URL にハッシュだけが残る）。
+  // タスクカードの振り返り導線（Issue #557 / S2a, 親 #438 決定14 → Issue
+  // #689）。決定ログへ切り替えると同時に「どのタスクに絞り込むか」を持ち、
+  // `DecisionLog` へ prop で渡す。#557 はそのタスクの節へスクロールしていた
+  // が、記録 0 件のタスク（節が無い）・いちばん新しい節（もともと先頭）・最後
+  // の節（先頭まで寄せられない）では何も動かず、遷移しただけに見えた（#689）。
+  // 絞り込みならどの並びでもそのタスクの記録だけが目に入る。
   //
   // 開始導線と違って `adhoc` でも `status` でもゲートしない: 読むだけで、
   // 発言も記録も朝会ゲートも触らない。記録の有無でも出し分けない — それを
   // 知るには決定ログの取得をここへ持ち上げる必要があり、持ち上げると
   // 「アプリ起動時の 1 回きり」になってメンタリング直後の記録が映らなくなる。
+  // 記録が無いことは絞り込んだ決定ログ側で伝える。
   //
-  // この state は `DecisionLog` がアンマウントされても残るので、消費されない
-  // と「導線から遷移 → 別ビュー → ナビゲーションから決定ログ」で再びスクロール
-  // してしまう。クリアの契機は `DecisionLog` の取得完了（スクロールの有無に
-  // かかわらず呼ばれる）で、更新者は state の持ち主であるここだけにする。
-  const [decisionLogScrollTaskId, setDecisionLogScrollTaskId] = useState<
-    number | null
-  >(null);
+  // 絞り込みは表示している間は持ち続け、決定ログの「すべての記録を表示」と
+  // ナビゲーション経由の切替でクリアする（ナビゲーションから開いたときは
+  // 全体表示＝ #358 判断1）。
+  const [decisionLogFilterTask, setDecisionLogFilterTask] =
+    useState<DecisionLogFilterTask | null>(null);
   const showTaskRecords = (task: Task) => {
-    setDecisionLogScrollTaskId(task.id);
+    setDecisionLogFilterTask({ id: task.id, title: task.title });
     setActiveView("decisions");
   };
-  const clearDecisionLogScrollTarget = useCallback(() => {
-    setDecisionLogScrollTaskId(null);
-  }, []);
-  // ナビゲーション経由の切替でも対象を捨てる（PR #559 の Codex P2 を受けた
-  // 2026-09-21 のオーナー決定）。消費の通知は取得完了が契機なので、取得が
-  // 終わる前に決定ログを離れると通知されないまま対象が残り、次にナビゲーション
-  // から開いたときにスクロールしてしまう。ナビゲーションは導線を経由しない
-  // 遷移なので、ここで捨てても導線側のスクロールの機会は奪わない（決定15 が
-  // 却下した「決定ログへの切替を検知してクリア」とは違い、競合しない）。
+  const clearDecisionLogFilter = () => {
+    setDecisionLogFilterTask(null);
+  };
   const navigateTo = (view: AppView) => {
-    clearDecisionLogScrollTarget();
+    clearDecisionLogFilter();
     setActiveView(view);
   };
 
@@ -290,8 +285,8 @@ function AppLayout() {
             <DecisionLog
               tasks={tasksState.tasks}
               tasksStatus={tasksState.status}
-              scrollTargetTaskId={decisionLogScrollTaskId}
-              onScrollTargetConsumed={clearDecisionLogScrollTarget}
+              filterTask={decisionLogFilterTask}
+              onClearFilter={clearDecisionLogFilter}
             />
           </main>
         )}
