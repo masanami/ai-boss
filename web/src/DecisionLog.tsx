@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { decisionSectionId } from "./decision-section-id";
 import { useDecisions } from "./use-decisions";
 import { groupDecisionsByTask } from "./group-decisions-by-task";
@@ -169,6 +169,7 @@ function DecisionLog({
   // （`AppLayout` へ上げない）: 面は決定ログの上に重ねるだけで、ほかのビューと
   // 共有する状態が無い。`useChat` の状態には触れない（決定22）。
   const [openedRecord, setOpenedRecord] = useState<OpenedRecord | null>(null);
+  const rootRef = useRef<HTMLDivElement>(null);
 
   if (status === "loading") {
     return <p className="decision-log-status">決定ログを読み込み中…</p>;
@@ -189,14 +190,21 @@ function DecisionLog({
   // Issue #513 (決定3): only resolve once the task list has actually loaded.
   const taskReferenceTasks = referenceableTasks(tasks, tasksStatus);
 
+  // 「すべての記録を表示」は押すと自分自身が消える。フォーカスが body に
+  // 落ちてキーボード操作の位置を見失わないよう、決定ログの先頭へ移す。
+  const handleClearFilter = () => {
+    onClearFilter?.();
+    rootRef.current?.focus();
+  };
+
   return (
-    <div className="decision-log">
+    <div className="decision-log" ref={rootRef} tabIndex={-1}>
       {filterTask !== null && (
         <div className="decision-log-filter">
           <p className="decision-log-filter-notice">
             「{filterTask.title}」の記録だけを表示しています
           </p>
-          <button type="button" onClick={onClearFilter}>
+          <button type="button" onClick={handleClearFilter}>
             すべての記録を表示
           </button>
         </div>

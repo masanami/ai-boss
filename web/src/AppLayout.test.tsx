@@ -2082,6 +2082,29 @@ describe("AppLayout", () => {
       ).not.toBeInTheDocument();
     });
 
+    // 「すべての記録を表示」は押すと自分自身が消える。フォーカスを body に
+    // 落とさず決定ログに残す（キーボード操作で位置を見失わない）。
+    it("keeps keyboard focus inside the decision log after すべての記録を表示 removes itself", async () => {
+      vi.stubGlobal(
+        "fetch",
+        createRoutedFetchMock({
+          tasks: [TASK, OTHER_TASK],
+          decisions: [TASK_RECORD, OTHER_TASK_RECORD],
+        }),
+      );
+
+      render(<AppLayout />);
+      const card = await openTaskCard(TASK.title);
+      fireEvent.click(within(card).getByRole("button", { name: "記録を見る" }));
+      const showAll = await screen.findByRole("button", { name: SHOW_ALL });
+      showAll.focus();
+      fireEvent.click(showAll);
+
+      await findDecisionSection(OTHER_TASK.title);
+      expect(document.activeElement).not.toBe(document.body);
+      expect(document.activeElement).toHaveClass("decision-log");
+    });
+
     // #358 判断1: ナビゲーションから開いたときは全体表示のまま。
     it("shows the whole log, unfiltered, when the decision log is opened from the navigation", async () => {
       vi.stubGlobal(
