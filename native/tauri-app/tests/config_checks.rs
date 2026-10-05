@@ -844,55 +844,26 @@ fn compact(text: &str) -> String {
 }
 
 /// `source` の中の関数 `name` を 1 つだけ取り出し、正規化したシグネチャ（最初の `{` の手前まで）と
-/// 本体（最初の `{` の直後から、関数を閉じる行頭の `}` の直前まで）を返す（#683・#685・#687）。
+/// 本体（最初の `{` の直後から、関数を閉じる行頭の `}` の直前まで）を返す（#683・#685・#687・#693）。
 /// 照らす前にコメント（`//`・`///`・入れ子を含む `/* */`）を字句として取り除き（文字列・文字の
 /// リテラルの中の `//`・`/*` はコメントとみなさない）、生の識別子 `r#name` を `name` に寄せる。
 /// 次のいずれかなら panic する（配線のすり替えの抜け道を塞ぐ）:
-/// - `fn name<` / `fn name(` が（入れ子・`pub` の有無・`r#` の有無・間の空白やコメントを問わず）
-///   ちょうど 1 回ではない（`#[cfg(target_os = "ios")]` 側だけ別の定義を並べると、ホストでは片方しか
-///   照らせない。[`definition_lines`]）
-/// - その定義が行頭の `pub fn name` ではない、または `{ }` のブロックの中にある（`mod`・`cfg_if!`
-///   等。字下げに依らず、手前の `{` と `}` の数の差で見る）
-/// - その定義に付いた外側の属性（直前に空白・コメントだけを挟んで連なる `#[...]` の並び。
-///   複数行の属性を含む）に `cfg` がある。並びは前の項目の終わりの `}`・`;`（1 行で閉じる項目を
-///   含む）で止まり、それより前の項目の属性は見ない（[`outer_attributes`]）
+/// - 定義がちょうど 1 つではない、括弧のブロックの中にある、定義の行の `fn` より左が修飾子だけではない、
+///   外側の属性・項目の並びの始まりの内側の属性に `cfg` がある（[`single_top_level_definition`]。
+///   `pub` の有無を問わず照らす部分）
+/// - その定義が行頭の `pub fn name` ではない
 ///
 /// コメントを先に取り除くため、ブロックコメントの中の `}`・`;` で並びの遡りが止まることはない
 /// （#687 low (a)）。doc コメントは属性だが中身を照らさない（`cfg` の語を含む説明を書けるように）。
 /// マクロ・`include!` で生成される定義は対象外（ソースの文面に現れないため）。
 fn top_level_fn(source: &str, name: &str) -> (String, String) {
+    let start = single_top_level_definition(source, name);
     let code = strip_comments(source, false);
     let lines: Vec<&str> = code.lines().collect();
-    let blanked = strip_comments(source, true);
-    // リテラルの中身を空白にした版で数える（文字列の中の `fn name(` を定義とみなさない）。
-    let definitions = definition_lines(&blanked, name);
-    assert_eq!(
-        definitions.len(),
-        1,
-        "src/lib.rs の fn {name} の定義がちょうど 1 つではない（cfg で分けた定義はホストでは片方しか照らせない）: 行 {:?}",
-        definitions.iter().map(|i| i + 1).collect::<Vec<_>>()
-    );
-    let start = definitions[0];
     assert!(
         lines[start].starts_with(&format!("pub fn {name}")),
         "src/lib.rs の fn {name} が行頭の pub fn ではない: {}",
         lines[start]
-    );
-    let offset: usize = blanked
-        .split_inclusive('\n')
-        .take(start)
-        .map(str::len)
-        .sum();
-    let depth = blanked[..offset].matches('{').count() as isize
-        - blanked[..offset].matches('}').count() as isize;
-    assert_eq!(
-        depth, 0,
-        "src/lib.rs の fn {name} が `{{ }}` のブロックの中にある（mod・cfg_if! 等の cfg で定義を差し替えられる）"
-    );
-    let attributes = outer_attributes(&blanked[..offset]);
-    assert!(
-        attributes.iter().all(|attribute| !attribute.contains("cfg")),
-        "src/lib.rs の fn {name} に cfg の属性がある（ビルド対象ごとに定義を差し替えられる）: {attributes:?}"
     );
     let end = lines[start..]
         .iter()
@@ -904,6 +875,94 @@ fn top_level_fn(source: &str, name: &str) -> (String, String) {
         .split_once('{')
         .unwrap_or_else(|| panic!("fn {name} のシグネチャに `{{` が無い: {text}"));
     (compact(signature), compact(body))
+}
+
+/// `source` の中の関数 `name` の定義の行の番号（0 始まり）を返す。`pub` の有無・本体の形は問わない
+/// （#683・#685・#687・#693）。次のいずれかなら panic する（配線のすり替えの抜け道を塞ぐ）:
+/// - `fn name<` / `fn name(` が（入れ子・`pub` の有無・`r#` の有無・間の空白やコメントを問わず）
+///   ちょうど 1 回ではない（`#[cfg(target_os = "ios")]` 側だけ別の定義を並べると、ホストでは片方しか
+///   照らせない。[`definition_offsets`]）
+/// - その定義が括弧（`( )`・`[ ]`・`{ }`）のブロックの中にある（`mod`・`cfg_if!`・丸／角括弧の
+///   マクロ呼び出し等。字下げに依らず、定義の行の行頭より手前の開きと閉じの数の差がそれぞれ 0 かで見る）
+/// - 定義の行の `fn` より左が修飾子（`pub`・`pub(..)`・`const`・`async`・`unsafe`・`extern "..."`）
+///   だけではない（同じ行の属性 `#[cfg(..)] fn`・マクロの開き `not_ios!(fn`・`mod m { fn` は、行頭より
+///   手前だけを見る上と下の確認をすり抜けるため。[`is_fn_qualifiers`]）
+/// - その定義に付いた外側の属性（直前に空白・コメントだけを挟んで連なる `#[...]` の並び。
+///   複数行の属性を含む）に `cfg` がある。並びは前の項目の終わりの `}`・`;`（1 行で閉じる項目を
+///   含む）で止まり、それより前の項目の属性は見ない。並びの始まりの内側の属性（`#![...]`）に
+///   `cfg(` があっても panic する（[`outer_attributes`]）
+fn single_top_level_definition(source: &str, name: &str) -> usize {
+    let blanked = strip_comments(source, true);
+    // リテラルの中身を空白にした版で数える（文字列の中の `fn name(` を定義とみなさない）。
+    let definitions = definition_offsets(&blanked, name);
+    let line_of = |offset: usize| blanked[..offset].matches('\n').count();
+    assert_eq!(
+        definitions.len(),
+        1,
+        "src/lib.rs の fn {name} の定義がちょうど 1 つではない（cfg で分けた定義はホストでは片方しか照らせない）: 行 {:?}",
+        definitions.iter().map(|&i| line_of(i) + 1).collect::<Vec<_>>()
+    );
+    let fn_offset = definitions[0];
+    let start = line_of(fn_offset);
+    let offset = blanked[..fn_offset].rfind('\n').map_or(0, |i| i + 1);
+    let qualifiers = &blanked[offset..fn_offset];
+    assert!(
+        is_fn_qualifiers(qualifiers),
+        "src/lib.rs の fn {name} の定義の行の fn より左が修飾子だけではない（同じ行の属性・マクロの開き・mod 等で定義を差し替えられる）: {qualifiers:?}"
+    );
+    let before = &blanked[..offset];
+    let depths = [('(', ')'), ('[', ']'), ('{', '}')].map(|(open, close)| {
+        before.matches(open).count() as isize - before.matches(close).count() as isize
+    });
+    assert_eq!(
+        depths, [0, 0, 0],
+        "src/lib.rs の fn {name} が括弧（`( )`・`[ ]`・`{{ }}`）のブロックの中にある（mod・cfg_if!・丸／角括弧のマクロ呼び出し等の cfg で定義を差し替えられる）: 深さ（丸・角・波）"
+    );
+    let attributes = outer_attributes(before);
+    assert!(
+        attributes.iter().all(|attribute| !attribute.contains("cfg")),
+        "src/lib.rs の fn {name} に cfg の属性がある（ビルド対象ごとに定義を差し替えられる）: {attributes:?}"
+    );
+    start
+}
+
+/// `text` が関数の修飾子（`pub`・`pub(crate)` 等の `pub(..)`・`const`・`async`・`unsafe`・
+/// `extern "..."`）と空白だけでできているか（#693）。`text` は [`strip_comments`] でリテラルの中身を
+/// 空白にしたもの（`extern` の ABI の文字列の中身は空白になっている）。
+fn is_fn_qualifiers(text: &str) -> bool {
+    let is_ident = |c: char| c.is_alphanumeric() || c == '_';
+    let mut rest = text;
+    loop {
+        rest = rest.trim_start();
+        if rest.is_empty() {
+            return true;
+        }
+        let (word, after) = rest.split_at(rest.find(|c| !is_ident(c)).unwrap_or(rest.len()));
+        rest = match word {
+            "const" | "async" | "unsafe" => after,
+            "pub" => match after.trim_start().strip_prefix('(') {
+                Some(inner) => match inner.split_once(')') {
+                    Some((path, after))
+                        if path
+                            .chars()
+                            .all(|c| is_ident(c) || c == ':' || c.is_whitespace()) =>
+                    {
+                        after
+                    }
+                    _ => return false,
+                },
+                None => after,
+            },
+            "extern" => match after.trim_start().strip_prefix('"') {
+                Some(abi) => match abi.split_once('"') {
+                    Some((_, after)) => after,
+                    None => return false,
+                },
+                None => after,
+            },
+            _ => return false,
+        };
+    }
 }
 
 /// Rust のソースからコメント（`//`・入れ子を含む `/* */`）を取り除き、生の識別子 `r#name` を `name` に
@@ -1016,10 +1075,13 @@ fn strip_comments(source: &str, blank_literals: bool) -> String {
 }
 
 /// 項目の手前までのソース `before`（[`strip_comments`] でリテラルの中身を空白にしたもの）の末尾に
-/// 連なる外側の属性（`#[...]`）を、近い順に返す（#687）。末尾から空白を飛ばし、`]` で終わる属性
-/// だけを括弧の対応で遡り、前の項目の終わり（`}`・`;`）かファイルの先頭で止まる。`#` の付かない
-/// `]` や、それ以外の文字で止まる形は項目の間に現れないため、照らせない形として panic する
-/// （安全側に倒す）。
+/// 連なる外側の属性（`#[...]`）を、近い順に返す（#687・#693）。末尾から空白を飛ばし、`]` で終わる
+/// 属性だけを括弧の対応で遡り、前の項目の終わり（`}`・`;`）かファイルの先頭で止まる。内側の属性
+/// （`#![...]`）はファイル・`mod` の先頭に付いて項目に付くものではないため集めないが、遡りは続ける
+/// （その手前の内側の属性も見る）。内側の属性の中身に `cfg(`（`cfg_attr(.., cfg(..))` の中を含む）が
+/// あれば、ファイル・`mod` ごと差し替えられるため panic する（`cfg_attr(test, allow(..))` 等は通す）。
+/// `#` の付かない `]` や、それ以外の文字で止まる形は項目の間に現れないため、照らせない形として
+/// panic する（安全側に倒す）。
 fn outer_attributes(before: &str) -> Vec<String> {
     let mut before = before.trim_end();
     let mut attributes = Vec::new();
@@ -1038,26 +1100,49 @@ fn outer_attributes(before: &str) -> Vec<String> {
             })
             .map(|(index, _)| index)
             .unwrap_or_else(|| panic!("属性の `[` が見つからない: {before}"));
-        attributes.push(format!("{}]", &rest[open..]));
         let head = rest[..open].trim_end();
-        let head = head.strip_suffix('!').map_or(head, str::trim_end);
+        let (head, inner) = head
+            .strip_suffix('!')
+            .map_or((head, false), |head| (head.trim_end(), true));
         before = head
             .strip_suffix('#')
             .unwrap_or_else(|| panic!("項目の直前に `#` の付かない `]` がある: {}", &rest[open..]))
             .trim_end();
+        if inner {
+            // 内側の `cfg(..)` はファイル・`mod` ごと差し替えられるため、素通りさせない。中身の
+            // どこにあっても見る（`cfg_attr(.., cfg(..))` を含む）。語の `cfg` に限り、`cfg_attr` は通す。
+            let content = &rest[open + 1..];
+            let has_cfg = content.match_indices("cfg").any(|(index, _)| {
+                !content[..index].ends_with(|c: char| c.is_alphanumeric() || c == '_')
+                    && content[index + 3..].trim_start().starts_with('(')
+            });
+            assert!(
+                !has_cfg,
+                "項目の並びの始まりに内側の cfg の属性がある: {}]",
+                &rest[open..]
+            );
+        } else {
+            attributes.push(format!("{}]", &rest[open..]));
+        }
     }
+    // 末尾の 40 文字（byte で切ると、多バイト文字の途中で別の panic にすり替わる）。
+    let tail_start = before
+        .char_indices()
+        .rev()
+        .nth(39)
+        .map_or(0, |(index, _)| index);
     assert!(
         before.is_empty() || before.ends_with(['}', ';']),
         "項目の属性の並びの手前が前の項目の終わり（`}}`・`;`）ではない: {:?}",
-        &before[before.len().saturating_sub(40)..]
+        &before[tail_start..]
     );
     attributes
 }
 
 /// `code`（[`strip_comments`] を通したもの）の中で、`fn` の直後に空白を挟んで `name` が続き、さらに
-/// 空白を挟んで `<`・`(` が続く箇所の、`fn` のある行の番号（0 始まり）を返す。字句の単位で照らす
-/// ため、`fn  name (`・コメントを挟んだ `fn /**/name(`・改行をまたぐ形も数える（#687）。
-fn definition_lines(code: &str, name: &str) -> Vec<usize> {
+/// 空白を挟んで `<`・`(` が続く箇所の、`fn` の byte の位置を返す。字句の単位で照らすため、
+/// `fn  name (`・コメントを挟んだ `fn /**/name(`・改行をまたぐ形も数える（#687）。
+fn definition_offsets(code: &str, name: &str) -> Vec<usize> {
     let is_ident = |c: char| c.is_alphanumeric() || c == '_';
     let mut words = Vec::new();
     let mut word_start = None;
@@ -1080,7 +1165,7 @@ fn definition_lines(code: &str, name: &str) -> Vec<usize> {
                 && code[fn_end..name_start].trim().is_empty()
                 && code[name_end..].trim_start().starts_with(['<', '('])
         })
-        .map(|pair| code[..pair[0].0].matches('\n').count())
+        .map(|pair| pair[0].0)
         .collect()
 }
 
@@ -1089,7 +1174,9 @@ fn definition_lines(code: &str, name: &str) -> Vec<usize> {
 #[test]
 fn top_level_fn_ignores_the_name_inside_string_and_char_literals() {
     // 文字列・文字のリテラルの中の `fn f(` は定義として数えない（偽陽性で落とさない）。
-    let source = "const NOTE: &str = \"fn f(\";\nconst RAW: &str = r#\"fn f<\"#;\n\npub fn f() {\n    good()\n}\n";
+    // 先頭の `'"'` は `"` を含む文字リテラル（#693）。字句として読まないと、この `"` で文字列が
+    // 開いて、続く `"fn f("` の中身が文字列の外に出て定義に数えられる。
+    let source = "const Q: char = '\"';\nconst NOTE: &str = \"fn f(\";\nconst RAW: &str = r#\"fn f<\"#;\n\npub fn f() {\n    good()\n}\n";
     let (signature, body) = top_level_fn(source, "f");
     assert_eq!(signature, "pubfnf()"); // 照合用に空白を詰めた形（`compact`）
     assert_eq!(body, "good()");
@@ -1097,16 +1184,19 @@ fn top_level_fn_ignores_the_name_inside_string_and_char_literals() {
 
 #[test]
 #[should_panic(expected = "ちょうど 1 つではない")]
-fn top_level_fn_sees_through_a_block_comment_and_a_raw_identifier() {
-    // #687 low (a): ブロックコメントの中の `}`・`note;` で遡りを止め、iOS 側を `r#` で定義する迂回。
-    let source = "#[cfg(not(target_os = \"ios\"))]\n/*\n}\nnote;\n*/\npub fn f() {\n    good()\n}\n\n#[cfg(target_os = \"ios\")]\npub fn r#f() {\n    bad()\n}\n";
+fn top_level_fn_counts_a_raw_identifier_as_another_definition() {
+    // #687 low (a)・#693: iOS 側を生の識別子 `r#f` で定義する迂回。`r#` を寄せないと定義が 1 つに
+    // 見えて、cfg の assert（別のメッセージ）で落ちる。ブロックコメント越しの遡りは、定義が 1 つの
+    // 次のテスト（`top_level_fn_sees_a_cfg_hidden_behind_a_block_comment`）が担う。
+    let source = "#[cfg(not(target_os = \"ios\"))]\npub fn f() {\n    good()\n}\n\n#[cfg(target_os = \"ios\")]\npub fn r#f() {\n    bad()\n}\n";
     top_level_fn(source, "f");
 }
 
 #[test]
 #[should_panic(expected = "cfg の属性がある")]
 fn top_level_fn_sees_a_cfg_hidden_behind_a_block_comment() {
-    // #687 low (a): 同じ迂回の、iOS 側を `use` で差し替える形。定義は 1 つなので cfg で落とす。
+    // #687 low (a): ブロックコメントの中の `}`・`note;` で並びの遡りを止め、iOS 側を `use` で差し替える
+    // 迂回。定義は 1 つなので cfg で落とす。
     let source = "#[cfg(not(target_os = \"ios\"))]\n/*\n}\nnote;\n*/\npub fn f() {\n    good()\n}\n\n#[cfg(target_os = \"ios\")]\nuse other_mod::f;\n";
     top_level_fn(source, "f");
 }
@@ -1160,6 +1250,162 @@ fn top_level_fn_stops_at_a_one_line_item_before_it() {
 }
 
 #[test]
+#[should_panic(expected = "cfg の属性がある")]
+fn top_level_fn_sees_a_cfg_hidden_behind_a_nested_block_comment() {
+    // #693 low ③: 入れ子のブロックコメント。入れ子を数えず最初の `*/` で閉じると、続く
+    // `fn x() {}` の `}` で遡りが止まって cfg を見落とす（`// */` は行コメント）。
+    let source =
+        "#[cfg(not(target_os = \"ios\"))]\n/* /* */ fn x() {} // */\npub fn f() {\n    good()\n}\n";
+    top_level_fn(source, "f");
+}
+
+#[test]
+#[should_panic(expected = "ブロックの中にある")]
+fn top_level_fn_rejects_a_definition_inside_a_paren_macro_call() {
+    // #693 medium 1: 丸括弧で囲むマクロ呼び出しの中に定義を置き、iOS 側を再エクスポートで差し替える形。
+    // `{ }` の深さだけでは 0 に見えて通り抜ける。
+    let source = "not_ios!(\nfn helper() {}\npub fn f() {\n    good()\n}\n);\n#[cfg(target_os = \"ios\")]\npub use ios_wiring::f;\n";
+    top_level_fn(source, "f");
+}
+
+#[test]
+#[should_panic(expected = "ブロックの中にある")]
+fn top_level_fn_rejects_a_definition_inside_a_bracket_macro_call() {
+    // #693 medium 1: 角括弧で囲む形（`not_ios![ ... ];`）。
+    let source = "not_ios![\nfn helper() {}\npub fn f() {\n    good()\n}\n];\n#[cfg(target_os = \"ios\")]\npub use ios_wiring::f;\n";
+    top_level_fn(source, "f");
+}
+
+#[test]
+fn top_level_fn_does_not_take_an_inner_attribute_for_an_outer_one() {
+    // #693 low ⑥: ファイル先頭の `#![cfg_attr(..)]` は項目に付く外側の属性ではない。
+    let source = "#![cfg_attr(test, allow(dead_code))]\npub fn f() {\n    good()\n}\n";
+    assert_eq!(
+        top_level_fn(source, "f"),
+        ("pubfnf()".to_string(), "good()".to_string())
+    );
+}
+
+#[test]
+#[should_panic(expected = "cfg の属性がある")]
+fn top_level_fn_sees_an_outer_cfg_after_an_inner_attribute() {
+    // #693 low ⑥: 内側の属性を除いても、その後ろに付いた外側の cfg は見る。
+    let source =
+        "#![allow(dead_code)]\n#[cfg(not(target_os = \"ios\"))]\npub fn f() {\n    good()\n}\n";
+    top_level_fn(source, "f");
+}
+
+#[test]
+#[should_panic(expected = "前の項目の終わり")]
+fn outer_attributes_reports_a_multibyte_tail_without_a_char_boundary_panic() {
+    // #693 low ⑤: 失敗メッセージに載せる末尾を byte で切ると、多バイト文字の途中で別の panic
+    // （`is not a char boundary`）にすり替わる。「あ」は 3 byte で 150 byte あり、末尾から 40 byte の
+    // 位置（110 byte 目）は文字の途中。40 文字より長いため、末尾の 40 文字を切り出す側も踏む。
+    outer_attributes(&"あ".repeat(50));
+}
+
+#[test]
+#[should_panic(expected = "内側の cfg の属性がある")]
+fn top_level_fn_sees_an_inner_cfg_before_it() {
+    // #693 low ⑥: 内側の属性を集めない代わりに、`#![cfg(..)]` は素通りさせない。
+    let source = "#![cfg(not(target_os = \"ios\"))]\npub fn f() {\n    good()\n}\n";
+    top_level_fn(source, "f");
+}
+
+#[test]
+#[should_panic(expected = "`#` の付かない")]
+fn outer_attributes_does_not_take_a_macro_call_for_an_inner_attribute() {
+    // `#![...]` の `!` と、`name![...]` の `!` を取り違えない（`#` の確認を内側の属性でも省かない）。
+    outer_attributes("not_ios![x]");
+}
+
+#[test]
+fn single_top_level_definition_returns_the_line_of_a_private_fn() {
+    // `pub` でない関数も照らせる（`top_level_fn` の「行頭の `pub fn`」はここに含めない）。
+    let source = "use a::b;\n\nfn helper(x: u8) -> u8 {\n    x\n}\n";
+    assert_eq!(single_top_level_definition(source, "helper"), 2);
+}
+
+#[test]
+#[should_panic(expected = "ちょうど 1 つではない")]
+fn single_top_level_definition_counts_cfg_split_private_definitions() {
+    // `pub` でない関数に cfg の 2 定義を並べて、ホストでは片方しか照らせなくする形。
+    let source = "#[cfg(not(target_os = \"ios\"))]\nfn helper() {\n    good()\n}\n\n#[cfg(target_os = \"ios\")]\nfn helper() {\n    bad()\n}\n";
+    single_top_level_definition(source, "helper");
+}
+
+#[test]
+#[should_panic(expected = "cfg の属性がある")]
+fn single_top_level_definition_sees_a_cfg_on_a_single_private_definition() {
+    // 定義が 1 つでも、cfg が付いていれば、別のターゲットでは定義が無いか別の物に差し替わる。
+    let source = "#[cfg(not(target_os = \"ios\"))]\nfn helper() {\n    good()\n}\n";
+    single_top_level_definition(source, "helper");
+}
+
+#[test]
+#[should_panic(expected = "修飾子だけではない")]
+fn single_top_level_definition_sees_a_cfg_on_the_same_line() {
+    // #697 medium (a): 外側の cfg を定義と同じ行に書き、iOS 側を `mod`＋`use` で差し替える形。
+    // 行頭より手前だけを遡ると属性が見えない。
+    let source = "#[cfg(not(target_os = \"ios\"))] fn helper<R: Runtime>() {\n    good()\n}\n\n#[cfg(target_os = \"ios\")]\nmod ios_backup;\n#[cfg(target_os = \"ios\")]\nuse ios_backup::helper;\n";
+    single_top_level_definition(source, "helper");
+}
+
+#[test]
+#[should_panic(expected = "修飾子だけではない")]
+fn single_top_level_definition_sees_a_macro_call_opened_on_the_same_line() {
+    // #697 medium (b): マクロの開きを定義と同じ行に書く形。行頭より手前の括弧の深さは 0 に見える。
+    let source = "not_ios!(pub fn helper(exclude: bool) {\n    good()\n});\n#[cfg(target_os = \"ios\")]\npub use ios_backup::helper;\n";
+    single_top_level_definition(source, "helper");
+}
+
+#[test]
+#[should_panic(expected = "修飾子だけではない")]
+fn single_top_level_definition_sees_a_mod_opened_on_the_same_line() {
+    // #697 medium (c): `mod m {` を定義と同じ行に書き、cfg を `mod` に付ける形。
+    let source = "#[cfg(not(target_os = \"ios\"))]\nmod m { pub fn helper() {\n    good()\n}\n}\n";
+    single_top_level_definition(source, "helper");
+}
+
+#[test]
+fn single_top_level_definition_accepts_qualifiers_left_of_fn() {
+    // 修飾子（`pub(crate)`・`pub(in ..)`・`const`・`async`・`unsafe`・`extern "C"`）だけなら通す。
+    for qualifiers in [
+        "",
+        "pub ",
+        "pub(crate) ",
+        "pub(in crate::a) const ",
+        "pub async unsafe ",
+        "pub unsafe extern \"C\" ",
+    ] {
+        let source = format!("use a::b;\n\n{qualifiers}fn helper() {{\n    good()\n}}\n");
+        assert_eq!(
+            single_top_level_definition(&source, "helper"),
+            2,
+            "{qualifiers:?}"
+        );
+    }
+}
+
+#[test]
+#[should_panic(expected = "内側の cfg の属性がある")]
+fn single_top_level_definition_sees_an_inner_cfg_before_another_inner_attribute() {
+    // #697 low (d): 内側の `#![cfg(..)]` の後ろに別の内側の属性を置き、最初の内側の属性で遡りを
+    // 止めさせる形。
+    let source = "#![cfg(not(target_os = \"ios\"))]\n#![allow(dead_code)]\npub fn helper() {\n    good()\n}\n";
+    single_top_level_definition(source, "helper");
+}
+
+#[test]
+#[should_panic(expected = "内側の cfg の属性がある")]
+fn single_top_level_definition_sees_a_cfg_inside_an_inner_cfg_attr() {
+    // #697 low (e): `cfg_attr` の中に `cfg(..)` を入れ、先頭が `cfg(` かだけを見る確認をすり抜ける形。
+    let source =
+        "#![cfg_attr(target_os = \"ios\", cfg(any()))]\npub fn helper() {\n    good()\n}\n";
+    single_top_level_definition(source, "helper");
+}
+
+#[test]
 fn top_level_fn_keeps_comment_markers_inside_literals() {
     // 文字列・文字のリテラルの中の `//`・`/*` はコメントではない（照合の対象に残す）。
     let source = "/// `$APPCONFIG/evidence/*` の直下\npub fn f<'a>() {\n    call(\"a//b /* c */\", r#\"//\"#, '\"', '/', '\\'', '[') // note\n}\n";
@@ -1198,7 +1444,8 @@ fn run_is_the_mobile_entry_point() {
 ///
 /// 製品の経路のうち固定するのは `configure`（`configure_routes_through_configure_with`）→
 /// `configure_with` → `configure_with_backup_exclusion` まで。`run_mobile`・`run_desktop` が
-/// `configure` を呼ぶことは固定しない（担保の範囲外）。
+/// `configure` を呼ぶことは固定しない（担保の範囲外）。呼ばれる側の関数の担保の範囲と範囲外は
+/// `backup_exclusion_callees_are_single_definitions_without_cfg` の doc に書く（#693）。
 #[test]
 fn configure_with_passes_the_build_targets_backup_exclusion() {
     let (signature, body) = top_level_fn(&load_lib_rs(), "configure_with");
@@ -1212,6 +1459,39 @@ fn configure_with_passes_the_build_targets_backup_exclusion() {
         "configure_with_backup_exclusion(builder,secure_state,backup_exclusion_for(EXCLUDES_APP_DATA_FROM_BACKUP))",
         "configure_with の本体が backup_exclusion_for(EXCLUDES_APP_DATA_FROM_BACKUP) を渡す呼び出しだけになっていない（#681・#683）"
     );
+}
+
+/// `configure_with` から呼ばれる側の関数が、cfg でターゲットごとに差し替えられていないこと（#693）。
+/// ホストの単体テストはホストの定義しか実行できず、`check:ios` はコンパイルしかしないため、
+/// `#[cfg(not(target_os = "ios"))]` 付きの元の定義と `#[cfg(target_os = "ios")]` 付きの差し替え
+/// （除外を `None` にする等）を並べられると、iOS だけ除外が外れても全テストが通る。そこで
+/// 4 つの関数について、定義がちょうど 1 つで、括弧のブロックの中になく、定義の行の `fn` より左が
+/// 修飾子だけで、外側の属性に `cfg` が無いことを [`single_top_level_definition`] で照らす。`app_data_backup_exclusion_plugin` は
+/// `pub` でない（`pub fn` の確認は含めない）。
+///
+/// 照らさないもの（残る抜け道を含む）:
+/// - 本体の中の cfg（`#[cfg(target_os = "ios")] let exclusion = None;`・`cfg!(..)` による分岐）。
+///   照らすのは定義の手前の文面だけで、本体は読まない。`configure_with_backup_exclusion` の
+///   本体には正当な `#[cfg(desktop)]` があるため、本体の `cfg` の語を一律には禁じられない。
+/// - `cfg` の語を含まない属性マクロ（proc-macro 等）による差し替え。
+/// - `exclude_from_backup`: `#[cfg(target_vendor = "apple")]` と `#[cfg(not(target_vendor = "apple"))]`
+///   の 2 定義が正当に並ぶ。Apple 側は objc2 の実 API で、ホストの macOS の単体テストが実際に属性が
+///   付くことを確かめ、iOS のコンパイルは `check:ios` が確かめる。ただし `check:ios` はコンパイルが
+///   通ることしか確かめず、iOS でどちらの定義が選ばれるか（cfg を狭めて iOS だけ別の定義に差し替える
+///   形）は固定しない。iOS での実観測は #682。
+/// - `EXCLUDES_APP_DATA_FROM_BACKUP`: 関数ではなく、ターゲットごとの `const _: () = assert!(..)` が
+///   コンパイルで固定する。
+#[test]
+fn backup_exclusion_callees_are_single_definitions_without_cfg() {
+    let source = load_lib_rs();
+    for name in [
+        "configure_with_backup_exclusion",
+        "backup_exclusion_for",
+        "app_data_backup_exclusion_plugin",
+        "exclude_app_data_dir_from_backup",
+    ] {
+        single_top_level_definition(&source, name);
+    }
 }
 
 /// 製品の `configure` が、製品版の通信層の状態を作って `configure_with` を通ること（#685）。
