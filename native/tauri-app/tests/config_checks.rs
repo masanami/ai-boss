@@ -819,7 +819,9 @@ fn compact(text: &str) -> String {
 fn top_level_fn(source: &str, name: &str) -> (String, String) {
     let code = strip_comments(source, false);
     let lines: Vec<&str> = code.lines().collect();
-    let definitions = definition_lines(&code, name);
+    let blanked = strip_comments(source, true);
+    // リテラルの中身を空白にした版で数える（文字列の中の `fn name(` を定義とみなさない）。
+    let definitions = definition_lines(&blanked, name);
     assert_eq!(
         definitions.len(),
         1,
@@ -832,7 +834,6 @@ fn top_level_fn(source: &str, name: &str) -> (String, String) {
         "src/lib.rs の fn {name} が行頭の pub fn ではない: {}",
         lines[start]
     );
-    let blanked = strip_comments(source, true);
     let offset: usize = blanked
         .split_inclusive('\n')
         .take(start)
@@ -1040,6 +1041,15 @@ fn definition_lines(code: &str, name: &str) -> Vec<usize> {
 }
 
 // `top_level_fn` 自体の検査（#687）。製品の `lib.rs` では起きない形を、合成したソースで固定する。
+
+#[test]
+fn top_level_fn_ignores_the_name_inside_string_and_char_literals() {
+    // 文字列・文字のリテラルの中の `fn f(` は定義として数えない（偽陽性で落とさない）。
+    let source = "const NOTE: &str = \"fn f(\";\nconst RAW: &str = r#\"fn f<\"#;\n\npub fn f() {\n    good()\n}\n";
+    let (signature, body) = top_level_fn(source, "f");
+    assert_eq!(signature, "pubfnf()"); // 照合用に空白を詰めた形（`compact`）
+    assert_eq!(body, "good()");
+}
 
 #[test]
 #[should_panic(expected = "ちょうど 1 つではない")]
