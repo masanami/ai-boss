@@ -132,6 +132,66 @@ describe("TaskCard", () => {
     );
   });
 
+  // Issue #694: 見出しジャンプでカードを渡ると、見出しの外の `#<id>` を通らない。
+  // 名前はタイトルのまま（#688）、ID は説明として見出しに結ぶ。
+  it("ties the task id to the title heading as its accessible description (#694)", () => {
+    render(
+      <TaskCard
+        task={{ ...BASE_TASK, id: 42 }}
+        onStatusChange={vi.fn()}
+        onEdit={vi.fn()}
+      />,
+    );
+
+    expect(
+      screen.getByRole("heading", {
+        level: 3,
+        name: "資料を作る",
+        description: "#42",
+      }),
+    ).toBeInTheDocument();
+  });
+
+  it("ties the task id to the edit form as its accessible description (#694)", () => {
+    render(
+      <TaskCard
+        task={{ ...BASE_TASK, id: 42 }}
+        onStatusChange={vi.fn()}
+        onEdit={vi.fn()}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "編集" }));
+
+    expect(
+      screen.getByRole("form", { name: "タスクを編集", description: "#42" }),
+    ).toBeInTheDocument();
+  });
+
+  it("gives each card's id its own description target when several cards are shown (#694)", () => {
+    render(
+      <>
+        <TaskCard
+          task={{ ...BASE_TASK, id: 42 }}
+          onStatusChange={vi.fn()}
+          onEdit={vi.fn()}
+        />
+        <TaskCard
+          task={{ ...BASE_TASK, id: 7, title: "議事録を送る" }}
+          onStatusChange={vi.fn()}
+          onEdit={vi.fn()}
+        />
+      </>,
+    );
+
+    expect(
+      screen.getByRole("heading", { name: "資料を作る", description: "#42" }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole("heading", { name: "議事録を送る", description: "#7" }),
+    ).toBeInTheDocument();
+  });
+
   it("shows the priority as a boss decision in Japanese", () => {
     render(
       <TaskCard

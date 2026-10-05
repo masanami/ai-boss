@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useId, useState } from "react";
 import type { ChangeEvent, DragEvent, FormEvent, KeyboardEvent, MouseEvent } from "react";
 import { TASK_STATUSES } from "./task";
 import type { Task, TaskPatchInput, TaskPriority, TaskStatus } from "./task";
@@ -117,6 +117,8 @@ function TaskCard({
   onShowTaskRecords,
 }: TaskCardProps) {
   const [isEditing, setIsEditing] = useState(false);
+  // `#<id>` の span の DOM id。見出し・編集フォームの説明に結ぶ（Issue #694）
+  const taskIdElementId = useId();
   const [title, setTitle] = useState(task.title);
   const [description, setDescription] = useState(task.description ?? "");
   const [priority, setPriority] = useState<TaskPriority | "">(
@@ -255,10 +257,13 @@ function TaskCard({
       <form
         className="task-card task-card-edit"
         aria-label="タスクを編集"
+        aria-describedby={taskIdElementId}
         onSubmit={handleSubmit}
       >
         {/* 編集中もボスの文面の `#<id>` と突き合わせられるように ID を残す（Issue #688） */}
-        <span className="task-card-id">{`#${task.id}`}</span>
+        <span className="task-card-id" id={taskIdElementId}>
+          {`#${task.id}`}
+        </span>
         <label>
           タイトル
           <input
@@ -391,9 +396,13 @@ function TaskCard({
     >
       <div className="task-card-header">
         {/* ボスの文面がタスクを呼ぶときと同じ `#<id>` 表記（Issue #688）。
-            見出しの外に置き、見出しのアクセシブルネームはタイトルだけに保つ */}
-        <span className="task-card-id">{`#${task.id}`}</span>
-        <h3>{task.title}</h3>
+            見出しの外に置き、見出しのアクセシブルネームはタイトルだけに保つ。
+            見出しジャンプでカードを渡っても ID が読まれるよう、説明として
+            見出しに結ぶ（Issue #694） */}
+        <span className="task-card-id" id={taskIdElementId}>
+          {`#${task.id}`}
+        </span>
+        <h3 aria-describedby={taskIdElementId}>{task.title}</h3>
       </div>
       {task.description !== null && task.description !== "" && (
         <p>{task.description}</p>
