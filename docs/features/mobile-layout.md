@@ -1,6 +1,6 @@
 # スマホ向けの画面レイアウト（製品版の iOS・Android・既存の React の流用）
 
-> Issue #586。2026-10-05 に作成した。範囲と前提は、ADR 0011 の決定 6（OS ごとのネイティブ UI は採らず、画面は既存の React を使う）・決定 20（モバイルはデスクトップと同等の全機能。#590 のオーナー決定・2026-09-26）と、ADR 0011 の「帰結（改訂）」（#586 は補助の画面に絞らず全画面をスマホに対応させる）に拠る。iOS の器 S1（#676・PR #677）と Android の器 S1（#679・PR #680）は `main` にマージ済みで、その上に作る。2026-10-05 に、画面構成・ナビゲーション・操作の体験の根幹（O1〜O3）をオーナーが決め（★）、技術の論点（P1〜P5）を親が決めた。いずれも作成時の推奨どおり（「決定（2026-10-05）」節。選択肢と判断材料は「決定時の選択肢と判断材料」節に残した）。
+> Issue #586。2026-10-05 に作成した。範囲と前提は、ADR 0011 の決定 6（OS ごとのネイティブ UI は採らず、画面は既存の React を使う）・決定 20（モバイルはデスクトップと同等の全機能。#590 のオーナー決定・2026-09-26）と、ADR 0011 の「帰結（改訂）」（#586 は補助の画面に絞らず全画面をスマホに対応させる）に拠る。iOS の器 S1（#676・PR #677）と Android の器 S1（#679・PR #680）は `main` にマージ済みで、その上に作る。2026-10-05 に、画面構成・ナビゲーション・操作の体験の根幹（O1〜O3）をオーナーが決め（★）、技術の論点（P1〜P5）を親が決めた。いずれも作成時の推奨どおり（「決定（2026-10-05）」節。選択肢と判断材料は「決定時の選択肢と判断材料」節に残した）。同日、PR #703 の独立レビューの指摘（high 3・medium 4・low 6）を親が決めた方向で反映した（「2026-10-05 の改訂」節。オーナーの決定 O1〜O3 は変えていない）。
 
 ## 概要
 
@@ -81,7 +81,7 @@
 
 ### 器の設定（iOS・Android）
 
-- iOS（`native/tauri-app/gen/apple/project.yml`・`Info.plist`）: 対象は iOS 15.0 以上（`deploymentTarget`）。端末は iPhone と iPad（`TARGETED_DEVICE_FAMILY = "1,2"`）。**iPhone で横向き（左右）を許している**（`UISupportedInterfaceOrientations`）。
+- iOS（`native/tauri-app/gen/apple/project.yml`・`Info.plist`）: 対象は iOS 15.0 以上（`deploymentTarget`）。端末は iPhone と iPad（`gen/apple/ai-boss-tauri-app.xcodeproj/project.pbxproj` の `TARGETED_DEVICE_FAMILY = "1,2"`）。**iPhone で横向き（左右）を許している**（`UISupportedInterfaceOrientations`）。
 - wry 0.57.0（Tauri 2.12.0 が使う）は、iOS の WKWebView の `scrollView` のバウンスを切る（`wry-0.57.0/src/wkwebview/mod.rs` 525〜530 行 `setBounces(false)`）。`contentInsetAdjustmentBehavior`・`ignoresViewportScaleLimits` は設定しない（既定のまま。grep で 0 件）。
 - Android（`gen/android`）: `MainActivity.kt` は **`enableEdgeToEdge()`** を呼ぶ。`targetSdk = 36`・`minSdk = 24`。`AndroidManifest.xml` に `windowSoftInputMode` の指定は無く、`configChanges` に `orientation|keyboardHidden|keyboard|screenSize` を持つ（回転・キーボードで Activity を作り直さない）。画面の向きの指定は無い（回転する）。
 - Tauri の設定（`tauri.conf.json`）の `app.windows` は空で、ウィンドウはコード（`lib.rs` の `WebviewWindowBuilder::from_config`）で作る。**`tauri.conf.json` に、セーフエリア・キーボード・拡大縮小を変える項目は無い**（Tauri 2.12.0 の設定にこれらを扱う項目は見当たらない。推論）。そのため、この仕様の手当ては web の側（HTML・CSS・TS）で行う。
@@ -101,7 +101,7 @@
 
 ### テストの環境
 
-- `npm test`（web）は vitest の **jsdom**（`web/vite.config.ts` 52〜55 行）。**jsdom はレイアウトを計算しない**（`scrollWidth`・`getBoundingClientRect` は 0。CSS の `@media` も評価しない。`matchMedia` は実装されていない）。vitest は既定で CSS のファイルを処理しない。
+- `npm test`（web）は vitest の **jsdom**（`web/vite.config.ts` 15〜16 行の `test.environment`）。**jsdom はレイアウトを計算しない**（`scrollWidth`・`getBoundingClientRect` は 0。CSS の `@media` も評価しない。`matchMedia` は実装されていない）。vitest は既定で CSS のファイルを処理しない。
 - jsdom の `window.innerWidth` の既定は 1024（`AppLayout.test.tsx` 2403〜2429 行が前提にしている）。**既存のテストは、幅の判定を足しても 1024＝デスクトップの側で走る**。
 - E2E のブラウザ（Playwright 等）はリポジトリに無い。
 - したがって、**幅の判定・描く骨組み・属性・イベントの配線は jsdom で自動に判定でき、はみ出し・大きさ・セーフエリア・キーボードの見え方は実ブラウザ・シミュレータ・エミュレータでの手動の確認になる**（決定 9・P4）。
@@ -137,20 +137,20 @@
 
 - 判定: `isCompactLayout(windowWidth: number): boolean` ＝ `windowWidth < 768`。境界 768 はコンパクトに**含めない**（768 はデスクトップ）。
 - 窓の幅は、`useSidePanelWidth` と同じく `window.innerWidth` と `resize` の購読で取る（仕組みを 2 つにしない）。`matchMedia` は使わない（jsdom に無く、判定の境界をテストで殺せない。純粋関数なら 767・768 で `<`↔`<=` の変異を殺せる）。
-- CSS は `@media` で骨組みを切り替えず、`.app-layout--compact` のクラスの下にだけ規則を足す（判定の正本を JS の 1 か所にし、CSS と JS の境界の値の食い違いを起こさない。デスクトップの規則に触れない）。
+- CSS は `@media` で骨組みを切り替えず、`.app-layout--compact` のクラスの下にだけ規則を足す（判定の正本を JS の 1 か所にし、CSS と JS の境界の値の食い違いを起こさない。デスクトップの規則に触れない）。**例外は決定 5 のセーフエリアの余白**で、`.app-layout` 自身に付ける（macOS・ブラウザでは値が 0 で、見た目は変わらない。AC-46・手動の確認手順 2・12）。
 - 境界を 768 にする理由: 今のデスクトップの骨組みが成り立つ最小は 966px で、768〜965px はすでに中央が縮んで使われうる幅である。768 未満は、iPhone の縦持ち（320〜440px）・iPad mini の縦持ち（744px）を含む。966 を境界にすると、今 768〜965px で使っているデスクトップの窓の見た目が変わる（「デスクトップを変えない」に反する）。
-- 既知の注意（推論）: iOS ではピンチで拡大している間、`window.innerWidth` が拡大後の見える幅になりうる。拡大すると狭い側へ切り替わる恐れがあるため、手動の確認手順で確かめる。問題になれば `document.documentElement.clientWidth`（レイアウトの領域の幅）へ替える（軽微・可逆）。
+- 既知の注意（推論）: iOS ではピンチで拡大している間、`window.innerWidth` が拡大後の見える幅になりうる。拡大すると狭い側へ切り替わる恐れがあるため、手動の確認手順 6 で確かめる。問題になれば `document.documentElement.clientWidth`（レイアウトの領域の幅）へ替える（軽微・可逆）。
 
-### 2. コンパクトは `AppLayout` の中で骨組みだけを替え、デスクトップの DOM と CSS は変えない（作成者の判断）
+### 2. コンパクトは `AppLayout` の中で骨組みだけを替え、デスクトップの DOM は変えない（作成者の判断）
 
-- `AppLayout` は同じコンポーネントのまま、`isCompactLayout` の値で骨組み（ナビゲーション・横のパネルの置き場）を描き分ける。`tasksState`・`chatState`・`activeView`・決定ログの絞り込みは今の場所に持ち続ける（切り替えで失わない）。
+- `AppLayout` は同じコンポーネントのまま、`isCompactLayout` の値で骨組み（ナビゲーション・横のパネルの置き場）を描き分ける。`tasksState`・`chatState`・`activeView`・決定ログの絞り込みは今の場所に持ち続ける（切り替えで失わない。チャットの下書きも `useChat` に持ち上げ済み〔`use-chat.ts` 322 行〕）。
 - コンパクトでは分割バー（`role="separator"`）を描かない。`useSidePanelWidth` は呼び続ける（フックの呼び出しの順序を変えない）が、保存済みの幅は書き換えない（今も `resize` では書かない）。デスクトップへ戻れば、保存済みの幅で描く。
 - デスクトップの DOM（境界以上）は、今と同じ要素・属性・順序で描く。既存の `AppLayout.test.tsx` 等のテストは、本体を変えずに合格させる（jsdom の幅 1024＝デスクトップ）。
 - 画面ごとのコンポーネント（`Dashboard`・`ChatView`・`TaskBoard` 等）の中の狭い幅の手当ては、CSS の `.app-layout--compact .chat-session-bar { … }` のような子孫の規則で行い、コンポーネントに幅の値を渡さない（例外は決定 8 のチャットの Enter。挙動が変わるため prop で渡す）。
 
 ### 3. ナビゲーションの形（O1 ★・【決定】2026-10-05・オーナー）
 
-**A: 下部のタブ**。画面の下端に「ダッシュボード」「チャット」「タスク」「その他」の 4 つのタブを置き、「その他」で残りの 4 画面（決定ログ・日報・作業ログ・設定）の一覧を開く。今の画面のタブに `aria-current="page"`、残りの 4 画面のどれかを開いているときは「その他」に `aria-current="page"` を付ける。「その他」は `aria-expanded` を持つ。
+**A: 下部のタブ**。画面の下端に「ダッシュボード」「チャット」「タスク」「その他」の 4 つのタブを置き、「その他」で残りの 4 画面（決定ログ・日報・作業ログ・設定）の一覧を開く。今の画面のタブに `aria-current="page"`、残りの 4 画面のどれかを開いているときは「その他」に `aria-current="page"` を付ける。「その他」は `aria-expanded` を持つ。ナビゲーションは、デスクトップと同じ `<nav aria-label="メインナビゲーション">` の 1 つで、中身と置き場（CSS）だけを替える。
 
 ### 4. 横のパネルの置き場（O2 ★・【決定】2026-10-05・オーナー）
 
@@ -171,24 +171,33 @@
 「チェックイン」を押す → 下からシート（チェックイン・今日のまとめ）が出る
 ```
 
-- 常設の帯に、着手中のタスクの名前（無ければ「着手中のタスクはありません」）と、シートを開くボタン「チェックイン」を置く。**着手時のメンタリングの促し（`TaskStartMentoringPrompt`）は帯の上に常に置く**（`role="status"` の領域を空のまま置き続ける今の作りを保つ。シートの中に入れると、閉じている間にライブリージョンが消える）。
-- シートは `role="dialog"`・`aria-modal="true"`・`aria-label="チェックイン"`。中に `CheckinPanel` と `TodaySummary` を描く。閉じるボタン・背景のタップで閉じ、閉じたらフォーカスを「チェックイン」のボタンへ戻す。開いている間、フォーカスをシートの中に留める（`SessionTranscriptDialog` の作りを流用する）。
+- **常設の帯**: 今の作業の状態を 1 行で示す文言（仮定 M5）と、シートを開くボタン「チェックイン」を置く。**着手時のメンタリングの促し（`TaskStartMentoringPrompt`）は帯の上に常に置く**（`role="status"` の領域を空のまま置き続ける今の作りを保つ。シートの中に入れると、閉じている間にライブリージョンが消える）。休憩中かどうかは `CheckinPanel` が活動の一覧から導いている（`derive-break-status.ts`）ため、`CheckinPanel` から `AppLayout` へ知らせる（仮定 M12）。
+- **`CheckinPanel` は 1 つのインスタンスを保つ**（high-1 への手当て。2026-10-05 の親の決定）: `CheckinPanel` は `pendingBreak`（`CheckinPanel.tsx` 99〜111 行。break_end の記録に失敗した後、「休憩」を break_end だけの再送にする保留）を自分の state に持つ。アンマウントされると保留が消え、「休憩」が break_start を二重に記録する不具合（PR #354・#356・#357 で塞いだもの）が戻る。そのため:
+  - デスクトップのサイドパネルの `<aside id="app-side-panel">` と、コンパクトのシートは**同じ要素**にする。`AppLayout` の木の同じ位置（同じ親・同じ並び）に常に描き、中の `CheckinPanel`・`TodaySummary` も同じ並びに置く（React が同じインスタンスとして扱う条件）。着手時の促しは、デスクトップでは今どおり `<aside>` の先頭に、コンパクトでは帯に描く（`<aside>` の先頭の枠は、コンパクトでは空の枠として並びを保つ）
+  - デスクトップでは今どおり `complementary`（名前「サイドパネル」）。コンパクトで**閉じている間は `hidden` 属性で隠す**（見えず、支援技術にも読まれない。インスタンスは残る）。開いている間は `role="dialog"`・`aria-modal="true"`・`aria-label="チェックインのシート"` を付ける（`CheckinPanel` の `<section aria-label="チェックイン">` と名前を重ねない。仮定 M5）
+  - 境界をまたいでも、シートを開閉しても、`CheckinPanel` の DOM のノードは同じものが残る（AC-26・AC-27）
+- **シートの操作**（`SessionTranscriptDialog.tsx` 88〜152 行の作りに揃える）: 開いたら閉じるボタンへフォーカスを移す。Tab・Shift+Tab は端で折り返す。シートの外へ出たフォーカスは閉じるボタンへ引き戻す。Escape で閉じる。閉じたらフォーカスを「チェックイン」のボタンへ戻す。**背景（シートの外の半透明の幕）のタップでも閉じる**（シートに固有。流用元のダイアログは背景で閉じない）。流用元はマウントとアンマウントで開閉を表すが、シートは隠すだけで残るため、フォーカスの移動は「開いた／閉じた」の変化で行う。
+- **シートの中で着手したら、シートを自動で閉じる**（medium-1 への手当て）: シートが開いている間に着手時の促しが現れたら（`useTaskStartMentoringPrompt` の `promptTask` が `null` から値になったら）、シートを閉じ、フォーカスを「チェックイン」のボタンへ戻す。促しはシート（`aria-modal`）の裏に隠れず、帯の上で見え、読み上げられる。朝会・夕会の最中など、促しが出ない状況では閉じない（仮定 M11）。
+- **シートの高さと位置**（medium-4 への手当て）: シートは `.app-layout` を基準に置き（`.app-layout` は `position: relative`・シートは `position: absolute` で下端を合わせる）、最大の高さを `--app-viewport-height`（決定 6）に従わせる。下端に `env(safe-area-inset-bottom)` の余白を付ける（`.app-layout` の余白の外に出るため、シート自身に付ける）。これで、シートの中の入力欄（「ひとこと」・時刻・休憩の分）もキーボードの上に出る（手動の確認手順 5・10）。
 
-### 5. セーフエリアは `viewport-fit=cover` と `env(safe-area-inset-*)` で web の側で吸収する（作成者の判断）
+### 5. セーフエリアは `viewport-fit=cover` と `env(safe-area-inset-*)` で web の側で吸収し、余白は骨組み全体に付ける（作成者の判断。余白の範囲は 2026-10-05 に親が改めた）
 
 - `web/app.html` と `web/index.html` の viewport を `width=device-width, initial-scale=1.0, viewport-fit=cover` にする。`maximum-scale`・`user-scalable=no` は**足さない**（ピンチの拡大を止めない）。
-- コンパクトの骨組みでだけ、ヘッダの上・左右と、下部のタブの下・左右に `env(safe-area-inset-*)` の余白を足す（デスクトップでは値が 0 で、規則もコンパクトの下だけに置く）。
-- Android は器の `enableEdgeToEdge()` のまま、WebView が渡す `env()` に頼る（ネイティブの側で余白を付けない。付けると Android の文書が言う二重の余白になる）。エミュレータの WebView が M144 より前で `env()` が 0 を返す場合は、手動の確認手順で記録し、器の `MainActivity` で余白を付ける（同文書の「Zeroing approach」）かを、そこで親に問う（S1 の中で解く）。
+- **`env(safe-area-inset-top/right/bottom/left)` の余白は `.app-layout` 自身に付ける**（デスクトップの骨組みを含む。high-3 への手当て）。`viewport-fit=cover` はどの幅にも効くため、余白をコンパクトにだけ付けると、iPad の横持ち（1024px 以上）や Android の横持ち（768px 以上になる機種）でデスクトップの骨組みがバー・切り欠きに重なる。macOS の WebView とデスクトップのブラウザでは `env()` が 0 のため、デスクトップの見た目は変わらない（AC-46・手動の確認手順 2・12 で、算出された余白が 4 辺とも `0px` であることを確かめる）。シートは決定 4 のとおり自身に下の余白を付ける。
+- Android は器の `enableEdgeToEdge()` のまま、WebView が渡す `env()` に頼る（ネイティブの側で余白を付けない。付けると Android の文書が言う二重の余白になる）。エミュレータの WebView が M144 より前で `env()` が 0 を返す場合は、手動の確認手順 9 で記録し、器の `MainActivity` で余白を付ける（同文書の「Zeroing approach」）かを、そこで親に問う（S1 の中で解く）。
 
-### 6. キーボードは visual viewport の高さで骨組みの高さを決める（作成者の判断）
+### 6. キーボードは visual viewport の高さで骨組みの高さを決める（作成者の判断。拡大中の扱い・隠し方・`offsetTop` は 2026-10-05 に親が改めた）
 
 - iOS（WebKit）にも Android（M139 以降）にも、キーボードでレイアウトの領域を縮める手段が無い（`interactive-widget` は WebKit に未実装）。そのため、コンパクトでは `window.visualViewport` の `resize` を購読し、`.app-layout` の高さを visual viewport の高さ（CSS 変数 `--app-viewport-height`）にする。`visualViewport` が無ければ変数を置かず、今の `100vh` のまま。
-- キーボードが出ている（`window.innerHeight − visualViewport.height > 150`。仮定 M6）間は、下部のタブと常設の帯を描かない（入力欄に縦の余地を渡す）。
+- キーボードが出ている（`window.innerHeight − visualViewport.height > 150`。仮定 M6）間は、`.app-layout` に `app-layout--keyboard-open` のクラスを付け、下部のタブと常設の帯を**見た目だけ隠す**（medium-2 への手当て）。DOM からは外さず、`hidden`・`aria-hidden`・`display: none`・`visibility: hidden` も使わない（視覚的に隠す手法〔`position: absolute`・1px 四方・`clip-path: inset(50%)`・`overflow: hidden`〕で隠す）。着手時の促しのライブリージョンは入れ直されず、`メインナビゲーション` のランドマークも残る。
+- **ピンチで拡大している間（`visualViewport.scale !== 1`）は、高さの更新もキーボードの判定もしない**（high-2 への手当て）。拡大すると `visualViewport.height` が縮むため、更新すると骨組みが縮み、キーボードありと誤って判定してタブと帯が隠れる。拡大中は直前の値（高さとキーボードの判定）を保ち、`scale` が 1 に戻った `resize` で更新を再開する。
+- **`offsetTop` の扱い**（medium-3 への手当て）: iOS はキーボードを出すとき、フォーカスした入力欄が見えるように文書をスクロールし、`visualViewport.offsetTop` が 0 でなくなることがある（推論）。骨組みには高さ（`visualViewport.height`）だけを反映し、位置（`offsetTop`）は反映しない（WebKit のスクロールに任せる）。入力欄が見えるかは、`offsetTop` を含めて判定する（式 K）。式 K が満たされない場合は、S1 の中で骨組みを `offsetTop` だけ下げる（`transform`）か、フォーカスの後に `window.scrollTo(0, 0)` するかを決める。
+- Android の WebView が M139 より前（キーボードが visual viewport を縮めない）の場合は、手動の確認手順 10 で版を記録し、式 K が満たされなければ **S1 の既知の制約として PR に記録する**（low-1。`AndroidManifest.xml` の `windowSoftInputMode` の変更は S1 に入れない）。
 - `dvh` は使わない（iOS 15.0〜15.3 で使えず、キーボードも反映しない）。
 
 ### 7. iOS の自動拡大は、コンパクトで入力欄の文字を 16px にして避ける（P5・【決定】2026-10-05・親）
 
-- コンパクトでは、`input`・`textarea`・`select` の `font-size` を `16px` にする（`.app-layout--compact` の下の規則）。
+- コンパクトでは、`input`・`textarea`・`select` の `font-size` を `16px` にする（`.app-layout--compact` の下の規則。シートの中の入力欄も含む）。
 - `maximum-scale=1` で止める案は採らない: WKWebView はページの指定に従うため（`ignoresViewportScaleLimits` の既定 `false`）、ピンチの拡大まで止まり、拡大に頼る利用者が読めなくなる。
 
 ### 8. チャットの Enter（O3 ★・【決定】2026-10-05・オーナー）
@@ -197,9 +206,9 @@
 
 ### 9. 確認の分担（P4・【決定】2026-10-05・親）
 
-- **自動（vitest・jsdom）**: 幅の判定の純粋関数（境界の両側）、骨組みの描き分け（描く要素・属性・ランドマーク・`aria-current`・`aria-expanded`）、境界をまたぐ切り替えで状態が残ること、シートの開閉とフォーカス、visual viewport の購読と CSS 変数、チャットの Enter、viewport の指定（HTML のファイルの検査）。
-- **手動**（実ブラウザ・iOS シミュレータ・Android エミュレータ）: はみ出し（`scrollWidth`）・大きさ（`getBoundingClientRect`）・セーフエリア・キーボード・自動拡大・デスクトップの見た目。合否は、Web インスペクタのコンソールで評価する**式の値**（観測できる肯定の事実）で決め、画面の写しを PR に貼る。
-- Playwright 等の E2E のブラウザは入れない（P4。依存とブラウザの導入が増え、必須ゲートの時間も延びる。jsdom で判定できない部分は 3 つの環境の手動の確認に置く）。
+- **自動（vitest・jsdom と `node --test`）**: 幅の判定の純粋関数（境界の両側）、骨組みの描き分け（描く要素・属性・ランドマーク・`aria-current`・`aria-expanded`）、境界をまたぐ切り替えで状態とインスタンスが残ること、シートの開閉とフォーカス、visual viewport の購読と CSS 変数・拡大中の扱い、チャットの Enter、viewport の指定と画面の向きの設定（ファイルの検査）。
+- **手動**（実ブラウザ・iOS シミュレータ〔iPhone・iPad〕・Android エミュレータ・macOS の `.app`）: はみ出し（`scrollWidth`）・大きさ（`getBoundingClientRect`）・セーフエリア・キーボード・自動拡大・拡大中の振る舞い・デスクトップの見た目。合否は、Web インスペクタのコンソールで評価する**式の値**（観測できる肯定の事実）で決め、画面の写しを PR に貼る。
+- Playwright 等の E2E のブラウザは入れない（P4。依存とブラウザの導入が増え、必須ゲートの時間も延びる。jsdom で判定できない部分は手動の確認に置く）。
 
 ## 機能全体の設計
 
@@ -207,40 +216,50 @@
 
 | 経路 | 塞ぎ方 |
 |---|---|
-| デスクトップのレイアウトが変わる（ナビ・分割バー・パネル・格子の幅・既存の DOM） | 決定 1・2。境界の上側（768・1024）で今と同じ要素を描くことを jsdom で判定し、既存のテストを本体を変えずに合格させる（受入基準）。見た目は 768・1280 での `grid-template-columns` の値を `main` と比べる（手動の確認手順 1） |
-| 境界の値の比較が 1 つずれる（`<`↔`<=`）・境界の幅で表示が揺れる | 決定 1。純粋関数を 767・768 で判定する。jsdom で幅 767→768→767 の `resize` で 2 回切り替わることを判定する（受入基準） |
-| CSS の `@media` と JS の境界が食い違う | 決定 1。骨組みの切り替えに `@media` を使わない。`web/src` の CSS に `@media` が 0 件のままであることを受入基準にする |
-| 境界をまたいだときに、開いている画面・チャットの下書き・決定ログの絞り込みが失われる | 決定 2（状態は `AppLayout` に持ったまま）。jsdom で、切り替えの後も同じ画面・同じ下書きであることを判定する（受入基準） |
-| 狭い幅で保存済みのパネルの幅が書き換わり、デスクトップへ戻ると幅が変わる | 決定 2。jsdom で、コンパクトを経てデスクトップへ戻った後の `localStorage` の値と描く幅が前と同じことを判定する（受入基準） |
-| コンパクトで到達できない画面がある（全機能の約束に反する） | 決定 3。jsdom で 7 画面すべてにナビゲーションから移れることを判定する（受入基準） |
-| チェックイン（サボり検知の活動の入口）がコンパクトで遠い・見えない | 決定 4。常設の帯から 1 回のタップでシートを開けることを jsdom で判定する（受入基準） |
-| 着手時の促しのライブリージョンが、閉じている間に消えて読み上げられない | 決定 4。コンパクトでもシートの開閉によらず `role="status"`（着手時のメンタリングの促し）が 1 つ DOM にあることを判定する（受入基準） |
-| `CheckinPanel` が 2 か所に描かれ、状態や取得が二重になる | 決定 2・4。どちらの骨組みでも、`CheckinPanel` の見出しが DOM に高々 1 つであることを判定する（受入基準） |
-| ソフトウェアキーボードで入力欄が隠れる | 決定 6。CSS 変数の更新とタブ・帯を隠すことを jsdom で判定する（受入基準）。見え方は手動の確認手順 3・4（入力欄の下端が visual viewport の内側） |
-| セーフエリアにヘッダ・タブ・ボタンが重なる | 決定 5。viewport の指定をファイルの検査で判定する（受入基準）。値は手動の確認手順 3・4 で、`env()` の値とヘッダ・タブの位置を式で確かめる |
-| Android の WebView が古く、`env()` が 0（edge-to-edge でバーの下に隠れる） | 決定 5。手動の確認手順 4 で WebView の版と値を記録する。0 なら S1 の中で親に問う |
-| iOS で入力欄のフォーカスで画面が拡大される | 決定 7。手動の確認手順 3（コンパクトの入力欄の `fontSize` が 16px・フォーカスの後の `visualViewport.scale` が 1） |
-| ピンチの拡大を止めてしまう（アクセシビリティの後退） | 決定 5・7。viewport に `maximum-scale`・`user-scalable` が無いことをファイルの検査で判定する（受入基準） |
-| タッチで届かない操作（T1〜T9） | 「タッチで使えない操作」の表。T1・T2 は描かない（受入基準）、T3・T6・T7 は既存の代替、T5 は決定 8（受入基準）、T4 は S2 |
-| 主要画面が幅 375px・320px で横にはみ出す（例: `.chat-session-bar` が折り返さない） | コンパクトの子孫の規則で折り返す。手動の確認手順 1〜4 で `scrollWidth <= clientWidth` を式で確かめる |
-| WebKit と Chromium 系で表示が違う | 手動の確認を 3 つの環境（Chrome・Safari のレスポンシブデザインモード／iOS シミュレータ／Android エミュレータ）で同じ式で行う |
-| 押す対象が小さく、指で押し違える | 非機能要件の 44px。手動の確認手順 1 で、タブ・「チェックイン」・シートの閉じるボタンの大きさを式で確かめる |
-| #694 等で入れたスクリーンリーダー向けの作りが、骨組みの差し替えで落ちる | 既存のテスト（`TaskCard.test.tsx`・`DecisionLog.test.tsx`）を本体を変えずに合格させる。コンパクトでも `<nav aria-label="メインナビゲーション">` と画面ごとの `<main aria-label>` が 1 つずつあることを判定する（受入基準） |
-| 横向き（iPhone の横持ちは幅 568〜956px・高さ約 320〜440px）で、デスクトップの骨組みが低い高さに詰め込まれる | P3。iPhone は縦に固定する（S1）。`project.yml`・`Info.plist` の検査（受入基準）と、シミュレータの回転（手動の確認手順 10） |
-| iPad（`TARGETED_DEVICE_FAMILY` に含まれる）の横持ち（1024px 以上）でデスクトップの骨組み・縦持ち（744〜834px）で幅によってどちらにもなる | P3。iPad は回転を許し幅だけで判定する。iPad の専用の調整は S3。S1 では iPad の向きの設定を変えないこと（受入基準）だけを固定する |
+| デスクトップのレイアウトが変わる（ナビ・分割バー・パネル・格子の幅・既存の DOM） | 決定 1・2。境界の上側（768・1024）で今と同じ要素を描くことを jsdom で判定し（AC-4・AC-5）、既存のテストを本体を変えずに合格させる（AC-6）。見た目は 768・1280 での `grid-template-columns` の値を基準点の `main` と比べる（手動の確認手順 2） |
+| セーフエリアの余白を骨組み全体に付けたことで、デスクトップの見た目が変わる | 決定 5。macOS の `.app` とデスクトップのブラウザで、`.app-layout` の算出された余白が 4 辺とも `0px` であることを確かめる（手動の確認手順 2・12）。規則の置き場は AC-46 で固定する |
+| 境界の値の比較が 1 つずれる（`<`↔`<=`）・境界の幅で表示が揺れる | 決定 1。純粋関数を 767・768 で判定する（AC-1・AC-2）。jsdom で幅 1024 → 767 → 768 → 767 の `resize` で、クラスが 3 回切り替わることを判定する（AC-11） |
+| CSS の `@media` と JS の境界が食い違う | 決定 1。骨組みの切り替えに `@media` を使わない。`web/src` の CSS に `@media` が 0 件のままであることを AC-7 で固定する |
+| 境界をまたいだときに、開いている画面・チャットの下書き・決定ログの絞り込みが失われる | 決定 2（状態は `AppLayout` に持ったまま）。AC-12（画面と下書き）・AC-13（決定ログの絞り込み） |
+| 狭い幅で保存済みのパネルの幅が書き換わり、デスクトップへ戻ると幅が変わる | 決定 2。AC-14 |
+| コンパクトで到達できない画面がある（全機能の約束に反する） | 決定 3。AC-20 |
+| チェックイン（サボり検知の活動の入口）がコンパクトで遠い・見えない | 決定 4。常設の帯から 1 回のタップでシートを開ける（AC-28） |
+| シートの開閉・境界の切り替えで `CheckinPanel` がアンマウントされ、`pendingBreak` が消えて break_start を二重に記録する（PR #354・#356・#357 の不具合の再発） | 決定 4。`<aside>` を同じ位置に描き、閉じている間は `hidden` で隠す。同じ DOM のノードが残ること（AC-26・AC-27）と、保留の間の「休憩」が break_start を新しく記録しないこと（AC-37・AC-38） |
+| シートを閉じている間も `CheckinPanel` が見える・読み上げられる | 決定 4。AC-25（閉じている間は既定の照会〔隠れた要素を除く〕で見つからない） |
+| 着手時の促しのライブリージョンが、シートの開閉・キーボードの出入りで消える・入れ直される | 決定 4・6。AC-24・AC-31（シートの開閉）・AC-42（キーボード） |
+| シートの中で着手すると、促しがシート（`aria-modal`）の裏に出て見えない・読み上げられない | 決定 4。シートを自動で閉じる（AC-36・手動の確認手順 7） |
+| `CheckinPanel` が 2 か所に描かれ、状態や取得が二重になる | 決定 2・4。どちらの骨組みでも、`CheckinPanel` の見出しが DOM に 1 つだけある（AC-25・AC-32） |
+| シートのフォーカスが背面へ出る・閉じた後にフォーカスを失う・Escape で閉じない | 決定 4。AC-29・AC-30・AC-33〜AC-35 |
+| ソフトウェアキーボードで入力欄が隠れる（画面の入力欄・シートの中の入力欄） | 決定 4・6。CSS 変数の更新とタブ・帯を見た目だけ隠すことを jsdom で判定する（AC-39〜AC-44）。見え方は手動の確認手順 5・10（式 K。シートの「ひとこと」を含む） |
+| キーボードが出ている間にナビゲーションのランドマークが消える | 決定 6。AC-42 |
+| ピンチで拡大すると骨組みが縮み、キーボードありと誤って判定してタブと帯が消える | 決定 6。AC-45（`scale: 2`）・手動の確認手順 6（iOS）・11（Android） |
+| キーボードの判定で `offsetTop` を考えず、見えていない入力欄を見えると判定する | 決定 6。式 K に `offsetTop` を入れる |
+| Android の WebView が M139 より前で、キーボードで入力欄が隠れる | 決定 6。手動の確認手順 10 で版を記録し、S1 の既知の制約として PR に記録する |
+| セーフエリアにヘッダ・タブ・ボタンが重なる（iPhone の縦持ち） | 決定 5。viewport の指定をファイルの検査で判定する（AC-55・AC-56）。値は手動の確認手順 4・9 の式 S |
+| iPad の縦横・Android の横持ちで、デスクトップの骨組みがバー・切り欠きに重なる | 決定 5（余白を骨組み全体に付ける）。手動の確認手順 8（iPad の縦横）・9（Android の横持ち）の式 S |
+| Android の WebView が古く、`env()` が 0（edge-to-edge でバーの下に隠れる） | 決定 5。手動の確認手順 9 で WebView の版と値を記録する。0 なら S1 の中で親に問う |
+| iOS で入力欄のフォーカスで画面が拡大される | 決定 7。手動の確認手順 5（式 Z） |
+| ピンチの拡大を止めてしまう（アクセシビリティの後退） | 決定 5・7。AC-56 |
+| タッチで届かない操作（T1〜T9） | 「タッチで使えない操作」の表。T1・T2 は描かない（AC-9）、T3・T6・T7 は既存の代替、T5 は決定 8（AC-48〜AC-50）、T4 は S2 |
+| 主要画面が幅 375px・320px で横にはみ出す（例: `.chat-session-bar` が折り返さない） | コンパクトの子孫の規則で折り返す。手動の確認手順 1・3・4・9（式 H） |
+| WebKit と Chromium 系で表示が違う | 手動の確認を Chrome・Safari のレスポンシブデザインモード・iOS シミュレータ・Android エミュレータで同じ式で行う（手動の確認手順 1・3・4・9） |
+| 押す対象が小さく、指で押し違える | 非機能要件の 44px。手動の確認手順 1（式 T。タブ・「その他」で開く 4 つ・「チェックイン」・シートの閉じるボタン） |
+| #694 等で入れたスクリーンリーダー向けの作りが、骨組みの差し替えで落ちる | 既存のテスト（`TaskCard.test.tsx`・`DecisionLog.test.tsx`）を本体を変えずに合格させる（AC-6）。コンパクトでも `<nav aria-label="メインナビゲーション">` と画面ごとの `<main aria-label>` が 1 つずつある（AC-10） |
+| 横向き（iPhone の横持ちは幅 568〜956px・高さ約 320〜440px）で、デスクトップの骨組みが低い高さに詰め込まれる | P3。iPhone は縦に固定する（AC-51・AC-52）。シミュレータの回転（手動の確認手順 13） |
+| iPad（`project.pbxproj` の `TARGETED_DEVICE_FAMILY` に含まれる）の横持ち（1024px 以上）でデスクトップの骨組み・縦持ち（744〜834px）で幅によってどちらにもなる | P3。iPad は回転を許し幅だけで判定する。iPad の専用の調整は S3。S1 では iPad の向きの設定を変えないこと（AC-53）と、セーフエリア（手動の確認手順 8）だけを確かめる |
 
 ### 実装計画（S1 のチケット分解の見通し）
 
-S1 は 1〜2 チケットの見込み（触るファイルは 10〜14）。分けるなら次の 2 つ（直列）。
+S1 は 1〜2 チケットの見込み（触るファイルは 13〜17）。分けるなら次の 2 つ（直列）。
 
-1. 幅の判定（純粋関数・フック）・コンパクトの骨組み（ナビゲーション・常設の帯・シート）・分割バーを描かないこと・viewport の指定・セーフエリア・visual viewport・入力欄の 16px（`AppLayout.tsx`・`AppLayout.css`・新しい `layout-mode.ts`〔仮〕・`use-visual-viewport.ts`〔仮〕・`app.html`・`index.html` とテスト）
-2. 主要画面の狭い幅の手当て・iPhone の縦への固定（`project.yml`・`Info.plist`・設定の検査）（`ChatView`〔Enter・`.chat-session-bar`〕・`Dashboard.css`・`TaskBoard.css`）とテスト
+1. 幅の判定（純粋関数・フック）・コンパクトの骨組み（ナビゲーション・常設の帯・シート〔`<aside>` の共用・`CheckinPanel` からの休憩の状態の通知・着手での自動の閉じ〕）・分割バーを描かないこと・viewport の指定・セーフエリア・visual viewport・入力欄の 16px（`AppLayout.tsx`・`AppLayout.css`・`CheckinPanel.tsx`・新しい `layout-mode.ts`〔仮〕・`use-visual-viewport.ts`〔仮〕・`app.html`・`index.html` とテスト）
+2. 主要画面の狭い幅の手当て（`ChatView`〔Enter・`.chat-session-bar`〕・`Dashboard.css`・`TaskBoard.css`）・iPhone の縦への固定（`project.yml`・`Info.plist`・設定の検査）とテスト
 
 ## スライス（出荷の単位）
 
 | スライス | 内容 | 触るファイル数（概算） | 出荷条件 |
 |---|---|---|---|
-| S1（最小） | 幅の判定（決定 1）・iPhone の縦への固定（P3）・コンパクトの骨組み（ナビゲーション〔O1〕・横のパネルの置き場〔O2〕）・分割バーを描かない（T1・T2）・セーフエリア（決定 5）・キーボード（決定 6）・入力欄の自動拡大の回避（決定 7）・主要画面（ダッシュボード・チャット・タスク）の狭い幅の手当て・チャットの Enter（O3）。残りの 4 画面はナビゲーションから到達できるところまで（中のレイアウトは S2）。デスクトップは変えない | 12-16 | **この仕様の PR がマージされてから**（O1〜O3・P1〜P5 は 2026-10-05 に決定済み）。#677・#680 はマージ済み |
+| S1（最小） | 幅の判定（決定 1）・iPhone の縦への固定（P3）・コンパクトの骨組み（ナビゲーション〔O1〕・横のパネルの置き場〔O2〕。`CheckinPanel` の 1 つのインスタンスの維持を含む）・分割バーを描かない（T1・T2）・セーフエリア（決定 5。骨組み全体）・キーボード（決定 6）・入力欄の自動拡大の回避（決定 7）・主要画面（ダッシュボード・チャット・タスク）の狭い幅の手当て・チャットの Enter（O3）。残りの 4 画面はナビゲーションから到達できるところまで（中のレイアウトは S2）。デスクトップは変えない | 13-17 | **この仕様の PR がマージされてから**（O1〜O3・P1〜P5 は 2026-10-05 に決定済み）。#677・#680 はマージ済み |
 | S2 | 残りの画面（決定ログ・日報〔`220px 1fr` の格子〕・作業ログ・設定）と会話面のダイアログ（`SessionTranscriptDialog`）の狭い幅の手当て、タスク ID のホバーの代替（T4）、既存の画面の中のボタンの大きさ（44px）を揃えること | 未見積もり | S1 がマージされてから |
 | S3 | iPad 向けの調整（縦持ちの 744〜834px・横持ちの 1024px 以上でのレイアウトの磨き込み。P3） | 未見積もり | S1 がマージされてから |
 
@@ -252,6 +271,7 @@ S1 は 1〜2 チケットの見込み（触るファイルは 10〜14）。分�
 - タスクカードのドラッグのタッチ対応（T3）（理由: 同じ変更をカードの「ステータス」の選択欄でできる。タッチのドラッグを足すと、縦のスクロールとの取り合いの判定が要り、費用に見合わない）
 - コンパクトでの分割バー（T1・T2）（理由: 横に並べる余地が無い。パネルの中身は決定 4 の置き場で使う）
 - ピンチの拡大を止めること（`maximum-scale=1`・`user-scalable=no`）（理由: 拡大に頼る利用者が読めなくなる。決定 7）
+- Android の `windowSoftInputMode` の変更（理由: 決定 6。M139 より前の WebView でキーボードが入力欄を隠す場合は、S1 の既知の制約として記録する）
 - 通知の許可の体験・予約通知の画面（理由: #669 S2・#674 S3・#585。この仕様は骨組みまで）
 - 実機での確認（理由: ADR 0011「未決」でオーナーが製品化の後のフェーズとした。この仕様の手動の確認はシミュレータ・エミュレータ・ブラウザ）
 - Windows（WebView2）での確認（理由: ADR 0011 決定 19。Windows は後続のリリース）
@@ -261,7 +281,7 @@ S1 は 1〜2 チケットの見込み（触るファイルは 10〜14）。分�
 
 ## 受入基準（S1）
 
-検査は、`npm test`（web の vitest・jsdom と、`test:scripts` の `node --test`）と `git` で行う。実ブラウザ・シミュレータ・エミュレータでしか見られないもの（はみ出し・大きさ・セーフエリア・キーボード・自動拡大・デスクトップの見た目）は「手動の確認手順（S1）」に置く。jsdom の窓の幅は `window.innerWidth` を定義して `resize` を送って変える。
+検査は、`npm test`（web の vitest・jsdom と、`test:scripts` の `node --test`）と `git` で行う。実ブラウザ・シミュレータ・エミュレータでしか見られないもの（はみ出し・大きさ・セーフエリア・キーボード・自動拡大・デスクトップの見た目）は「手動の確認手順（S1）」に置く。jsdom の窓の幅は `window.innerWidth` を定義して `resize` を送って変える。「見つからない」は、Testing Library の既定の照会（隠れた要素〔`hidden` 属性の配下等〕を除く）で見つからないことを言う。
 
 **比較の基準点**: 「変えない」の項目は、**この仕様の PR をマージした後の `main`** を基準点とする。
 
@@ -269,76 +289,96 @@ S1 は 1〜2 チケットの見込み（触るファイルは 10〜14）。分�
 
 幅の判定（純粋関数）:
 
-- [ ] `isCompactLayout(767)` は `true` を返す
-- [ ] `isCompactLayout(768)` は `false` を返す
-- [ ] `isCompactLayout(320)` は `true`、`isCompactLayout(1024)` は `false` を返す
+- [ ] AC-1: `isCompactLayout(767)` は `true` を返す
+- [ ] AC-2: `isCompactLayout(768)` は `false` を返す
+- [ ] AC-3: `isCompactLayout(320)` は `true`、`isCompactLayout(1024)` は `false` を返す
 
 デスクトップを変えない（jsdom）:
 
-- [ ] 幅 768 で、`.app-layout` に `app-layout--compact` のクラスが無い
-- [ ] 幅 768 で、`role="separator"`（名前「サイドパネルの幅」）が 1 つ、`complementary`（名前「サイドパネル」）が 1 つあり、`メインナビゲーション` の中のボタンが 7 つ（ダッシュボード・チャット・タスク・決定ログ・日報・作業ログ・設定の順）ある
-- [ ] 基準点の `web/src` にある既存のテストファイルについて、`git diff <基準点>...HEAD -- <ファイル>` に削除の行（`-` で始まる行。ファイルの見出しの行を除く）が無く、`npm test` が合格する（既存のテストの本体を変えずに合格する）
-- [ ] `web/src` の CSS のファイルに `@media` が 0 件である（`grep -r "@media" web/src --include=*.css` の出力が空）
+- [ ] AC-4: 幅 768 で、`.app-layout` に `app-layout--compact` のクラスが無い
+- [ ] AC-5: 幅 768 で、`role="separator"`（名前「サイドパネルの幅」）が 1 つ、`complementary`（名前「サイドパネル」）が 1 つあり、`メインナビゲーション` の中のボタンが 7 つ（ダッシュボード・チャット・タスク・決定ログ・日報・作業ログ・設定の順）ある
+- [ ] AC-6: 基準点の `web/src` にある既存のテストファイルについて、`git diff <基準点>...HEAD -- <ファイル>` に削除の行（`-` で始まる行。ファイルの見出しの行を除く）が無く、`npm test` が合格する（既存のテストの本体を変えずに合格する）
+- [ ] AC-7: `web/src` の CSS のファイルに `@media` が 0 件である（`grep -r "@media" web/src --include=*.css` の出力が空）
 
 コンパクトの骨組み（jsdom）:
 
-- [ ] 幅 767 で、`.app-layout` に `app-layout--compact` のクラスがある
-- [ ] 幅 767 で、`role="separator"` が 0 件である
-- [ ] 幅 767 で、`navigation`（名前「メインナビゲーション」）が 1 つ、画面の `main` が 1 つある
-- [ ] 幅 1024 → 767 → 768 と `resize` を送ると、`app-layout--compact` のクラスが無 → 有 → 無と変わる
-- [ ] 幅 1024 でチャットの画面を開き、入力欄に「下書き」と入れた後、幅 767 へ変えると、チャットの画面のまま（`main` の名前が「ボスとの対話」）で、入力欄の値が「下書き」である
-- [ ] `localStorage` の `ai-boss:side-panel-width` が `360` のとき、幅 1280 → 767 → 1280 と変えた後も、値は `360` のままで、分割バーの `aria-valuenow` は `360` である
+- [ ] AC-8: 幅 767 で、`.app-layout` に `app-layout--compact` のクラスがある
+- [ ] AC-9: 幅 767 で、`role="separator"` が 0 件である
+- [ ] AC-10: 幅 767 で、`navigation`（名前「メインナビゲーション」）が 1 つ、画面の `main` が 1 つある
+- [ ] AC-11: 幅 1024 → 767 → 768 → 767 と `resize` を送ると、`app-layout--compact` のクラスが無 → 有 → 無 → 有と変わる
+- [ ] AC-12: 幅 1024 でチャットの画面を開き、入力欄に「下書き」と入れた後、幅 767 へ変えると、チャットの画面のまま（`main` の名前が「ボスとの対話」）で、入力欄の値が「下書き」である
+- [ ] AC-13: 幅 1024 でタスクカードの「記録を見る」で決定ログを絞り込んだ後、幅 767 へ変えると、`main` の名前が「決定ログ」のままで、絞り込みの表示（`DecisionLog` の「…の記録だけを表示しています」の `role="status"`）が残っている
+- [ ] AC-14: `localStorage` の `ai-boss:side-panel-width` が `360` のとき、幅 1280 → 767 → 1280 と変えた後も、値は `360` のままで、分割バーの `aria-valuenow` は `360` である
 
 ナビゲーション（jsdom・幅 767）:
 
-- [ ] （O1）`メインナビゲーション` の中に、ボタン「ダッシュボード」「チャット」「タスク」「その他」がこの順にある
-- [ ] （O1）起動の直後、「ダッシュボード」に `aria-current="page"` があり、ほかの 3 つに無い
-- [ ] （O1）「チャット」を押すと、`main` の名前が「ボスとの対話」になり、「チャット」に `aria-current="page"` が移る
-- [ ] （O1）「その他」は `aria-expanded="false"` を持ち、押すと `"true"` になって、ボタン「決定ログ」「日報」「作業ログ」「設定」が出る
-- [ ] （O1）「その他」から「設定」を押すと、`main` の名前が「設定」になり、「その他」に `aria-current="page"` があり、`aria-expanded` が `"false"` に戻る
-- [ ] （O1）7 つの画面（`main` の名前: ダッシュボード・ボスとの対話・タスクボード・決定ログ・日報・作業ログ・設定）のそれぞれへ、ナビゲーションのボタンの押下だけで移れる
-- [ ] （O1）タスクカードの「記録を見る」で決定ログへ移ったとき、「その他」に `aria-current="page"` があり、決定ログは絞り込まれている（`DecisionLog` の絞り込みの表示がある）
+- [ ] AC-15:（O1）`メインナビゲーション` の中に、ボタン「ダッシュボード」「チャット」「タスク」「その他」がこの順にある
+- [ ] AC-16:（O1）起動の直後、「ダッシュボード」に `aria-current="page"` があり、ほかの 3 つに無い
+- [ ] AC-17:（O1）「チャット」を押すと、`main` の名前が「ボスとの対話」になり、「チャット」に `aria-current="page"` が移る
+- [ ] AC-18:（O1）「その他」は `aria-expanded="false"` を持ち、押すと `"true"` になって、ボタン「決定ログ」「日報」「作業ログ」「設定」が出る
+- [ ] AC-19:（O1）「その他」から「設定」を押すと、`main` の名前が「設定」になり、「その他」に `aria-current="page"` があり、`aria-expanded` が `"false"` に戻る
+- [ ] AC-20:（O1）7 つの画面（`main` の名前: ダッシュボード・ボスとの対話・タスクボード・決定ログ・日報・作業ログ・設定）のそれぞれへ、ナビゲーションのボタンの押下だけで移れる
+- [ ] AC-21:（O1）タスクカードの「記録を見る」で決定ログへ移ったとき、「その他」に `aria-current="page"` があり、決定ログは絞り込まれている（`DecisionLog` の絞り込みの表示がある）
 
-横のパネルの置き場（jsdom・幅 767）:
+常設の帯（jsdom・幅 767）:
 
-- [ ] （O2）シートを開く前、`role="status"`（名前「着手時のメンタリングの促し」）が 1 つある
-- [ ] （O2）シートを開く前、`CheckinPanel` の見出しが 0 件で、ボタン「チェックイン」が 1 つある
-- [ ] （O2）タスクを 1 つ進行中にすると、常設の帯にそのタスクの名前が出る。進行中のタスクが無いとき、「着手中のタスクはありません」が出る
-- [ ] （O2）「チェックイン」を押すと、`role="dialog"`（名前「チェックイン」・`aria-modal="true"`）が 1 つ出て、その中に `CheckinPanel` と `TodaySummary` の見出しが 1 つずつある
-- [ ] （O2）シートの閉じるボタンを押すと、`role="dialog"` が 0 件になり、フォーカスが「チェックイン」のボタンにある
-- [ ] （O2）シートを開いている間に Tab を最後の要素から押すと、フォーカスはシートの中の最初の要素へ移る
-- [ ] （O2）シートを開いている間も、`role="status"`（着手時のメンタリングの促し）は 1 つだけある
-- [ ] 幅 768 で、`CheckinPanel` の見出しはサイドパネルの中に 1 つだけある
+- [ ] AC-22:（O2）帯の文言は、進行中のタスクが 1 件（名前「資料の下書き」）のとき「着手中: 資料の下書き」、2 件（`tasks` の並びで先が「A」）のとき「着手中: A ほか 1 件」、進行中が 0 件で一時停止が 1 件（名前「B」）のとき「一時停止中: B」、進行中も一時停止も 0 件のとき「着手中のタスクはありません」である
+- [ ] AC-23:（O2）活動の一覧の最後が `break_start`（休憩中）のとき、帯の文言は進行中のタスクの有無によらず「休憩中」である
+- [ ] AC-24:（O2）`role="status"`（名前「着手時のメンタリングの促し」）が 1 つあり、帯の中にある
+
+シート（jsdom・幅 767）:
+
+- [ ] AC-25:（O2）シートを開く前、heading「チェックイン」（level 2）・heading「進捗」（level 2）は見つからず、`hidden: true` を付けた照会ではそれぞれ 1 つ見つかる。ボタン「チェックイン」が 1 つある
+- [ ] AC-26:（O2）シートを開く前に `hidden: true` で得た heading「チェックイン」（level 2）の DOM のノードは、シートを開いた後・閉じた後・もう一度開いた後も同じノード（`toBe` で同一）である
+- [ ] AC-27:（O2）幅 1024 で得た heading「チェックイン」（level 2）の DOM のノードは、幅 767 へ変えた後（`hidden: true` で得る）・再び 1024 へ変えた後も同じノードである
+- [ ] AC-28:（O2）「チェックイン」を押すと、`role="dialog"`（名前「チェックインのシート」・`aria-modal="true"`）が 1 つ出て、その中に heading「チェックイン」（level 2）と heading「進捗」（level 2）が 1 つずつある
+- [ ] AC-29:（O2）シートを開いた直後、フォーカスはシートの閉じるボタン（名前「閉じる」）にある
+- [ ] AC-30:（O2）シートの閉じるボタンを押すと、`role="dialog"` が 0 件になり、heading「チェックイン」（level 2）が見つからず、フォーカスが「チェックイン」のボタンにある
+- [ ] AC-31:（O2）シートを開いている間も、`role="status"`（着手時のメンタリングの促し）は 1 つだけあり、シートの外（帯の中）にある
+- [ ] AC-32: 幅 768 で、heading「チェックイン」（level 2）は `complementary`（名前「サイドパネル」）の中に 1 つだけある
+- [ ] AC-33:（O2）シートを開いている間に、最後の操作要素で Tab を押すとフォーカスはシートの最初の操作要素へ、最初の操作要素で Shift+Tab を押すと最後の操作要素へ移る
+- [ ] AC-34:（O2）シートを開いている間に Escape を押すと、`role="dialog"` が 0 件になり、フォーカスが「チェックイン」のボタンにある
+- [ ] AC-35:（O2）シートの背景（シートの外の幕）を押すと、`role="dialog"` が 0 件になる。シートの中を押しても閉じない
+- [ ] AC-36:（O2）`adhoc` の区間（`chatState.status` が `ready`）でシートを開き、シートの中の着手で未着手のタスク（名前「資料の下書き」）を進行中にすると、`role="dialog"` が 0 件になり、`role="status"`（着手時のメンタリングの促し）に「資料の下書き」が出て見え（`toBeVisible`）、フォーカスが「チェックイン」のボタンにある
+- [ ] AC-37:（O2）シートの中で break_end の記録が失敗して保留（`pendingBreak`）が残った状態で、シートを閉じてもう一度開き「休憩」を押すと、新しく送られる記録は `break_end` だけで、`break_start` は 0 件である（`CheckinPanel.test.tsx` の「keeps break_start recorded … when break_end fails」と同じ失敗の作り方）
+- [ ] AC-38: 幅 1024 のサイドパネルで AC-37 と同じ保留を作った後、幅 767 へ変えてシートを開き「休憩」を押すと、新しく送られる記録は `break_end` だけで、`break_start` は 0 件である。幅 767 で作った保留を 1024 へ変えてから押しても同じである
 
 キーボード（jsdom・幅 767・`window.visualViewport` を差し替える）:
 
-- [ ] `visualViewport.height` が 500 で `resize` を送ると、`.app-layout` の `style` の `--app-viewport-height` が `500px` になる
-- [ ] `window.visualViewport` が `undefined` のとき、`.app-layout` の `style` に `--app-viewport-height` が無い
-- [ ] `innerHeight` が 800 で `visualViewport.height` が 650（差 150）のとき、下部のタブ（`メインナビゲーション`）と常設の帯がある
-- [ ] `innerHeight` が 800 で `visualViewport.height` が 649（差 151）のとき、下部のタブと常設の帯が無い
-- [ ] 幅 1024 では、`visualViewport.height` を変えても `--app-viewport-height` は置かれない
+- [ ] AC-39: `visualViewport.height` が 500（`scale` 1）で `resize` を送ると、`.app-layout` の `style` の `--app-viewport-height` が `500px` になる
+- [ ] AC-40: `window.visualViewport` が `undefined` のとき、`.app-layout` の `style` に `--app-viewport-height` が無い
+- [ ] AC-41: `innerHeight` が 800 で `visualViewport.height` が 650（差 150）のとき、`.app-layout` に `app-layout--keyboard-open` のクラスが無い
+- [ ] AC-42: `innerHeight` が 800 で `visualViewport.height` が 649（差 151）のとき、`.app-layout` に `app-layout--keyboard-open` のクラスがあり、`navigation`（名前「メインナビゲーション」）が 1 つ、`role="status"`（名前「着手時のメンタリングの促し」）が 1 つ見つかる（DOM から外さない・`hidden`・`aria-hidden` を付けない）
+- [ ] AC-43: AC-42 の状態から `visualViewport.height` を 800 に戻すと、`app-layout--keyboard-open` のクラスが無くなり、`role="status"`（着手時のメンタリングの促し）の DOM のノードは AC-42 の前と同じノードである
+- [ ] AC-44: 幅 1024 では、`visualViewport.height` を変えても `--app-viewport-height` も `app-layout--keyboard-open` も置かれない
+- [ ] AC-45: `innerHeight` 800・`visualViewport.height` 800・`scale` 1 の後、`scale` 2・`height` 300 で `resize` を送ると、`--app-viewport-height` は `800px` のままで、`app-layout--keyboard-open` のクラスが無い。続けて `scale` 1・`height` 500 で `resize` を送ると、`--app-viewport-height` が `500px` になる
+
+セーフエリア（CSS のファイルの検査）:
+
+- [ ] AC-46: `web/src/AppLayout.css` の `.app-layout` のセレクタだけを持つ規則（`.app-layout--compact` 等の修飾の無いもの）に、`env(safe-area-inset-top)`・`env(safe-area-inset-right)`・`env(safe-area-inset-bottom)`・`env(safe-area-inset-left)` の 4 つがある（`node --test` で CSS のファイルを文字列として読んで判定する）
+- [ ] AC-47: 同じファイルの、シートに当たる規則（`.app-layout--compact` の下の `#app-side-panel` 等）に `env(safe-area-inset-bottom)` がある
 
 チャットの Enter（jsdom）:
 
-- [ ] （O3）幅 767 で、チャットの入力欄に「あ」を入れて Enter（Shift なし・変換中でない）を押すと、送信されず（`send` が呼ばれない）、既定の動作が止められない（`defaultPrevented` が `false`）
-- [ ] （O3）幅 767 で、送信のボタンを押すと送信される
-- [ ] 幅 1024 で、Enter で送信され、Shift+Enter で送信されない（今の振る舞い。既存のテストのまま）
+- [ ] AC-48:（O3）幅 767 で、チャットの入力欄に「あ」を入れて Enter（Shift なし・変換中でない）を押すと、送信されず（`send` が呼ばれない）、既定の動作が止められない（`defaultPrevented` が `false`）
+- [ ] AC-49:（O3）幅 767 で、送信のボタンを押すと送信される
+- [ ] AC-50: 幅 1024 で、Enter で送信され、Shift+Enter で送信されない（今の振る舞い。既存のテストのまま）
 
 画面の向き（P3。設定のファイルの検査）:
 
-- [ ] `native/tauri-app/gen/apple/project.yml` の `UISupportedInterfaceOrientations` は `UIInterfaceOrientationPortrait` の 1 つだけである
-- [ ] `native/tauri-app/gen/apple/ai-boss-tauri-app_iOS/Info.plist` の `UISupportedInterfaceOrientations` の配列は `UIInterfaceOrientationPortrait` の 1 つだけである
-- [ ] `project.yml`・`Info.plist` の `UISupportedInterfaceOrientations~ipad` は基準点と同じ 4 つ（`Portrait`・`PortraitUpsideDown`・`LandscapeLeft`・`LandscapeRight`）のままである
-- [ ] `native/tauri-app/gen/android/app/src/main/AndroidManifest.xml` に `android:screenOrientation` が無い（Android は回転を許す）
+- [ ] AC-51: `native/tauri-app/gen/apple/project.yml` の `UISupportedInterfaceOrientations` は `UIInterfaceOrientationPortrait` の 1 つだけである
+- [ ] AC-52: `native/tauri-app/gen/apple/ai-boss-tauri-app_iOS/Info.plist` の `UISupportedInterfaceOrientations` の配列は `UIInterfaceOrientationPortrait` の 1 つだけである
+- [ ] AC-53: `project.yml`・`Info.plist` の `UISupportedInterfaceOrientations~ipad` は基準点と同じ 4 つ（`Portrait`・`PortraitUpsideDown`・`LandscapeLeft`・`LandscapeRight`）のままである
+- [ ] AC-54: `native/tauri-app/gen/android/app/src/main/AndroidManifest.xml` に `android:screenOrientation` が無い（Android は回転を許す）
 
 viewport の指定（HTML のファイルの検査）:
 
-- [ ] `web/app.html` と `web/index.html` の `<meta name="viewport">` の `content` は、`width=device-width`・`initial-scale=1.0`・`viewport-fit=cover` を含む
-- [ ] 同じ `content` は、`maximum-scale` と `user-scalable` を含まない
+- [ ] AC-55: `web/app.html` と `web/index.html` の `<meta name="viewport">` の `content` は、`width=device-width`・`initial-scale=1.0`・`viewport-fit=cover` を含む
+- [ ] AC-56: 同じ `content` は、`maximum-scale` と `user-scalable` を含まない
 
 品質ゲート:
 
-- [ ] `npm run lint`・`npm run typecheck`・`npm test` が合格する（Rust のコードを変えないため、`test:rust`・`test:tauri`・`check:ios`・`check:android`・`lint:rust`・`fmt:rust` は手動の確認手順のビルドで代える。ただし `/quality-check` の必須ゲートは全数を回す）
+- [ ] AC-57: `npm run lint`・`npm run typecheck`・`npm test` が合格する（Rust のコードを変えないため、`test:rust`・`test:tauri`・`check:ios`・`check:android`・`lint:rust`・`fmt:rust` は手動の確認手順のビルドで代える。ただし `/quality-check` の必須ゲートは全数を回す）
 
 （日付の境界に触らないため、`test:tz` は対象にしない。）
 
@@ -347,25 +387,29 @@ viewport の指定（HTML のファイルの検査）:
 **合否は、コンソールで評価する式の値で決める**（「崩れない」を根拠にしない）。各手順の式は次の名前で参照する。
 
 - **H（はみ出し）**: `[document.documentElement.scrollWidth <= document.documentElement.clientWidth, document.querySelector(".app-main").scrollWidth <= document.querySelector(".app-main").clientWidth]` が `[true, true]`（タスクの画面の `.task-board-columns` の中の横のスクロールは #515 の設計どおりで対象外）
-- **S（セーフエリア）**: `(() => { const p = document.createElement("div"); p.style.cssText = "position:fixed;padding:env(safe-area-inset-top) 0 env(safe-area-inset-bottom)"; document.body.append(p); const s = getComputedStyle(p); const r = [s.paddingTop, s.paddingBottom]; p.remove(); return r; })()` で上下の値を得て、`document.querySelector(".app-header").getBoundingClientRect()` の中の文字の上端（`h1` の `getBoundingClientRect().top`）が上の値以上、下部のタブの各ボタンの `getBoundingClientRect().bottom` が `innerHeight − 下の値` 以下
-- **K（キーボード）**: 入力欄にフォーカスしてキーボードを出した後、`(() => { const e = document.activeElement.getBoundingClientRect(); const v = visualViewport; return [e.top >= 0, e.bottom <= v.height + 1, v.scale]; })()` が `[true, true, 1]`
+- **S（セーフエリア）**: 次の式で端末の 4 辺の値と、`.app-layout` の算出された余白を得る。`(() => { const p = document.createElement("div"); p.style.cssText = "position:fixed;padding:env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left)"; document.body.append(p); const s = getComputedStyle(p); const inset = [s.paddingTop, s.paddingRight, s.paddingBottom, s.paddingLeft]; p.remove(); const l = getComputedStyle(document.querySelector(".app-layout")); return { inset, layout: [l.paddingTop, l.paddingRight, l.paddingBottom, l.paddingLeft] }; })()`。合格は、`layout` が `inset` と 4 辺とも等しいこと（骨組みの内容がセーフエリアの内側にある）。期待する結果の欄で、`inset` が `0px` でないことを求める辺を手順ごとに書く
+- **K（キーボード）**: 入力欄にフォーカスしてキーボードを出した後、`(() => { const e = document.activeElement.getBoundingClientRect(); const v = visualViewport; return [e.top >= v.offsetTop, e.bottom <= v.offsetTop + v.height + 1, v.scale]; })()` が `[true, true, 1]`
 - **Z（自動拡大）**: コンパクトで `[...document.querySelectorAll("input, textarea, select")].every((e) => parseFloat(getComputedStyle(e).fontSize) >= 16)` が `true`。入力欄にフォーカスした後の `visualViewport.scale` が `1`
-- **T（押す対象）**: 下部のタブの各ボタン・「チェックイン」・シートの閉じるボタンの `getBoundingClientRect()` の `width` と `height` がどれも 44 以上
+- **T（押す対象）**: 下部のタブの各ボタン・「その他」を開いたときの 4 つのボタン（決定ログ・日報・作業ログ・設定）・「チェックイン」・シートの閉じるボタンの `getBoundingClientRect()` の `width` と `height` がどれも 44 以上
+- **V（帯とタブが見える）**: `[...document.querySelectorAll('nav[aria-label="メインナビゲーション"] button')].every((b) => b.getBoundingClientRect().height >= 44)` と、帯（「チェックイン」のボタン）の `getBoundingClientRect().height >= 44` が、どちらも `true`
 
-**準備**: iOS シミュレータは `ios-shell.md`「手動の確認手順（S1）」の準備、Android エミュレータは `android-shell.md`「手動の確認手順（S1）」の準備に従う。
+**準備**: iOS シミュレータは `ios-shell.md`「手動の確認手順（S1）」の準備、Android エミュレータは `android-shell.md`「手動の確認手順（S1）」の準備に従う。iPad のシミュレータ（例: iPad Air 11 インチ）も用意する。
 
 | # | 操作 | 期待する結果 |
 |---|---|---|
-| 1 | **ブラウザ（Chromium）**: `npm run dev` を開き、Chrome の DevTools のデバイスのツールバーで幅を 375×812・320×568 にする。ダッシュボード・チャット（朝会を始めた状態）・タスクの各画面と、シートを開いた状態で式 **H**・**T** を評価する | どの組み合わせでも H が `[true, true]`、T が `true`。画面の写しを PR に貼る |
-| 2 | **ブラウザ（境界とデスクトップ）**: 同じ DevTools で幅を 767・768・1280 にし、`document.querySelector(".app-layout").classList.contains("app-layout--compact")` と `getComputedStyle(document.querySelector(".app-body")).gridTemplateColumns` を評価する。基準点の `main` でも 768・1280 で同じ式を評価する | 767 で `true`、768・1280 で `false`。768・1280 の `gridTemplateColumns` が基準点の `main` と同じ文字列。1280 の画面の写しを基準点と並べて PR に貼る |
+| 1 | **ブラウザ（Chromium）**: `npm run dev` を開き、Chrome の DevTools のデバイスのツールバーで幅を 375×812・320×568 にする。ダッシュボード・チャット（朝会を始めた状態）・タスクの各画面と、シートを開いた状態・「その他」を開いた状態で式 **H**・**T** を評価する | どの組み合わせでも H が `[true, true]`、T が `true`。画面の写しを PR に貼る |
+| 2 | **ブラウザ（境界とデスクトップ）**: 同じ DevTools で幅を 767・768・1280 にし、`document.querySelector(".app-layout").classList.contains("app-layout--compact")`・`getComputedStyle(document.querySelector(".app-body")).gridTemplateColumns`・式 **S** の `layout` を評価する。基準点の `main` でも 768・1280 で `gridTemplateColumns` を評価する | 767 で `true`、768・1280 で `false`。768・1280 の `gridTemplateColumns` が基準点の `main` と同じ文字列。S の `layout` が 4 辺とも `0px`（セーフエリアの余白がデスクトップの見た目を変えない）。1280 の画面の写しを基準点と並べて PR に貼る |
 | 3 | **ブラウザ（WebKit）**: macOS の Safari の「レスポンシブデザインモード」で `npm run dev` を 375×812 にし、手順 1 の式 **H** を評価する | 手順 1 と同じ値（WebKit と Chromium で揃う） |
-| 4 | **iOS シミュレータ**（ノッチ・Dynamic Island のある端末。例: iPhone 17）: Web インスペクタを使うため `native/tauri-app` で `npx @tauri-apps/cli ios build --debug --target aarch64-sim --ci` を実行し、`xcrun simctl install booted <.app>` → `xcrun simctl launch booted dev.aiboss.app` で起動する。Safari の開発メニュー → シミュレータでコンソールを開き、ダッシュボード・チャット・タスクの各画面で式 **H**・**S** を評価する | H が `[true, true]`。S の上の値が `0px` でなく、ヘッダの文字の上端がその値以上、タブの下端が `innerHeight − 下の値` 以下。画面の写し（`xcrun simctl io booted screenshot`）を PR に貼る |
-| 5 | 手順 4 のアプリで、チャットの入力欄・タスクのフォームの名前の欄をタップしてソフトウェアキーボードを出す（出なければシミュレータの I/O → Keyboard → Toggle Software Keyboard）。式 **K**・**Z** を評価する | K が `[true, true, 1]`、Z が `true` と `1`。キーボードが出ている間、下部のタブと常設の帯が見えない（画面の写し） |
-| 6 | 手順 4 のアプリで、2 本の指でピンチして拡大し、`window.innerWidth` と `.app-layout` の `app-layout--compact` を評価する | 拡大できる（`visualViewport.scale` が 1 より大きい）。`app-layout--compact` が `true` のまま（決定 1 の既知の注意の確認。`false` になったら記録し、幅の取り方を改める） |
-| 7 | **Android エミュレータ**: `npm run build:tauri:android-emu` の APK を `adb install -r` で入れ、`adb shell monkey -p dev.aiboss.app 1` で起動する。Chrome の `chrome://inspect/#devices` でコンソールを開き、`navigator.userAgent` を記録した後、手順 4 と同じ画面で式 **H**・**S** を評価する | H が `[true, true]`。S の上の値が `0px` でなく、ヘッダの文字の上端がその値以上、タブの下端が `innerHeight − 下の値` 以下（edge-to-edge のステータスバー・ナビゲーションバーに重ならない）。`navigator.userAgent` の `Chrome/<版>` を PR に記録する。**S の値が `0px` でバーに重なったら、S1 の中で親に問う**（決定 5） |
-| 8 | 手順 7 のアプリで、手順 5 と同じくキーボードを出して式 **K** を評価する | K の 1 つ目・2 つ目が `true`。キーボードが出ている間、下部のタブと常設の帯が見えない |
-| 9 | macOS で `npm run build:tauri` の `.app` を起動する（窓の幅は既定のまま） | デスクトップの骨組み（左のナビ・分割バー・サイドパネル）で描かれる。分割バーのドラッグと矢印キーで幅が変わる（#362 の振る舞いのまま） |
-| 10 | 手順 4 のアプリ（iPhone のシミュレータ）で、Device → Rotate Left（⌘←）で端末を回し、コンソールで `[innerWidth < innerHeight, screen.orientation ? screen.orientation.type : null]` を評価する | 1 つ目が `true`（画面は縦のまま）。2 つ目の値を記録する。回した後の画面の写しを PR に貼る（P3） |
+| 4 | **iOS シミュレータ（iPhone）**（ノッチ・Dynamic Island のある端末。例: iPhone 17）: Web インスペクタを使うため `native/tauri-app` で `npx @tauri-apps/cli ios build --debug --target aarch64-sim --ci` を実行し、`xcrun simctl install booted <.app>` → `xcrun simctl launch booted dev.aiboss.app` で起動する。Safari の開発メニュー → シミュレータでコンソールを開き、ダッシュボード・チャット・タスクの各画面と、シートを開いた状態で式 **H**・**S** を評価する | H が `[true, true]`。S の `inset` の上と下が `0px` でなく、`layout` が `inset` と 4 辺とも等しい。シートを開いた状態で、シートの下端の余白（`getComputedStyle(document.getElementById("app-side-panel")).paddingBottom`）が `inset` の下以上。画面の写し（`xcrun simctl io booted screenshot`）を PR に貼る |
+| 5 | 手順 4 のアプリで、(a) チャットの入力欄、(b) タスクのフォームの名前の欄、(c) シートを開いてチェックインの「ひとこと」の欄、をそれぞれタップしてソフトウェアキーボードを出す（出なければシミュレータの I/O → Keyboard → Toggle Software Keyboard）。それぞれで式 **K**・**Z** と、`document.querySelector(".app-layout").classList.contains("app-layout--keyboard-open")`・`document.querySelectorAll('nav[aria-label="メインナビゲーション"]').length` を評価する | (a)〜(c) のどれでも K が `[true, true, 1]`、Z が `true` と `1`、`app-layout--keyboard-open` が `true`、`nav` の数が `1`。(a)・(b) で下部のタブと常設の帯が見えない（画面の写し）。(c) でシートが開いたまま、入力欄がキーボードの上に見える（画面の写し） |
+| 6 | 手順 4 のアプリ（キーボードを閉じた状態）で、拡大の前に `getComputedStyle(document.querySelector(".app-layout")).getPropertyValue("--app-viewport-height")` を記録する。2 本の指でピンチして拡大し、`visualViewport.scale`・`.app-layout` の `app-layout--compact`・同じ `--app-viewport-height`・`app-layout--keyboard-open` と式 **V** を評価する | `visualViewport.scale` が 1 より大きい。`app-layout--compact` が `true` のまま（決定 1 の既知の注意の確認。`false` になったら記録し、幅の取り方を改める）。`--app-viewport-height` が拡大の前と同じ値。`app-layout--keyboard-open` が `false`。V が `true`（タブと帯が残る） |
+| 7 | 手順 4 のアプリで、チャットの画面に会（朝会・夕会）が開いていないこと（`adhoc`）を確かめ、未着手のタスクを 1 つ用意する。シートを開き、そのタスクを選んで着手する | シートが閉じ（`document.querySelector('[role="dialog"]')` が `null`）、帯の上に着手時の促しが出て見える（`document.querySelector('[aria-label="着手時のメンタリングの促し"]').getBoundingClientRect().height > 0`）。画面の写しを PR に貼る |
+| 8 | **iOS シミュレータ（iPad）**: 手順 4 と同じビルドを iPad のシミュレータへ入れて起動する。縦持ちで、`.app-layout` の `app-layout--compact` と式 **S** を評価する。Device → Rotate Left（⌘←）で横持ちにし、もう一度評価する | 縦持ち・横持ちのどちらでも、S の `layout` が `inset` と 4 辺とも等しい（`inset` の値と、`app-layout--compact` の値は記録する。横持ちはデスクトップの骨組みになる見込み）。両方の画面の写しを PR に貼る |
+| 9 | **Android エミュレータ**: `npm run build:tauri:android-emu` の APK を `adb install -r` で入れ、`adb shell monkey -p dev.aiboss.app 1` で起動する。Chrome の `chrome://inspect/#devices` でコンソールを開き、`navigator.userAgent` を記録した後、手順 4 と同じ画面で式 **H**・**S** を評価する。続けてエミュレータを横持ちに回し（エミュレータの回転のボタン）、`app-layout--compact` と式 **S** を評価する | 縦持ちで H が `[true, true]`、S の `inset` の上が `0px` でなく、`layout` が `inset` と 4 辺とも等しい（edge-to-edge のステータスバー・ナビゲーションバーに重ならない）。横持ちでも S の `layout` が `inset` と 4 辺とも等しい（`inset` の値と `app-layout--compact` の値を記録する）。`navigator.userAgent` の `Chrome/<版>` を PR に記録する。**縦持ちで S の `inset` の上が `0px` でバーに重なったら、S1 の中で親に問う**（決定 5） |
+| 10 | 手順 9 のアプリ（縦持ち）で、手順 5 の (a)〜(c) と同じくキーボードを出して式 **K** と `app-layout--keyboard-open`・`nav` の数を評価する | (a)〜(c) のどれでも K の 1 つ目・2 つ目が `true`、`app-layout--keyboard-open` が `true`、`nav` の数が `1`。**K が満たされず、手順 9 の WebView の版が M139 より前なら、S1 の既知の制約として版と結果を PR に記録する**（決定 6。`windowSoftInputMode` は変えない）。M139 以降で満たされなければ S1 を出荷しない |
+| 11 | 手順 9 のアプリで、2 本の指でピンチして拡大を試みる（エミュレータでは Ctrl を押しながらドラッグ）。`visualViewport.scale` を評価する | `visualViewport.scale` を記録する（wry の Android の WebView の設定〔`RustWebView.kt`〕は拡大の部品を有効にしておらず、拡大しない見込み。推論）。**1 より大きくなった場合は**、手順 6 と同じ期待する結果（`--app-viewport-height` が拡大の前と同じ・`app-layout--keyboard-open` が `false`・V が `true`）を満たす |
+| 12 | macOS で `npm run build:tauri` の `.app` を起動する（窓の幅は既定のまま）。Web インスペクタ（デバッグのビルド）が使えれば式 **S** の `layout` を評価する | デスクトップの骨組み（左のナビ・分割バー・サイドパネル）で描かれる。分割バーのドラッグと矢印キーで幅が変わる（#362 の振る舞いのまま）。S の `layout` が 4 辺とも `0px`（評価できなかった場合は、基準点の `main` の `.app` と並べた画面の写しで代え、その旨を PR に書く） |
+| 13 | 手順 4 のアプリ（iPhone のシミュレータ）で、Device → Rotate Left（⌘←）で端末を回し、コンソールで `[innerWidth < innerHeight, screen.orientation ? screen.orientation.type : null]` を評価する | 1 つ目が `true`（画面は縦のまま）。2 つ目の値を記録する。回した後の画面の写しを PR に貼る（P3） |
 
 ## 決定時の選択肢と判断材料
 
@@ -444,19 +488,36 @@ viewport の指定（HTML のファイルの検査）:
 | O3 | チャットの Enter | **A 狭い幅では Enter を改行にし、送信はボタンだけ**。デスクトップは今のまま（Enter で送信・Shift+Enter で改行）。代替案: B 今のまま／C 設定で選ぶ | ★オーナー | 決定 8・T5・受入基準（S1）の「チャットの Enter」 |
 | P1 | 幅の境界の値と判定の仕組み | **768px（`< 768` で狭い幅）**。判定は JS の純粋関数 1 つに置き、CSS はその結果のクラス（`.app-layout--compact`）に従う。`@media` で骨組みを切り替えない | 親 | 決定 1・受入基準（S1） |
 | P2 | 開発者用の版にも同じレイアウトを適用するか | **適用する**（エントリで分けない） | 親 | 非機能要件・手動の確認手順 1〜3 |
-| P3 | 縦横の回転・タブレット | **iPhone は縦に固定**（`project.yml`・`Info.plist` の `UISupportedInterfaceOrientations` を `UIInterfaceOrientationPortrait` だけにする）。**iPad と Android は回転を許し、幅だけで判定する**。iPad 向けの調整は **S3** | 親 | 技術的な制約・失敗の経路・スライス S1・S3・受入基準（S1）の「画面の向き」・手動の確認手順 10 |
+| P3 | 縦横の回転・タブレット | **iPhone は縦に固定**（`project.yml`・`Info.plist` の `UISupportedInterfaceOrientations` を `UIInterfaceOrientationPortrait` だけにする）。**iPad と Android は回転を許し、幅だけで判定する**。iPad 向けの調整は **S3** | 親 | 技術的な制約・失敗の経路・スライス S1・S3・受入基準（S1）の「画面の向き」（AC-51〜AC-54）・手動の確認手順 8・13 |
 | P4 | 確認の方法（E2E のブラウザ） | **Playwright 等は入れない**。jsdom で判定できる部分を自動に、レイアウトの値は手動の確認手順の式で確かめる | 親 | 決定 9・やらないこと |
 | P5 | iOS の自動拡大の避け方 | **狭い幅で入力欄の文字を 16px にする**。`maximum-scale=1` は使わない | 親 | 決定 7・受入基準（S1）の「viewport の指定」・手動の確認手順 5 |
+
+### 2026-10-05 の改訂（PR #703 の独立レビュー〔claude-harness の code-reviewer〕の指摘による。方向は親が決めた）
+
+| ID | 指摘 | 決定 | 反映先 |
+|---|---|---|---|
+| high-1 | シートを閉じている間 `CheckinPanel` を描かないと、境界の切り替えでもアンマウントされ、`pendingBreak` が消えて break_start の二重記録（PR #354・#356・#357）が戻る | `CheckinPanel` はシートの開閉と境界の切り替えをまたいで同じインスタンスを保つ（`<aside>` を木の同じ位置に描き、閉じている間は `hidden`） | 決定 4・失敗の経路・AC-25〜AC-27・AC-37・AC-38 |
+| high-2 | ピンチで拡大すると `visualViewport.height` が縮み、キーボードありと誤判定してタブと帯が消える | `visualViewport.scale !== 1` の間は、高さの更新とキーボードの判定をしない | 決定 6・AC-45・手動の確認手順 6・11 |
+| high-3 | `viewport-fit=cover` は全部の幅に効くのに余白が狭い幅だけで、iPad・Android の横持ちでデスクトップの骨組みがバーに重なる | `env(safe-area-inset-*)` の余白は `.app-layout` 全体に付ける（macOS・ブラウザでは 0） | 決定 1・5・失敗の経路・AC-46・手動の確認手順 2・8・9・12 |
+| medium-1 | シートの中で着手すると、促しがシート（`aria-modal`）の裏に出る | シートの中で着手したらシートを自動で閉じる | 決定 4・AC-36・手動の確認手順 7・仮定 M11 |
+| medium-2 | キーボードの間に帯とタブを描かないと、促しのライブリージョンが入れ直され、ランドマークが消える | キーボードの間も DOM に残し、見た目だけ隠す | 決定 6・AC-42・AC-43 |
+| medium-3 | 式 K が `visualViewport.offsetTop` を考えていない | 式 K を `[e.top >= v.offsetTop, e.bottom <= v.offsetTop + v.height + 1, v.scale]` に改め、決定 6 に `offsetTop` の扱いを書く | 決定 6・手動の確認手順の式 K |
+| medium-4 | シートの中の入力欄とキーボード・下のセーフエリアが未確認 | シートの高さと位置も `--app-viewport-height` に従わせ、下端に `env(safe-area-inset-bottom)` を付ける | 決定 4・AC-47・手動の確認手順 4・5・10 |
+| low-1〜6 | Android の M139 より前の扱い・シートのフォーカスの受入基準・見出しの一意な指定・帯の文言・実在しない参照・切り替えの順の食い違いほか | すべて直す | 決定 6・AC-11・AC-13・AC-25〜AC-35・式 T・仮定 M2・M5・M9・「実コードの実測」の参照 |
 
 ## 仮定（軽微・可逆）
 
 - M1: 仕様のファイル名は `docs/features/mobile-layout.md` とする。
-- M2: スライスを S1（骨組み・主要 3 画面）・S2（残りの画面・ダイアログ・ホバーの代替・ボタンの大きさ）・S3（横向き・タブレット。P3 による）に切る。
+- M2: スライスを S1（骨組み・主要 3 画面）・S2（残りの画面・ダイアログ・ホバーの代替・ボタンの大きさ）・S3（iPad 向けの調整。P3）に切る。
 - M3: コンパクトの判定のクラス名は `app-layout--compact`、純粋関数は `isCompactLayout`、境界の定数は `COMPACT_LAYOUT_MAX_WIDTH_EXCLUSIVE = 768`（名前は実装で改めてよい）。
 - M4: コンパクトで「その他」の一覧は、ナビゲーションの中に展開する（別のダイアログにしない）。
-- M5: 常設の帯の文言は「着手中: <タスク名>」「着手中のタスクはありません」、シートを開くボタンは「チェックイン」（文言は実装の PR でオーナーが確認してよい）。
+- M5: 常設の帯の文言は、上から順に最初に当てはまるもの（low-4・2026-10-05）: 休憩中（`CheckinPanel` が導く休憩の状態が真）→「休憩中」／進行中が 1 件 →「着手中: <タスク名>」／進行中が 2 件以上 →「着手中: <`tasks` の並びで最初のタスク名> ほか <残りの件数> 件」／進行中が 0 件で一時停止が 1 件以上 →「一時停止中: <最初のタスク名>」（2 件以上は同じく「ほか <件数> 件」）／いずれも 0 件 →「着手中のタスクはありません」。シートを開くボタンは「チェックイン」、シートの名前（`aria-label`）は「チェックインのシート」（`CheckinPanel` の `<section aria-label="チェックイン">` と重ねない）、シートの閉じるボタンは「閉じる」。文言は実装の PR でオーナーが確認してよい。
 - M6: キーボードが出ていると見なす差の閾値は 150px（`innerHeight − visualViewport.height > 150`）。日本語のソフトウェアキーボードの高さ（約 250〜350px。推論）より小さく、Safari の下部のバーの出入り（アプリの WebView には無い）より大きい値として置いた。
 - M7: タスクの画面の列は、コンパクトでも #515 の「列の格子の中だけを横にスクロールする」設計を保ち、列の最小幅を `min(18rem, 100%)` にして 1 列が画面の幅に収まるようにする（`scroll-snap` で 1 列ずつ止める）。
 - M8: コンパクトのヘッダは `ai-boss` と接続状態のまま残す（接続状態〔`ConnectionStatus`〕は DB 未接続の案内を兼ねるため隠さない）。
+- M9: viewport の検査は、`web/src` の vitest（`// @vitest-environment node` を付けたテスト）で `app.html`・`index.html` を読んで行う（`web/src/app-entry/vite-build-inputs.test.ts` が同じく node の環境でファイルを扱う前例）。
 - M10: 画面の向きの設定の検査は、`scripts/*.test.mjs`（`npm test` の `test:scripts`。`ios-shell-gitignore.test.mjs` と同じ置き場）に置き、`project.yml`・`Info.plist`・`AndroidManifest.xml` を文字列として読んで判定する。`Info.plist` と `project.yml` の両方を直すのは、`tauri ios build` が xcodegen で `Info.plist` を `project.yml` から作り直すかどうかを確かめていないため（推論。両方が一致していればどちらでも同じ結果になる）。
-- M9: viewport の検査は、`web/src` の vitest（node の環境）で `app.html`・`index.html` を読んで行う（`vite-build-inputs.test.ts` と同じく、ファイルを読む検査を web のテストに置く）。
+- M11: シートの中で着手したときに自動で閉じるのは、着手時の促しが現れたとき（`promptTask` が `null` から値になったとき）だけとする。朝会・夕会の最中（促しが出ない）はシートを開いたままにする（促しが無いので、シートの裏に隠れる情報が無い）。
+- M12: 休憩中かどうかは、`CheckinPanel` に任意の prop（例: `onBreakStatusChange(isOnBreak: boolean)`）を足して `AppLayout` へ知らせる（活動の一覧の取得を `AppLayout` へ持ち上げない。`CheckinPanel` は決定 4 で常にマウントされているため、知らせが途切れない）。
+- M13: セーフエリアの規則の検査（AC-46・AC-47）は、`scripts/*.test.mjs`（`test:scripts`）に置き、`web/src/AppLayout.css` を文字列として読んで判定する（vitest は CSS のファイルを処理しないため）。
+- M14: シートの開閉の状態は `AppLayout` が持ち、幅がデスクトップへ変わったら閉じた状態に戻す（コンパクトへ戻ったときはシートが閉じている）。
