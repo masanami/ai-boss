@@ -103,9 +103,3 @@
   margin: 0;
   font-weight: 600;
 }
-
-/* 「すべての記録を表示」の後にフォーカスを受ける（tabIndex=-1）。
-   プログラムからのフォーカスで枠線を出さない */
-.decision-log:focus {
-  outline: none;
-}
