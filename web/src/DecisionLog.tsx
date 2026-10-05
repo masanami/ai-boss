@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useRef, useState } from "react";
 import { decisionSectionId } from "./decision-section-id";
 import { useDecisions } from "./use-decisions";
 import { groupDecisionsByTask } from "./group-decisions-by-task";
@@ -123,25 +123,27 @@ interface DecisionLogProps {
   tasks?: Task[];
   tasksStatus?: TasksLoadStatus;
   /**
-   * Issue #557 (S2a, 親 #438 決定15): the task whose section to scroll into
-   * view once the log has loaded — set when the log was opened from a task
-   * card's 記録を見る button, `null`/omitted when opened from the navigation.
-   */
-  scrollTargetTaskId?: number | null;
-  /**
-   * Called once the target above has been consumed, i.e. as soon as the fetch
-   * has settled — **whether or not anything was scrolled** (no section for
-   * that task, empty log, fetch error, no `scrollIntoView` in this
-   * environment). The owner of the state (`AppLayout`) clears it in response;
-   * this component keeps no state of its own about it. If consumption were
-   * conditional on having scrolled, a stale target would survive this
-   * component's unmount and fire on a later reopen from the navigation.
+   * Issue #689: the task to narrow the log to — set when the log was opened
+   * from a task card's 記録を見る button, `null`/omitted when opened from the
+   * navigation (which keeps the whole-log view of #358 判断1). Narrowing
+   * replaced #557's scroll-to-section: the scroll did work, but for a task
+   * with no records (no section), the newest section (already at the top) or
+   * the last one (cannot reach the top) nothing visibly changed, so the
+   * button looked like a plain page switch.
    *
-   * Must be referentially stable (it is an effect dependency): an inline
-   * arrow from a caller that does not clear the target would re-run the
-   * scroll on every parent render.
+   * Carries the title, not just the id, so the notice can name the task even
+   * when it has no records (section titles come from the records).
    */
-  onScrollTargetConsumed?: () => void;
+  filterTask?: DecisionLogFilterTask | null;
+  /** Leaves the narrowed view for the whole log (すべての記録を表示). The
+   * owner of `filterTask` (`AppLayout`) clears it in response. */
+  onClearFilter?: () => void;
+}
+
+/** The task the log is narrowed to (Issue #689). */
+export interface DecisionLogFilterTask {
+  id: number;
+  title: string;
 }
 
 /**
@@ -151,35 +153,23 @@ interface DecisionLogProps {
  * once, and a picker only answers the first. Decisions keep mattering across
  * days, so limiting the view to today would be a weak reference surface —
  * the dashboard and the daily report already cover today.
+ *
+ * The one exception is arriving from a task card's 記録を見る (Issue #689):
+ * then only that task's section is shown, with a way back to the whole log.
+ * That is the card's own question, not a picker on this screen.
  */
 function DecisionLog({
   tasks,
   tasksStatus,
-  scrollTargetTaskId = null,
-  onScrollTargetConsumed,
+  filterTask = null,
+  onClearFilter,
 }: DecisionLogProps = {}) {
   const { decisions, status } = useDecisions();
   // Issue #564 (S3): 読み取り専用の会話面で開いている記録。持ち主はここ
   // （`AppLayout` へ上げない）: 面は決定ログの上に重ねるだけで、ほかのビューと
   // 共有する状態が無い。`useChat` の状態には触れない（決定22）。
   const [openedRecord, setOpenedRecord] = useState<OpenedRecord | null>(null);
-
-  // Runs after the commit that rendered the sections (or the empty/error
-  // state), so the target section — if there is one — is already in the DOM.
-  useEffect(() => {
-    if (status === "loading" || scrollTargetTaskId === null) {
-      return;
-    }
-    const section = document.getElementById(
-      decisionSectionId(scrollTargetTaskId),
-    );
-    // Defensive: jsdom (and, in principle, a very old browser) doesn't
-    // implement scrollIntoView. Same stance as AppLayout's setPointerCapture.
-    if (section !== null && typeof section.scrollIntoView === "function") {
-      section.scrollIntoView({ block: "start" });
-    }
-    onScrollTargetConsumed?.();
-  }, [status, scrollTargetTaskId, onScrollTargetConsumed]);
+  const rootRef = useRef<HTMLDivElement>(null);
 
   if (status === "loading") {
     return <p className="decision-log-status">決定ログを読み込み中…</p>;
@@ -192,14 +182,39 @@ function DecisionLog({
     );
   }
 
-  const sections = groupDecisionsByTask(decisions);
+  const allSections = groupDecisionsByTask(decisions);
+  const sections =
+    filterTask === null
+      ? allSections
+      : allSections.filter((section) => section.taskId === filterTask.id);
   // Issue #513 (決定3): only resolve once the task list has actually loaded.
   const taskReferenceTasks = referenceableTasks(tasks, tasksStatus);
 
+  // 「すべての記録を表示」は押すと自分自身が消える。フォーカスが body に
+  // 落ちてキーボード操作の位置を見失わないよう、決定ログの先頭へ移す。
+  const handleClearFilter = () => {
+    onClearFilter?.();
+    rootRef.current?.focus();
+  };
+
   return (
-    <div className="decision-log">
+    <div className="decision-log" ref={rootRef} tabIndex={-1}>
+      {filterTask !== null && (
+        <div className="decision-log-filter">
+          <p className="decision-log-filter-notice">
+            「{filterTask.title}」の記録だけを表示しています
+          </p>
+          <button type="button" onClick={handleClearFilter}>
+            すべての記録を表示
+          </button>
+        </div>
+      )}
       {sections.length === 0 ? (
-        <p className="decision-log-empty">決定はまだありません</p>
+        <p className="decision-log-empty">
+          {filterTask === null
+            ? "決定はまだありません"
+            : "このタスクの記録はまだありません"}
+        </p>
       ) : (
         sections.map((section) => (
           <DecisionTaskSection

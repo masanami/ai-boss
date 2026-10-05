@@ -89,3 +89,17 @@
 .decision-transcript-button {
   font-size: 0.75rem;
 }
+
+/* Issue #689: タスクカードの「記録を見る」から開いたときの絞り込みの表示と、
+   全体へ戻る導線。 */
+.decision-log-filter {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 0.75rem;
+}
+
+.decision-log-filter-notice {
+  margin: 0;
+  font-weight: 600;
+}

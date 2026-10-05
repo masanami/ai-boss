@@ -1881,30 +1881,12 @@ describe("AppLayout", () => {
     ).not.toBeInTheDocument();
   });
 
-  // Issue #557 (S2a, 親 #438 決定14・決定15): タスクカードから決定ログの
-  // 当該タスクのセクションへ寄せる振り返り導線。「どのタスクへ寄せるか」は
-  // AppLayout が state に持ち、DecisionLog の消費通知でクリアする（単位レベル
-  // の確認は TaskCard / TaskBoard / DecisionLog の各テスト側に持つ）。
-  describe("タスクカードの振り返り導線 (Issue #557, S2a)", () => {
-    // jsdom は `scrollIntoView` を実装しないので、プロトタイプ側へスタブを
-    // 差して「どの要素に対して呼ばれたか」を観測する。
-    let scrolledElements: Element[] = [];
-
-    beforeEach(() => {
-      scrolledElements = [];
-      Object.defineProperty(Element.prototype, "scrollIntoView", {
-        configurable: true,
-        writable: true,
-        value: function scrollIntoView(this: Element) {
-          scrolledElements.push(this);
-        },
-      });
-    });
-
-    afterEach(() => {
-      delete (Element.prototype as { scrollIntoView?: unknown }).scrollIntoView;
-    });
-
+  // Issue #557 (S2a, 親 #438 決定14) → Issue #689: タスクカードから決定ログを
+  // そのタスクの記録に絞り込んで開く振り返り導線。「どのタスクに絞るか」は
+  // AppLayout が state に持ち、決定ログの「すべての記録を表示」とナビゲー
+  // ションでクリアする（単位レベルの確認は TaskCard / TaskBoard / DecisionLog
+  // の各テスト側に持つ）。
+  describe("タスクカードの振り返り導線 (Issue #557 / #689)", () => {
     const TASK = makeTask({ id: 5, title: "見積もり資料の作成" });
     const OTHER_TASK = makeTask({ id: 8, title: "打ち合わせの準備" });
 
@@ -1932,8 +1914,13 @@ describe("AppLayout", () => {
       id: 2,
       task_id: OTHER_TASK.id,
       task_title: OTHER_TASK.title,
+      content: "議題を 3 つに絞れ",
       created_at: new Date(2026, 6, 5, 10, 0, 0).toISOString(),
     });
+
+    const FILTER_NOTICE = `「${TASK.title}」の記録だけを表示しています`;
+    const NO_RECORDS = "このタスクの記録はまだありません";
+    const SHOW_ALL = "すべての記録を表示";
 
     /** タスク画面を開き、指定タスクのカードが描画されるまで待って返す。 */
     async function openTaskCard(title: string): Promise<HTMLElement> {
@@ -1952,6 +1939,13 @@ describe("AppLayout", () => {
         name: title,
       });
       return heading.closest("section") as HTMLElement;
+    }
+
+    function decisionSectionTitles(): string[] {
+      const log = screen.getByRole("main", { name: "決定ログ" });
+      return within(log)
+        .queryAllByRole("heading", { level: 3 })
+        .map((heading) => heading.textContent ?? "");
     }
 
     // タスク画面は決定ログを取得しない（＝記録の有無を知る材料を持たない）の
@@ -2008,7 +2002,7 @@ describe("AppLayout", () => {
       ).toBeEnabled();
     });
 
-    it("switches to the decision log and scrolls that task's section into view", async () => {
+    it("switches to the decision log narrowed to that task's records", async () => {
       vi.stubGlobal(
         "fetch",
         createRoutedFetchMock({
@@ -2021,13 +2015,15 @@ describe("AppLayout", () => {
       const card = await openTaskCard(TASK.title);
       fireEvent.click(within(card).getByRole("button", { name: "記録を見る" }));
 
-      const section = await findDecisionSection(TASK.title);
+      await findDecisionSection(TASK.title);
       expect(
         screen.queryByRole("main", { name: "タスクボード" }),
       ).not.toBeInTheDocument();
-      // `toBe`（同一性）で比べる: `toEqual` は DOM ノードを構造等価で比較する。
-      await waitFor(() => expect(scrolledElements).toHaveLength(1));
-      expect(scrolledElements[0]).toBe(section);
+      expect(decisionSectionTitles()).toEqual([TASK.title]);
+      expect(screen.getByText(FILTER_NOTICE)).toBeInTheDocument();
+      expect(
+        screen.queryByText(OTHER_TASK_RECORD.content),
+      ).not.toBeInTheDocument();
     });
 
     it("does not list decision or mentoring records on the task screen", async () => {
@@ -2044,7 +2040,7 @@ describe("AppLayout", () => {
       expect(board.querySelector(".decision-card")).toBeNull();
     });
 
-    it("opens the decision log without scrolling when the task has no records", async () => {
+    it("says the task has no records yet, instead of showing other tasks' records, when it has none", async () => {
       vi.stubGlobal(
         "fetch",
         createRoutedFetchMock({
@@ -2057,161 +2053,151 @@ describe("AppLayout", () => {
       const card = await openTaskCard(TASK.title);
       fireEvent.click(within(card).getByRole("button", { name: "記録を見る" }));
 
-      await findDecisionSection(OTHER_TASK.title);
-      expect(scrolledElements).toEqual([]);
+      const log = await screen.findByRole("main", { name: "決定ログ" });
+      expect(await within(log).findByText(NO_RECORDS)).toBeInTheDocument();
+      expect(within(log).getByText(FILTER_NOTICE)).toBeInTheDocument();
+      expect(decisionSectionTitles()).toEqual([]);
       expect(screen.queryByRole("alert")).not.toBeInTheDocument();
     });
 
-    it("does not scroll when the decision log is opened from the navigation", async () => {
+    it("goes back to the whole log from the 記録を見る view with すべての記録を表示", async () => {
       vi.stubGlobal(
         "fetch",
-        createRoutedFetchMock({ tasks: [TASK], decisions: [TASK_RECORD] }),
+        createRoutedFetchMock({
+          tasks: [TASK, OTHER_TASK],
+          decisions: [TASK_RECORD, OTHER_TASK_RECORD],
+        }),
+      );
+
+      render(<AppLayout />);
+      const card = await openTaskCard(TASK.title);
+      fireEvent.click(within(card).getByRole("button", { name: "記録を見る" }));
+      fireEvent.click(await screen.findByRole("button", { name: SHOW_ALL }));
+
+      await findDecisionSection(OTHER_TASK.title);
+      expect(decisionSectionTitles()).toEqual([OTHER_TASK.title, TASK.title]);
+      expect(screen.queryByText(FILTER_NOTICE)).not.toBeInTheDocument();
+      expect(
+        screen.queryByRole("button", { name: SHOW_ALL }),
+      ).not.toBeInTheDocument();
+    });
+
+    // 「すべての記録を表示」は押すと自分自身が消える。フォーカスを body に
+    // 落とさず決定ログに残す（キーボード操作で位置を見失わない）。
+    it("keeps keyboard focus inside the decision log after すべての記録を表示 removes itself", async () => {
+      vi.stubGlobal(
+        "fetch",
+        createRoutedFetchMock({
+          tasks: [TASK, OTHER_TASK],
+          decisions: [TASK_RECORD, OTHER_TASK_RECORD],
+        }),
+      );
+
+      render(<AppLayout />);
+      const card = await openTaskCard(TASK.title);
+      fireEvent.click(within(card).getByRole("button", { name: "記録を見る" }));
+      const showAll = await screen.findByRole("button", { name: SHOW_ALL });
+      showAll.focus();
+      fireEvent.click(showAll);
+
+      await findDecisionSection(OTHER_TASK.title);
+      expect(document.activeElement).not.toBe(document.body);
+      expect(document.activeElement).toHaveClass("decision-log");
+    });
+
+    // #358 判断1: ナビゲーションから開いたときは全体表示のまま。
+    it("shows the whole log, unfiltered, when the decision log is opened from the navigation", async () => {
+      vi.stubGlobal(
+        "fetch",
+        createRoutedFetchMock({
+          tasks: [TASK, OTHER_TASK],
+          decisions: [TASK_RECORD, OTHER_TASK_RECORD],
+        }),
       );
 
       render(<AppLayout />);
       await openTaskCard(TASK.title);
       fireEvent.click(screen.getByRole("button", { name: "決定ログ" }));
 
-      await findDecisionSection(TASK.title);
-      expect(scrolledElements).toEqual([]);
+      await findDecisionSection(OTHER_TASK.title);
+      expect(decisionSectionTitles()).toEqual([OTHER_TASK.title, TASK.title]);
+      expect(
+        screen.queryByRole("button", { name: SHOW_ALL }),
+      ).not.toBeInTheDocument();
     });
 
-    it("consumes the target: reopening the decision log from the navigation afterwards does not scroll again", async () => {
-      vi.stubGlobal(
-        "fetch",
-        createRoutedFetchMock({ tasks: [TASK], decisions: [TASK_RECORD] }),
-      );
-
-      render(<AppLayout />);
-      const card = await openTaskCard(TASK.title);
-      fireEvent.click(within(card).getByRole("button", { name: "記録を見る" }));
-      await findDecisionSection(TASK.title);
-      await waitFor(() => expect(scrolledElements).toHaveLength(1));
-
-      fireEvent.click(screen.getByRole("button", { name: "設定" }));
-      await screen.findByRole("main", { name: "設定" });
-      fireEvent.click(screen.getByRole("button", { name: "決定ログ" }));
-
-      await findDecisionSection(TASK.title);
-      expect(scrolledElements).toHaveLength(1);
-    });
-
-    // 決定15: スクロールしなかった遷移でも対象は消費される。1 回目の取得では
-    // そのタスクの記録が無く、開き直したときには記録がある（＝消費されずに
-    // 残っていればここでスクロールしてしまう）状況を作って確かめる。
-    it("consumes the target even when nothing was scrolled: a record that appears later is not scrolled to on a navigation reopen", async () => {
-      let decisionsFetchCount = 0;
+    it("does not keep the filter once the user navigates away: reopening from the navigation shows the whole log", async () => {
       vi.stubGlobal(
         "fetch",
         createRoutedFetchMock({
           tasks: [TASK, OTHER_TASK],
-          decisions: () => {
-            decisionsFetchCount += 1;
-            return decisionsFetchCount === 1
-              ? [OTHER_TASK_RECORD]
-              : [TASK_RECORD, OTHER_TASK_RECORD];
-          },
+          decisions: [TASK_RECORD, OTHER_TASK_RECORD],
         }),
       );
 
       render(<AppLayout />);
       const card = await openTaskCard(TASK.title);
       fireEvent.click(within(card).getByRole("button", { name: "記録を見る" }));
-      await findDecisionSection(OTHER_TASK.title);
-      expect(scrolledElements).toEqual([]);
+      await screen.findByText(FILTER_NOTICE);
 
       fireEvent.click(screen.getByRole("button", { name: "設定" }));
       await screen.findByRole("main", { name: "設定" });
       fireEvent.click(screen.getByRole("button", { name: "決定ログ" }));
 
-      await findDecisionSection(TASK.title);
-      expect(decisionsFetchCount).toBe(2);
-      expect(scrolledElements).toEqual([]);
+      await findDecisionSection(OTHER_TASK.title);
+      expect(decisionSectionTitles()).toEqual([OTHER_TASK.title, TASK.title]);
     });
 
-    // 消費後は対象が `null` なので、決定ログを表示したまま `AppLayout` が
-    // 再レンダリングしても寄せ直さない（ユーザーのスクロール位置を奪わない）。
-    // ナビゲーション側のクリアが入った後は、消費通知の配線が外れたことを
-    // 開き直しのテストでは観測できないため、観測できるこの形で固定する。
-    it("does not scroll again when AppLayout re-renders while the decision log stays open", async () => {
-      vi.stubGlobal(
-        "fetch",
-        createRoutedFetchMock({ tasks: [TASK], decisions: [TASK_RECORD] }),
-      );
-
-      render(<AppLayout />);
-      const card = await openTaskCard(TASK.title);
-      fireEvent.click(within(card).getByRole("button", { name: "記録を見る" }));
-      await findDecisionSection(TASK.title);
-      await waitFor(() => expect(scrolledElements).toHaveLength(1));
-
-      // サイドパネル幅の変更は AppLayout 自身の再レンダリングを起こす。
-      const splitter = screen.getByRole("separator", {
-        name: "サイドパネルの幅",
-      });
-      const widthBefore = splitter.getAttribute("aria-valuenow");
-      fireEvent.keyDown(splitter, { key: "Home" });
-      fireEvent.keyDown(splitter, { key: "End" });
-      fireEvent.keyDown(splitter, { key: "ArrowRight" });
-      expect(splitter.getAttribute("aria-valuenow")).not.toBe(widthBefore);
-
-      expect(scrolledElements).toHaveLength(1);
-    });
-
-    // PR #559 Codex P2（2026-09-21 オーナー決定）: 消費の通知は取得完了が契機
-    // なので、取得が終わる前に決定ログを離れると `DecisionLog` は通知しないまま
-    // アンマウントされる。ナビゲーション経由の切替は導線を経由しない遷移
-    // なので、`AppLayout` がその場で対象を捨てる。
-    it("drops the target when the user navigates away before the decision log has loaded", async () => {
-      const firstFetch = createGate();
-      let decisionsFetchCount = 0;
+    // 絞り込み表示中にナビゲーションの「決定ログ」を押しても、ナビゲーション
+    // から開いたことになる（全体表示）。
+    it("clears the filter when 決定ログ in the navigation is pressed while narrowed", async () => {
       vi.stubGlobal(
         "fetch",
         createRoutedFetchMock({
-          tasks: [TASK],
-          decisions: () => {
-            decisionsFetchCount += 1;
-            return decisionsFetchCount === 1
-              ? firstFetch.promise.then(() => [TASK_RECORD])
-              : [TASK_RECORD];
-          },
+          tasks: [TASK, OTHER_TASK],
+          decisions: [TASK_RECORD, OTHER_TASK_RECORD],
         }),
       );
 
       render(<AppLayout />);
       const card = await openTaskCard(TASK.title);
       fireEvent.click(within(card).getByRole("button", { name: "記録を見る" }));
-      const log = await screen.findByRole("main", { name: "決定ログ" });
-      expect(within(log).getByText("決定ログを読み込み中…")).toBeInTheDocument();
+      await screen.findByText(FILTER_NOTICE);
 
-      // 取得は保留のまま、ナビゲーションで離れて開き直す。
-      fireEvent.click(screen.getByRole("button", { name: "設定" }));
-      await screen.findByRole("main", { name: "設定" });
       fireEvent.click(screen.getByRole("button", { name: "決定ログ" }));
 
-      await findDecisionSection(TASK.title);
-      expect(decisionsFetchCount).toBe(2);
-      expect(scrolledElements).toEqual([]);
-
-      // 保留していた 1 回目の取得を解放して合流する（アンマウント済みの
-      // インスタンスは `cancelled` ガードで何もしない）。
-      firstFetch.open();
-      await firstFetch.promise;
-      expect(scrolledElements).toEqual([]);
+      await findDecisionSection(OTHER_TASK.title);
+      expect(screen.queryByText(FILTER_NOTICE)).not.toBeInTheDocument();
     });
 
-    it("does not throw where scrollIntoView does not exist", async () => {
-      delete (Element.prototype as { scrollIntoView?: unknown }).scrollIntoView;
+    // 記録を見るはタスクごとに押せる。別のタスクから押し直したら、そのタスクの
+    // 記録に絞り込まれる。タスク画面へはナビゲーションで戻る（＝絞り込みは
+    // 一度クリアされる）ので、ここで固定しているのは「新しいタスクの名前と
+    // 節だけが出る」ことまでである。
+    it("narrows to the newly chosen task when 記録を見る is pressed on another card", async () => {
       vi.stubGlobal(
         "fetch",
-        createRoutedFetchMock({ tasks: [TASK], decisions: [TASK_RECORD] }),
+        createRoutedFetchMock({
+          tasks: [TASK, OTHER_TASK],
+          decisions: [TASK_RECORD, OTHER_TASK_RECORD],
+        }),
       );
 
       render(<AppLayout />);
       const card = await openTaskCard(TASK.title);
       fireEvent.click(within(card).getByRole("button", { name: "記録を見る" }));
+      await screen.findByText(FILTER_NOTICE);
 
-      expect(await findDecisionSection(TASK.title)).toBeInTheDocument();
+      const otherCard = await openTaskCard(OTHER_TASK.title);
+      fireEvent.click(
+        within(otherCard).getByRole("button", { name: "記録を見る" }),
+      );
+
+      await screen.findByText(
+        `「${OTHER_TASK.title}」の記録だけを表示しています`,
+      );
+      await findDecisionSection(OTHER_TASK.title);
+      expect(decisionSectionTitles()).toEqual([OTHER_TASK.title]);
     });
   });
   describe("メンタリング記録から当該会話を読み返す面 (Issue #564, S3)", () => {
