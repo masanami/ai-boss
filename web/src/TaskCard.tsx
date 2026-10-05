@@ -257,6 +257,8 @@ function TaskCard({
         aria-label="タスクを編集"
         onSubmit={handleSubmit}
       >
+        {/* 編集中もボスの文面の `#<id>` と突き合わせられるように ID を残す（Issue #688） */}
+        <span className="task-card-id">{`#${task.id}`}</span>
         <label>
           タイトル
           <input

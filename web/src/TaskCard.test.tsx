@@ -106,6 +106,22 @@ describe("TaskCard", () => {
     expect(within(card).getByText("#42")).toBeInTheDocument();
   });
 
+  it("keeps showing the task id while the card is being edited (#688)", () => {
+    render(
+      <TaskCard
+        task={{ ...BASE_TASK, id: 42 }}
+        onStatusChange={vi.fn()}
+        onEdit={vi.fn()}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "編集" }));
+
+    // 編集中もボスの文面の ID と突き合わせられる（カードの状態で ID が消えない）
+    const form = screen.getByRole("form", { name: "タスクを編集" });
+    expect(within(form).getByText("#42")).toBeInTheDocument();
+  });
+
   it("keeps the title heading's accessible name to the title alone (#688)", () => {
     render(
       <TaskCard task={BASE_TASK} onStatusChange={vi.fn()} onEdit={vi.fn()} />,
