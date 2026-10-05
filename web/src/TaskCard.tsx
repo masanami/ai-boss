@@ -387,7 +387,12 @@ function TaskCard({
       onDragStart={handleDragStart}
       onDragEnd={handleDragEnd}
     >
-      <h3>{task.title}</h3>
+      <div className="task-card-header">
+        {/* ボスの文面がタスクを呼ぶときと同じ `#<id>` 表記（Issue #688）。
+            見出しの外に置き、見出しのアクセシブルネームはタイトルだけに保つ */}
+        <span className="task-card-id">{`#${task.id}`}</span>
+        <h3>{task.title}</h3>
+      </div>
       {task.description !== null && task.description !== "" && (
         <p>{task.description}</p>
       )}

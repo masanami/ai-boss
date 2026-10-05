@@ -148,6 +148,21 @@
   font-size: 0.95rem;
 }
 
+/* タスク ID（Issue #688）はタイトルの前に小さく添える。長いタイトルは
+   ID の右で折り返す */
+.task-card-header {
+  display: flex;
+  align-items: baseline;
+  gap: 0.4rem;
+}
+
+.task-card-id {
+  flex-shrink: 0;
+  font-size: 0.8rem;
+  color: var(--color-text-muted);
+  font-variant-numeric: tabular-nums;
+}
+
 .task-card p {
   margin: 0;
   font-size: 0.8rem;
