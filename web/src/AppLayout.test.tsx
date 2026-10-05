@@ -2147,8 +2147,10 @@ describe("AppLayout", () => {
       expect(screen.queryByText(FILTER_NOTICE)).not.toBeInTheDocument();
     });
 
-    // 記録を見るはタスクごとに押せる。別のタスクから押し直したら、そのタスクに
-    // 絞り直す（前の対象を持ち越さない）。
+    // 記録を見るはタスクごとに押せる。別のタスクから押し直したら、そのタスクの
+    // 記録に絞り込まれる。タスク画面へはナビゲーションで戻る（＝絞り込みは
+    // 一度クリアされる）ので、ここで固定しているのは「新しいタスクの名前と
+    // 節だけが出る」ことまでである。
     it("narrows to the newly chosen task when 記録を見る is pressed on another card", async () => {
       vi.stubGlobal(
         "fetch",
