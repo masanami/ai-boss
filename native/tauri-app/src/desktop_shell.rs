@@ -272,10 +272,7 @@ pub fn emit_minute_tick<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<()> {
 /// （区切って壁時計を確かめる `std::thread::sleep`）。
 /// 眠り方を引数で受け取り、マージンの加算と `Continue` を返すことをユニット
 /// テストで固定する。
-pub fn wait_for_next_tick(
-    duration: Duration,
-    sleep: &mut impl FnMut(Duration),
-) -> ControlFlow<()> {
+pub fn wait_for_next_tick(duration: Duration, sleep: &mut impl FnMut(Duration)) -> ControlFlow<()> {
     sleep(duration + TICK_MARGIN);
     ControlFlow::Continue(())
 }
@@ -295,7 +292,9 @@ pub fn sleep_until_wall_clock(
         let Ok(until_deadline) = deadline.duration_since(now()) else {
             return;
         };
-        let step = until_deadline.min(duration - slept).min(WAKE_CHECK_INTERVAL);
+        let step = until_deadline
+            .min(duration - slept)
+            .min(WAKE_CHECK_INTERVAL);
         if step.is_zero() {
             return;
         }
@@ -552,17 +551,21 @@ mod tests {
         let clock = Cell::new(at(1_700_000_070, 0));
         let slept = RefCell::new(Vec::new());
 
-        sleep_until_wall_clock(duration, || clock.get(), |d| {
-            let i = slept.borrow().len();
-            slept.borrow_mut().push(d);
-            let jump = jumps.get(i).copied().unwrap_or(0);
-            let advanced = clock.get() + d;
-            clock.set(if jump >= 0 {
-                advanced + Duration::from_secs(jump as u64)
-            } else {
-                advanced - Duration::from_secs(jump.unsigned_abs())
-            });
-        });
+        sleep_until_wall_clock(
+            duration,
+            || clock.get(),
+            |d| {
+                let i = slept.borrow().len();
+                slept.borrow_mut().push(d);
+                let jump = jumps.get(i).copied().unwrap_or(0);
+                let advanced = clock.get() + d;
+                clock.set(if jump >= 0 {
+                    advanced + Duration::from_secs(jump as u64)
+                } else {
+                    advanced - Duration::from_secs(jump.unsigned_abs())
+                });
+            },
+        );
 
         slept.into_inner()
     }
@@ -624,7 +627,10 @@ mod tests {
         // 壁時計が戻っても、眠りの合計は元の待ち時間を越えない（変更前より遅れない）。
         let slept = run_sleep_until_wall_clock(Duration::from_millis(12_100), &[-600]);
 
-        assert_eq!(slept.iter().sum::<Duration>(), Duration::from_millis(12_100));
+        assert_eq!(
+            slept.iter().sum::<Duration>(),
+            Duration::from_millis(12_100)
+        );
     }
 
     #[test]

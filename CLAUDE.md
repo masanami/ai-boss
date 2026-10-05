@@ -101,7 +101,7 @@ AI が「上司（ボス）」を演じるセルフマネジメント支援ア�
 ## 品質方針
 
 ```text
-- 必須ゲート: lint / typecheck / test / test:rust / test:tauri / check:ios / check:android の全通過（/quality-check が機械可読で pass を返すこと）。`npm test` は `cargo` を呼ばない（Rust のツールチェーンが無くても動く）ため、`npm run test:rust`・`npm run test:tauri`・`npm run check:ios`・`npm run check:android` は別に実行する。`test:tauri` は `native/tauri-app/`（Tauri 2 の器。機能仕様 docs/features/tauri-in-app-runtime.md S2）の `cargo test` で、実行前に製品版の web（`web/dist-app/`）のビルドを要する（`pretest:tauri` が自動で行う）。`check:ios` は器のライブラリを iOS 向け（`aarch64-apple-ios-sim`・`aarch64-apple-ios`）に `cargo check` し、デスクトップの変更が iOS のビルドを壊したことに気づくための検査（機能仕様 docs/features/ios-shell.md 決定 3）。開発機に `rustup target add aarch64-apple-ios aarch64-apple-ios-sim` を要する（無いとターゲットが無いエラーで落ちる。品質の失敗ではなく準備の不足）。web のビルドは `precheck:ios` が自動で行う。`check:android` は器のライブラリを Android 向け（`aarch64-linux-android`）に `cargo check` する検査（機能仕様 docs/features/android-shell.md 決定 3）。依存の `build.rs` が C のコードを NDK の clang でコンパイルするため、`scripts/check-android.mjs` が NDK の場所（`NDK_HOME`、無ければ `ANDROID_HOME`・`ANDROID_SDK_ROOT`・`~/Library/Android/sdk` の `ndk/` の最新の版）からツールチェーンの環境変数を組んで呼ぶ。開発機に `rustup target add aarch64-linux-android` と Android NDK を要する（無いと `NDK_HOME` の設定を促して落ちる。品質の失敗ではなく準備の不足。導入の手順は同じ機能仕様の「手動の確認手順（S1）」の準備）。web のビルドは `precheck:android` が自動で行う
+- 必須ゲート: lint / typecheck / test / test:rust / test:tauri / check:ios / check:android / lint:rust / fmt:rust の全通過（/quality-check が機械可読で pass を返すこと）。`npm test` は `cargo` を呼ばない（Rust のツールチェーンが無くても動く）ため、`npm run test:rust`・`npm run test:tauri`・`npm run check:ios`・`npm run check:android`・`npm run lint:rust`・`npm run fmt:rust` は別に実行する。`test:tauri` は `native/tauri-app/`（Tauri 2 の器。機能仕様 docs/features/tauri-in-app-runtime.md S2）の `cargo test` で、実行前に製品版の web（`web/dist-app/`）のビルドを要する（`pretest:tauri` が自動で行う）。`check:ios` は器のライブラリを iOS 向け（`aarch64-apple-ios-sim`・`aarch64-apple-ios`）に `cargo check` し、デスクトップの変更が iOS のビルドを壊したことに気づくための検査（機能仕様 docs/features/ios-shell.md 決定 3）。開発機に `rustup target add aarch64-apple-ios aarch64-apple-ios-sim` を要する（無いとターゲットが無いエラーで落ちる。品質の失敗ではなく準備の不足）。web のビルドは `precheck:ios` が自動で行う。`check:android` は器のライブラリを Android 向け（`aarch64-linux-android`）に `cargo check` する検査（機能仕様 docs/features/android-shell.md 決定 3）。依存の `build.rs` が C のコードを NDK の clang でコンパイルするため、`scripts/check-android.mjs` が NDK の場所（`NDK_HOME`、無ければ `ANDROID_HOME`・`ANDROID_SDK_ROOT`・`~/Library/Android/sdk` の `ndk/` の最新の版）からツールチェーンの環境変数を組んで呼ぶ。開発機に `rustup target add aarch64-linux-android` と Android NDK を要する（無いと `NDK_HOME` の設定を促して落ちる。品質の失敗ではなく準備の不足。導入の手順は同じ機能仕様の「手動の確認手順（S1）」の準備）。web のビルドは `precheck:android` が自動で行う。`lint:rust` は器（`native/tauri-app/`）の全ターゲット（ライブラリ・テスト・example）に `cargo clippy -- -D warnings` をかけ、`fmt:rust` は同じ器に `cargo fmt -- --check`（既定の設定）をかける。対象は器だけ（`native/secure-transport/` 等の他のクレートは含まない）。`lint:rust` も Tauri の `generate_context!` が `web/dist-app/` を要するため、web のビルドは `prelint:rust` が自動で行う
 - クリティカル箇所（変更時は人間レビュー必須）: Claude API 連携・DB スキーマ・API キーの取り扱い・通知の実行系
 - サボり検知の閾値・エスカレーションはユニットテストが仕様の正本（[ADR 0004](docs/adr/0004-deterministic-detection-engine.md)）。閾値を変える PR はテストを同時に変える
 ```
@@ -140,6 +140,12 @@ npm run check:ios
 
 # Tauri の器の Android 向けのコンパイルの検査（必須ゲート。要 rustup target add aarch64-linux-android と Android NDK）
 npm run check:android
+
+# Tauri の器の clippy（必須ゲート。警告もエラー扱い。web/dist-app/ のビルドを自動で先に行う）
+npm run lint:rust
+
+# Tauri の器の整形の検査（必須ゲート。直すときは cargo fmt --manifest-path native/tauri-app/Cargo.toml）
+npm run fmt:rust
 
 # ビルド
 npm run build

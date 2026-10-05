@@ -292,7 +292,10 @@ fn setup_starts_the_minute_ticker() {
     // 待ち・送りを製品の組み立てで行うことは `tick_n_times` を使うテストが確かめる。
     let watch_until = Instant::now() + Duration::from_millis(300);
     while Instant::now() < watch_until {
-        assert!(ticker.is_running(), "the minute ticker thread should keep running");
+        assert!(
+            ticker.is_running(),
+            "the minute ticker thread should keep running"
+        );
         std::thread::sleep(Duration::from_millis(10));
     }
     ticker.stop();
@@ -421,12 +424,18 @@ struct SingleInstanceSocketGuard {
 impl SingleInstanceSocketGuard {
     /// 器を組むと single-instance が非同期に待ち受けを開く場合。
     fn expecting_bind(socket: PathBuf) -> Self {
-        Self { socket, wait_for_bind: true }
+        Self {
+            socket,
+            wait_for_bind: true,
+        }
     }
 
     /// 待ち受けが開かない（テストが置く・既に消してある）場合。すぐ消す。
     fn immediate(socket: PathBuf) -> Self {
-        Self { socket, wait_for_bind: false }
+        Self {
+            socket,
+            wait_for_bind: false,
+        }
     }
 }
 
@@ -489,7 +498,9 @@ fn the_product_assembly_holds_the_instance_lock() {
     test_home();
     let identifier = format!("dev.aiboss.app.instance-lock-held-{}", std::process::id());
     // 器を組む（ソケットが開きうる）より前に作る。
-    let _socket = SingleInstanceSocketGuard::expecting_bind(app_lib::single_instance_socket_path(&identifier));
+    let _socket = SingleInstanceSocketGuard::expecting_bind(app_lib::single_instance_socket_path(
+        &identifier,
+    ));
     let mut context = app_lib::context();
     context.config_mut().identifier = identifier;
     let mut app = app_lib::configure(app_lib::with_single_instance(mock_builder()))
@@ -502,7 +513,10 @@ fn the_product_assembly_holds_the_instance_lock() {
 
     let second = app_lib::acquire_instance_lock(&config_dir).unwrap();
 
-    assert!(second.is_none(), "the running app should hold the instance lock");
+    assert!(
+        second.is_none(),
+        "the running app should hold the instance lock"
+    );
 }
 
 /// 錠を別の持ち手（先に起動したプロセス）が持っていると、製品の組み立ては錠の

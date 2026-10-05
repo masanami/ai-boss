@@ -80,8 +80,10 @@ fn main() {
                 for (name, value) in map {
                     headers.insert(
                         HeaderName::from_bytes(name.as_bytes()).expect("header name"),
-                        HeaderValue::from_str(value.as_str().expect("header value must be a string"))
-                            .expect("header value"),
+                        HeaderValue::from_str(
+                            value.as_str().expect("header value must be a string"),
+                        )
+                        .expect("header value"),
                     );
                 }
             }

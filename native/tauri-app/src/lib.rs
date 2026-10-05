@@ -80,6 +80,7 @@ pub const EXCLUDES_APP_DATA_FROM_BACKUP: bool = cfg!(target_os = "ios");
 // 付け先をターゲットごとのコンパイルで固定する（iOS は `check:ios`、macOS は
 // `test:tauri`・`build:tauri`、Android は `check:android` がコンパイルする）。`cfg!` の
 // 付け先を誤ると（例: `mobile`・`target_vendor = "apple"`）、どれかのターゲットで落ちる。
+// ホスト（macOS）の `cargo test` が iOS の分岐に入らないことも、下の 2 行目が固定する。
 #[cfg(target_os = "ios")]
 const _: () = assert!(EXCLUDES_APP_DATA_FROM_BACKUP);
 #[cfg(not(target_os = "ios"))]
@@ -104,18 +105,22 @@ pub fn backup_exclusion_for(exclude: bool) -> Option<BackupExclusion> {
 /// 実際に付くことを確かめる）が、製品で呼ぶのは iOS だけ（[`EXCLUDES_APP_DATA_FROM_BACKUP`]）。
 #[cfg(target_vendor = "apple")]
 pub fn exclude_from_backup(path: &Path) -> io::Result<()> {
-    use objc2_foundation::{NSNumber, NSString, NSURL, NSURLIsExcludedFromBackupKey};
+    use objc2_foundation::{NSNumber, NSString, NSURLIsExcludedFromBackupKey, NSURL};
 
-    let url = NSURL::fileURLWithPath_isDirectory(&NSString::from_str(&path.to_string_lossy()), path.is_dir());
+    let url = NSURL::fileURLWithPath_isDirectory(
+        &NSString::from_str(&path.to_string_lossy()),
+        path.is_dir(),
+    );
     let value = NSNumber::numberWithBool(true);
     // SAFETY: `NSURLIsExcludedFromBackupKey` の値は真偽の `NSNumber`（Apple の文書）。
-    unsafe { url.setResourceValue_forKey_error(Some(&value), NSURLIsExcludedFromBackupKey) }.map_err(|error| {
-        io::Error::other(format!(
-            "failed to exclude {} from backup: {}",
-            path.display(),
-            error.localizedDescription()
-        ))
-    })
+    unsafe { url.setResourceValue_forKey_error(Some(&value), NSURLIsExcludedFromBackupKey) }
+        .map_err(|error| {
+            io::Error::other(format!(
+                "failed to exclude {} from backup: {}",
+                path.display(),
+                error.localizedDescription()
+            ))
+        })
 }
 
 /// Apple 以外では呼ばれない（[`backup_exclusion_for`] は iOS でだけ `true` を受ける）。
@@ -123,7 +128,10 @@ pub fn exclude_from_backup(path: &Path) -> io::Result<()> {
 pub fn exclude_from_backup(path: &Path) -> io::Result<()> {
     Err(io::Error::new(
         io::ErrorKind::Unsupported,
-        format!("excluding from backup is only implemented for Apple targets: {}", path.display()),
+        format!(
+            "excluding from backup is only implemented for Apple targets: {}",
+            path.display()
+        ),
     ))
 }
 
@@ -227,13 +235,15 @@ pub fn acquire_instance_lock(app_config_dir: &Path) -> io::Result<Option<Instanc
 #[cfg(desktop)]
 fn instance_lock_plugin<R: Runtime>() -> tauri::plugin::TauriPlugin<R> {
     tauri::plugin::Builder::new(INSTANCE_LOCK_PLUGIN_NAME)
-        .setup(|app, _api| match acquire_instance_lock(&app.path().app_config_dir()?)? {
-            Some(lock) => {
-                app.manage(lock);
-                Ok(())
-            }
-            None => Err(INSTANCE_LOCK_HELD_MESSAGE.into()),
-        })
+        .setup(
+            |app, _api| match acquire_instance_lock(&app.path().app_config_dir()?)? {
+                Some(lock) => {
+                    app.manage(lock);
+                    Ok(())
+                }
+                None => Err(INSTANCE_LOCK_HELD_MESSAGE.into()),
+            },
+        )
         .build()
 }
 
@@ -242,7 +252,10 @@ fn instance_lock_plugin<R: Runtime>() -> tauri::plugin::TauriPlugin<R> {
 /// （identifier の `.`・`-` を `_` にして `/tmp/<identifier>_si.sock`）。
 #[cfg(target_os = "macos")]
 pub fn single_instance_socket_path(identifier: &str) -> PathBuf {
-    PathBuf::from(format!("/tmp/{}_si.sock", identifier.replace(['.', '-'], "_")))
+    PathBuf::from(format!(
+        "/tmp/{}_si.sock",
+        identifier.replace(['.', '-'], "_")
+    ))
 }
 
 /// 錠を取れなかったプロセスが、既にあるプロセス（錠を持っている側）へ 2 つ目の起動を
@@ -291,7 +304,12 @@ fn notify_once(socket: &Path) -> io::Result<()> {
     let cwd = std::env::current_dir().unwrap_or_default();
     writer.write_all(cwd.to_str().unwrap_or_default().as_bytes())?;
     writer.write_all(b"\0\0")?;
-    writer.write_all(std::env::args().collect::<Vec<String>>().join("\0").as_bytes())?;
+    writer.write_all(
+        std::env::args()
+            .collect::<Vec<String>>()
+            .join("\0")
+            .as_bytes(),
+    )?;
     writer.flush()
 }
 
@@ -377,7 +395,9 @@ pub fn is_allowed_navigation_for(origin: AppOrigin, url: &Url) -> bool {
     match origin {
         AppOrigin::TauriLocalhost => url.scheme() == "tauri" && url.host_str() == Some("localhost"),
         AppOrigin::HttpTauriLocalhost => {
-            url.scheme() == "http" && url.host_str() == Some("tauri.localhost") && url.port().is_none()
+            url.scheme() == "http"
+                && url.host_str() == Some("tauri.localhost")
+                && url.port().is_none()
         }
     }
 }
@@ -509,13 +529,13 @@ fn run_desktop() {
         Err(error) => panic!("error while building tauri application: {error}"),
     };
     app.run(|app, event| {
-            if let tauri::RunEvent::Ready = event {
-                if let Err(error) = desktop_shell::create_tray(app) {
-                    eprintln!("failed to create the menu bar icon: {error}");
-                }
+        if let tauri::RunEvent::Ready = event {
+            if let Err(error) = desktop_shell::create_tray(app) {
+                eprintln!("failed to create the menu bar icon: {error}");
             }
-            desktop_shell::handle_run_event(app, event);
-        });
+        }
+        desktop_shell::handle_run_event(app, event);
+    });
 }
 
 /// 多重起動の防止（#659）を組み込む。`configure` より前（先頭の 2 つのプラグイン）に
@@ -577,7 +597,10 @@ pub fn configure<R: Runtime>(builder: tauri::Builder<R>) -> tauri::Builder<R> {
 /// [`SecureState::production`]（製品版の宛先の表と端末の保管。Apple はキーチェーン、
 /// Android は S1 では保管できない保管〔#674〕）、テストは
 /// 模擬の宛先の表とメモリの保管を渡す。
-pub fn configure_with<R: Runtime>(builder: tauri::Builder<R>, secure_state: SecureState) -> tauri::Builder<R> {
+pub fn configure_with<R: Runtime>(
+    builder: tauri::Builder<R>,
+    secure_state: SecureState,
+) -> tauri::Builder<R> {
     configure_with_backup_exclusion(
         builder,
         secure_state,
@@ -687,7 +710,10 @@ mod tests {
 
         assert!(prepare_evidence_dir(&config_dir).is_err());
         // リンクはそのまま（消さない・張り替えない）で、リンク先には何も作らない。
-        assert_eq!(std::fs::read_link(config_dir.join("evidence")).unwrap(), outside);
+        assert_eq!(
+            std::fs::read_link(config_dir.join("evidence")).unwrap(),
+            outside
+        );
         assert_eq!(std::fs::read_dir(&outside).unwrap().count(), 0);
     }
 
@@ -726,14 +752,9 @@ mod tests {
         let path = std::ffi::CString::new(path.as_os_str().as_bytes()).unwrap();
         let name = c"com.apple.metadata:com_apple_backup_excludeItem";
         // SAFETY: どちらも NUL 終端の文字列。値の大きさだけを問い合わせる（バッファ無し）。
-        let size = unsafe { libc::getxattr(path.as_ptr(), name.as_ptr(), std::ptr::null_mut(), 0, 0, 0) };
+        let size =
+            unsafe { libc::getxattr(path.as_ptr(), name.as_ptr(), std::ptr::null_mut(), 0, 0, 0) };
         size >= 0
-    }
-
-    #[test]
-    fn the_host_build_does_not_exclude_app_data_from_backup() {
-        // ホスト（macOS）の `cargo test` は iOS の分岐に入らない。
-        assert!(!EXCLUDES_APP_DATA_FROM_BACKUP);
     }
 
     #[test]
@@ -745,7 +766,10 @@ mod tests {
     #[test]
     fn the_chosen_exclusion_sets_the_backup_exclusion_attribute_on_a_directory() {
         let dir = tempfile::tempdir().unwrap();
-        assert!(!has_backup_exclusion_attribute(dir.path()), "a fresh directory has no exclusion");
+        assert!(
+            !has_backup_exclusion_attribute(dir.path()),
+            "a fresh directory has no exclusion"
+        );
 
         let exclude = backup_exclusion_for(true).expect("an exclusion is chosen when excluding");
         exclude(dir.path()).unwrap();
@@ -763,8 +787,15 @@ mod tests {
     static EXCLUDED: std::sync::Mutex<Vec<PathBuf>> = std::sync::Mutex::new(Vec::new());
 
     fn record_exclusion(path: &Path) -> io::Result<()> {
-        assert!(path.is_dir(), "the directory exists when it is excluded: {}", path.display());
-        EXCLUDED.lock().unwrap_or_else(|e| e.into_inner()).push(path.to_path_buf());
+        assert!(
+            path.is_dir(),
+            "the directory exists when it is excluded: {}",
+            path.display()
+        );
+        EXCLUDED
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .push(path.to_path_buf());
         Ok(())
     }
 
@@ -783,7 +814,10 @@ mod tests {
         exclude_app_data_dir_from_backup(&config_dir, Some(record_exclusion)).unwrap();
 
         // 配下の DB・evidence/・錠に効くよう、`app_config_dir` そのもの（だけ）に付ける。
-        assert_eq!(*EXCLUDED.lock().unwrap_or_else(|e| e.into_inner()), vec![config_dir]);
+        assert_eq!(
+            *EXCLUDED.lock().unwrap_or_else(|e| e.into_inner()),
+            vec![config_dir]
+        );
     }
 
     #[test]
@@ -795,7 +829,10 @@ mod tests {
 
         exclude_app_data_dir_from_backup(&config_dir, None).unwrap();
 
-        assert!(EXCLUDED.lock().unwrap_or_else(|e| e.into_inner()).is_empty());
+        assert!(EXCLUDED
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .is_empty());
         // macOS・Android の経路は変えない（ディレクトリも作らない）。
         assert!(!config_dir.exists());
     }
@@ -803,7 +840,8 @@ mod tests {
     #[test]
     fn exclude_app_data_dir_from_backup_fails_when_the_exclusion_fails() {
         let config_dir = tempfile::tempdir().unwrap();
-        let error = exclude_app_data_dir_from_backup(config_dir.path(), Some(fail_exclusion)).unwrap_err();
+        let error =
+            exclude_app_data_dir_from_backup(config_dir.path(), Some(fail_exclusion)).unwrap_err();
         assert_eq!(error.to_string(), "exclusion failed");
     }
 
@@ -891,7 +929,12 @@ mod tests {
         }
 
         let mut holder = Command::new(std::env::current_exe().unwrap())
-            .args(["--exact", "tests::instance_lock_holder_process", "--ignored", "--nocapture"])
+            .args([
+                "--exact",
+                "tests::instance_lock_holder_process",
+                "--ignored",
+                "--nocapture",
+            ])
             .env("INSTANCE_LOCK_HOLDER_DIR", config_dir.path())
             .stdout(Stdio::piped())
             .spawn()
@@ -909,7 +952,10 @@ mod tests {
         let while_held = acquire_instance_lock(config_dir.path()).unwrap().is_none();
         drop(holder);
 
-        assert!(while_held, "the lock held by another process should not be acquired");
+        assert!(
+            while_held,
+            "the lock held by another process should not be acquired"
+        );
         assert!(
             acquire_instance_lock(config_dir.path()).unwrap().is_some(),
             "the lock should be released when the holder process dies"
@@ -930,7 +976,8 @@ mod tests {
 
     #[test]
     fn the_held_message_from_another_plugin_is_not_a_held_instance_lock() {
-        let error = tauri::Error::PluginInitialization("sql".into(), INSTANCE_LOCK_HELD_MESSAGE.into());
+        let error =
+            tauri::Error::PluginInitialization("sql".into(), INSTANCE_LOCK_HELD_MESSAGE.into());
 
         assert!(!is_instance_lock_held(&error));
     }
@@ -964,7 +1011,10 @@ mod tests {
     #[cfg(target_os = "macos")]
     fn short_socket_in(dir: &tempfile::TempDir) -> PathBuf {
         let socket = dir.path().join("si.sock");
-        assert!(socket.as_os_str().len() < 104, "the test socket path is too long");
+        assert!(
+            socket.as_os_str().len() < 104,
+            "the test socket path is too long"
+        );
         socket
     }
 
@@ -994,9 +1044,14 @@ mod tests {
         let body = received_rx.recv_timeout(Duration::from_secs(10)).unwrap();
         winner.join().unwrap();
         // プラグインの知らせと同じ形式: 作業ディレクトリ + "\0\0" + 引数（"\0" 区切り）。
-        let (cwd, args) = body.split_once("\0\0").expect("the body has the \\0\\0 separator");
+        let (cwd, args) = body
+            .split_once("\0\0")
+            .expect("the body has the \\0\\0 separator");
         assert_eq!(cwd, std::env::current_dir().unwrap().to_str().unwrap());
-        assert_eq!(args.split('\0').map(String::from).collect::<Vec<_>>(), std::env::args().collect::<Vec<_>>());
+        assert_eq!(
+            args.split('\0').map(String::from).collect::<Vec<_>>(),
+            std::env::args().collect::<Vec<_>>()
+        );
     }
 
     #[cfg(target_os = "macos")]
@@ -1048,7 +1103,10 @@ mod tests {
             error.kind(),
             io::ErrorKind::NotFound | io::ErrorKind::ConnectionRefused
         ));
-        assert!(started.elapsed() < Duration::from_millis(500), "the error should not be retried");
+        assert!(
+            started.elapsed() < Duration::from_millis(500),
+            "the error should not be retried"
+        );
     }
 
     // --- is_allowed_navigation ------------------------------------------------
@@ -1180,18 +1238,29 @@ mod tests {
     #[test]
     fn android_origin_denies_external_https_and_its_own_blob_url() {
         assert!(!android_allows("https://example.com/"));
-        assert!(!android_allows(&format!("blob:http://tauri.localhost/{UUID}")));
+        assert!(!android_allows(&format!(
+            "blob:http://tauri.localhost/{UUID}"
+        )));
     }
 
     #[test]
     fn apple_origin_denies_the_android_origin() {
-        assert!(!is_allowed_navigation_for(AppOrigin::TauriLocalhost, &url("http://tauri.localhost/")));
+        assert!(!is_allowed_navigation_for(
+            AppOrigin::TauriLocalhost,
+            &url("http://tauri.localhost/")
+        ));
     }
 
     #[test]
     fn apple_origin_allows_its_own_origin() {
-        assert!(is_allowed_navigation_for(AppOrigin::TauriLocalhost, &url("tauri://localhost")));
-        assert!(!is_allowed_navigation_for(AppOrigin::TauriLocalhost, &url("tauri://evil.example")));
+        assert!(is_allowed_navigation_for(
+            AppOrigin::TauriLocalhost,
+            &url("tauri://localhost")
+        ));
+        assert!(!is_allowed_navigation_for(
+            AppOrigin::TauriLocalhost,
+            &url("tauri://evil.example")
+        ));
     }
 
     #[test]
@@ -1199,7 +1268,9 @@ mod tests {
         let allows = |s: &str| is_allowed_new_window_for(AppOrigin::HttpTauriLocalhost, &url(s));
         assert!(allows(&format!("blob:http://tauri.localhost/{UUID}")));
         assert!(!allows(&format!("blob:tauri://localhost/{UUID}")));
-        assert!(!allows(&format!("blob:http://tauri.localhost.evil.example/{UUID}")));
+        assert!(!allows(&format!(
+            "blob:http://tauri.localhost.evil.example/{UUID}"
+        )));
         assert!(!allows(&format!("blob:http://tauri.localhost:8080/{UUID}")));
         assert!(!allows(&format!("blob:https://tauri.localhost/{UUID}")));
         assert!(!allows("http://tauri.localhost/"));
@@ -1215,7 +1286,10 @@ mod tests {
     #[test]
     fn the_origin_chosen_for_android_is_http_tauri_localhost() {
         assert_eq!(app_origin_for(true), AppOrigin::HttpTauriLocalhost);
-        assert_eq!(AppOrigin::HttpTauriLocalhost.as_str(), "http://tauri.localhost");
+        assert_eq!(
+            AppOrigin::HttpTauriLocalhost.as_str(),
+            "http://tauri.localhost"
+        );
     }
 
     #[test]
