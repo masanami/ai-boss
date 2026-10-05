@@ -1,0 +1,8 @@
+# Rust のツールチェーンの版を固定する（#699）。新しい stable の clippy が増やす lint で
+# `npm run lint:rust`（-D warnings）がコードを変えずに落ちないようにするため。
+# 版を上げるときは、上げる PR で clippy の新しい指摘をまとめて直す。
+[toolchain]
+channel = "1.98.1"
+components = ["clippy", "rustfmt"]
+# check:ios・check:android（と build:tauri:ios-sim・build:tauri:android-emu）が使う targets
+targets = ["aarch64-apple-ios", "aarch64-apple-ios-sim", "aarch64-linux-android"]
