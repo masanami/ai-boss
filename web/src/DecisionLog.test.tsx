@@ -1,7 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import DecisionLog from "./DecisionLog";
-import { decisionSectionId } from "./decision-section-id";
 import type { DecisionRecord } from "./decision";
 import type { Task } from "./task";
 
@@ -362,78 +361,6 @@ describe("DecisionLog task-id hover (Issue #513)", () => {
   });
 });
 
-// Issue #557 (S2a, 親 #438 決定15): タスク別セクションの id。
-describe("DecisionLog section ids (Issue #557, S2a)", () => {
-  afterEach(() => {
-    vi.unstubAllGlobals();
-  });
-
-  const RECORDS = [
-    makeDecision({
-      id: 1,
-      task_id: 5,
-      task_title: "見積もり資料の作成",
-      created_at: at(9, 5, 9),
-    }),
-    makeDecision({
-      id: 2,
-      task_id: 8,
-      task_title: "打ち合わせの準備",
-      created_at: at(9, 5, 10),
-    }),
-    makeDecision({ id: 3, task_id: null, created_at: at(9, 5, 11) }),
-  ];
-
-  function sectionOf(title: string): HTMLElement {
-    const section = screen
-      .getByRole("heading", { level: 3, name: title })
-      .closest("section");
-    expect(section).not.toBeNull();
-    return section as HTMLElement;
-  }
-
-  it("gives each task section an id derived from its task id", async () => {
-    stubFetchWith(RECORDS);
-
-    render(<DecisionLog />);
-
-    await waitFor(() =>
-      expect(sectionOf("見積もり資料の作成")).toHaveAttribute(
-        "id",
-        decisionSectionId(5),
-      ),
-    );
-    expect(sectionOf("打ち合わせの準備")).toHaveAttribute(
-      "id",
-      decisionSectionId(8),
-    );
-    // タスク id 由来であること自体を固定する（ヘルパーの中身が決定 id や連番に
-    // すり替わっても、上の自己参照的な比較だけでは気づけないため）。
-    expect(decisionSectionId(5)).toBe("decision-section-task-5");
-    expect(decisionSectionId(8)).toBe("decision-section-task-8");
-  });
-
-  it("gives the section for records without a task_id a fixed id too", async () => {
-    stubFetchWith(RECORDS);
-
-    render(<DecisionLog />);
-
-    await waitFor(() =>
-      expect(sectionOf("タスクに紐づかない決定")).toHaveAttribute(
-        "id",
-        decisionSectionId(null),
-      ),
-    );
-    expect(decisionSectionId(null)).toBe("decision-section-unassigned");
-    expect(document.querySelectorAll("section[id]")).toHaveLength(3);
-    expect(
-      new Set(
-        Array.from(document.querySelectorAll("section[id]"), (el) => el.id),
-      ).size,
-    ).toBe(3);
-  });
-});
-
 // Issue #689: タスクカードの「記録を見る」から開いたときは、そのタスクの節だけ
 // に絞り込む。#557 のスクロールは実ブラウザでも動いていたが、記録 0 件の
 // タスク（節が無い）・いちばん新しい節（もともと先頭）では何も動かず、最後の
@@ -536,6 +463,111 @@ describe("DecisionLog task filter (Issue #689)", () => {
       await screen.findByText("このタスクの記録はまだありません"),
     ).toBeInTheDocument();
     expect(screen.queryByText("決定はまだありません")).not.toBeInTheDocument();
+  });
+
+  // Issue #694: 絞り込みは支援技術にも伝える。押した「記録を見る」はカードごと
+  // 消えるので、フォーカスを絞り込みの表示へ移して読み上げの起点にする。
+  it("announces the narrowing as a status and moves focus to it", async () => {
+    stubFetchWith(RECORDS);
+
+    render(<DecisionLog filterTask={TARGET} onClearFilter={vi.fn()} />);
+
+    const notice = await screen.findByRole("status");
+    expect(notice).toHaveTextContent(
+      /^「見積もり資料の作成」の記録だけを表示しています$/,
+    );
+    expect(notice).toHaveFocus();
+    expect(notice).toHaveAccessibleDescription("");
+  });
+
+  it("announces that the task has no records yet as a status too", async () => {
+    stubFetchWith([OTHER_DECISION]);
+
+    render(<DecisionLog filterTask={TARGET} onClearFilter={vi.fn()} />);
+
+    await screen.findByText("このタスクの記録はまだありません");
+    expect(
+      screen.getAllByRole("status").map((status) => status.textContent),
+    ).toEqual([
+      "「見積もり資料の作成」の記録だけを表示しています",
+      "このタスクの記録はまだありません",
+    ]);
+    const notice = screen.getByText(
+      "「見積もり資料の作成」の記録だけを表示しています",
+    );
+    expect(notice).toHaveFocus();
+    // 表示と同時に挿入される status は読み上げられないことがあるので、
+    // フォーカスした絞り込みの表示の説明としても読ませる。
+    expect(notice).toHaveAccessibleDescription(
+      "このタスクの記録はまだありません",
+    );
+  });
+
+  it("does not take focus from where the user moved while the log was loading", async () => {
+    let resolveFetch: (value: unknown) => void = () => {};
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(
+        () =>
+          new Promise((resolve) => {
+            resolveFetch = resolve;
+          }),
+      ),
+    );
+
+    render(
+      <>
+        <input aria-label="チャット入力" />
+        <DecisionLog filterTask={TARGET} onClearFilter={vi.fn()} />
+      </>,
+    );
+    const chatInput = screen.getByRole("textbox", { name: "チャット入力" });
+    chatInput.focus();
+    resolveFetch({
+      ok: true,
+      status: 200,
+      json: () => Promise.resolve(RECORDS),
+    });
+
+    await screen.findByRole("status");
+    expect(chatInput).toHaveFocus();
+  });
+
+  it("moves focus to the notice only once, not on every re-render", async () => {
+    stubFetchWith(RECORDS);
+    const onClearFilter = vi.fn();
+
+    const { rerender } = render(
+      <DecisionLog filterTask={TARGET} onClearFilter={onClearFilter} />,
+    );
+    const notice = await screen.findByRole("status");
+    await waitFor(() => expect(notice).toHaveFocus());
+
+    notice.blur();
+    rerender(
+      <DecisionLog filterTask={TARGET} onClearFilter={onClearFilter} />,
+    );
+
+    expect(document.activeElement).toBe(document.body);
+  });
+
+  it("neither adds a status nor moves focus when the log is not narrowed", async () => {
+    stubFetchWith(RECORDS);
+
+    render(<DecisionLog />);
+
+    await waitFor(() => expect(sectionTitles()).toHaveLength(3));
+    expect(screen.queryByRole("status")).not.toBeInTheDocument();
+    expect(document.activeElement).toBe(document.body);
+  });
+
+  it("does not turn the unfiltered empty message into a status", async () => {
+    stubFetchWith([]);
+
+    render(<DecisionLog />);
+
+    await screen.findByText("決定はまだありません");
+    expect(screen.queryByRole("status")).not.toBeInTheDocument();
   });
 
   it("offers a way back to the whole log, which calls onClearFilter", async () => {
@@ -775,7 +807,7 @@ describe("DecisionLog mentoring record → session transcript (Issue #564, S3)",
     ).toEqual(["decision-card-header", "decision-content", "decision-rationale"]);
   });
 
-  it("keeps section headings, section order, record order and section ids unchanged", async () => {
+  it("keeps section headings, section order and record order unchanged", async () => {
     stubRoutedFetch();
     await renderLoaded();
 
@@ -783,15 +815,6 @@ describe("DecisionLog mentoring record → session transcript (Issue #564, S3)",
       "打ち合わせの準備",
       "見積もり資料の作成",
       "タスクに紐づかない決定",
-    ]);
-    expect(
-      screen
-        .getAllByRole("heading", { level: 3 })
-        .map((heading) => heading.closest("section")?.id),
-    ).toEqual([
-      decisionSectionId(8),
-      decisionSectionId(5),
-      decisionSectionId(null),
     ]);
     const taskItems = within(
       screen.getByLabelText("見積もり資料の作成の記録"),

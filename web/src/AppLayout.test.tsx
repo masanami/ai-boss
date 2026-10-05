@@ -2148,6 +2148,31 @@ describe("AppLayout", () => {
       expect(decisionSectionTitles()).toEqual([OTHER_TASK.title, TASK.title]);
     });
 
+    // Issue #694: 押した「記録を見る」はカードごと消える。フォーカスを body に
+    // 落とさず、絞り込みの表示（status）へ移して読み上げの起点にする。
+    it("moves focus from the vanished 記録を見る to the filter notice, announced as a status", async () => {
+      vi.stubGlobal(
+        "fetch",
+        createRoutedFetchMock({
+          tasks: [TASK, OTHER_TASK],
+          decisions: [TASK_RECORD, OTHER_TASK_RECORD],
+        }),
+      );
+
+      render(<AppLayout />);
+      const card = await openTaskCard(TASK.title);
+      const showRecords = within(card).getByRole("button", {
+        name: "記録を見る",
+      });
+      showRecords.focus();
+      fireEvent.click(showRecords);
+
+      const log = await screen.findByRole("main", { name: "決定ログ" });
+      const notice = await within(log).findByRole("status");
+      expect(notice).toHaveTextContent(FILTER_NOTICE);
+      await waitFor(() => expect(notice).toHaveFocus());
+    });
+
     // 絞り込み表示中にナビゲーションの「決定ログ」を押しても、ナビゲーション
     // から開いたことになる（全体表示）。
     it("clears the filter when 決定ログ in the navigation is pressed while narrowed", async () => {
@@ -2170,11 +2195,12 @@ describe("AppLayout", () => {
       expect(screen.queryByText(FILTER_NOTICE)).not.toBeInTheDocument();
     });
 
-    // 記録を見るはタスクごとに押せる。別のタスクから押し直したら、そのタスクの
-    // 記録に絞り込まれる。タスク画面へはナビゲーションで戻る（＝絞り込みは
-    // 一度クリアされる）ので、ここで固定しているのは「新しいタスクの名前と
-    // 節だけが出る」ことまでである。
-    it("narrows to the newly chosen task when 記録を見る is pressed on another card", async () => {
+    // 記録を見るはタスクごとに押せる。絞り込み中の決定ログにはカードが無く、
+    // タスク画面へはナビゲーションで戻る（＝絞り込みは一度クリアされる）ため、
+    // 「絞り込み中に別タスクへ切り替える」経路は存在しない（Issue #694）。
+    // ここで固定しているのは、戻った先で別のカードから押し直すと、新しい
+    // タスクの名前と節だけが出ることである。
+    it("narrows to the other task when, back on the task board, 記録を見る is pressed on another card", async () => {
       vi.stubGlobal(
         "fetch",
         createRoutedFetchMock({

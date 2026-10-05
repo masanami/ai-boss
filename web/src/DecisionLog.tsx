@@ -1,5 +1,4 @@
-import { useRef, useState } from "react";
-import { decisionSectionId } from "./decision-section-id";
+import { useEffect, useId, useRef, useState } from "react";
 import { useDecisions } from "./use-decisions";
 import { groupDecisionsByTask } from "./group-decisions-by-task";
 import type { DecisionSection } from "./group-decisions-by-task";
@@ -79,7 +78,7 @@ function DecisionTaskSection({
   onOpenTranscript,
 }: DecisionTaskSectionProps) {
   return (
-    <section className="decision-section" id={decisionSectionId(section.taskId)}>
+    <section className="decision-section">
       <h3 className="decision-section-title">{section.title}</h3>
       <ul className="decision-list" aria-label={`${section.title}の記録`}>
         {section.records.map((decision) => (
@@ -170,6 +169,25 @@ function DecisionLog({
   // 共有する状態が無い。`useChat` の状態には触れない（決定22）。
   const [openedRecord, setOpenedRecord] = useState<OpenedRecord | null>(null);
   const rootRef = useRef<HTMLDivElement>(null);
+  const filterNoticeRef = useRef<HTMLParagraphElement>(null);
+  const filterTaskId = filterTask?.id ?? null;
+  const emptyMessageId = useId();
+
+  // Issue #694: 押した「記録を見る」はカードごと消え、フォーカスが body に
+  // 落ちる。絞り込みの表示へ移し、どのタスクに絞り込まれたかを読み上げの
+  // 起点にする（`role="status"` は表示と同時に挿入されるため、それだけでは
+  // 読み上げられないことがある）。ナビゲーションから開いたとき（絞り込み
+  // なし）はフォーカスを動かさない（ビュー切替の扱いは変えない）。読み込みの
+  // 間に利用者がほかの場所（チャット欄など）へ移っていたら奪わない。
+  useEffect(() => {
+    if (status !== "ready" || filterTaskId === null) {
+      return;
+    }
+    const active = document.activeElement;
+    if (active === null || active === document.body) {
+      filterNoticeRef.current?.focus();
+    }
+  }, [status, filterTaskId]);
 
   if (status === "loading") {
     return <p className="decision-log-status">決定ログを読み込み中…</p>;
@@ -201,7 +219,17 @@ function DecisionLog({
     <div className="decision-log" ref={rootRef} tabIndex={-1}>
       {filterTask !== null && (
         <div className="decision-log-filter">
-          <p className="decision-log-filter-notice">
+          <p
+            className="decision-log-filter-notice"
+            role="status"
+            ref={filterNoticeRef}
+            tabIndex={-1}
+            // 記録が無いことはフォーカスした絞り込みの表示の説明として読ませる
+            // （表示と同時に挿入される status は読み上げられないことがある）
+            aria-describedby={
+              sections.length === 0 ? emptyMessageId : undefined
+            }
+          >
             「{filterTask.title}」の記録だけを表示しています
           </p>
           <button type="button" onClick={handleClearFilter}>
@@ -210,7 +238,12 @@ function DecisionLog({
         </div>
       )}
       {sections.length === 0 ? (
-        <p className="decision-log-empty">
+        <p
+          className="decision-log-empty"
+          id={emptyMessageId}
+          // 絞り込み先に記録が無いことも、絞り込みの結果として伝える（Issue #694）
+          role={filterTask === null ? undefined : "status"}
+        >
           {filterTask === null
             ? "決定はまだありません"
             : "このタスクの記録はまだありません"}
