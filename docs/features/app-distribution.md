@@ -1,6 +1,6 @@
 # 署名・公証・ストア申請とアプリ本体の自動更新（製品版の配布）
 
-> Issue #587。2026-10-05 に作成した。範囲と前提は、ADR 0011 の決定 5・9〜11・19、#590 のオーナーの決定（2026-09-26。Windows は後続リリース）、#581 のオーナーの決定 Q7（未署名の `.app` ではデータ保護キーチェーンへ登録できない）に拠る。**オーナーは 2026-10-05、友人・身内に試してもらう段階に入るため、#587 を先に進め、最小スライス S1 を「試用者に配れる macOS 版の署名・公証」にすると決めた**（FR-13 で承認済み。ストア申請・自動更新は後のスライス）。作成時点の未決は「未決（オーナー）」「未決（親）」節に選択肢つきで置いた。
+> Issue #587。2026-10-05 に作成した。範囲と前提は、ADR 0011 の決定 5・9〜11・19、#590 のオーナーの決定（2026-09-26。Windows は後続リリース）、#581 のオーナーの決定 Q7（未署名の `.app` ではデータ保護キーチェーンへ登録できない）に拠る。**オーナーは 2026-10-05、友人・身内に試してもらう段階に入るため、#587 を先に進め、最小スライス S1 を「試用者に配れる macOS 版の署名・公証」にすると決めた**（FR-13 で承認済み。ストア申請・自動更新は後のスライス）。同日、作成時点の未決（オーナーへの問い O1〜O4・親への問い P1〜P6）が決まった（★ はオーナーの決定。「決定（2026-10-05）」節）。
 
 ## 概要
 
@@ -108,7 +108,7 @@
 
 ## 機能要件（機能全体。スライスごとの範囲は「スライス」節）
 
-- **S1**: オーナーの開発機で 1 つのコマンドを実行すると、Developer ID Application の証明書で署名し（hardened runtime・キーチェーンの entitlement・Developer ID のプロビジョニングプロファイルつき）、Apple の公証を通して staple した `.app` と、それを入れた配布物（形式は未決 O2。推奨は DMG。DMG も公証・staple する）ができる。
+- **S1**: オーナーの開発機で 1 つのコマンドを実行すると、Developer ID Application の証明書で署名し（hardened runtime・キーチェーンの entitlement・Developer ID のプロビジョニングプロファイルつき）、Apple の公証を通して staple した `.app` と、それを入れた DMG（DMG も公証・staple する。決定 O2・P5）ができる。
 - **S1**: 配布物を作るスクリプトは、署名・公証の前提（証明書の種類・チーム ID・プロファイル・公証の資格情報）が足りない・食い違うとき、**Tauri のビルドを始めずに**失敗する（Tauri は資格情報が無いと公証を飛ばして成功するため、スクリプトの側で塞ぐ）。
 - **S1**: 配布物の検査のコマンドが、`.app` と配布物について、署名の検証・Developer ID による公証の受理・staple・hardened runtime・entitlements を確かめ、1 つでも満たさなければ 0 以外で終わる。**検査に合格した配布物だけを配る**。
 - **S1**: 公証済みの配布物で、試用者が BYOK のキーを登録し、チャット・朝会・夕会を使える（#581 S3 の手動の確認手順を、配布物で行う）。
@@ -121,7 +121,7 @@
 - **秘密情報**: 証明書（`.p12`）・App Store Connect の API キー（`.p8`）・アプリ用パスワード・プロビジョニングプロファイル・更新の署名の秘密鍵（S2）を、リポジトリのファイル・コミット・スクリプトの出力に出さない。値はシェルの環境変数かリポジトリの外のファイルで渡す。
 - **安全側**: 確定しないもの（公証の結果が分からない・staple を確かめられない・更新の署名を検証できない）は、配らない・適用しない側に倒す。
 - **再現性**: 配布物は、同じコミット・同じ環境変数から同じ手順で作れる。スクリプトの組み立て（引数・生成するファイル・前提の検査）は、副作用を差し替えた単体テストで固定する（`tauri-signing.mjs` と同じ型）。
-- **費用**: Apple Developer Program の年会費が要る（未決 O1）。S1 は CI を使わず、オーナーの開発機で作る（「やらないこと」）。
+- **費用**: Apple Developer Program の年会費が要る（個人で登録する。決定 O1）。S1 は CI を使わず、オーナーの開発機で作る（「やらないこと」）。
 
 ## 技術的な制約・方針
 
@@ -133,9 +133,9 @@
 
 ## クリティカル設計決定
 
-### 1. 配布物は Developer ID Application の証明書で署名し、Developer ID のプロビジョニングプロファイルを必須にする（作成者の判断・2026-10-05。親の確認待ち＝P6）
+### 1. 配布物は Developer ID Application の証明書で署名し、Developer ID のプロビジョニングプロファイルを必須にする（P6・【決定】2026-10-05・親）
 
-- **採用案**: 配布用のビルドは、署名 ID が `Developer ID Application:` で始まる証明書だけを受け付ける。プロビジョニングプロファイル（Developer ID・macOS・App ID は識別子〔未決 O4〕）を**必須**にし、`.app` の `Contents/embedded.provisionprofile` に入れる。entitlements は次の 3 つだけにする。
+- **採用案**: 配布用のビルドは、署名 ID が `Developer ID Application:` で始まる証明書だけを受け付ける。プロビジョニングプロファイル（Developer ID・macOS・App ID は `dev.aiboss.app`〔決定 O4〕）を**必須**にし、`.app` の `Contents/embedded.provisionprofile` に入れる。entitlements は次の 3 つだけにする。
   - `keychain-access-groups`: `[<チーム ID>.<識別子>]`（今の `build:tauri:signed` と同じ値）
   - `com.apple.application-identifier`: `<チーム ID>.<識別子>`
   - `com.apple.developer.team-identifier`: `<チーム ID>`
@@ -145,7 +145,7 @@
 
 ### 2. 公証の資格情報が無ければ、Tauri のビルドを始めずに失敗する（作成者の判断・2026-10-05）
 
-- **採用案**: 配布用のビルドのスクリプトは、公証の資格情報（未決 P1。推奨は App Store Connect の API キー〔`APPLE_API_KEY`・`APPLE_API_ISSUER`・`APPLE_API_KEY_PATH` の 3 つ〕）がそろっていないとき、Tauri のビルドを始めずに 0 以外で終わる。片方の方式だけが中途半端にある（例: `APPLE_API_KEY` だけ）ときも失敗する。
+- **採用案**: 配布用のビルドのスクリプトは、公証の資格情報（App Store Connect の API キー〔`APPLE_API_KEY`・`APPLE_API_ISSUER`・`APPLE_API_KEY_PATH` の 3 つ〕。決定 P1）がそろっていないとき、Tauri のビルドを始めずに 0 以外で終わる。片方の方式だけが中途半端にある（例: `APPLE_API_KEY` だけ）ときも失敗する。
 - **理由**: Tauri は資格情報が無いと警告を出して公証を飛ばし、成功の終了コードで終わる（`app.rs` 143〜147 行）。警告はビルドの大量の出力に埋もれる。
 - **影響範囲**: 配布用のビルドのスクリプト。
 
@@ -161,13 +161,13 @@
 - **理由**: Tauri の `staple_app` は `stapler` の終了コードを見ない。staple が漏れると、オフラインの Mac で Gatekeeper が公証を確かめられず拒否する。
 - **影響範囲**: `scripts/`（検査のスクリプトとテスト）・`package.json`。
 
-### 4. DMG も公証し staple する（作成者の判断・2026-10-05。配布の形〔未決 O2〕が DMG のとき）
+### 4. DMG も公証し staple する（P5・【決定】2026-10-05・親。配布の形は DMG＝決定 O2）
 
 - **採用案**: Tauri のビルド（`.app` の署名・公証・staple と、DMG の作成・署名）が成功した後、スクリプトが DMG を `xcrun notarytool submit <dmg> --wait` で公証し、`xcrun stapler staple <dmg>` で staple する。どちらかが 0 以外で終われば、スクリプトも 0 以外で終わる。
 - **理由**: Tauri は DMG を公証も staple もしない（`dmg/mod.rs`）。中の `.app` は staple 済みだが、外側の DMG が公証されていないと、ダウンロードした DMG を開くときの Gatekeeper の判定が `.app` の判定と食い違いうる（DMG の判定の結果は**推論**。手動の確認手順で観測する）。公証の送信が 1 回増えるだけで、配る物の全体を公証済みにできる。
-- **代替案**: (a) DMG を公証しない — 上の不確かさを残す。(b) zip で配る — 公証は `.app` の分だけで済むが、zip は staple できない（中の `.app` の staple は残る）。O2 で zip を選んだら、この決定は不要になる。
+- **代替案**: (a) DMG を公証しない — 上の不確かさを残す。(b) zip で配る — 公証は `.app` の分だけで済むが、zip は staple できない（中の `.app` の staple は残る）。配布の形は DMG に決まった（決定 O2）。
 
-### 5. 配布用のビルドは、今の `build:tauri`・`build:tauri:signed` と別の入口にする（作成者の判断・2026-10-05。親の確認待ち＝P2）
+### 5. 配布用のビルドは、今の `build:tauri`・`build:tauri:signed` と別の入口にする（P2・【決定】2026-10-05・親）
 
 - **採用案**: 新しい npm スクリプト（仮に `build:tauri:dist`）と、組み立ての純粋関数のモジュール（仮に `scripts/tauri-distribution.mjs`）・入口（`scripts/build-tauri-dist.mjs`）を足す。チーム ID の形の検査など共通の部品は `tauri-signing.mjs` から import してよいが、**`tauri-signing.mjs` の既存の関数の振る舞いと `tauri-signing.test.mjs` は変えない**。`tauri.conf.json` の `bundle.targets` は `"app"` のままにし、DMG は配布用のビルドの `--bundles` の引数で指定する。
 - **理由**: `build:tauri:signed` は Apple Development の証明書でキーの登録を確かめる開発用の入口で（#581 S3）、プロファイル任意・公証なしが正しい。配布用の必須条件（Developer ID・プロファイル必須・公証必須）を同じ入口に混ぜると、開発用の手順が壊れるか、配布用の検査が緩む。
@@ -201,10 +201,10 @@ S2 で ADR 0001 に「改訂（アプリ本体の更新）」を足す。中身�
 | staple の漏れ（Tauri は `stapler` の失敗を見ない）で、オフラインの Mac の Gatekeeper が拒否する | 検査で `stapler validate` を確かめる（V2・決定 3）。DMG は自分で staple し、終了コードを見る（D14）。オフラインで開けることを手動の確認手順 5 で確かめる |
 | DMG が公証されていない | DMG を公証・staple する（決定 4・D14）。検査で DMG の `spctl`・`stapler validate` を確かめる（V5） |
 | 秘密情報（証明書・パスワード・API キー・プロファイル）がリポジトリに入る | `.gitignore` に `*.p12`・`*.p8`・`*.cer`・`*.provisionprofile`・`*.mobileprovision` を足し、`git check-ignore` で確かめる（G1）。生成するファイルは `target/` の下に置く（D9）。追跡しているファイルにこれらの拡張子が無いことを確かめる（G2） |
-| 秘密情報がスクリプトの出力・ログに出る | スクリプトの失敗の文言・出力に、パスワード・API キーの値・発行者 ID を出さない（D12）。スクリプトはパスワードを自分の起動する子プロセスの引数に載せない（D13）。Tauri の Apple ID 方式はパスワードを `notarytool` の引数に載せるため、推奨は API キー方式（未決 P1）。ビルドのログを PR・Issue へ貼らない（手動の確認手順の記録の規則。リポジトリは public） |
-| 識別子を配布の後で変える（データのディレクトリ・キーチェーンのグループが変わり、試用者のデータと登録したキーが見えなくなる） | 最初の配布の前に識別子を決める（未決 O4）。App ID とプロファイルは識別子に結びつくため、O1 の準備の前に決める |
-| arm64 のみの配布物を Intel の Mac の試用者が受け取る（起動しない） | 試用者の Mac の種類を確かめ、対象を決める（未決 O2）。arm64 のみで配るなら、配るときに Apple シリコン専用と伝える |
-| 試用者がキーを登録できない（BYOK）・中継が使えない | 試用の LLM の経路を決める（未決 O3）。中継（#583 S3 のホスティング・#584 のトークン）が無い間は BYOK だけ |
+| 秘密情報がスクリプトの出力・ログに出る | スクリプトの失敗の文言・出力に、発行者 ID・API キーのファイルの中身を出さない（D12a・D12b）。スクリプトは API キーをパスで渡し、中身を子プロセスの引数に載せない（D13）。Tauri の Apple ID 方式はパスワードを `notarytool` の引数に載せるため、API キー方式にする（決定 P1）。ビルドのログを PR・Issue へ貼らない（手動の確認手順の記録の規則。リポジトリは public） |
+| 識別子を配布の後で変える（データのディレクトリ・キーチェーンのグループが変わり、試用者のデータと登録したキーが見えなくなる） | `dev.aiboss.app` のまま変えないと決めた（決定 O4）。App ID・プロファイルはこの識別子で作る。U6 で、配布用のビルドの識別子と器の識別子が等しいことを固定する |
+| arm64 のみの配布物を Intel の Mac の試用者が受け取る（起動しない） | arm64 のみで配ると決めた（決定 O2）。配るときに Apple シリコン専用と伝える |
+| 試用者がキーを登録できない（BYOK）・中継が使えない | オーナーが試用者ごとに Anthropic の API キーを発行して渡し、試用者が BYOK に登録する（決定 O3）。S1 は中継の URL を渡さずにビルドする。キーを登録できることは手動の確認手順 6 で確かめる |
 | （S2）偽の更新が配られる（配信の置き場所の乗っ取り・中間者） | 更新の署名の検証（外せない）と TLS の強制。秘密鍵をリポジトリの外に置き、ビルドだけに渡す（S2 の受入基準） |
 | （S2）更新の署名の秘密鍵を失う | 入っているアプリへ更新を配れなくなる。秘密鍵の保管と控えの方法を S2 で決める（オーナー）。失ったら手で配り直す |
 | （S2）更新の通信先が ADR 0001 の許可範囲の外 | 決定 6 の追補を S2 で ADR 0001 に入れる。入るまで updater を配線しない |
@@ -212,20 +212,20 @@ S2 で ADR 0001 に「改訂（アプリ本体の更新）」を足す。中身�
 
 ### 実装計画（S1 のチケット分解の見通し）
 
-S1 は 1 チケットで足りる見込み（触るファイルは 12 前後）。O4 で識別子を変えると決まったら、その置換は S1 の前の独立した先行チケットにする（21 ファイルの機械的な置換で、S1 の差分と混ぜない）。
+S1 は 1 チケットで足りる見込み（触るファイルは 12 前後）。
 
 1. `.gitignore` に秘密情報の拡張子を足し、`git check-ignore` の検査を `scripts/*.test.mjs` に置く
 2. 配布用のビルドの組み立て（`scripts/tauri-distribution.mjs`）と単体テスト（環境変数の検査・entitlements・設定の上書き・Tauri の引数・DMG の公証と staple の順序と失敗の伝播・出力に秘密情報を出さない）
 3. 入口 `scripts/build-tauri-dist.mjs` と npm スクリプト `build:tauri:dist`
 4. 配布物の検査の判定（純粋関数）と単体テスト（記録した出力の例で合格・不合格）と、入口 `scripts/verify-tauri-dist.mjs`・npm スクリプト `verify:tauri-dist`
-5. 版番号（未決 P3）
+5. 版番号（`tauri.conf.json` の `version`。決定 P3）
 6. `CLAUDE.md` の「よく使うコマンド」、`secure-transport-byok.md` の仮定 A23 の更新
 
 ## スライス（出荷の単位）
 
 | スライス | 内容 | 触るファイル数（概算） | 出荷条件 |
 |---|---|---|---|
-| S1（最小） | macOS の配布物（Developer ID の署名・hardened runtime・キーチェーンの entitlement とプロファイル・公証・staple。形式は O2）を作るスクリプトと、配布物の検査（決定 1〜5）。秘密情報の `.gitignore`。版番号（P3）。公証済みの配布物で、Gatekeeper の受理・オフラインでの起動・BYOK のキーの登録とチャットを手動の確認手順で確かめる。**開発者用の版と、今の `build:tauri`・`build:tauri:signed` の振る舞いは変えない**。**自動更新は無い**（新しい版は手で配り直す。O2） | 12 前後（O4 の識別子の置換を除く） | **この仕様の PR がマージされてから**。**O1〜O4 がオーナーに決まってから**。**手動の確認手順の前に、オーナーが Apple Developer Program に登録し、Developer ID Application の証明書・App ID・Developer ID のプロビジョニングプロファイル・公証の資格情報を用意してから**（実装とテストはそれより先に進められる） |
+| S1（最小） | macOS の配布物（Developer ID の署名・hardened runtime・キーチェーンの entitlement とプロファイル・公証・staple。DMG・arm64 のみ。決定 O2）を作るスクリプトと、配布物の検査（決定 1〜5）。秘密情報の `.gitignore`。版番号（決定 P3）。公証済みの配布物で、Gatekeeper の受理・オフラインでの起動・BYOK のキーの登録とチャットを手動の確認手順で確かめる。**開発者用の版と、今の `build:tauri`・`build:tauri:signed` の振る舞いは変えない**。**自動更新は無い**（新しい版は手で配り直す。決定 O2） | 12 前後 | **この仕様の PR がマージされてから**。**手動の確認手順の前に、オーナーが Apple Developer Program に個人で登録し、Developer ID Application の証明書・App ID・Developer ID のプロビジョニングプロファイル・公証の資格情報を用意してから**（実装とテストはそれより先に進められる） |
 | S2 | アプリ本体の自動更新（`tauri-plugin-updater`・更新の署名の鍵・`createUpdaterArtifacts`・配信の置き場所・確認の頻度と利用者の操作・capability）と、ADR 0001 の追補（決定 6）。**外部送信の追加のため、ADR の改訂と PR は人間レビュー必須** | 未見積もり | S1 がマージされてから。配信の置き場所・アクセスの記録の許容・確認の頻度・秘密鍵の保管がオーナーに決まってから |
 | S3 | iOS の配布: App Store Connect への登録・Apple Distribution の署名・TestFlight での配布・App Store の審査への申請の準備（プライバシーの記述・暗号の輸出の申告） | 未見積もり | #669 S2 がマージされてから。S1 の Apple Developer Program の登録の後 |
 | S4 | Android の配布: アップロードの鍵・リリースの署名・Google Play Console への登録・内部テストの配布・申請の準備（データの安全性の記述） | 未見積もり | #674 S2・S3 がマージされてから。Google Play の開発者の登録（オーナー） |
@@ -239,18 +239,20 @@ S1 は 1 チケットで足りる見込み（触るファイルは 12 前後）�
 - Mac App Store への申請（理由: App Store の外の配布を S1 とした。Mac App Store はサンドボックスが必須で、今の器の機能〔トレイ・ファイルの保存等〕の見直しが要る。必要になったら別の Issue）
 - CI（GitHub Actions 等）での署名・公証（理由: 証明書・API キーを CI の秘密に置く判断と費用が要る。試用の段階ではオーナーの開発機で作れば足りる。YAGNI）
 - 証明書・プロファイルの期限の監視（理由: 試用の段階では、期限が切れたら作り直せば足りる。期限が切れると配布用のビルドか検査が失敗して気づける）
-- 自動更新（理由: S2。S1 の試用は手で配り直す〔O2〕）
-- 中継（プラン込み）の URL を入れたビルド（理由: #583 S3〔ホスティング〕・#584〔トークン〕の範囲。S1 は中継の URL を渡さずにビルドし、#583 の決定 S2-Q2 のとおり中継の行は作られない。試用の LLM の経路は O3）
-- 利用規約・プライバシーポリシー・特商法表記（理由: #589 の範囲。友人・身内の試用で要るかはオーナーの判断。O3 の判断材料に添えた）
+- 自動更新（理由: S2。S1 の試用は手で配り直す〔決定 O2〕）
+- 中継（プラン込み）の URL を入れたビルド（理由: #583 S3〔ホスティング〕・#584〔トークン〕の範囲。S1 は中継の URL を渡さずにビルドし、#583 の決定 S2-Q2 のとおり中継の行は作られない。試用者はオーナーが発行した Anthropic の API キーを BYOK に登録する〔決定 O3〕）
+- 試用者へ API キーを渡すことの規約上の扱いの確認（理由: オーナーが確認する事項〔決定 O3〕。アプリの振る舞いに関わらないため受入基準に入れない。仮定 B7）
+- zip での配布・GitHub Releases 等の公開の置き場所での配布（理由: DMG を直接受け渡すと決めた〔決定 O2〕。公開の置き場所は外部への公開に当たるため、配る範囲を広げるときに別に決める）
+- 利用規約・プライバシーポリシー・特商法表記（理由: #589 の範囲。友人・身内の試用で要るかはオーナーの判断）
 - Gatekeeper の判定・公証の送信を自動のテストに入れること（理由: Apple のサービスと証明書が要る。判定の純粋関数までを自動にし、実行は手動の確認手順で行う）
-- 識別子の変更の実装を S1 に含めること（理由: O4 の決定による。変えると決まったら、S1 の前の独立した先行チケットで置換し、S1 の受入基準の基準点はその後の `main` にする）
-- Intel の Mac 向け（universal）のビルド（理由: O2 の決定による。要ると決まったら S1 のチケットに入れる）
+- 識別子の変更（理由: `dev.aiboss.app` のまま変えないと決めた〔決定 O4〕）
+- Intel の Mac 向け（universal）のビルド（理由: Apple シリコンのみで配ると決めた〔決定 O2〕）
 
 ## 受入基準（S1）
 
 検査は、ホスト（macOS）の `node --test`（`npm test` の `test:scripts`）・`npm run`・`git` で行う。Apple のサービスと証明書が要るもの（実際の署名・公証・Gatekeeper の判定・キーの登録）は「手動の確認手順（S1）」に置く。
 
-**比較の基準点**: 「変更されない」の項目は、S1 の実装ブランチの分岐元の `main`（O4 で識別子を変えるときは、その先行チケットをマージした後の `main`）を基準点とし、`git diff --name-only <基準点>...HEAD -- <パス>` の出力が空であることで判定する。
+**比較の基準点**: 「変更されない」の項目は、S1 の実装ブランチの分岐元の `main` を基準点とし、`git diff --name-only <基準点>...HEAD -- <パス>` の出力が空であることで判定する。
 
 **配布用のビルドの組み立て**（副作用を差し替えた単体テスト。Tauri の CLI は起動しない）:
 
@@ -259,17 +261,16 @@ S1 は 1 チケットで足りる見込み（触るファイルは 12 前後）�
 - [ ] D3: `APPLE_TEAM_ID` が無い・英大文字と数字の 10 文字でない（例: `abc`・`ABCDEFGHIJK`）と、Tauri のビルドを始めずに 0 以外で終わる
 - [ ] D4: `APPLE_SIGNING_IDENTITY` の末尾の括弧の中（例: `Developer ID Application: Taro (ABCDE12345)` の `ABCDE12345`）が `APPLE_TEAM_ID` と一致しないと、Tauri のビルドを始めずに 0 以外で終わる。一致するときはビルドへ進む
 - [ ] D5: `APPLE_PROVISIONING_PROFILE` が無い、または指すパスにファイルが無いと、Tauri のビルドを始めずに 0 以外で終わる（ファイルの有無の確認は差し替えられる依存にする）
-- [ ] D6: 公証の資格情報（P1 で決めた方式の環境変数）が 1 つも無いと、Tauri のビルドを始めずに 0 以外で終わる
+- [ ] D6: 公証の資格情報（`APPLE_API_KEY`・`APPLE_API_ISSUER`・`APPLE_API_KEY_PATH`）が 1 つも無いと、Tauri のビルドを始めずに 0 以外で終わる
 - [ ] D7: 公証の資格情報が欠けている（例: API キー方式で `APPLE_API_KEY` と `APPLE_API_ISSUER` があり `APPLE_API_KEY_PATH` が無い・`APPLE_API_KEY` だけがある）と、Tauri のビルドを始めずに 0 以外で終わる
 - [ ] D8: 生成する entitlements の鍵は（`<識別子>` は `scripts/tauri-signing.mjs` の `APP_IDENTIFIER` を import して使う。テストは期待値に `APP_IDENTIFIER` を使う）、`keychain-access-groups`（`[<APPLE_TEAM_ID>.<識別子>]` の 1 要素）・`com.apple.application-identifier`（`<APPLE_TEAM_ID>.<識別子>`）・`com.apple.developer.team-identifier`（`<APPLE_TEAM_ID>`）の 3 つちょうどである（`com.apple.security.get-task-allow` を含まない）
 - [ ] D9: 生成するファイル（entitlements・設定の上書き）は `native/tauri-app/target/` の下に置かれる
 - [ ] D10: Tauri へ渡す設定の上書きは、`bundle.macOS.signingIdentity` に `APPLE_SIGNING_IDENTITY`、`bundle.macOS.entitlements` に生成したファイル、`bundle.macOS.hardenedRuntime` に `true`、`bundle.macOS.files` の `embedded.provisionprofile` に `APPLE_PROVISIONING_PROFILE` を持つ
-- [ ] D11: Tauri の CLI の引数は `build`・`--config <生成した上書き>`・`--bundles <O2 で決めた形式>` を含み、`--debug` を含まない。スクリプトに `--debug` を渡すと、Tauri のビルドを始めずに 0 以外で終わる
+- [ ] D11: Tauri の CLI の引数は `build`・`--config <生成した上書き>`・`--bundles app,dmg` を含み、`--debug` を含まない。スクリプトに `--debug` を渡すと、Tauri のビルドを始めずに 0 以外で終わる
 - [ ] D12a: D1〜D7・D11 の失敗の文言と、スクリプト自身が書き出す行（`logError`・`log` の依存に渡す文字列。成功の経路を含む）に、`APPLE_API_ISSUER` に渡した値が含まれない（テストは、他の文字列に現れない値を渡して確かめる。子プロセス〔Tauri・`xcrun`〕がそのまま出す出力は対象外）
 - [ ] D12b: 同じ範囲に、`APPLE_API_KEY_PATH` が指すファイルの中身（テストでは差し替えた読み込みが返す値）が含まれない（スクリプトはキーのファイルを読まない）
-- [ ] D12c: （P1 で Apple ID 方式を採るとき）同じ範囲に、`APPLE_PASSWORD` に渡した値が含まれない
-- [ ] D13: （P1 で API キー方式を採るとき）スクリプトが起動する子プロセス（Tauri の CLI・`xcrun`）の引数のどれにも、`APPLE_API_KEY_PATH` が指すファイルの中身が含まれない（キーはパスで渡す）
-- [ ] D14: （O2 が DMG のとき）Tauri のビルドが 0 で終わると、DMG について `xcrun notarytool submit <dmg> --wait`（P1 の資格情報の引数つき）、続けて `xcrun stapler staple <dmg>` の順に起動する。`notarytool` は `--output-format json` で起動し、**出力の JSON の `status` が `Accepted` のときだけ**成功とみなす（判定は純粋関数。`Accepted`・`Invalid`・`Rejected`・JSON でない出力の記録した例で単体テストする）。`notarytool` が 0 以外で終わるか `status` が `Accepted` でないと、`stapler` を起動せずに 0 以外で終わる。`stapler` が 0 以外で終わると 0 以外で終わる。公証が `Accepted` で `stapler` が 0 のときだけ 0 で終わり、`Accepted` の事実（提出の ID つき）を 1 行出す
+- [ ] D13: スクリプトが起動する子プロセス（Tauri の CLI・`xcrun`）の引数のどれにも、`APPLE_API_KEY_PATH` が指すファイルの中身が含まれない（キーはパスで渡す）
+- [ ] D14: Tauri のビルドが 0 で終わると、DMG について `xcrun notarytool submit <dmg> --wait`（`--key <APPLE_API_KEY_PATH> --key-id <APPLE_API_KEY> --issuer <APPLE_API_ISSUER>` つき）、続けて `xcrun stapler staple <dmg>` の順に起動する。`notarytool` は `--output-format json` で起動し、**出力の JSON の `status` が `Accepted` のときだけ**成功とみなす（判定は純粋関数。`Accepted`・`Invalid`・`Rejected`・JSON でない出力の記録した例で単体テストする）。`notarytool` が 0 以外で終わるか `status` が `Accepted` でないと、`stapler` を起動せずに 0 以外で終わる。`stapler` が 0 以外で終わると 0 以外で終わる。公証が `Accepted` で `stapler` が 0 のときだけ 0 で終わり、`Accepted` の事実（提出の ID つき）を 1 行出す
 - [ ] D15: Tauri のビルドが 0 以外で終わると、`xcrun` を起動せずに同じく 0 以外で終わる
 
 **配布物の検査**（判定は純粋関数。記録した出力の例を入力にする単体テスト）:
@@ -282,7 +283,7 @@ S1 は 1 チケットで足りる見込み（触るファイルは 12 前後）�
 - [ ] V3d: `codesign -d --entitlements - --xml` の判定は、entitlements の鍵と値が D8 の 3 つと一致するときだけ合格にする（`keychain-access-groups` だけの例〔今の `build:tauri:signed` の形〕で不合格）
 - [ ] V3e: 同じ出力の判定は、`com.apple.security.get-task-allow` を持つと不合格にする
 - [ ] V4: `spctl -a -vv -t exec` の判定は、出力に `: accepted` と `source=Notarized Developer ID` の両方があるときだけ合格にする（`source=Developer ID`〔公証されていない〕・`: rejected`・`source=no usable signature` の例で不合格になる）
-- [ ] V5: （O2 が DMG のとき）DMG の `spctl -a -vv -t open --context context:primary-signature` の判定は V4 と同じ条件で、DMG の `stapler validate` の判定は V2 と同じ条件で合格にする
+- [ ] V5: DMG の `spctl -a -vv -t open --context context:primary-signature` の判定は V4 と同じ条件で、DMG の `stapler validate` の判定は V2 と同じ条件で合格にする
 - [ ] V6: 検査の入口は、V1〜V5（V3a〜V3e を含む）の判定のうち 1 つでも不合格なら 0 以外で終わり、不合格の項目の名前を標準エラーに出す。すべて合格のときだけ 0 で終わる（コマンドの実行を差し替えた単体テスト）
 - [ ] V7: 検査の対象の `.app`・DMG が見つからないとき、検査の入口は 0 以外で終わる（「対象なし」を合格にしない）
 
@@ -298,7 +299,7 @@ S1 は 1 チケットで足りる見込み（触るファイルは 12 前後）�
 - [ ] U3: `native/tauri-app/tauri.conf.json` の `bundle.targets` は `"app"` のままである（器の設定の検査テスト）
 - [ ] U4: `server/` と `web/` は変更されない（基準点からの `git diff --name-only -- server web` が空）
 - [ ] U6: `scripts/tauri-signing.mjs` の `APP_IDENTIFIER` は、`native/tauri-app/tauri.conf.json` の `identifier` と等しい（`scripts/*.test.mjs` の単体テスト。配布物の entitlements の識別子と器の識別子の食い違いを塞ぐ）
-- [ ] U5: （P3 の推奨を採るとき）`tauri.conf.json` の `version` は、`native/tauri-app/Cargo.toml` の `package.version` と等しい（器の設定の検査テスト。`build:tauri` の `.app` の版が変わらないことの担保）
+- [ ] U5: `tauri.conf.json` の `version` は `0.1.0` で（決定 P3）、`native/tauri-app/Cargo.toml` の `package.version` と等しい（器の設定の検査テスト。`build:tauri` の `.app` の版が変わらないことの担保）
 
 **文書**:
 
@@ -325,11 +326,11 @@ S1 は 1 チケットで足りる見込み（触るファイルは 12 前後）�
 
 | 準備 | 内容 | 確かめ方 |
 |---|---|---|
-| Apple Developer Program | 登録（年会費。O1） | developer.apple.com のアカウントにメンバーシップが表示される |
-| Developer ID Application の証明書 | アカウントの保有者（Account Holder）が作り、ログインキーチェーンに入れる（秘密鍵ごと） | `security find-identity -v -p codesigning` に `Developer ID Application: …` が 1 件出る |
-| App ID | 識別子（O4）の明示的な App ID を登録する | developer.apple.com の Identifiers に出る |
+| Apple Developer Program | 個人で登録する（年会費。決定 O1）。オーナーがアカウントの保有者（Account Holder）になる | developer.apple.com のアカウントにメンバーシップが表示される |
+| Developer ID Application の証明書 | アカウントの保有者（個人の登録ではオーナー本人）が作り、ログインキーチェーンに入れる（秘密鍵ごと） | `security find-identity -v -p codesigning` に `Developer ID Application: …` が 1 件出る |
+| App ID | 識別子 `dev.aiboss.app`（決定 O4）の明示的な App ID を登録する | developer.apple.com の Identifiers に出る |
 | Developer ID のプロビジョニングプロファイル | 種類 Developer ID・プラットフォーム macOS・上の App ID・上の証明書で作り、**リポジトリの外**に置く | ファイルがある。`security cms -D -i <ファイル>` の `Entitlements` に `com.apple.application-identifier` が `<チーム ID>.<識別子>` で出る |
-| 公証の資格情報 | P1 の方式。推奨は App Store Connect の API キー（役割 Developer 以上・`.p8` を**リポジトリの外**に置く） | `xcrun notarytool history --key <パス> --key-id <ID> --issuer <ID>` が認証エラーにならない |
+| 公証の資格情報 | App Store Connect の API キー（決定 P1。役割 Developer 以上・`.p8` を**リポジトリの外**に置く） | `xcrun notarytool history --key <パス> --key-id <ID> --issuer <ID>` が認証エラーにならない |
 
 | # | 操作 | 期待する結果 |
 |---|---|---|
@@ -345,28 +346,6 @@ S1 は 1 チケットで足りる見込み（触るファイルは 12 前後）�
 | 10 | `git status --short` を見る | 証明書・プロファイル・API キー・生成した entitlements が未追跡のファイルとして出ない |
 | 11 | （既知の失敗の確認・任意）`APPLE_SIGNING_IDENTITY` に Apple Development の証明書の名前を渡して `npm run build:tauri:dist` を実行する | Tauri のビルドが始まらずに 0 以外で終わり、Developer ID Application の証明書を求める文言が出る |
 
-## 未決（オーナー）
-
-作成時点でオーナーに問う論点。いずれも S1 の出荷条件。
-
-| ID | 論点 | 選択肢 | 推奨 |
-|---|---|---|---|
-| O1 | Apple Developer Program の登録と、Developer ID の証明書・プロファイルの用意 | A 個人で登録する／B 組織で登録する（D-U-N-S 番号が要る。証明書・配布物の名義が組織名になる）／C 登録しない（S1 を進めない） | **登録の有無を確認したうえで A か B**。将来の販売の名義を組織にする予定があるなら B、試用を早く始めるなら A。年会費は Apple の公式の価格（年額。作成時点の金額は developer.apple.com で確かめる）。Developer ID の証明書を作れるのはアカウントの保有者だけ |
-| O2 | 試用者への配布の形 | 形式: A DMG（推奨）／B zip。渡し方: a 直接の受け渡し（AirDrop・個別のクラウドのリンク）／b 公開の置き場所（GitHub Releases。リポジトリは public のため誰でも取れる）。更新: S1 は自動更新なしで新しい版を手で配り直す（推奨）／自動更新を待つ（S2 の後に試用を始める）。アーキテクチャ: Apple シリコンのみ（今のまま）／universal（Intel の Mac にも配る。`x86_64-apple-darwin` のターゲットとビルドの時間が増える） | **DMG・直接の受け渡し・手で配り直す・Apple シリコンのみ**（試用者に Intel の Mac の人がいれば universal）。Tauri の macOS の bundle に zip は無いため、zip を選んだら S1 のチケットで「staple 済みの `.app` を `ditto -c -k --keepParent` で zip にする」項目を D14・V5 の代わりに足す。公開の置き場所は外部への公開に当たるため、配る範囲を広げるときに別に決める |
-| O3 | 試用者が使う LLM の経路 | A BYOK のみ（試用者が各自の Anthropic／OpenAI の API キーを用意する）／B BYOK のみで、オーナーが試用者ごとのキーを発行して渡す（利用額の上限を設定でき、個別に無効にできる。規約上の扱いは未確認＝**推論**）／C 中継（プラン込み）を使えるようにしてから配る（#583 S3 のホスティングと #584 のトークンの保管が要り、S1 の範囲の外で時間がかかる） | **A か B**（S1 は中継の URL を渡さずにビルドする）。C は #583・#584 の範囲で、S1 の出荷を待たせる。利用規約・プライバシーポリシー（#589）を試用の前に用意するかもあわせて決める |
-| O4 | 識別子 `dev.aiboss.app` を最初の配布の前に変えるか | A そのまま使う（Tauri の警告を受け入れる）／B 変える（例: オーナーが持つドメインに基づく逆ドメイン名）。変えるなら 21 ファイル（`gen/apple`・`gen/android`・器のテスト・スクリプト）に及ぶが、機械的な置換で済む | **B（変えるなら今）**。App ID・プロファイル・キーチェーンのグループ・データのディレクトリが識別子に結びつき、配った後で変えると試用者のデータと登録したキーが見えなくなる。ストアのバンドル ID は登録後に変えられない。A でも技術的には動く（警告だけ）。B なら置換は S1 の前の独立した先行チケットにする |
-
-## 未決（親）
-
-| ID | 論点 | 選択肢 | 推奨 |
-|---|---|---|---|
-| P1 | 公証の資格情報の方式 | A App Store Connect の API キー（`APPLE_API_KEY`・`APPLE_API_ISSUER`・`APPLE_API_KEY_PATH`）／B Apple ID とアプリ用パスワード（`APPLE_ID`・`APPLE_PASSWORD`・`APPLE_TEAM_ID`） | **A**。B は Tauri がパスワードを `notarytool` の引数に載せる（実行中はプロセスの一覧から見える）。A はキーの中身を引数に載せず、権限を絞れて個別に失効できる。D6・D7・D12・D13 は A に合わせて書く（B を採れば、Tauri もスクリプトの DMG の公証〔D14〕もパスワードを `notarytool` の引数に載せることになるため、D13 を「`APPLE_PASSWORD` の値が引数に載らない」には書けない。B のときは `notarytool store-credentials` で作ったキーチェーンのプロファイル〔`--keychain-profile`〕を DMG の公証に使う案を S1 のチケットで検討する） |
-| P2 | 配布用のビルドを `tauri-signing.mjs` の拡張にするか別の入口にするか | A 別の入口（決定 5）／B `build:tauri:signed` に配布のモードを足す | **A**。`build:tauri:signed` の S3-G1〜S3-G7 と開発用の手順を変えずに済む |
-| P3 | 版番号の置き場所 | A `tauri.conf.json` に `version` を置き、今の `Cargo.toml` と同じ `0.1.0` から始める（Tauri の推奨。U5 で一致を固定）／B 置かずに `Cargo.toml` の版を使い続ける | **A**。S2 の updater は SemVer の比較で更新を判断するため、版の正本を Tauri の設定に置く。配るたびに上げる（上げ方は S1 では手で行う） |
-| P4 | 配布物の検査を自動のテストにするか手動か | A 判定の純粋関数は単体テスト・実際の実行は npm スクリプトで手動の確認手順から呼ぶ（決定 3）／B すべて手動の確認手順に書く | **A** |
-| P5 | DMG を公証するか | A する（決定 4）／B しない | **A**（O2 が DMG のとき） |
-| P6 | Developer ID の配布でプロファイルを必須にし、entitlements に application-identifier・team-identifier を足すこと（決定 1）。#581 の仮定 A23（要否は未実測）を、一次情報で「要る」に倒す | A 必須にする（決定 1）／B 任意のまま（#581 S3 と同じ）にして手動の確認で判断する | **A**。B だと、キーを登録できない配布物が検査に合格しうる。手動の確認手順 6 で実測し、要らなかったと分かっても A は安全側のまま残せる |
-
 ## 決定（2026-10-05）
 
 | ID | 論点 | 決定 | 決めた人 | 反映先 |
@@ -374,6 +353,16 @@ S1 は 1 チケットで足りる見込み（触るファイルは 12 前後）�
 | — | #587 を先に進め、S1 を「試用者に配れる macOS 版の署名・公証」にする（ストア申請・自動更新は後のスライス） | 確定（FR-13 で承認） | ★オーナー | 概要・スライス |
 | — | Windows の扱い | 後続リリース（この仕様の範囲外） | ★オーナー（#590・2026-09-26） | やらないこと |
 | — | 未署名の `.app` でキーを登録できないこと・キーの属性を変えないこと | #581 決定 Q7 のまま | ★オーナー（2026-09-29） | 背景・技術的な制約・決定 1 |
+| O1 | Apple Developer Program の登録と、Developer ID の証明書・プロファイルの用意 | **個人で登録する**（登録済み、またはこれから登録する）。証明書・App ID・プロファイルの作成はオーナーが行う。手動の確認手順の準備は個人のアカウント（オーナーが保有者）を前提にする。代替案: 組織で登録（D-U-N-S 番号が要る）／登録しない | ★オーナー | 手動の確認手順（S1）の準備・スライス S1 |
+| O2 | 試用者への配布の形 | **DMG・直接の受け渡し（AirDrop・個別のクラウドのリンク）・自動更新なし（新しい版は手で配り直す）・Apple シリコン（arm64）のみ**。代替案: zip／GitHub Releases での公開／universal | ★オーナー | 決定 4・受入基準 D11・D14・V5・やらないこと |
+| O3 | 試用者が使う LLM の経路 | **オーナーが試用者ごとに Anthropic の API キーを発行して渡し、試用者がアプリの BYOK に登録する**。アプリから見れば BYOK と同じ経路で、S1 は中継の URL を渡さずにビルドする。キーを人に渡すことの規約上の扱いは未確認で、**オーナーが確認する事項**とする（受入基準には入れない。仮定 B7）。代替案: 試用者が各自のキーを用意する／中継を使えるようにしてから配る | ★オーナー | やらないこと・仮定 B7・手動の確認手順 6 |
+| O4 | 識別子 `dev.aiboss.app` を最初の配布の前に変えるか | **変えない**（`dev.aiboss.app` のまま。Tauri の `.app` で終わる識別子の警告は受け入れる）。識別子の変更の独立チケットは作らない。代替案: 所有するドメインに基づく識別子へ変える | ★オーナー | 決定 1・受入基準 D8・U6・手動の確認手順の準備 |
+| P1 | 公証の資格情報の方式 | **App Store Connect の API キー**（`APPLE_API_KEY`・`APPLE_API_ISSUER`・`APPLE_API_KEY_PATH`）。Apple ID とアプリ用パスワードの方式は、Tauri がパスワードを `notarytool` の引数に載せるため採らない | 親 | 決定 2・受入基準 D6・D7・D12・D13・D14 |
+| P2 | 配布用のビルドの入口 | **`build:tauri:signed` と別の入口**（決定 5） | 親 | 決定 5・受入基準 U1・U2 |
+| P3 | 版番号の置き場所 | **`tauri.conf.json` に `version` を置き、`0.1.0` から始める**。S1 では版を手で上げ、上げるときは `native/tauri-app/Cargo.toml` の `package.version` も同じ値にする（U5 で一致を固定） | 親 | 受入基準 U5 |
+| P4 | 配布物の検査の自動化の範囲 | **判定の純粋関数は単体テスト、実際の実行は npm スクリプトを手動の確認手順から呼ぶ**（決定 3） | 親 | 決定 3・受入基準 V1〜V7・手動の確認手順 2 |
+| P5 | DMG を公証するか | **公証し staple する**（決定 4） | 親 | 決定 4・受入基準 D14・V5 |
+| P6 | Developer ID の配布でプロファイルを必須にするか | **必須にし、entitlements を 3 つ（`keychain-access-groups`・`com.apple.application-identifier`・`com.apple.developer.team-identifier`）にする**（決定 1）。#581 の仮定 A23 は、Developer ID の配布については一次情報で「要る」に倒す | 親 | 決定 1・受入基準 D5・D8・V3d・W2 |
 
 ## 仮定（軽微・可逆）
 
@@ -382,4 +371,5 @@ S1 は 1 チケットで足りる見込み（触るファイルは 12 前後）�
 - B3: npm スクリプトの名前は `build:tauri:dist`（配布用のビルド）・`verify:tauri-dist`（配布物の検査）、モジュールは `scripts/tauri-distribution.mjs`・入口は `scripts/build-tauri-dist.mjs`・`scripts/verify-tauri-dist.mjs` とする（`build:tauri:signed`・`verify:tauri-bundle` に揃える）。実装で変えてよい。
 - B4: 検査の判定に使う出力の文字列（`valid on disk`・`satisfies its Designated Requirement`・`The validate action worked!`・`source=Notarized Developer ID`・`: accepted`）は、Xcode 26.6 の `codesign`・`stapler`・`spctl` の出力の形に拠る。この起動ではホストに署名 ID が無く、合格の出力を実測していない（不合格の出力〔ad-hoc の `.app`〕は実測した）。手動の確認手順 2 で合格の出力を実測し、形が違えば S1 の実装で判定を直す。
 - B5: 手動の確認手順 4 の「別の Mac か別のユーザーのアカウント」は、隔離属性の付いた状態で初めて開く体験を再現するためのもの。同じアカウントでも隔離属性が付いていれば判定は同じ見込み（推論）。
-- B6: 識別子は、この仕様では `<識別子>` と書き、O4 で決まった値を S1 のチケットで使う。
+- B6: 識別子は、この仕様では `<識別子>` と書く。値は `dev.aiboss.app`（決定 O4）で、`scripts/tauri-signing.mjs` の `APP_IDENTIFIER` から取る（D8・U6）。
+- B7: 試用者へ渡すキーは、オーナーが Anthropic のコンソールで試用者ごとに発行する（利用額の上限・個別の無効化はオーナーの運用）。試用者へキーを渡すことが Anthropic の規約上許されるかはオーナーが確認する（決定 O3。未確認）。アプリはこれを区別せず、BYOK のキーとして扱う。
