@@ -758,8 +758,9 @@ mod tests {
 
     #[test]
     fn the_host_build_does_not_exclude_app_data_from_backup() {
-        // ホスト（macOS）の `cargo test` は iOS の分岐に入らない。
-        assert!(!EXCLUDES_APP_DATA_FROM_BACKUP);
+        // ホスト（macOS）の `cargo test` は iOS の分岐に入らない。定数なのでコンパイル時に
+        // 確かめる（clippy の `assertions_on_constants`。偽ならテストのビルドが落ちる）。
+        const { assert!(!EXCLUDES_APP_DATA_FROM_BACKUP) };
     }
 
     #[test]
