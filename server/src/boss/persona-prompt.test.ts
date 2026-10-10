@@ -4,8 +4,11 @@ import {
   DEFAULT_PERSONA_SETTINGS,
   MAX_TASK_RELATED_RECORDS_TOTAL_LENGTH,
   MAX_TODAYS_ADHOC_MESSAGES_TOTAL_LENGTH,
+  MENTORING_TARGET_ESTIMATE_INSTRUCTION,
   MENTORING_TARGET_TASK_INSTRUCTION,
+  MORNING_UNCONFIRMED_TASKS_INSTRUCTION,
   NOTIFICATION_PLAIN_TEXT_INSTRUCTION,
+  UNCONFIRMED_TASKS_SECTION_HEADING,
   buildPersonaPrompt,
   type PersonaSettings,
   type TaskRelatedRecord,
@@ -2155,5 +2158,292 @@ describe("buildPersonaPrompt", () => {
 
       expect(prompt).not.toMatch(/\d{2}:\d{2}(:\d{2}(\.\d+)?)?Z/);
     });
+  });
+});
+
+// Issue #706（親 #561 S2・機能仕様 docs/features/task-start-mentoring-prompt.md
+// 決定 9〜11）: 朝会の未確認タスクの印付けと、タスク起点メンタリングでの見積もりの
+// 提案。指示文・見出しは export した定数で照合する（文言の重複記述で恒真にしない）。
+describe("朝会の未確認セクションと予約の指示（Issue #706, 親 #561 決定9・11）", () => {
+  /** プロンプトから未確認セクション（見出しから次の空行まで）を抜き出す。無ければ undefined。 */
+  function unconfirmedSection(prompt: string): string | undefined {
+    const start = prompt.indexOf(UNCONFIRMED_TASKS_SECTION_HEADING);
+    if (start === -1) {
+      return undefined;
+    }
+    const end = prompt.indexOf("\n\n", start);
+    return end === -1 ? prompt.slice(start) : prompt.slice(start, end);
+  }
+
+  /** 未確認セクションのうち `#<id> ` を含む行。無ければ undefined。 */
+  function lineFor(section: string, id: number): string | undefined {
+    return section.split("\n").find((line) => line.includes(`#${id} `));
+  }
+
+  /** 行の「未確認: 」より後（内訳）。 */
+  function breakdownOf(line: string): string {
+    return line.slice(line.indexOf("未確認: "));
+  }
+
+  function morningPrompt(tasks: Task[], mentoredTaskIds: number[] | undefined): string {
+    return buildPersonaPrompt(DEFAULT_PERSONA_SETTINGS, {
+      tasks,
+      recentDecisions: [],
+      now,
+      purpose: "chat",
+      sessionType: "morning",
+      mentoredTaskIds,
+    });
+  }
+
+  const unconfirmed = makeTask({ id: 1, title: "見積もり無しタスク", estimated_minutes: null });
+
+  it("見積もりが空の todo タスクは未確認セクションに #id とタイトルを含む行を持つ（AC-23）", () => {
+    const section = unconfirmedSection(morningPrompt([unconfirmed], []));
+
+    expect(section).toBeDefined();
+    const line = lineFor(section!, 1);
+    expect(line).toBeDefined();
+    expect(line).toContain("見積もり無しタスク");
+  });
+
+  it("見積もりがあってもメンタリング記録の無い todo タスクは未確認セクションに行を持つ（AC-24）", () => {
+    const task = makeTask({ id: 2, title: "記録無しタスク", estimated_minutes: 30 });
+
+    const section = unconfirmedSection(morningPrompt([task], []));
+
+    expect(section).toBeDefined();
+    const line = lineFor(section!, 2);
+    expect(line).toBeDefined();
+    expect(line).toContain("記録無しタスク");
+  });
+
+  it("未確認の todo タスクが 1 件以上あるとき予約の指示を含み、朝会のフロー指示より後に現れる（AC-25・AC-26）", () => {
+    const prompt = morningPrompt([unconfirmed], []);
+
+    const instructionIdx = prompt.indexOf(MORNING_UNCONFIRMED_TASKS_INSTRUCTION);
+    const morningFlowIdx = prompt.indexOf("これは朝会");
+    expect(instructionIdx).toBeGreaterThan(-1);
+    expect(morningFlowIdx).toBeGreaterThan(-1);
+    expect(instructionIdx).toBeGreaterThan(morningFlowIdx);
+  });
+
+  it("見積もりが空で記録も無いタスクの内訳は「見積もり」と「進め方」の両方を含む（AC-27）", () => {
+    const line = lineFor(unconfirmedSection(morningPrompt([unconfirmed], []))!, 1);
+
+    expect(line).toBeDefined();
+    expect(breakdownOf(line!)).toContain("見積もり");
+    expect(breakdownOf(line!)).toContain("進め方");
+  });
+
+  it("見積もりが空で記録の在るタスクの内訳は「見積もり」だけを含む（AC-28）", () => {
+    const line = lineFor(unconfirmedSection(morningPrompt([unconfirmed], [1]))!, 1);
+
+    expect(line).toBeDefined();
+    expect(breakdownOf(line!)).toContain("見積もり");
+    expect(breakdownOf(line!)).not.toContain("進め方");
+  });
+
+  it("見積もり 0 で記録の無いタスクの内訳は「進め方」だけを含む（見積もり 0 は確認済み。AC-29）", () => {
+    const task = makeTask({ id: 3, title: "ゼロ分タスク", estimated_minutes: 0 });
+
+    const line = lineFor(unconfirmedSection(morningPrompt([task], []))!, 3);
+
+    expect(line).toBeDefined();
+    expect(breakdownOf(line!)).toContain("進め方");
+    expect(breakdownOf(line!)).not.toContain("見積もり");
+  });
+
+  it("予約の指示の定数は「着手時に相談」「深掘りしない」「強制しない」を含む（AC-30・AC-30b・AC-30c）", () => {
+    expect(MORNING_UNCONFIRMED_TASKS_INSTRUCTION).toContain("着手時に相談");
+    expect(MORNING_UNCONFIRMED_TASKS_INSTRUCTION).toContain("深掘りしない");
+    expect(MORNING_UNCONFIRMED_TASKS_INSTRUCTION).toContain("強制しない");
+  });
+
+  it.each([30, 0])(
+    "見積もり %i 分で記録の在る todo タスクは未確認セクションに行を持たない（AC-31・AC-32）",
+    (estimatedMinutes) => {
+      const confirmed = makeTask({ id: 4, title: "確認済みタスク", estimated_minutes: estimatedMinutes });
+
+      const section = unconfirmedSection(morningPrompt([unconfirmed, confirmed], [4]));
+
+      expect(section).toBeDefined();
+      expect(lineFor(section!, 1)).toBeDefined();
+      expect(lineFor(section!, 4)).toBeUndefined();
+    },
+  );
+
+  it.each(["in_progress", "paused", "done", "dropped"] as const)(
+    "status が %s のタスクは見積もりが空でも未確認セクションに行を持たない（AC-33）",
+    (status) => {
+      const other = makeTask({ id: 5, title: "着手済みタスク", status, estimated_minutes: null });
+
+      const section = unconfirmedSection(morningPrompt([unconfirmed, other], []));
+
+      expect(section).toBeDefined();
+      expect(lineFor(section!, 1)).toBeDefined();
+      expect(lineFor(section!, 5)).toBeUndefined();
+    },
+  );
+
+  it("未確認の todo タスクが 0 件なら未確認セクションも予約の指示も含まない（AC-34）", () => {
+    const confirmed = makeTask({ id: 4, title: "確認済みタスク", estimated_minutes: 30 });
+    const started = makeTask({ id: 5, title: "着手済みタスク", status: "in_progress", estimated_minutes: null });
+
+    const prompt = morningPrompt([confirmed, started], [4]);
+
+    expect(prompt).toContain("これは朝会");
+    expect(prompt).not.toContain(UNCONFIRMED_TASKS_SECTION_HEADING);
+    expect(prompt).not.toContain(MORNING_UNCONFIRMED_TASKS_INSTRUCTION);
+  });
+
+  it.each(["adhoc", "evening", undefined] as const)(
+    "sessionType が %s なら未確認セクションも予約の指示も含まない（AC-35）",
+    (sessionType) => {
+      const prompt = buildPersonaPrompt(DEFAULT_PERSONA_SETTINGS, {
+        tasks: [unconfirmed],
+        recentDecisions: [],
+        now,
+        purpose: "chat",
+        sessionType,
+        mentoredTaskIds: [],
+      });
+
+      expect(prompt).not.toContain(UNCONFIRMED_TASKS_SECTION_HEADING);
+      expect(prompt).not.toContain(MORNING_UNCONFIRMED_TASKS_INSTRUCTION);
+    },
+  );
+
+  it.each(["notification", "daily-report"] as const)(
+    "purpose が %s なら朝会でも未確認セクションも予約の指示も含まない（AC-36）",
+    (purpose) => {
+      const prompt = buildPersonaPrompt(DEFAULT_PERSONA_SETTINGS, {
+        tasks: [unconfirmed],
+        recentDecisions: [],
+        now,
+        purpose,
+        sessionType: "morning",
+        mentoredTaskIds: [],
+      });
+
+      expect(prompt).not.toContain(UNCONFIRMED_TASKS_SECTION_HEADING);
+      expect(prompt).not.toContain(MORNING_UNCONFIRMED_TASKS_INSTRUCTION);
+    },
+  );
+
+  it("mentoredTaskIds が未指定なら朝会でも未確認セクションも予約の指示も含まない（fail-closed。AC-37）", () => {
+    const prompt = morningPrompt([unconfirmed], undefined);
+
+    expect(prompt).toContain("これは朝会");
+    expect(prompt).not.toContain(UNCONFIRMED_TASKS_SECTION_HEADING);
+    expect(prompt).not.toContain(MORNING_UNCONFIRMED_TASKS_INSTRUCTION);
+  });
+
+  it("見積もりだけが異なる同じ todo タスクで「現在のタスク一覧」セクションは同じ文字列になる（formatTaskLine 不変。AC-38）", () => {
+    function taskListSection(prompt: string): string {
+      const start = prompt.indexOf("現在のタスク一覧:");
+      return prompt.slice(start, prompt.indexOf("\n\n", start));
+    }
+    const withoutEstimate = morningPrompt([makeTask({ id: 6, estimated_minutes: null })], []);
+    const withEstimate = morningPrompt([makeTask({ id: 6, estimated_minutes: 30 })], []);
+
+    expect(taskListSection(withoutEstimate)).toContain("#6 ");
+    expect(taskListSection(withoutEstimate)).toBe(taskListSection(withEstimate));
+  });
+});
+
+describe("タスク起点メンタリングの見積もりの指示（Issue #706, 親 #561 決定10）", () => {
+  function mentoringPrompt(
+    target: Task,
+    overrides: { mentoring?: boolean; mentoringTaskId?: number; taskRelatedRecords?: TaskRelatedRecord[] } = {},
+  ): string {
+    return buildPersonaPrompt(DEFAULT_PERSONA_SETTINGS, {
+      tasks: [target],
+      recentDecisions: [],
+      now,
+      purpose: "chat",
+      sessionType: "adhoc",
+      mentoring: true,
+      mentoringTaskId: target.id,
+      ...overrides,
+    });
+  }
+
+  const noEstimate = makeTask({ id: 8, title: "見積もり無しタスク", estimated_minutes: null });
+
+  it("対象タスクの見積もりが空なら見積もりの指示を含む（AC-43）", () => {
+    expect(mentoringPrompt(noEstimate)).toContain(MENTORING_TARGET_ESTIMATE_INSTRUCTION);
+  });
+
+  it("対象タスクが in_progress でも見積もりが空なら見積もりの指示を含む（status を問わない。AC-44）", () => {
+    const started = makeTask({ id: 8, status: "in_progress", estimated_minutes: null });
+
+    expect(mentoringPrompt(started)).toContain(MENTORING_TARGET_ESTIMATE_INSTRUCTION);
+  });
+
+  it.each([30, 0])(
+    "対象タスクの見積もりが %i 分なら見積もりの指示を含まない（AC-45・AC-46）",
+    (estimatedMinutes) => {
+      const estimated = makeTask({ id: 8, estimated_minutes: estimatedMinutes });
+
+      const prompt = mentoringPrompt(estimated);
+
+      expect(prompt).toContain(MENTORING_TARGET_TASK_INSTRUCTION);
+      expect(prompt).not.toContain(MENTORING_TARGET_ESTIMATE_INSTRUCTION);
+    },
+  );
+
+  it("mentoring が偽なら mentoringTaskId を指定しても見積もりの指示を含まない（AC-47）", () => {
+    expect(mentoringPrompt(noEstimate, { mentoring: false })).not.toContain(
+      MENTORING_TARGET_ESTIMATE_INSTRUCTION,
+    );
+  });
+
+  it("mentoringTaskId が未指定なら見積もりの指示を含まない（AC-48）", () => {
+    expect(mentoringPrompt(noEstimate, { mentoringTaskId: undefined })).not.toContain(
+      MENTORING_TARGET_ESTIMATE_INSTRUCTION,
+    );
+  });
+
+  it("mentoringTaskId が tasks に無い id なら見積もりの指示を含まない（AC-49）", () => {
+    expect(mentoringPrompt(noEstimate, { mentoringTaskId: 999 })).not.toContain(
+      MENTORING_TARGET_ESTIMATE_INSTRUCTION,
+    );
+  });
+
+  it("見積もりの指示は MENTORING_TARGET_TASK_INSTRUCTION より後に現れ、「対象タスク」の直後は MENTORING_TARGET_TASK_INSTRUCTION のまま（AC-50・AC-51）", () => {
+    const prompt = mentoringPrompt(noEstimate);
+    const sections = prompt.split("\n\n");
+    const targetIdx = sections.findIndex((section) => section.startsWith("対象タスク:"));
+
+    expect(targetIdx).toBeGreaterThan(-1);
+    expect(sections[targetIdx + 1]).toBe(MENTORING_TARGET_TASK_INSTRUCTION);
+    expect(prompt.indexOf(MENTORING_TARGET_ESTIMATE_INSTRUCTION)).toBeGreaterThan(
+      prompt.indexOf(MENTORING_TARGET_TASK_INSTRUCTION),
+    );
+  });
+
+  it("対象タスクの過去記録があるとき、見積もりの指示はその後に現れる（AC-52）", () => {
+    const prompt = mentoringPrompt(noEstimate, {
+      taskRelatedRecords: [
+        {
+          content: "締切を延ばす",
+          rationale: null,
+          kind: "mentoring",
+          recordedAt: new Date(2026, 6, 5, 9).toISOString(),
+        },
+      ],
+    });
+
+    const recordsIdx = prompt.indexOf("対象タスクの過去記録:");
+    expect(recordsIdx).toBeGreaterThan(-1);
+    expect(prompt.indexOf(MENTORING_TARGET_ESTIMATE_INSTRUCTION)).toBeGreaterThan(recordsIdx);
+  });
+
+  it("見積もりの指示の定数は estimated_minutes・確認前に保存してはならない・提案・繰り返し求めない を含む（AC-53・AC-53b・AC-53c）", () => {
+    expect(MENTORING_TARGET_ESTIMATE_INSTRUCTION).toContain("estimated_minutes");
+    expect(MENTORING_TARGET_ESTIMATE_INSTRUCTION).toContain("確認前に保存してはならない");
+    expect(MENTORING_TARGET_ESTIMATE_INSTRUCTION).toContain("提案");
+    expect(MENTORING_TARGET_ESTIMATE_INSTRUCTION).toContain("繰り返し求めない");
   });
 });

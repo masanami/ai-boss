@@ -117,6 +117,20 @@ export async function listRecentDecisions(
 }
 
 /**
+ * メンタリング記録（`kind = 'mentoring'`）を 1 件以上持つタスクの id を重複なく
+ * 返す（Issue #706, 親 #561 決定11）。記録の `status` は問わない（`withdrawn` でも
+ * 進め方は確認済みに数える。web の `isMentoringUnconfirmed` と同じ規則）。朝会の
+ * プロンプトで「見積もり・進め方が未確認のタスク」を判定するのに使う。
+ * `listRecentDecisions` とは別経路で、「直近の決定」（#408 AC-42）には触れない。
+ */
+export async function listMentoredTaskIds(db: Db): Promise<number[]> {
+  const rows = await db.all<{ task_id: number }>(
+    "SELECT DISTINCT task_id FROM decisions WHERE kind = 'mentoring' AND task_id IS NOT NULL ORDER BY task_id",
+  );
+  return rows.map((row) => row.task_id);
+}
+
+/**
  * 対象タスクに紐づく決定・メンタリング記録を新しい順に最大 `limit` 件返す
  * （S2b・Issue #545, 親 #438 決定17）。`listRecentDecisions` とは別経路で、
  * `kind` で絞らない（決定とメンタリングの両方を返す）。`listRecentDecisions`

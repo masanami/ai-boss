@@ -4,6 +4,9 @@ import { createHookedTestDb } from "../db/test-support/create-test-db.js";
 import type { DbPort } from "../db/db-port.js";
 import type { DriverHook } from "../db/test-support/hooked-driver.js";
 import { insertTask } from "../tasks/tasks-repository.js";
+import { UNCONFIRMED_TASKS_SECTION_HEADING } from "../boss/persona-prompt.js";
+import { insertDecision } from "../decisions/decisions-repository.js";
+import type { Decision } from "../decisions/decision.js";
 import type { Session } from "./session.js";
 
 // Issue #618（#597 決定 2 の全数監査の漏れ）: チャット 1 ターンのプロンプト材料を
@@ -183,5 +186,50 @@ describe("POST /api/sessions/:id/messages のプロンプト材料のスナッ�
     expect(system).not.toContain("新タスク");
     expect(system).toContain("「旧ボス」");
     expect(system).not.toContain(MENTORING_INSTRUCTION_HEAD);
+  });
+
+  // Issue #706（親 #561 決定11・AC-42b）: メンタリング記録を持つタスク id の読み取りも
+  // タスク一覧と同じトランザクションの中で同じ時点の状態から行われる。読み取りを
+  // トランザクションの前へ出すとタイトルの変更が入り、後へ出すと割り込んだ記録で
+  // X が確認済みになって行が消える。
+  it("ターン最初の tasks/decisions の読み出しの直後にメンタリング記録の挿入とタイトルの変更が割り込んでも、未確認の判定とタスク一覧は同じ（旧い）状態から読まれる（AC-42b）", async () => {
+    // X: 見積もり 30 分・メンタリング記録なしの todo タスク（タイトル変更の対象を X にする）
+    raw.prepare("UPDATE tasks SET estimated_minutes = 30 WHERE id = ?").run(taskId);
+    const session = await createMorningSession();
+    // 記録の挿入は DbPort（直列化層）を通す。raw の接続へ直接書くと、開いている
+    // ターンのトランザクションの中に入り込んでしまい「別の流れ」にならない。
+    let inserted: Promise<Decision> | undefined;
+    const injected = interruptAfterFirstTurnRead(
+      (sql) =>
+        sql.trimStart().startsWith("SELECT") &&
+        (sql.includes("FROM tasks") || sql.includes("FROM decisions")),
+      () => {
+        inserted = insertDecision(db, {
+          session_id: session.id,
+          task_id: taskId,
+          content: "割り込んだ記録",
+          kind: "mentoring",
+        });
+        return [renameTask()];
+      },
+    );
+
+    await postChat(session.id);
+    const [renamed] = await Promise.all(injected());
+
+    // 割り込んだ 2 つの書き込みはどちらも成功している（割り込みが実際に起きた裏取り）。
+    expect((await inserted!).kind).toBe("mentoring");
+    expect(renamed.status).toBe(200);
+    expect(
+      raw.prepare("SELECT COUNT(*) AS n FROM decisions WHERE task_id = ? AND kind = 'mentoring'").get(taskId),
+    ).toEqual({ n: 1 });
+    const { system } = lastRequest();
+    expect(system).toContain("旧タスク");
+    expect(system).not.toContain("新タスク");
+    const start = system.indexOf(UNCONFIRMED_TASKS_SECTION_HEADING);
+    expect(start).toBeGreaterThan(-1);
+    const end = system.indexOf("\n\n", start);
+    const section = end === -1 ? system.slice(start) : system.slice(start, end);
+    expect(section.split("\n").some((line) => line.includes(`#${taskId} `))).toBe(true);
   });
 });

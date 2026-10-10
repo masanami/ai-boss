@@ -9,6 +9,7 @@ import { findTaskById, listTasks } from "../tasks/tasks-repository.js";
 import { countTaskEvidencesByTaskIds } from "../tasks/task-evidences-repository.js";
 import {
   listDecisionsByTaskId,
+  listMentoredTaskIds,
   listRecentDecisions,
 } from "../decisions/decisions-repository.js";
 import { resolveBossSettingsFrom } from "../boss/boss-settings.js";
@@ -429,6 +430,11 @@ export function registerChatMessageRoute(
           mentoringTaskIdForTurn === undefined
             ? undefined
             : await listDecisionsByTaskId(tx, mentoringTaskIdForTurn, TASK_RELATED_RECORD_LIMIT);
+        // Issue #706（親 #561 決定11）: 朝会の未確認タスクの判定に使う、メンタリング
+        // 記録を持つタスクの id。タスク一覧と同じトランザクション（#618）で読み、
+        // 朝会以外のターンではクエリ自体を発行しない（使わないため）。
+        const mentoredTaskIds =
+          session.type === "morning" ? await listMentoredTaskIds(tx) : undefined;
         const system = buildPersonaPrompt(persona, {
           tasks,
           // 決定 3-a: ボスが自分の裁定（要否）と現状（添付件数）を参照できる
@@ -448,6 +454,8 @@ export function registerChatMessageRoute(
           mentoringTaskId: mentoringTaskIdForTurn,
           // Issue #545（親 #438 決定16・17）: 対象タスクの過去記録の結線。
           taskRelatedRecords,
+          // Issue #706（親 #561 決定11）: 朝会の未確認セクションの結線。
+          mentoredTaskIds,
           // 「今何時か」「締切まであと何時間か」の主経路（Issue #288）
           includeCurrentDateTime: true,
         });

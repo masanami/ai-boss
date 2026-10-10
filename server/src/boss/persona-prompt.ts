@@ -168,6 +168,15 @@ export interface PersonaPromptContext {
    * 空配列として扱う（後方互換）。
    */
   taskRelatedRecords?: TaskRelatedRecord[];
+  /**
+   * メンタリング記録（`kind = 'mentoring'`）を持つタスクの id（Issue #706, 親
+   * #561 決定11。記録の `status` は問わない）。朝会の chat のターンで「見積もり・
+   * 進め方が未確認のタスク」を判定するのに使う。**呼び出し側（チャットルート）が
+   * 朝会のターンに限って渡す**。未指定なら記録の有無が分からないため、朝会でも
+   * 未確認セクションと予約の指示を積まない（fail-closed。`includeCurrentDateTime`
+   * の「未指定は出さない」と同じ作法）。空配列は「記録を持つタスクが無い」の意味。
+   */
+  mentoredTaskIds?: number[];
 }
 
 const TONE_DESCRIPTIONS: Record<TonePreset, string> = {
@@ -800,6 +809,83 @@ export const MENTORING_TARGET_TASK_INSTRUCTION =
   "このメンタリングには対象タスクがある。上の「対象タスク」セクションに示したタスクについての相談として扱い、" +
   "record_mentoring を呼ぶときは task_id にそのタスクの id（#の後の数字）を指定すること。";
 
+/**
+ * タスクの見積もり・進め方のうち未確認のものの内訳（Issue #706, 親 #561 決定11）。
+ * 規則は web の `isMentoringUnconfirmed`（`web/src/task-start-mentoring.ts`・S1）と
+ * 同じ: 見積もりは `estimated_minutes === null` なら未確認（0 は確認済み）、進め方は
+ * そのタスクに `kind = 'mentoring'` の記録が 1 件も無ければ未確認（記録の `status` は
+ * 問わない）。server と web は共有経路が無いため、同じ規則をここにも置く
+ * （`TASK_RELATED_RECORD_KIND_LABELS` と同じ判断）。両方確認済みなら空配列。
+ */
+function resolveUnconfirmedParts(
+  task: Task,
+  mentoredTaskIds: ReadonlySet<number>,
+): string[] {
+  const parts: string[] = [];
+  if (task.estimated_minutes === null) {
+    parts.push("見積もり");
+  }
+  if (!mentoredTaskIds.has(task.id)) {
+    parts.push("進め方");
+  }
+  return parts;
+}
+
+/**
+ * 朝会の「見積もり・進め方が未確認のタスク」セクションの見出し（Issue #706, 親
+ * #561 決定9。機能仕様の IF で確定）。テストがセクションを特定するため export する。
+ */
+export const UNCONFIRMED_TASKS_SECTION_HEADING = "見積もり・進め方が未確認のタスク:";
+
+/**
+ * 朝会の未確認セクションを組み立てる（Issue #706, 親 #561 決定9）。対象は
+ * `status === "todo"` のタスクに限る（予約の対象は着手前のタスク）。行は
+ * `- #<id> <タイトル>（未確認: <内訳>）`。未確認の `todo` タスクが無ければ null。
+ * タスク一覧の行（`formatTaskLine`）は通知文面・日報抽出と共有しているため変えず、
+ * 別セクションとして朝会にだけ閉じる。
+ */
+function formatUnconfirmedTasksSection(
+  tasks: Task[],
+  mentoredTaskIds: ReadonlySet<number>,
+): string | null {
+  const lines = tasks
+    .filter((task) => task.status === "todo")
+    .map((task) => ({ task, parts: resolveUnconfirmedParts(task, mentoredTaskIds) }))
+    .filter(({ parts }) => parts.length > 0)
+    .map(({ task, parts }) => `- #${task.id} ${task.title}（未確認: ${parts.join("・")}）`);
+  if (lines.length === 0) {
+    return null;
+  }
+  return `${UNCONFIRMED_TASKS_SECTION_HEADING}\n${lines.join("\n")}`;
+}
+
+/**
+ * 朝会で未確認のタスクの進め方の相談を「着手時に相談」と予約させる指示（Issue
+ * #706, 親 #561 決定9）。朝会は全体の軽い調整にとどめる（#438 判断7）向きに揃え、
+ * 進め方の深掘りを抑える。見積もりの提案は予約の対象にせず、
+ * `MORNING_FLOW_INSTRUCTION` どおり朝会で行う。担保はこの指示だけで、朝会ゲート
+ * （`mentoring-gate.ts`）には触れない。テストが文言を重複記述して恒真にならない
+ * よう export する。
+ */
+export const MORNING_UNCONFIRMED_TASKS_INSTRUCTION =
+  "上の「見積もり・進め方が未確認のタスク」に挙げたタスクについて、朝会では進め方を深掘りしない（タスクごとの点検をしない）こと。" +
+  "それらのタスクの進め方の相談は「着手時に相談」と一言で予約するにとどめること。" +
+  "相談を強制しないこと。着手を止めないこと。" +
+  "所要時間の見積もりの提案は予約の対象にせず、朝会の中でこれまでどおり行うこと。";
+
+/**
+ * タスク起点メンタリングで対象タスクの見積もりが未設定のときに積む指示（Issue
+ * #706, 親 #561 決定10）。「確認済みの値だけ保存」の担保は既存の見積もり・着手の
+ * 約束の確認指示と同じく指示だけで、機械的なゲートは置かない（同じ言い回しを使う）。
+ * 相談中は毎ターン積まれるため、保留・拒否されたら繰り返し求めない旨を含める
+ * （#438 判断7「深掘りを強制しない」）。テストが文言を重複記述して恒真にならない
+ * よう export する。
+ */
+export const MENTORING_TARGET_ESTIMATE_INSTRUCTION =
+  "対象タスクの所要時間の見積もりは未設定である。この相談の中で所要時間の見積もりを提案すること。" +
+  "ユーザーが確認（同意または修正）した値だけを update_task で estimated_minutes に保存すること（確認前に保存してはならない）。" +
+  "ユーザーが見積もりを保留または拒否したら、この相談の中で繰り返し求めないこと。";
+
 const MORNING_FLOW_INSTRUCTION =
   "これは朝会（計画セッション）。ユーザーから今日の予定の報告を受けたら、タスクの優先順位と今日のノルマを決定の形で提示し、" +
   "create_task / update_task でタスクへ反映すること。各タスクの所要時間はざっくり見積もって提案し、ユーザーが同意または修正した" +
@@ -997,6 +1083,12 @@ export function buildPersonaPrompt(
         if (taskRelatedRecordsSection) {
           sections.push(`対象タスクの過去記録:\n${taskRelatedRecordsSection}`);
         }
+        // Issue #706（親 #561 決定10）: 見積もりが空のときだけ、対象タスクの
+        // まとまりの後に積む（まとまりの並びは変えない）。対象タスクの status は
+        // 問わない（S1 の促しから入ると in_progress になっている）。
+        if (targetTask.estimated_minutes === null) {
+          sections.push(MENTORING_TARGET_ESTIMATE_INSTRUCTION);
+        }
       }
     }
     const sessionFlowInstruction = resolveSessionFlowInstruction(
@@ -1004,6 +1096,19 @@ export function buildPersonaPrompt(
     );
     if (sessionFlowInstruction) {
       sections.push(sessionFlowInstruction);
+    }
+    // Issue #706（親 #561 決定9・11）: 朝会のときだけ、朝会のフロー指示の直後に
+    // 未確認セクションと予約の指示を積む。mentoredTaskIds が未指定なら記録の
+    // 有無が分からないため積まない（fail-closed）。
+    if (context.sessionType === "morning" && context.mentoredTaskIds !== undefined) {
+      const unconfirmedSection = formatUnconfirmedTasksSection(
+        context.tasks,
+        new Set(context.mentoredTaskIds),
+      );
+      if (unconfirmedSection) {
+        sections.push(unconfirmedSection);
+        sections.push(MORNING_UNCONFIRMED_TASKS_INSTRUCTION);
+      }
     }
     sections.push(TASK_ESTIMATE_CONFIRMATION_INSTRUCTION);
     sections.push(TASK_COMMITMENT_CONFIRMATION_INSTRUCTION);
