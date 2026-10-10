@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { fetchSettings, updateSettings } from "./settings-api";
-import type { Settings } from "./settings";
+import type { Settings, SettingsWarning } from "./settings";
 
 const SAMPLE_SETTINGS: Settings = {
   boss_name: "ボス",
@@ -65,7 +65,7 @@ describe("updateSettings", () => {
     const fetchMock = vi.fn().mockResolvedValue({
       ok: true,
       status: 200,
-      json: () => Promise.resolve(SAMPLE_SETTINGS),
+      json: () => Promise.resolve({ settings: SAMPLE_SETTINGS, warnings: [] }),
     });
     vi.stubGlobal("fetch", fetchMock);
 
@@ -79,7 +79,7 @@ describe("updateSettings", () => {
 
     const updated = await updateSettings(patch);
 
-    expect(updated).toEqual(SAMPLE_SETTINGS);
+    expect(updated).toEqual({ settings: SAMPLE_SETTINGS, warnings: [] });
     expect(fetchMock).toHaveBeenCalledWith(
       "/api/settings",
       expect.objectContaining({
@@ -88,6 +88,32 @@ describe("updateSettings", () => {
         body: JSON.stringify(patch),
       }),
     );
+  });
+
+  // #708 決定 18: PUT の 200 の本文は { settings, warnings } の入れ子。
+  it("returns the response's settings and warnings separately (#708)", async () => {
+    const warnings: SettingsWarning[] = [
+      {
+        code: "meeting_outside_working_hours",
+        key: "morning_meeting_time",
+        message: "朝会の時刻（08:30）が勤務時間帯（09:00〜18:00）の外にあります",
+      },
+    ];
+    const saved = { ...SAMPLE_SETTINGS, morning_meeting_time: "08:30" };
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue({
+        ok: true,
+        status: 200,
+        json: () => Promise.resolve({ settings: saved, warnings }),
+      }),
+    );
+
+    const result = await updateSettings({ morning_meeting_time: "08:30" });
+
+    expect(result.settings).toEqual(saved);
+    expect(result.warnings).toEqual(warnings);
+    expect(result.settings).not.toHaveProperty("warnings");
   });
 
   it("throws with the server error message when the update fails", async () => {

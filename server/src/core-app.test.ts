@@ -79,6 +79,27 @@ describe("createCoreApp", () => {
     expect(registeredLlmBackendNames()).toEqual([]);
   });
 
+  // #708 受入基準（S4）: 製品版の器は WebView 内でこのコアを通るため、
+  // PUT /api/settings の { settings, warnings } の応答形をコアの入口でも固定する。
+  it("returns { settings, warnings } with the morning-meeting warning from PUT /api/settings (#708)", async () => {
+    const app = createCoreApp(portFor(db), {});
+
+    const res = await app.request("/api/settings", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ morning_meeting_time: "08:30" }),
+    });
+
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as {
+      settings: { morning_meeting_time: string };
+      warnings: { key: string }[];
+    };
+    expect(Object.keys(body).sort()).toEqual(["settings", "warnings"]);
+    expect(body.settings.morning_meeting_time).toBe("08:30");
+    expect(body.warnings.map((w) => w.key)).toEqual(["morning_meeting_time"]);
+  });
+
   it("returns 404 for an unknown path", async () => {
     const app = createCoreApp(portFor(db), {});
 

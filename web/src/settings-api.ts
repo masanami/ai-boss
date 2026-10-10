@@ -1,4 +1,8 @@
-import type { Settings, SettingsPatch } from "./settings";
+import type {
+  Settings,
+  SettingsPatch,
+  UpdateSettingsResult,
+} from "./settings";
 
 const SETTINGS_URL = "/api/settings";
 
@@ -25,11 +29,14 @@ export async function fetchSettings(): Promise<Settings> {
 
 /**
  * Applies a partial update to the settings and returns the resulting
- * effective settings. Throws with the server-provided error message when
- * validation fails (e.g. an out-of-range value) — the caller keeps the
- * previous state in that case (see `useSettings`).
+ * effective settings together with the save's warnings (#708 決定 18 — the
+ * 200 body is `{ settings, warnings }`). Throws with the server-provided
+ * error message when validation fails (e.g. an out-of-range value) — the
+ * caller keeps the previous state in that case (see `useSettings`).
  */
-export async function updateSettings(patch: SettingsPatch): Promise<Settings> {
+export async function updateSettings(
+  patch: SettingsPatch,
+): Promise<UpdateSettingsResult> {
   const response = await fetch(SETTINGS_URL, {
     method: "PUT",
     headers: { "Content-Type": "application/json" },
@@ -38,5 +45,7 @@ export async function updateSettings(patch: SettingsPatch): Promise<Settings> {
   if (!response.ok) {
     throw new Error(await toErrorMessage(response));
   }
-  return (await response.json()) as Settings;
+  const { settings, warnings } =
+    (await response.json()) as UpdateSettingsResult;
+  return { settings, warnings };
 }

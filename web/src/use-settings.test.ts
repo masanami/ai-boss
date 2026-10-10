@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { act, renderHook, waitFor } from "@testing-library/react";
 import { useSettings } from "./use-settings";
-import type { Settings } from "./settings";
+import type { Settings, SettingsWarning } from "./settings";
 
 const SAMPLE_SETTINGS: Settings = {
   boss_name: "ボス",
@@ -68,7 +68,7 @@ describe("useSettings", () => {
     fetchMock.mockResolvedValueOnce({
       ok: true,
       status: 200,
-      json: () => Promise.resolve(updated),
+      json: () => Promise.resolve({ settings: updated, warnings: [] }),
     });
     vi.stubGlobal("fetch", fetchMock);
 
@@ -130,7 +130,8 @@ describe("useSettings", () => {
             resolve({
               ok: true,
               status: 200,
-              json: () => Promise.resolve(SAMPLE_SETTINGS),
+              json: () =>
+                Promise.resolve({ settings: SAMPLE_SETTINGS, warnings: [] }),
             });
         }),
     );
@@ -152,5 +153,113 @@ describe("useSettings", () => {
     });
 
     expect(result.current.isSaving).toBe(false);
+  });
+  // #708 決定 18・22: 警告は設定とは別の状態に置き、保存のたびに置き換える。
+  describe("saveWarnings (#708)", () => {
+    const WARNING: SettingsWarning = {
+      code: "meeting_outside_working_hours",
+      key: "morning_meeting_time",
+      message: "朝会の時刻（08:30）が勤務時間帯（09:00〜18:00）の外にあります",
+    };
+    const OUTSIDE = { ...SAMPLE_SETTINGS, morning_meeting_time: "08:30" };
+
+    function okGet() {
+      return {
+        ok: true,
+        status: 200,
+        json: () => Promise.resolve(SAMPLE_SETTINGS),
+      };
+    }
+
+    function okPut(settings: Settings, warnings: SettingsWarning[]) {
+      return {
+        ok: true,
+        status: 200,
+        json: () => Promise.resolve({ settings, warnings }),
+      };
+    }
+
+    it("is empty before any save", async () => {
+      vi.stubGlobal("fetch", vi.fn().mockResolvedValueOnce(okGet()));
+
+      const { result } = renderHook(() => useSettings());
+      await waitFor(() => expect(result.current.status).toBe("ready"));
+
+      expect(result.current.saveWarnings).toEqual([]);
+    });
+
+    it("keeps the response's settings as settings and its warnings separately", async () => {
+      const fetchMock = vi.fn();
+      fetchMock.mockResolvedValueOnce(okGet());
+      fetchMock.mockResolvedValueOnce(okPut(OUTSIDE, [WARNING]));
+      vi.stubGlobal("fetch", fetchMock);
+
+      const { result } = renderHook(() => useSettings());
+      await waitFor(() => expect(result.current.status).toBe("ready"));
+      await act(async () => {
+        await result.current.saveSettings(OUTSIDE);
+      });
+
+      expect(result.current.settings).toEqual(OUTSIDE);
+      expect(result.current.saveWarnings).toEqual([WARNING]);
+    });
+
+    it("clears the previous warnings as soon as the next save starts", async () => {
+      const fetchMock = vi.fn();
+      fetchMock.mockResolvedValueOnce(okGet());
+      fetchMock.mockResolvedValueOnce(okPut(OUTSIDE, [WARNING]));
+      let releaseSave: (() => void) | undefined;
+      fetchMock.mockImplementationOnce(
+        () =>
+          new Promise((resolve) => {
+            releaseSave = () => resolve(okPut(OUTSIDE, [WARNING]));
+          }),
+      );
+      vi.stubGlobal("fetch", fetchMock);
+
+      const { result } = renderHook(() => useSettings());
+      await waitFor(() => expect(result.current.status).toBe("ready"));
+      await act(async () => {
+        await result.current.saveSettings(OUTSIDE);
+      });
+      expect(result.current.saveWarnings).toEqual([WARNING]);
+
+      let savePromise: Promise<boolean> | undefined;
+      act(() => {
+        savePromise = result.current.saveSettings(OUTSIDE);
+      });
+      await waitFor(() => expect(result.current.isSaving).toBe(true));
+      expect(result.current.saveWarnings).toEqual([]);
+
+      await act(async () => {
+        releaseSave?.();
+        await savePromise;
+      });
+      expect(result.current.saveWarnings).toEqual([WARNING]);
+    });
+
+    it("clears the previous warnings when the next save fails", async () => {
+      const fetchMock = vi.fn();
+      fetchMock.mockResolvedValueOnce(okGet());
+      fetchMock.mockResolvedValueOnce(okPut(OUTSIDE, [WARNING]));
+      fetchMock.mockResolvedValueOnce({
+        ok: false,
+        status: 400,
+        json: () => Promise.resolve({ error: "invalid" }),
+      });
+      vi.stubGlobal("fetch", fetchMock);
+
+      const { result } = renderHook(() => useSettings());
+      await waitFor(() => expect(result.current.status).toBe("ready"));
+      await act(async () => {
+        await result.current.saveSettings(OUTSIDE);
+      });
+      await act(async () => {
+        await result.current.saveSettings(OUTSIDE);
+      });
+
+      expect(result.current.saveError).toBe("invalid");
+      expect(result.current.saveWarnings).toEqual([]);
+    });
   });
 });

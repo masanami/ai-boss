@@ -65,3 +65,24 @@ export interface Settings {
 
 /** `PUT /api/settings` accepts a partial update; this app always sends the full form. */
 export type SettingsPatch = Partial<Settings>;
+
+/**
+ * A warning attached to a successful `PUT /api/settings` (#708 決定 18・22):
+ * a meeting time saved outside the working hours. The save itself succeeded;
+ * `message` is the server-built Japanese text shown as-is.
+ */
+export interface SettingsWarning {
+  code: "meeting_outside_working_hours";
+  key: "morning_meeting_time" | "evening_meeting_time";
+  message: string;
+}
+
+/**
+ * `PUT /api/settings`'s 200 body (#708 決定 18). Only PUT is nested — the
+ * warnings live beside `settings`, never inside it, so spreading `settings`
+ * into the form and sending it back can't carry a non-setting key.
+ */
+export interface UpdateSettingsResult {
+  settings: Settings;
+  warnings: SettingsWarning[];
+}

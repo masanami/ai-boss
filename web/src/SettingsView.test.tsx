@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import SettingsView from "./SettingsView";
-import type { Settings } from "./settings";
+import type { Settings, SettingsWarning } from "./settings";
 
 const SAMPLE_SETTINGS: Settings = {
   boss_name: "ボス",
@@ -41,6 +41,14 @@ function stubGet(settings: Settings = SAMPLE_SETTINGS) {
   return fetchMock;
 }
 
+/**
+ * `PUT /api/settings` の 200 の本文（#708 決定 18: `{ settings, warnings }` の入れ子。
+ * GET の本文は平坦なまま）。
+ */
+function putBody(settings: Settings, warnings: SettingsWarning[] = []) {
+  return { settings, warnings };
+}
+
 describe("SettingsView", () => {
   afterEach(() => {
     vi.unstubAllGlobals();
@@ -69,6 +77,7 @@ describe("SettingsView", () => {
         settings: null,
         status: "ready" as const,
         saveError: null,
+        saveWarnings: [],
         isSaving: false,
         saveSettings: vi.fn(),
       }),
@@ -93,7 +102,7 @@ describe("SettingsView", () => {
             resolve({
               ok: true,
               status: 200,
-              json: () => Promise.resolve(SAMPLE_SETTINGS),
+              json: () => Promise.resolve(putBody(SAMPLE_SETTINGS)),
             });
         }),
     );
@@ -180,7 +189,7 @@ describe("SettingsView", () => {
     fetchMock.mockResolvedValueOnce({
       ok: true,
       status: 200,
-      json: () => Promise.resolve(SAMPLE_SETTINGS),
+      json: () => Promise.resolve(putBody(SAMPLE_SETTINGS)),
     });
     vi.stubGlobal("fetch", fetchMock);
 
@@ -226,7 +235,7 @@ describe("SettingsView", () => {
     fetchMock.mockResolvedValueOnce({
       ok: true,
       status: 200,
-      json: () => Promise.resolve({ ...SAMPLE_SETTINGS, boss_name: "鬼上司" }),
+      json: () => Promise.resolve(putBody({ ...SAMPLE_SETTINGS, boss_name: "鬼上司" })),
     });
     vi.stubGlobal("fetch", fetchMock);
 
@@ -271,7 +280,7 @@ describe("SettingsView", () => {
     fetchMock.mockResolvedValueOnce({
       ok: true,
       status: 200,
-      json: () => Promise.resolve(SAMPLE_SETTINGS),
+      json: () => Promise.resolve(putBody(SAMPLE_SETTINGS)),
     });
     vi.stubGlobal("fetch", fetchMock);
 
@@ -343,7 +352,7 @@ describe("SettingsView", () => {
       ok: true,
       status: 200,
       json: () =>
-        Promise.resolve({ ...SAMPLE_SETTINGS, evidence_enforcement_enabled: true }),
+        Promise.resolve(putBody({ ...SAMPLE_SETTINGS, evidence_enforcement_enabled: true })),
     });
     vi.stubGlobal("fetch", fetchMock);
 
@@ -387,7 +396,7 @@ describe("SettingsView", () => {
       ok: true,
       status: 200,
       json: () =>
-        Promise.resolve({ ...SAMPLE_SETTINGS, detection_daily_notification_cap: 3 }),
+        Promise.resolve(putBody({ ...SAMPLE_SETTINGS, detection_daily_notification_cap: 3 })),
     });
     vi.stubGlobal("fetch", fetchMock);
 
@@ -446,10 +455,10 @@ describe("SettingsView", () => {
       ok: true,
       status: 200,
       json: () =>
-        Promise.resolve({
+        Promise.resolve(putBody({
           ...SAMPLE_SETTINGS,
           morning_mentoring_required: false,
-        }),
+        })),
     });
     vi.stubGlobal("fetch", fetchMock);
 
@@ -484,7 +493,7 @@ describe("SettingsView", () => {
             resolve({
               ok: true,
               status: 200,
-              json: () => Promise.resolve(SAMPLE_SETTINGS),
+              json: () => Promise.resolve(putBody(SAMPLE_SETTINGS)),
             });
         }),
     );
@@ -502,5 +511,196 @@ describe("SettingsView", () => {
 
     releaseSave?.();
     await waitFor(() => expect(saveButton).toBeEnabled());
+  });
+  // #708・機能仕様 docs/features/working-hours-intervals.md 決定 18・22・
+  // 受入基準（S4）「設定画面」。警告の文面はサーバが組み立てて返すため、
+  // ここでは応答の message がそのまま表示されることだけを見る。
+  describe("会の時刻と稼働時間帯の整合警告（#708）", () => {
+    const OUTSIDE_SETTINGS: Settings = {
+      ...SAMPLE_SETTINGS,
+      morning_meeting_time: "08:30",
+      evening_meeting_time: "19:00",
+    };
+    const MORNING_WARNING: SettingsWarning = {
+      code: "meeting_outside_working_hours",
+      key: "morning_meeting_time",
+      message: "朝会の時刻（08:30）が勤務時間帯（09:00〜18:00）の外にあります",
+    };
+    const EVENING_WARNING: SettingsWarning = {
+      code: "meeting_outside_working_hours",
+      key: "evening_meeting_time",
+      message: "夕会の時刻（19:00）が勤務時間帯（09:00〜18:00）の外にあります",
+    };
+
+    function okPut(settings: Settings, warnings: SettingsWarning[]) {
+      return {
+        ok: true,
+        status: 200,
+        json: () => Promise.resolve(putBody(settings, warnings)),
+      };
+    }
+
+    async function renderAndSave(fetchMock: ReturnType<typeof vi.fn>) {
+      vi.stubGlobal("fetch", fetchMock);
+      render(<SettingsView />);
+      await waitFor(() =>
+        expect(screen.getByLabelText("ボスの名前")).toHaveValue("ボス"),
+      );
+      fireEvent.click(screen.getByRole("button", { name: "保存" }));
+      await waitFor(() =>
+        expect(screen.getByText("保存しました")).toBeInTheDocument(),
+      );
+    }
+
+    it("警告が 1 件のとき、その message が role=alert で表示され、「保存しました」も表示される", async () => {
+      const fetchMock = stubGet();
+      fetchMock.mockResolvedValueOnce(
+        okPut({ ...SAMPLE_SETTINGS, morning_meeting_time: "08:30" }, [MORNING_WARNING]),
+      );
+
+      await renderAndSave(fetchMock);
+
+      expect(screen.getByRole("alert")).toHaveTextContent(MORNING_WARNING.message);
+      expect(screen.getByText("保存しました")).toBeInTheDocument();
+    });
+
+    it("警告が 2 件のとき、2 件の message がいずれも role=alert で表示される", async () => {
+      const fetchMock = stubGet();
+      fetchMock.mockResolvedValueOnce(
+        okPut(OUTSIDE_SETTINGS, [MORNING_WARNING, EVENING_WARNING]),
+      );
+
+      await renderAndSave(fetchMock);
+
+      const alerts = screen.getAllByRole("alert");
+      expect(alerts.map((alert) => alert.textContent)).toEqual([
+        MORNING_WARNING.message,
+        EVENING_WARNING.message,
+      ]);
+    });
+
+    it("警告が空配列のとき、role=alert の要素は無い", async () => {
+      const fetchMock = stubGet();
+      fetchMock.mockResolvedValueOnce(okPut(SAMPLE_SETTINGS, []));
+
+      await renderAndSave(fetchMock);
+
+      expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+    });
+
+    it("警告のある保存の後、フォームの各入力欄には応答の settings の値が表示される", async () => {
+      const fetchMock = stubGet();
+      const saved = { ...OUTSIDE_SETTINGS, boss_name: "鬼上司" };
+      fetchMock.mockResolvedValueOnce(okPut(saved, [MORNING_WARNING, EVENING_WARNING]));
+
+      vi.stubGlobal("fetch", fetchMock);
+      render(<SettingsView />);
+      await waitFor(() =>
+        expect(screen.getByLabelText("ボスの名前")).toHaveValue("ボス"),
+      );
+      fireEvent.click(screen.getByRole("button", { name: "保存" }));
+
+      await waitFor(() =>
+        expect(screen.getByLabelText("ボスの名前")).toHaveValue("鬼上司"),
+      );
+      expect(screen.getByLabelText("朝会の時刻")).toHaveValue("08:30");
+      expect(screen.getByLabelText("夕会の時刻")).toHaveValue("19:00");
+      expect(screen.getByLabelText("勤務開始")).toHaveValue("09:00");
+      expect(screen.getByLabelText("勤務終了")).toHaveValue("18:00");
+    });
+
+    it("警告のある保存の後に続けて保存したとき、2 回目の PUT の本文のキーの集合は Settings の 18 キーと等しい（warnings を含まない）", async () => {
+      const fetchMock = stubGet();
+      fetchMock.mockResolvedValueOnce(
+        okPut(OUTSIDE_SETTINGS, [MORNING_WARNING, EVENING_WARNING]),
+      );
+      fetchMock.mockResolvedValueOnce(
+        okPut(OUTSIDE_SETTINGS, [MORNING_WARNING, EVENING_WARNING]),
+      );
+      await renderAndSave(fetchMock);
+
+      fireEvent.click(screen.getByRole("button", { name: "保存" }));
+
+      await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(3));
+      const [, options] = fetchMock.mock.calls[2] as [string, RequestInit];
+      const sentBody = JSON.parse(options.body as string) as Record<string, unknown>;
+      expect(Object.keys(sentBody).sort()).toEqual(Object.keys(SAMPLE_SETTINGS).sort());
+      expect(Object.keys(sentBody)).toHaveLength(18);
+      expect(sentBody).not.toHaveProperty("warnings");
+      expect(sentBody).not.toHaveProperty("settings");
+    });
+
+    it("警告のある保存の後に次の保存を送信し、その応答が返る前（保存中）は、前回の警告は表示されない", async () => {
+      const fetchMock = stubGet();
+      fetchMock.mockResolvedValueOnce(
+        okPut({ ...SAMPLE_SETTINGS, morning_meeting_time: "08:30" }, [MORNING_WARNING]),
+      );
+      let releaseSave: (() => void) | undefined;
+      fetchMock.mockImplementationOnce(
+        () =>
+          new Promise((resolve) => {
+            releaseSave = () => resolve(okPut(SAMPLE_SETTINGS, []));
+          }),
+      );
+      await renderAndSave(fetchMock);
+      expect(screen.getByRole("alert")).toHaveTextContent(MORNING_WARNING.message);
+
+      const saveButton = screen.getByRole("button", { name: "保存" });
+      fireEvent.click(saveButton);
+
+      await waitFor(() => expect(saveButton).toBeDisabled());
+      expect(screen.queryByText(MORNING_WARNING.message)).not.toBeInTheDocument();
+      expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+
+      releaseSave?.();
+      await waitFor(() => expect(saveButton).toBeEnabled());
+    });
+
+    it("警告のある保存の後、次の保存の warnings が空配列なら、前回の警告は表示されない", async () => {
+      const fetchMock = stubGet();
+      fetchMock.mockResolvedValueOnce(
+        okPut({ ...SAMPLE_SETTINGS, morning_meeting_time: "08:30" }, [MORNING_WARNING]),
+      );
+      fetchMock.mockResolvedValueOnce(okPut(SAMPLE_SETTINGS, []));
+      await renderAndSave(fetchMock);
+      expect(screen.getByRole("alert")).toHaveTextContent(MORNING_WARNING.message);
+
+      fireEvent.click(screen.getByRole("button", { name: "保存" }));
+
+      await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(3));
+      await waitFor(() =>
+        expect(screen.getByText("保存しました")).toBeInTheDocument(),
+      );
+      expect(screen.queryByText(MORNING_WARNING.message)).not.toBeInTheDocument();
+      expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+    });
+
+    it("警告のある保存の後、次の保存が 400 になったとき、前回の警告は表示されず、400 の error が role=alert で表示される", async () => {
+      const fetchMock = stubGet();
+      fetchMock.mockResolvedValueOnce(
+        okPut({ ...SAMPLE_SETTINGS, morning_meeting_time: "08:30" }, [MORNING_WARNING]),
+      );
+      fetchMock.mockResolvedValueOnce({
+        ok: false,
+        status: 400,
+        json: () =>
+          Promise.resolve({
+            error: "勤務開始は勤務終了より前の時刻にしてください",
+            code: "invalid_working_hours",
+          }),
+      });
+      await renderAndSave(fetchMock);
+      expect(screen.getByRole("alert")).toHaveTextContent(MORNING_WARNING.message);
+
+      fireEvent.click(screen.getByRole("button", { name: "保存" }));
+
+      await waitFor(() =>
+        expect(screen.getByRole("alert")).toHaveTextContent(
+          "勤務開始は勤務終了より前の時刻にしてください",
+        ),
+      );
+      expect(screen.getAllByRole("alert")).toHaveLength(1);
+      expect(screen.queryByText(MORNING_WARNING.message)).not.toBeInTheDocument();
+    });
   });
 });

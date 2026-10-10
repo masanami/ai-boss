@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 import { fetchSettings, updateSettings } from "./settings-api";
-import type { Settings, SettingsPatch } from "./settings";
+import type { Settings, SettingsPatch, SettingsWarning } from "./settings";
 
 export type SettingsLoadStatus = "loading" | "ready" | "error";
 
@@ -8,6 +8,12 @@ export interface UseSettingsResult {
   settings: Settings | null;
   status: SettingsLoadStatus;
   saveError: string | null;
+  /**
+   * 直前の保存の警告（#708 決定 22）。保存を始めた時点で空にし、成功した
+   * 保存の応答の warnings に置き換える（失敗したときは空のまま）。前回の
+   * 警告を閉じた・見たという状態は持たない。
+   */
+  saveWarnings: SettingsWarning[];
   /** 保存中フラグ。UI 側で保存ボタンを無効化するために公開する */
   isSaving: boolean;
   saveSettings: (patch: SettingsPatch) => Promise<boolean>;
@@ -25,6 +31,7 @@ export function useSettings(): UseSettingsResult {
   const [settings, setSettings] = useState<Settings | null>(null);
   const [status, setStatus] = useState<SettingsLoadStatus>("loading");
   const [saveError, setSaveError] = useState<string | null>(null);
+  const [saveWarnings, setSaveWarnings] = useState<SettingsWarning[]>([]);
   const [isSaving, setIsSaving] = useState(false);
 
   useEffect(() => {
@@ -50,9 +57,11 @@ export function useSettings(): UseSettingsResult {
 
   const saveSettings = useCallback(async (patch: SettingsPatch) => {
     setIsSaving(true);
+    setSaveWarnings([]);
     try {
       const updated = await updateSettings(patch);
-      setSettings(updated);
+      setSettings(updated.settings);
+      setSaveWarnings(updated.warnings);
       setSaveError(null);
       return true;
     } catch (error) {
@@ -65,5 +74,5 @@ export function useSettings(): UseSettingsResult {
     }
   }, []);
 
-  return { settings, status, saveError, isSaving, saveSettings };
+  return { settings, status, saveError, saveWarnings, isSaving, saveSettings };
 }

@@ -49,7 +49,7 @@ function toFormState(settings: Settings): FormState {
 }
 
 function SettingsView() {
-  const { settings, status, saveError, isSaving, saveSettings } =
+  const { settings, status, saveError, saveWarnings, isSaving, saveSettings } =
     useSettings();
   const [form, setForm] = useState<FormState | null>(null);
   const [saveSuccess, setSaveSuccess] = useState(false);
@@ -379,6 +379,13 @@ function SettingsView() {
         {saveError === null && saveSuccess && (
           <div className="settings-save-feedback">
             <p>保存しました</p>
+            {/* #708 決定 22: 会の時刻が帯の外なら、保存成功に並べて 1 件 1 行で
+                出す。閉じる操作は置かず、次の保存を始めた時点で消える。 */}
+            {saveWarnings.map((warning) => (
+              <p key={warning.key} role="alert">
+                {warning.message}
+              </p>
+            ))}
             <p>設定は次回の応答・次回のチェックから反映されます</p>
           </div>
         )}
