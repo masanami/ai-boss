@@ -12,6 +12,7 @@ import {
   insertDecision,
   listDecisions,
   listDecisionsByTaskId,
+  listMentoredTaskIds,
   listRecentDecisions,
 } from "./decisions-repository.js";
 
@@ -543,5 +544,45 @@ describe("listDecisionsByTaskId", () => {
         recordedAt: "2026-07-05T00:00:00.000Z",
       },
     ]);
+  });
+});
+
+// Issue #706（親 #561 決定11）: 朝会の未確認タスクの判定に使う、メンタリング記録を
+// 持つタスクの id の読み取り。
+describe("listMentoredTaskIds", () => {
+  let db: Database.Database;
+
+  beforeEach(async () => {
+    db = openDatabase(":memory:");
+    await runMigrations(portFor(db));
+  });
+
+  afterEach(async () => {
+    db.close();
+  });
+
+  it("returns an empty array when there are no decisions", async () => {
+    expect(await listMentoredTaskIds(portFor(db))).toEqual([]);
+  });
+
+  it("returns task ids of kind='mentoring' rows only, without duplicates, ignoring kind='decision' rows and task_id IS NULL rows", async () => {
+    const session = await insertSession(portFor(db), { type: "adhoc" });
+    const mentored = await insertTask(portFor(db), newTask("メンタリング済み"));
+    const decided = await insertTask(portFor(db), newTask("決定だけ"));
+    insertRawDecision(db, session.id, "結論1", localIso(2026, 7, 5, 9), mentored.id, "mentoring");
+    insertRawDecision(db, session.id, "結論2", localIso(2026, 7, 5, 10), mentored.id, "mentoring");
+    insertRawDecision(db, session.id, "決定", localIso(2026, 7, 5, 11), decided.id, "decision");
+    insertRawDecision(db, session.id, "紐づけ無し", localIso(2026, 7, 5, 12), null, "mentoring");
+
+    expect(await listMentoredTaskIds(portFor(db))).toEqual([mentored.id]);
+  });
+
+  it("counts a withdrawn mentoring row as a record (status is not filtered)", async () => {
+    const session = await insertSession(portFor(db), { type: "adhoc" });
+    const task = await insertTask(portFor(db), newTask("取り下げ済み"));
+    insertRawDecision(db, session.id, "結論", localIso(2026, 7, 5, 9), task.id, "mentoring");
+    db.prepare("UPDATE decisions SET status = 'withdrawn' WHERE task_id = ?").run(task.id);
+
+    expect(await listMentoredTaskIds(portFor(db))).toEqual([task.id]);
   });
 });

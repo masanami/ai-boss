@@ -5,7 +5,12 @@ import { runMigrations } from "../db/migrate.js";
 import { portFor } from "../db/test-support/port-for.js";
 import { insertTask, listTasks } from "../tasks/tasks-repository.js";
 import { insertDecision, listDecisions } from "../decisions/decisions-repository.js";
-import { MENTORING_TARGET_TASK_INSTRUCTION } from "../boss/persona-prompt.js";
+import {
+  MENTORING_TARGET_ESTIMATE_INSTRUCTION,
+  MENTORING_TARGET_TASK_INSTRUCTION,
+  MORNING_UNCONFIRMED_TASKS_INSTRUCTION,
+  UNCONFIRMED_TASKS_SECTION_HEADING,
+} from "../boss/persona-prompt.js";
 import { updateSessionSummary } from "./sessions-repository.js";
 import { insertMessage } from "./messages-repository.js";
 import { stripHtmlTags } from "../lib/strip-html-tags.js";
@@ -2015,5 +2020,148 @@ describe("POST /api/sessions/:id/messages", () => {
       .prepare("SELECT * FROM messages WHERE session_id = ?")
       .all(session.id) as Message[];
     expect(messages.map((m) => m.role)).toEqual(["user"]);
+  });
+
+  // Issue #706（親 #561 S2・決定9〜11）: 朝会の未確認セクションの結線と、
+  // タスク起点メンタリングの見積もりの指示の結線。
+  describe("未確認タスクの印付けと見積もりの指示の結線（Issue #706, 親 #561）", () => {
+    async function createSessionOfType(type: "morning" | "adhoc"): Promise<Session> {
+      const app = createApp(portFor(db), env);
+      return readJson<Session>(
+        await app.request("/api/sessions", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ type }),
+        }),
+      );
+    }
+
+    async function insertTodoTask(title: string, estimatedMinutes: number | null): Promise<number> {
+      return (
+        await insertTask(portFor(db), {
+          title,
+          description: null,
+          category: "work",
+          priority: null,
+          due_at: null,
+          status: "todo",
+          boss_comment: null,
+          estimated_minutes: estimatedMinutes,
+        })
+      ).id;
+    }
+
+    function insertRecord(
+      sessionId: number,
+      taskId: number,
+      kind: "decision" | "mentoring",
+      status: "active" | "withdrawn" = "active",
+    ): void {
+      db.prepare(
+        `INSERT INTO decisions (session_id, task_id, content, rationale, kind, status, created_at)
+         VALUES (?, ?, '記録', NULL, ?, ?, ?)`,
+      ).run(sessionId, taskId, kind, status, new Date(2026, 6, 5, 9).toISOString());
+    }
+
+    /** チャットルートへ送り、LLM へ渡った system プロンプトを返す。 */
+    async function sendAndCaptureSystem(
+      sessionId: number,
+      extra: Record<string, unknown> = {},
+    ): Promise<string> {
+      streamBossMessageMock.mockResolvedValue(fakeTextMessage("了解した"));
+      const app = createApp(portFor(db), env);
+      const res = await app.request(`/api/sessions/${sessionId}/messages`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ content: "今日の予定です", ...extra }),
+      });
+      await res.text();
+      expect(res.status).toBe(200);
+      const calls = streamBossMessageMock.mock.calls;
+      return calls[calls.length - 1][1].system as string;
+    }
+
+    /** 未確認セクション（見出しから次の空行まで）。無ければ undefined。 */
+    function unconfirmedSection(system: string): string | undefined {
+      const start = system.indexOf(UNCONFIRMED_TASKS_SECTION_HEADING);
+      if (start === -1) {
+        return undefined;
+      }
+      const end = system.indexOf("\n\n", start);
+      return end === -1 ? system.slice(start) : system.slice(start, end);
+    }
+
+    function hasLineFor(section: string | undefined, taskId: number): boolean {
+      return (section ?? "").split("\n").some((line) => line.includes(`#${taskId} `));
+    }
+
+    it("朝会で、メンタリング記録の無い見積もり 30 分の todo タスクは未確認セクションに行を持つ（AC-39）", async () => {
+      const taskId = await insertTodoTask("記録無しタスク", 30);
+      const session = await createSessionOfType("morning");
+
+      const system = await sendAndCaptureSystem(session.id);
+
+      expect(hasLineFor(unconfirmedSection(system), taskId)).toBe(true);
+    });
+
+    it("朝会で、withdrawn のメンタリング記録だけを持つタスクは未確認セクションに行を持たない（AC-40）", async () => {
+      const unconfirmedId = await insertTodoTask("見積もり無しタスク", null);
+      const taskId = await insertTodoTask("取り下げ記録タスク", 30);
+      const session = await createSessionOfType("morning");
+      insertRecord(session.id, taskId, "mentoring", "withdrawn");
+
+      const system = await sendAndCaptureSystem(session.id);
+
+      const section = unconfirmedSection(system);
+      // セクション自体は出ている（行が無いのがセクションの欠落のせいでないことの裏取り）
+      expect(hasLineFor(section, unconfirmedId)).toBe(true);
+      expect(hasLineFor(section, taskId)).toBe(false);
+    });
+
+    it("朝会で、kind: decision の記録だけを持つタスクは未確認セクションに行を持つ（AC-41）", async () => {
+      const taskId = await insertTodoTask("決定だけタスク", 30);
+      const session = await createSessionOfType("morning");
+      insertRecord(session.id, taskId, "decision");
+
+      const system = await sendAndCaptureSystem(session.id);
+
+      expect(hasLineFor(unconfirmedSection(system), taskId)).toBe(true);
+    });
+
+    it("随時のセッションでは未確認の todo タスクがあっても未確認セクションも予約の指示も含まない（AC-42）", async () => {
+      await insertTodoTask("見積もり無しタスク", null);
+      const session = await createSessionOfType("adhoc");
+
+      const system = await sendAndCaptureSystem(session.id);
+
+      expect(system).toContain("見積もり無しタスク");
+      expect(system).not.toContain(UNCONFIRMED_TASKS_SECTION_HEADING);
+      expect(system).not.toContain(MORNING_UNCONFIRMED_TASKS_INSTRUCTION);
+    });
+
+    it("随時のタスク起点メンタリングで対象タスクの見積もりが空なら見積もりの指示を含む（AC-54）", async () => {
+      const taskId = await insertTodoTask("見積もり無しタスク", null);
+      const session = await createSessionOfType("adhoc");
+
+      const system = await sendAndCaptureSystem(session.id, {
+        mentoring: true,
+        mentoringTaskId: taskId,
+      });
+
+      expect(system).toContain(MENTORING_TARGET_ESTIMATE_INSTRUCTION);
+    });
+
+    it("随時のタスク起点メンタリングで対象タスクの見積もりが 30 分なら見積もりの指示を含まない（AC-55）", async () => {
+      const taskId = await insertTodoTask("見積もり済みタスク", 30);
+      const session = await createSessionOfType("adhoc");
+
+      const system = await sendAndCaptureSystem(session.id, {
+        mentoring: true,
+        mentoringTaskId: taskId,
+      });
+
+      expect(system).toContain(MENTORING_TARGET_TASK_INSTRUCTION);
+      expect(system).not.toContain(MENTORING_TARGET_ESTIMATE_INSTRUCTION);
+    });
   });
 });
