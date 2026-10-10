@@ -75,7 +75,10 @@ function stubFetch(options: {
       }
       return options.selectionGetFails ? respond(500, { error: "x" }) : respond(200, options.selection);
     }
-    if (url === "/api/settings") return respond(200, SETTINGS);
+    // #708 決定 18: PUT の 200 だけが { settings, warnings } の入れ子。GET は平坦なまま。
+    if (url === "/api/settings") {
+      return method === "PUT" ? respond(200, { settings: SETTINGS, warnings: [] }) : respond(200, SETTINGS);
+    }
     throw new Error(`unexpected fetch ${method} ${url}`);
   });
   vi.stubGlobal("fetch", fetchMock);

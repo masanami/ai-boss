@@ -74,7 +74,7 @@ type PositiveIntegerKey =
   | "detection_daily_notification_cap";
 type LabeledSettingKey = RequiredStringKey | TimeKey | PositiveIntegerKey;
 
-const SETTING_LABELS: Record<LabeledSettingKey, string> = {
+export const SETTING_LABELS: Record<LabeledSettingKey, string> = {
   boss_name: "ボスの名前",
   model: "モデル",
   work_start: "勤務開始",

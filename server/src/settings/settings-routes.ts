@@ -17,6 +17,7 @@ import { resolveBossSettingsFrom } from "../boss/boss-settings.js";
 import { resolveDetectionSettings } from "../scheduler/detection-settings.js";
 import { resolveEvidenceSettingsFrom } from "./evidence-settings.js";
 import { resolveMorningMentoringRequiredFrom } from "./mentoring-settings.js";
+import { findMeetingTimeWarnings } from "./meeting-time-warnings.js";
 import {
   DEFAULT_DETECTION_SETTINGS,
   TIME_PATTERN,
@@ -130,6 +131,11 @@ function resolveEffectiveWorkingHours(
  * effective settings inside the same transaction so the response always
  * reflects what this request actually persisted (not a later concurrent
  * save's values — #603).
+ *
+ * Only `PUT`'s 200 body is nested as `{ settings, warnings }` (#708 決定 18):
+ * the web spreads `settings` into its form and sends the whole form back on
+ * the next save, so warnings must never sit beside the setting keys (they
+ * would come back as an `unrecognized setting key` 400). `GET` stays flat.
  */
 export function createSettingsRouter(db: Db): Hono {
   const settings = new Hono();
@@ -172,6 +178,12 @@ export function createSettingsRouter(db: Db): Hono {
     // as "any failure saves nothing" (AC-5).
     const touchesWorkingHours =
       result.data.work_start !== undefined || result.data.work_end !== undefined;
+    // #708 決定 20: 会の時刻と帯の整合は、4 キーのいずれかを含む保存のときだけ
+    // 判定する（判断 7「稼働時間帯または朝会・夕会の時刻を保存したとき」）。
+    const touchesMeetingAlignment =
+      touchesWorkingHours ||
+      result.data.morning_meeting_time !== undefined ||
+      result.data.evening_meeting_time !== undefined;
     const patch: Record<string, string | null> = result.data;
     const persisted = await db.transaction(async (tx) => {
       if (touchesWorkingHours) {
@@ -199,7 +211,13 @@ export function createSettingsRouter(db: Db): Hono {
       );
     }
 
-    return c.json(persisted);
+    // #708 決定 20: 判定の入力は書き込み後に読み直した実効設定（応答の
+    // settings と同じ値）。不正な帯が保存されていても、読み出し側ガードで
+    // 実際に効いている帯を基準にする。
+    const warnings = touchesMeetingAlignment
+      ? findMeetingTimeWarnings(persisted)
+      : [];
+    return c.json({ settings: persisted, warnings });
   });
 
   return settings;

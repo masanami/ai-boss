@@ -82,6 +82,12 @@ interface SettingsBody {
   morning_mentoring_required: boolean;
 }
 
+// #708 決定 18: PUT の 200 の本文だけが { settings, warnings } の入れ子。
+interface PutSettingsBody {
+  settings: SettingsBody;
+  warnings: { code: string; key: string; message: string }[];
+}
+
 async function readJson<T>(res: Response): Promise<T> {
   return (await res.json()) as T;
 }
@@ -273,7 +279,7 @@ describe("settings routes", () => {
       });
 
       expect(putRes.status).toBe(200);
-      const body = await readJson<SettingsBody>(putRes);
+      const { settings: body } = await readJson<PutSettingsBody>(putRes);
       expect(body.boss_custom_instructions).toBeNull();
     });
 
@@ -580,7 +586,7 @@ describe("settings routes", () => {
         });
 
         expect(res.status).toBe(200);
-        const body = await readJson<SettingsBody>(res);
+        const { settings: body } = await readJson<PutSettingsBody>(res);
         expect(body.boss_strictness).toBe(MIN_STRICTNESS);
       });
 
@@ -594,7 +600,7 @@ describe("settings routes", () => {
         });
 
         expect(res.status).toBe(200);
-        const body = await readJson<SettingsBody>(res);
+        const { settings: body } = await readJson<PutSettingsBody>(res);
         expect(body.boss_strictness).toBe(MAX_STRICTNESS);
       });
 
@@ -818,7 +824,7 @@ describe("settings routes", () => {
         });
 
         expect(res.status).toBe(200);
-        const body = await readJson<SettingsBody>(res);
+        const { settings: body } = await readJson<PutSettingsBody>(res);
         expect(body.work_start).toBe("08:30");
         expect(body.work_end).toBe("17:30");
 
@@ -940,7 +946,7 @@ describe("settings routes", () => {
         });
 
         expect(res.status).toBe(200);
-        const body = await readJson<SettingsBody>(res);
+        const { settings: body } = await readJson<PutSettingsBody>(res);
         expect(body.work_start).toBe("07:00");
         expect(body.work_end).toBe("18:00");
       });
@@ -980,7 +986,7 @@ describe("settings routes", () => {
         });
 
         expect(res.status).toBe(200);
-        const body = await readJson<SettingsBody>(res);
+        const { settings: body } = await readJson<PutSettingsBody>(res);
         expect(body.work_start).toBe("09:00");
         expect(body.work_end).toBe("20:00");
       });
@@ -1101,7 +1107,7 @@ describe("settings routes", () => {
         });
 
         expect(res.status).toBe(200);
-        const body = await readJson<SettingsBody>(res);
+        const { settings: body } = await readJson<PutSettingsBody>(res);
         expect(body.boss_name).toBe("鬼上司");
       });
     });
@@ -1129,7 +1135,7 @@ describe("settings routes", () => {
         });
 
         expect(res.status).toBe(200);
-        const body = await readJson<Record<string, unknown>>(res);
+        const { settings: body } = await readJson<{ settings: Record<string, unknown> }>(res);
         expect(body[key]).toBe(1);
       });
 
@@ -1181,7 +1187,7 @@ describe("settings routes", () => {
         });
 
         expect(res.status).toBe(200);
-        const body = await readJson<SettingsBody>(res);
+        const { settings: body } = await readJson<PutSettingsBody>(res);
         expect(body.detection_daily_notification_cap).toBe(3);
         expect(readStoredCap()).toBe("3");
       });
@@ -1351,5 +1357,213 @@ describe("settings route on the async DB port (#603)", () => {
       { boss_name: "新ボス", work_start: "10:00" },
     ]).toContainEqual({ boss_name: body.boss_name, work_start: body.work_start });
     raw.close();
+  });
+});
+
+// #708・機能仕様 docs/features/working-hours-intervals.md 決定 17・18・20・
+// 受入基準（S4）: 会の時刻が帯の外でも保存は受け付け、PUT の 200 の本文を
+// { settings, warnings } の入れ子にして警告を載せる。
+describe("PUT /api/settings — 会の時刻と稼働時間帯の整合警告（#708 S4）", () => {
+  let db: Database.Database;
+
+  beforeEach(async () => {
+    db = openDatabase(":memory:");
+    await runMigrations(portFor(db));
+  });
+
+  afterEach(() => {
+    db.close();
+  });
+
+  function put(app: Hono, body: Record<string, unknown>) {
+    return app.request("/api/settings", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+  }
+
+  async function warningKeysOf(res: Response): Promise<string[]> {
+    expect(res.status).toBe(200);
+    const body = await readJson<PutSettingsBody>(res);
+    return body.warnings.map((w) => w.key);
+  }
+
+  describe("設定 API の応答形（決定 17・18）", () => {
+    it("帯の外の朝会 08:30 の保存は 200 で、直後の GET にも 08:30 が保存されている", async () => {
+      const app = createApp(portFor(db));
+
+      const res = await put(app, { morning_meeting_time: "08:30" });
+
+      expect(res.status).toBe(200);
+      const getBody = await readJson<SettingsBody>(await app.request("/api/settings"));
+      expect(getBody.morning_meeting_time).toBe("08:30");
+    });
+
+    it("200 の本文は settings と warnings の 2 つのキーを持ち、settings は直後の GET の本文と等しく、warnings は朝会の 1 件だけを持つ", async () => {
+      const app = createApp(portFor(db));
+
+      const res = await put(app, { morning_meeting_time: "08:30" });
+
+      const body = await readJson<PutSettingsBody>(res);
+      expect(Object.keys(body).sort()).toEqual(["settings", "warnings"]);
+      const getBody = await readJson<SettingsBody>(await app.request("/api/settings"));
+      expect(body.settings).toEqual(getBody);
+      expect(body.warnings).toHaveLength(1);
+      expect(body.warnings[0].key).toBe("morning_meeting_time");
+      expect(body.warnings[0].code).toBe("meeting_outside_working_hours");
+      expect(body.warnings[0].message).toBe(
+        "朝会の時刻（08:30）が勤務時間帯（09:00〜18:00）の外にあります",
+      );
+    });
+
+    it("会の時刻がいずれも帯の中の保存（朝会 10:00）の warnings は空配列である", async () => {
+      const app = createApp(portFor(db));
+
+      const res = await put(app, { morning_meeting_time: "10:00" });
+
+      expect(res.status).toBe(200);
+      expect((await readJson<PutSettingsBody>(res)).warnings).toEqual([]);
+    });
+
+    it("200 の本文の settings をそのまま次の PUT の本文として送ると 200 が返る（警告が設定に混ざらない）", async () => {
+      const app = createApp(portFor(db));
+      const first = await readJson<PutSettingsBody>(
+        await put(app, { morning_meeting_time: "08:30" }),
+      );
+      expect(first.warnings).toHaveLength(1);
+
+      const second = await put(app, first.settings as unknown as Record<string, unknown>);
+
+      expect(second.status).toBe(200);
+    });
+
+    it("GET の本文のキーの集合は S4 の前と同じ 18 キーで、warnings と settings を含まない", async () => {
+      const app = createApp(portFor(db));
+      await put(app, { morning_meeting_time: "08:30" });
+
+      const body = await readJson<Record<string, unknown>>(await app.request("/api/settings"));
+
+      expect(Object.keys(body).sort()).toEqual(
+        [
+          "boss_name",
+          "boss_tone_preset",
+          "boss_strictness",
+          "boss_custom_instructions",
+          "work_start",
+          "work_end",
+          "morning_meeting_time",
+          "evening_meeting_time",
+          "detection_unstarted_fallback_minutes",
+          "detection_silence_fallback_minutes",
+          "detection_break_fallback_minutes",
+          "escalation_l2_after_minutes",
+          "escalation_l3_after_minutes",
+          "escalation_repeat_minutes",
+          "detection_daily_notification_cap",
+          "model",
+          "evidence_enforcement_enabled",
+          "morning_mentoring_required",
+        ].sort(),
+      );
+      expect(body).not.toHaveProperty("warnings");
+      expect(body).not.toHaveProperty("settings");
+    });
+
+    it("work_start >= work_end の 400 の本文は S4 の前と同じ { error, code: invalid_working_hours } である", async () => {
+      const app = createApp(portFor(db));
+
+      const res = await put(app, { work_start: "18:00", work_end: "09:00" });
+
+      expect(res.status).toBe(400);
+      expect(await readJson<ErrorBody>(res)).toEqual({
+        error: WORKING_HOURS_ERROR,
+        code: "invalid_working_hours",
+      });
+    });
+
+    it("部分更新で相方の保存値と前後が逆になる 400 の本文も { error, code: invalid_working_hours } のままである", async () => {
+      const app = createApp(portFor(db));
+
+      const res = await put(app, { work_start: "19:00" });
+
+      expect(res.status).toBe(400);
+      expect(await readJson<ErrorBody>(res)).toEqual({
+        error: WORKING_HOURS_ERROR,
+        code: "invalid_working_hours",
+      });
+    });
+  });
+
+  describe("判定の入力と契機（決定 20）", () => {
+    it("設定が空の DB へ { work_start: 10:00 } を送ると、既定の朝会 09:00 で補われて朝会の 1 件を持つ", async () => {
+      const app = createApp(portFor(db));
+
+      expect(await warningKeysOf(await put(app, { work_start: "10:00" }))).toEqual([
+        "morning_meeting_time",
+      ]);
+    });
+
+    it("{ work_start: 10:00 } の保存後に { morning_meeting_time: 09:30 } を送ると、保存値 10:00 で補われて朝会の 1 件を持つ", async () => {
+      const app = createApp(portFor(db));
+      expect((await put(app, { work_start: "10:00" })).status).toBe(200);
+
+      expect(
+        await warningKeysOf(await put(app, { morning_meeting_time: "09:30" })),
+      ).toEqual(["morning_meeting_time"]);
+    });
+
+    it("設定が空の DB へ { evening_meeting_time: 19:00 } を送ると、既定の帯で補われて夕会の 1 件を持つ", async () => {
+      const app = createApp(portFor(db));
+
+      expect(
+        await warningKeysOf(await put(app, { evening_meeting_time: "19:00" })),
+      ).toEqual(["evening_meeting_time"]);
+    });
+
+    it("不正な帯 22:00-02:00 が保存された DB へ { morning_meeting_time: 09:00 } を送ると、読み出し側ガード後の実効の帯で判定して空配列である", async () => {
+      db.prepare("INSERT INTO settings (key, value) VALUES (?, ?), (?, ?)").run(
+        "work_start",
+        "22:00",
+        "work_end",
+        "02:00",
+      );
+      const app = createApp(portFor(db));
+
+      expect(
+        await warningKeysOf(await put(app, { morning_meeting_time: "09:00" })),
+      ).toEqual([]);
+    });
+
+    it("{ morning_meeting_time: null } は S4 の前と同じ 400（invalid_time）で、警告つきの成功応答にならない", async () => {
+      const app = createApp(portFor(db));
+
+      const res = await put(app, { morning_meeting_time: null });
+
+      expect(res.status).toBe(400);
+      const body = await readJson<ErrorBody>(res);
+      expect(body).toEqual({
+        error: TIME_KEY_ERRORS.morning_meeting_time,
+        code: "invalid_time",
+      });
+    });
+
+    it("朝会 08:30 の保存後に 4 キーのいずれも含まない { boss_name } を送ると、warnings は空配列である", async () => {
+      const app = createApp(portFor(db));
+      expect((await put(app, { morning_meeting_time: "08:30" })).status).toBe(200);
+
+      expect(await warningKeysOf(await put(app, { boss_name: "鬼上司" }))).toEqual([]);
+    });
+
+    it("朝会 08:30 の保存後にもう一度 { morning_meeting_time: 08:30 } を送ると、warnings は朝会の 1 件を持つ（前回の警告を記憶しない）", async () => {
+      const app = createApp(portFor(db));
+      expect(
+        await warningKeysOf(await put(app, { morning_meeting_time: "08:30" })),
+      ).toEqual(["morning_meeting_time"]);
+
+      expect(
+        await warningKeysOf(await put(app, { morning_meeting_time: "08:30" })),
+      ).toEqual(["morning_meeting_time"]);
+    });
   });
 });
