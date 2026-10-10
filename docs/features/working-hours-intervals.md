@@ -478,7 +478,7 @@
 
 - **採用案**:
   1. 判定の入力は、`PUT /api/settings` のトランザクションの中で書き込んだ後に読み直した実効設定（`settings-routes.ts` の `readEffectiveSettings(tx)` の戻り値＝応答の `settings` と同じもの）の `work_start` / `work_end` / `morning_meeting_time` / `evening_meeting_time` とする。部分更新で送られなかったキーは、これにより「保存値（書式が正しければ）、無ければ既定値」で補われる——S1 決定 6 の `resolveEffectiveWorkingHours`（`settings-routes.ts:105`）と同じ補い方である。
-  2. 判定は、patch が `work_start` / `work_end` / `morning_meeting_time` / `evening_meeting_time` のいずれかを含むときだけ行う（値が `null`＝既定へ戻すリセットでも「含む」とする。`settings-routes.ts` の `touchesWorkingHours` と同じ `!== undefined` の判定）。含まないとき `warnings` は空配列。
+  2. 判定は、patch が `work_start` / `work_end` / `morning_meeting_time` / `evening_meeting_time` のいずれかを含むときだけ行う（`settings-routes.ts` の `touchesWorkingHours` と同じ `!== undefined` の判定）。含まないとき `warnings` は空配列。時刻の 4 キーは**文字列の保存だけ**が契機になる——`null`（既定へ戻すリセット）は `validateTime`（`settings-validation.ts`）が 400（`invalid_time`）で拒否するため、成功する保存に 4 キーの `null` は現れない。S4 は `validatePutSettingsInput` を変えず、時刻の 4 キーの `null` のリセットを受け付けるようにはしない（範囲を広げない）。
 - **理由**:
   1. 応答の `settings` と警告が同じ値から出るため、画面のフォームに見えている値と警告の内容が食い違わない。
   2. 唯一の差は「`work_start >= work_end` の不正な組が既に保存されていて、patch が稼働時間帯に触れない」場合である。生値（`resolveEffectiveWorkingHours` の規則）で判定すると空の帯（例 `22:00`-`02:00`）に対して朝会・夕会がともに外と出るが、検知が実際に使う帯は読み出し側ガード（S1 決定 1）で既定の `09:00`-`18:00` に倒れており、応答の `settings` もそれを返す。実際に効く帯を基準にするほうが警告として正しい（S1 が生値を使うのは**拒否**の判定であり、目的が違う）。
@@ -771,8 +771,7 @@ S4 で新たにやらないこと:
 - [ ] `{ work_start: "10:00" }` を保存した後に `{ morning_meeting_time: "09:30" }` を送ると、`warnings` は朝会の 1 件を持つ（送られなかった `work_start` は保存値 `10:00` で補われる）
 - [ ] 設定が空の DB へ `{ evening_meeting_time: "19:00" }` を送ると、`warnings` は夕会の 1 件を持つ（送られなかった帯は既定の `09:00`-`18:00` で補われる）
 - [ ] `settings` テーブルへ直接 `work_start` `22:00`・`work_end` `02:00`（不正な組）を書いた DB へ `{ morning_meeting_time: "09:00" }` を送ると、`warnings` は空配列である（判定は読み出し側ガード適用後の実効の帯 `09:00`-`18:00` で行う）
-- [ ] `{ morning_meeting_time: "08:30" }` を保存した後に `{ morning_meeting_time: null }` を送ると、`warnings` は空配列である（リセット後の既定 `09:00` で判定する）
-- [ ] `{ work_start: "10:00" }` を保存した後に `{ work_start: null }` を送ると、`warnings` は空配列である（`null` も判定の契機になり、既定の帯 `09:00`-`18:00` で判定する）
+- [ ] `{ morning_meeting_time: null }` を送ると、S4 の前と同じ 400（`{ error, code: "invalid_time" }`）が返り、`warnings` を含む成功応答にならない（時刻の 4 キーの `null` のリセットは S4 でも受け付けない。決定 20 の 2）
 - [ ] `{ morning_meeting_time: "08:30" }` を保存した後に `{ boss_name: "鬼上司" }`（4 キーのいずれも含まない）を送ると、`warnings` は空配列である
 - [ ] `{ morning_meeting_time: "08:30" }` を保存した後に `{ morning_meeting_time: "08:30" }` をもう一度送ると、`warnings` は朝会の 1 件を持つ（前回の警告の有無を記憶しない）
 
