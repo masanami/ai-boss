@@ -324,7 +324,7 @@ function formatEvidenceInfo(evidenceRequired: boolean, evidenceCount: number): s
 // タスク名は1行のラベルとして埋め込む（Issue #712）。改行（\r\n・\n・\r）は
 // 空白 1 つへ畳み、行が増えてセクションの区切りを壊さないようにする。
 // `\r\n` は 1 つの改行として扱う（空白 2 つにしない）。
-function toSingleLineTitle(title: string): string {
+export function toSingleLineTitle(title: string): string {
   return title.replace(/\r\n|\r|\n/g, " ");
 }
 

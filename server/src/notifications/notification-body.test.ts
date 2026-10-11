@@ -140,6 +140,23 @@ describe("generateNotificationBody", () => {
     expect(userMessage).toContain("L2");
   });
 
+  // #712: タスク名の改行で「対象タスク:」の 1 行が割れないよう、ペルソナの
+  // プロンプトと同じ規則で 1 行に畳む（ローカル Codex の medium・PR #715）。
+  it("folds line breaks in the task title into single spaces in the user message", async () => {
+    streamBossMessageMock.mockResolvedValue(fakeTextMessage("着手しろ"));
+
+    await generateNotificationBody(portFor(db), env, {
+      ruleType: "todo_stall",
+      escalationLevel: 2,
+      task: makeTask({ title: "見積書\r\n作成\nと\r送付" }),
+      now,
+    });
+
+    const request = streamBossMessageMock.mock.calls[0][1];
+    const userMessage = request.messages[0].content as string;
+    expect(userMessage).toContain("対象タスク: 見積書 作成 と 送付");
+  });
+
   it("uses a small max_tokens for cost minimization", async () => {
     streamBossMessageMock.mockResolvedValue(fakeTextMessage("着手しろ"));
 

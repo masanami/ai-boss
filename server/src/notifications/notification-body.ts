@@ -2,7 +2,7 @@ import type { Db } from "../db/db-port.js";
 import { resolveBossSettingsFrom, type BossSettings } from "../boss/boss-settings.js";
 import { resolveLlmSelection } from "../llm/llm-selection.js";
 import { readSettingsSnapshot } from "../settings/settings-repository.js";
-import { buildPersonaPrompt } from "../boss/persona-prompt.js";
+import { buildPersonaPrompt, toSingleLineTitle } from "../boss/persona-prompt.js";
 import { stripHtmlTags } from "../lib/strip-html-tags.js";
 import {
   createClaudeClient,
@@ -94,7 +94,7 @@ export const ESCALATION_LEVEL_LABELS: Record<EscalationLevel, string> = {
 
 function buildUserInstruction(request: NotificationBodyRequest): string {
   const taskLine = request.task
-    ? `対象タスク: ${request.task.title}`
+    ? `対象タスク: ${toSingleLineTitle(request.task.title)}`
     : "対象タスク: 特定のタスクに紐付かない";
   const silenceHint =
     request.ruleType === "silence" && request.escalationLevel === 1
