@@ -90,6 +90,25 @@ describe("TaskCard", () => {
   });
 
   describe("未確認の印 (Issue #713, #561 S3)", () => {
+    it("ties the 未確認 text to the title heading as part of its accessible description", () => {
+      render(
+        <TaskCard
+          task={{ ...BASE_TASK, id: 42 }}
+          onStatusChange={vi.fn()}
+          onEdit={vi.fn()}
+          mentoringUnconfirmed
+        />,
+      );
+
+      expect(
+        screen.getByRole("heading", {
+          level: 3,
+          name: "資料を作る",
+          description: "#42 未確認",
+        }),
+      ).toBeInTheDocument();
+    });
+
     it("shows the 未確認 text when mentoringUnconfirmed is true", () => {
       render(
         <TaskCard

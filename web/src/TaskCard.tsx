@@ -127,6 +127,7 @@ function TaskCard({
   const [isEditing, setIsEditing] = useState(false);
   // `#<id>` の span の DOM id。見出し・編集フォームの説明に結ぶ（Issue #694）
   const taskIdElementId = useId();
+  const unconfirmedElementId = useId();
   const [title, setTitle] = useState(task.title);
   const [description, setDescription] = useState(task.description ?? "");
   const [priority, setPriority] = useState<TaskPriority | "">(
@@ -410,11 +411,21 @@ function TaskCard({
         <span className="task-card-id" id={taskIdElementId}>
           {`#${task.id}`}
         </span>
-        <h3 aria-describedby={taskIdElementId}>{task.title}</h3>
+        <h3
+          aria-describedby={
+            mentoringUnconfirmed
+              ? `${taskIdElementId} ${unconfirmedElementId}`
+              : taskIdElementId
+          }
+        >
+          {task.title}
+        </h3>
         {mentoringUnconfirmed && (
-          // 色やアイコンだけで表さず、文言を持つテキストで描く（アクセシビリティ）
+          // 色やアイコンだけで表さず、文言を持つテキストで描く（アクセシビリティ）。
+          // 見出しジャンプでも読まれるよう、`#<id>` と同じく見出しの説明に結ぶ（#694 と同じ形）
           <span
             className="task-card-unconfirmed"
+            id={unconfirmedElementId}
             title="見積もり・進め方がまだ確認されていません。着手時にボスと相談できます"
           >
             未確認
