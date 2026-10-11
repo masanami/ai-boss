@@ -2847,18 +2847,35 @@ describe("タスク着手時のメンタリングの促し (Issue #566, S1)", ()
   }
 
   /**
+   * タスクボードはマウント時に `GET /api/decisions` を 1 回取得する（Issue
+   * #713 / #561 S3。S1 の遷移時の取得とは独立で、1 回の操作で 2 回呼ばれること
+   * は許容する〔仮定 17〕）。S1 の取得の回数・順序を数えるテストは、この
+   * マウント時の取得を除いて数える。
+   */
+  const BOARD_MOUNT_DECISIONS_FETCHES = 1;
+
+  /**
    * `GET /api/decisions` の応答を、呼ばれた順に 1 件ずつテスト側から解決・
    * 失敗させる。取得の完了順の逆転（AC-16b〜16e）を作るために使う。
+   * 先頭のタスクボードのマウント時の取得（`BOARD_MOUNT_DECISIONS_FETCHES`）は
+   * 記録なしで即座に解決し、`callCount`・`resolve(index)`・`reject(index)` の
+   * 対象にしない（index 0 は S1 の最初の遷移時の取得）。
    */
   function createDecisionsQueue() {
     const pending: {
       resolve: (records: DecisionRecord[]) => void;
       reject: (error: Error) => void;
     }[] = [];
-    const respond = () =>
-      new Promise<DecisionRecord[]>((resolve, reject) => {
+    let skipped = 0;
+    const respond = () => {
+      if (skipped < BOARD_MOUNT_DECISIONS_FETCHES) {
+        skipped += 1;
+        return Promise.resolve<DecisionRecord[]>([]);
+      }
+      return new Promise<DecisionRecord[]>((resolve, reject) => {
         pending.push({ resolve, reject });
       });
+    };
     return {
       respond,
       get callCount() {
@@ -3089,7 +3106,9 @@ describe("タスク着手時のメンタリングの促し (Issue #566, S1)", ()
       render(<AppLayout />);
       await openBoardWith(["資料を作る"]);
       await changeStatus("資料を作る", "in_progress");
-      await waitFor(() => expect(decisionsCalls).toBe(1));
+      await waitFor(() =>
+        expect(decisionsCalls).toBe(BOARD_MOUNT_DECISIONS_FETCHES + 1),
+      );
       await flushAsync();
 
       expect(queryPrompt()).toBeNull();
@@ -3116,7 +3135,9 @@ describe("タスク着手時のメンタリングの促し (Issue #566, S1)", ()
       render(<AppLayout />);
       await openBoardWith(["資料を作る"]);
       await changeStatus("資料を作る", "in_progress");
-      await waitFor(() => expect(decisionsCalls).toBe(1));
+      await waitFor(() =>
+        expect(decisionsCalls).toBe(BOARD_MOUNT_DECISIONS_FETCHES + 1),
+      );
       await flushAsync();
 
       expect(queryPrompt()).toBeNull();
@@ -3240,7 +3261,9 @@ describe("タスク着手時のメンタリングの促し (Issue #566, S1)", ()
       render(<AppLayout />);
       await openBoardWith(["資料を作る"]);
       await changeStatus("資料を作る", "in_progress");
-      await waitFor(() => expect(decisionsCalls).toBe(1));
+      await waitFor(() =>
+        expect(decisionsCalls).toBe(BOARD_MOUNT_DECISIONS_FETCHES + 1),
+      );
       await flushAsync();
 
       expect(queryPrompt()).toBeNull();
@@ -3725,5 +3748,109 @@ describe("タスク着手時のメンタリングの促し (Issue #566, S1)", ()
         expect(within(prompt).getByRole("button", { name: "メンタリングする" })).toBeEnabled(),
       );
     });
+  });
+});
+
+// Issue #713 / #561 S3（決定12）: タスクカードの未確認の印。TaskBoard 単体の
+// 有無（AC-56〜66）は TaskBoard.test.tsx が持ち、ここは AppLayout を通した
+// ビューの切替による再取得（AC-67）と朝会中の表示（AC-68）を固定する。
+describe("タスクカードの未確認の印 (Issue #713, #561 S3)", () => {
+  const MARK = "未確認";
+
+  function mentoringRecord(taskId: number): DecisionRecord {
+    return {
+      id: 500 + taskId,
+      session_id: 1,
+      task_id: taskId,
+      task_title: `task-${taskId}`,
+      content: "進め方を確認した",
+      rationale: null,
+      status: "active",
+      kind: "mentoring",
+      created_at: "2026-07-05T00:00:00.000Z",
+    };
+  }
+
+  function cardOf(title: string): HTMLElement {
+    const card = within(screen.getByRole("main", { name: "タスクボード" }))
+      .getByRole("heading", { name: title })
+      .closest(".task-card");
+    if (!(card instanceof HTMLElement)) {
+      throw new Error(`task card not found: ${title}`);
+    }
+    return card;
+  }
+
+  it("refetches the decisions each time the tasks view is shown, so the mark disappears once a mentoring record exists (AC-67)", async () => {
+    const x = makeTask({ id: 1, title: "資料を作る", status: "todo", estimated_minutes: 30 });
+    // 2 回目の取得が完了したことを観測するための番兵（記録が無いまま印が出る）
+    const sentinel = makeTask({ id: 2, title: "番兵", status: "todo", estimated_minutes: 10 });
+    let decisionsCalls = 0;
+    vi.stubGlobal(
+      "fetch",
+      createRoutedFetchMock({
+        tasks: [x, sentinel],
+        decisions: () => {
+          decisionsCalls += 1;
+          return decisionsCalls === 1 ? [] : [mentoringRecord(1)];
+        },
+      }),
+    );
+
+    render(<AppLayout />);
+    fireEvent.click(screen.getByRole("button", { name: "タスク" }));
+    await waitFor(() =>
+      expect(within(cardOf("資料を作る")).getByText(MARK)).toBeInTheDocument(),
+    );
+    expect(decisionsCalls).toBe(1);
+
+    fireEvent.click(screen.getByRole("button", { name: "ダッシュボード" }));
+    fireEvent.click(screen.getByRole("button", { name: "タスク" }));
+
+    await waitFor(() =>
+      expect(within(cardOf("番兵")).getByText(MARK)).toBeInTheDocument(),
+    );
+    expect(decisionsCalls).toBe(2);
+    expect(within(cardOf("資料を作る")).queryByText(MARK)).not.toBeInTheDocument();
+  });
+
+  it("shows the mark on unconfirmed todo tasks during a morning meeting too (AC-68)", async () => {
+    const unestimated = makeTask({ id: 1, title: "見積もり無し", status: "todo", estimated_minutes: null });
+    const noRecord = makeTask({ id: 2, title: "記録無し", status: "todo", estimated_minutes: 30 });
+    const confirmed = makeTask({ id: 3, title: "確認済み", status: "todo", estimated_minutes: 30 });
+    const morningSession: ChatSession = {
+      id: 20,
+      type: "morning",
+      started_at: new Date().toISOString(),
+      ended_at: null,
+      summary: null,
+    };
+    const fetchMock = createRoutedFetchMock({
+        tasks: [unestimated, noRecord, confirmed],
+        sessions: [morningSession],
+        decisions: [mentoringRecord(3)],
+      });
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(<AppLayout />);
+    fireEvent.click(screen.getByRole("button", { name: "タスク" }));
+    await waitFor(() =>
+      expect(within(cardOf("記録無し")).getByText(MARK)).toBeInTheDocument(),
+    );
+    // 会中の条件が成立している（カードの「メンタリングする」が出ない）。ボタンは
+    // チャットの復元が終わるまでも出ないので、セッション一覧の取得が済んで復元が
+    // 落ち着くまで流してから不在を確かめる（読み込み中の不在で通らないように）。
+    await waitFor(() =>
+      expect(fetchMock).toHaveBeenCalledWith("/api/sessions"),
+    );
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    });
+    expect(
+      screen.queryByRole("button", { name: "メンタリングする" }),
+    ).not.toBeInTheDocument();
+
+    expect(within(cardOf("見積もり無し")).getByText(MARK)).toBeInTheDocument();
+    expect(within(cardOf("確認済み")).queryByText(MARK)).not.toBeInTheDocument();
   });
 });

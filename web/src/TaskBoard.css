@@ -163,6 +163,20 @@
   font-variant-numeric: tabular-nums;
 }
 
+/* 未確認の印（Issue #713 / #561 S3）。色だけに頼らず文言「未確認」を枠付きの
+   小さなバッジで描く。長いタイトルが折り返しても縮まない */
+.task-card-unconfirmed {
+  flex-shrink: 0;
+  margin-left: auto;
+  padding: 0 0.4rem;
+  font-size: 0.7rem;
+  font-weight: 600;
+  color: var(--color-text-muted);
+  border: 1px solid var(--color-border);
+  border-radius: 999px;
+  white-space: nowrap;
+}
+
 .task-card p {
   margin: 0;
   font-size: 0.8rem;
