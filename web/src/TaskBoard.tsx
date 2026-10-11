@@ -5,6 +5,8 @@ import TaskForm from "./TaskForm";
 import type { Task, TaskStatus } from "./task";
 import type { UseTasksResult } from "./use-tasks";
 import { TASK_DRAG_DATA_TYPE } from "./task-dnd";
+import { isMentoringUnconfirmed } from "./task-start-mentoring";
+import { useDecisions } from "./use-decisions";
 import { describeTasksApiError } from "./tasks-api";
 import {
   isWithinRecentLocalDays,
@@ -88,6 +90,11 @@ function TaskBoard({
   onShowTaskRecords,
 }: TaskBoardProps) {
   const { tasks, status, addTask, editTask, refresh } = tasksState;
+  // 未確認の印の判定に使うメンタリング記録（Issue #713 / #561 S3 決定12）。
+  // ボードのマウント時に 1 回だけ取得する。ビューを離れて戻るとボードが
+  // 再マウントされるので、メンタリングを終えて戻ったときに取り直される。
+  // S1 の遷移時の取得（`use-task-start-mentoring-prompt.ts`）とは共有しない。
+  const { decisions, status: decisionsStatus } = useDecisions();
   const [actionError, setActionError] = useState<string | null>(null);
   // ドラッグ中にハイライトすべきドロップ先カラム（Issue #122）。
   const [dragOverStatus, setDragOverStatus] = useState<TaskStatus | null>(
@@ -195,6 +202,23 @@ function TaskBoard({
     void runAction(editTask(id, { status: columnStatus }));
   };
 
+  // 未確認の印を出すか。印は `todo` のカードだけ（着手前のタスクの予約を示す
+  // もの。決定12）。見積もりが空なら記録を見るまでもなく未確認。見積もり済み
+  // のタスクは、取得が成功して記録が無いと分かったときだけ未確認とし、取得中・
+  // 失敗時は促さない側に倒す（記録が分からないまま「未確認」と言わない）。
+  // 取得失敗は画面に出さない。
+  const showsUnconfirmedMark = (task: Task): boolean => {
+    if (task.status !== "todo") {
+      return false;
+    }
+    if (task.estimated_minutes === null) {
+      return true;
+    }
+    return (
+      decisionsStatus === "ready" && isMentoringUnconfirmed(task, decisions)
+    );
+  };
+
   // 「今」はレンダリングのたびに 1 回取得する（明示的な仮定 5・前例:
   // TodaySummary.tsx。clock prop や時計監視タイマーは新設しない）。
   const now = new Date();
@@ -272,6 +296,7 @@ function TaskBoard({
                         onStartMentoring={onStartMentoring}
                         startMentoringDisabled={startMentoringDisabled}
                         onShowTaskRecords={onShowTaskRecords}
+                        mentoringUnconfirmed={showsUnconfirmedMark(task)}
                       />
                     </li>
                   ))}

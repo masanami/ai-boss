@@ -89,6 +89,53 @@ describe("TaskCard", () => {
     ).toBeInTheDocument();
   });
 
+  describe("未確認の印 (Issue #713, #561 S3)", () => {
+    it("shows the 未確認 text when mentoringUnconfirmed is true", () => {
+      render(
+        <TaskCard
+          task={BASE_TASK}
+          onStatusChange={vi.fn()}
+          onEdit={vi.fn()}
+          mentoringUnconfirmed
+        />,
+      );
+
+      expect(screen.getByText("未確認")).toBeInTheDocument();
+    });
+
+    it("shows no mark when mentoringUnconfirmed is false or omitted", () => {
+      const { rerender } = render(
+        <TaskCard
+          task={BASE_TASK}
+          onStatusChange={vi.fn()}
+          onEdit={vi.fn()}
+          mentoringUnconfirmed={false}
+        />,
+      );
+      expect(screen.queryByText("未確認")).not.toBeInTheDocument();
+
+      rerender(
+        <TaskCard task={BASE_TASK} onStatusChange={vi.fn()} onEdit={vi.fn()} />,
+      );
+      expect(screen.queryByText("未確認")).not.toBeInTheDocument();
+    });
+
+    it("keeps the title heading's accessible name to the title alone", () => {
+      render(
+        <TaskCard
+          task={BASE_TASK}
+          onStatusChange={vi.fn()}
+          onEdit={vi.fn()}
+          mentoringUnconfirmed
+        />,
+      );
+
+      expect(
+        screen.getByRole("heading", { name: "資料を作る" }),
+      ).toBeInTheDocument();
+    });
+  });
+
   it("shows the task id in the same #<id> notation the boss uses (#688)", () => {
     render(
       <TaskCard

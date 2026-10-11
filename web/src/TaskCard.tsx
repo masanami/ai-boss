@@ -53,6 +53,13 @@ interface TaskCardProps {
    * ので `startMentoringDisabled` の対象にもしない。
    */
   onShowTaskRecords?: ((task: Task) => void) | null;
+  /**
+   * 見積もり・進め方が未確認の `todo` のカードに「未確認」の印を描く（Issue
+   * #713 / #561 S3 決定12）。判定（`todo` か・取得中や失敗時の扱い）は呼び出し
+   * 元が持ち、このコンポーネントは真偽を描くだけ。未指定は偽（印なし）。
+   * 会の種別・`onStartMentoring` の有無とは連動させない。
+   */
+  mentoringUnconfirmed?: boolean;
 }
 
 const PRIORITY_LABEL: Record<TaskPriority, string> = {
@@ -115,6 +122,7 @@ function TaskCard({
   onStartMentoring,
   startMentoringDisabled = false,
   onShowTaskRecords,
+  mentoringUnconfirmed = false,
 }: TaskCardProps) {
   const [isEditing, setIsEditing] = useState(false);
   // `#<id>` の span の DOM id。見出し・編集フォームの説明に結ぶ（Issue #694）
@@ -403,6 +411,15 @@ function TaskCard({
           {`#${task.id}`}
         </span>
         <h3 aria-describedby={taskIdElementId}>{task.title}</h3>
+        {mentoringUnconfirmed && (
+          // 色やアイコンだけで表さず、文言を持つテキストで描く（アクセシビリティ）
+          <span
+            className="task-card-unconfirmed"
+            title="見積もり・進め方がまだ確認されていません。着手時にボスと相談できます"
+          >
+            未確認
+          </span>
+        )}
       </div>
       {task.description !== null && task.description !== "" && (
         <p>{task.description}</p>

@@ -1,6 +1,15 @@
+import { useState } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import {
+  act,
+  fireEvent,
+  render,
+  screen,
+  waitFor,
+  within,
+} from "@testing-library/react";
 import TaskBoard from "./TaskBoard";
+import type { DecisionRecord } from "./decision";
 import type { Task } from "./task";
 import type { UseTasksResult } from "./use-tasks";
 import { TASK_DRAG_DATA_TYPE } from "./task-dnd";
@@ -105,9 +114,21 @@ function expandTerminalColumn(label: "完了" | "中止") {
 }
 
 describe("TaskBoard", () => {
+  // TaskBoard はマウント時に GET /api/decisions を取得する（Issue #713 /
+  // #561 S3 決定12）。既定は永久に解決しない fetch にして、印と無関係な
+  // テストが取得完了後の setState（act 警告）を起こさないようにする。印の
+  // テストは describe 内で応答を差し替える。
+  beforeEach(() => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(() => new Promise(() => {})),
+    );
+  });
+
   // 直近ウィンドウのテストだけが Date を固定する。実タイマーのままの
   // テストでは no-op なので、既存テストの挙動は変わらない。
   afterEach(() => {
+    vi.unstubAllGlobals();
     vi.useRealTimers();
   });
 
@@ -1482,6 +1503,283 @@ describe("TaskBoard", () => {
       );
 
       expect(doneToggle).toHaveAttribute("aria-expanded", "false");
+    });
+  });
+  // Issue #713 / #561 S3（決定12）: `todo` で「未確認」のカードの印。印は文言
+  // 「未確認」を含むテキストで、取得中・失敗時は `estimated_minutes === null`
+  // のカードにだけ出す。
+  describe("タスクカードの未確認の印 (Issue #713, #561 S3)", () => {
+    const MARK = "未確認";
+
+    function mentoringRecord(
+      taskId: number,
+      overrides: Partial<DecisionRecord> = {},
+    ): DecisionRecord {
+      return {
+        id: 500 + taskId,
+        session_id: 1,
+        task_id: taskId,
+        task_title: `task-${taskId}`,
+        content: "進め方を確認した",
+        rationale: null,
+        status: "active",
+        kind: "mentoring",
+        created_at: "2026-07-05T00:00:00.000Z",
+        ...overrides,
+      };
+    }
+
+    /** `GET /api/decisions` を成功（records）で返す fetch を差し込む。 */
+    function stubDecisions(records: DecisionRecord[]) {
+      const fetchMock = vi.fn((url: string) =>
+        url === "/api/decisions"
+          ? Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve(records) })
+          : Promise.reject(new Error(`unexpected fetch call: ${url}`)),
+      );
+      vi.stubGlobal("fetch", fetchMock);
+      return fetchMock;
+    }
+
+    /** `GET /api/decisions` を失敗（500）で返す fetch を差し込む。 */
+    function stubDecisionsFailure() {
+      const fetchMock = vi.fn(() =>
+        Promise.resolve({
+          ok: false,
+          status: 500,
+          json: () => Promise.resolve({ error: "boom" }),
+        }),
+      );
+      vi.stubGlobal("fetch", fetchMock);
+      return fetchMock;
+    }
+
+    /** `GET /api/decisions` を解決しない fetch に差し込む（取得中のまま）。 */
+    function stubDecisionsPending() {
+      const fetchMock = vi.fn(() => new Promise(() => {}));
+      vi.stubGlobal("fetch", fetchMock);
+      return fetchMock;
+    }
+
+    /** 保留中の応答チェーン（fetch → json → setState）を流し切る。 */
+    async function flushAsync(): Promise<void> {
+      await act(async () => {
+        await new Promise((resolve) => setTimeout(resolve, 0));
+      });
+    }
+
+    function cardOf(title: string): HTMLElement {
+      const card = screen
+        .getByRole("heading", { name: title })
+        .closest(".task-card");
+      if (!(card instanceof HTMLElement)) {
+        throw new Error(`task card not found: ${title}`);
+      }
+      return card;
+    }
+
+    describe("印が出る", () => {
+      it("shows the mark on a todo task whose estimate is empty (AC-56)", async () => {
+        stubDecisions([]);
+        const task = makeTask({ id: 1, title: "資料を作る", status: "todo", estimated_minutes: null });
+
+        render(<TaskBoard tasksState={makeTasksState({ tasks: [task] })} />);
+
+        await waitFor(() =>
+          expect(within(cardOf("資料を作る")).getByText(MARK)).toBeInTheDocument(),
+        );
+      });
+
+      it("shows the mark on an estimated todo task that has no mentoring record once the lookup completes (AC-57)", async () => {
+        stubDecisions([]);
+        const task = makeTask({ id: 1, title: "資料を作る", status: "todo", estimated_minutes: 30 });
+
+        render(<TaskBoard tasksState={makeTasksState({ tasks: [task] })} />);
+
+        await waitFor(() =>
+          expect(within(cardOf("資料を作る")).getByText(MARK)).toBeInTheDocument(),
+        );
+      });
+
+      it("shows the mark when the task's only records are kind decision (AC-58)", async () => {
+        stubDecisions([mentoringRecord(1, { kind: "decision" })]);
+        const task = makeTask({ id: 1, title: "資料を作る", status: "todo", estimated_minutes: 30 });
+
+        render(<TaskBoard tasksState={makeTasksState({ tasks: [task] })} />);
+
+        await waitFor(() =>
+          expect(within(cardOf("資料を作る")).getByText(MARK)).toBeInTheDocument(),
+        );
+      });
+
+      it("shows the mark on an unestimated todo task even when the decisions fetch fails (AC-59)", async () => {
+        const fetchMock = stubDecisionsFailure();
+        const task = makeTask({ id: 1, title: "資料を作る", status: "todo", estimated_minutes: null });
+
+        render(<TaskBoard tasksState={makeTasksState({ tasks: [task] })} />);
+        await waitFor(() => expect(fetchMock).toHaveBeenCalledWith("/api/decisions"));
+        await flushAsync();
+
+        expect(within(cardOf("資料を作る")).getByText(MARK)).toBeInTheDocument();
+      });
+
+      it("fetches GET /api/decisions exactly once on mount (FR-20)", async () => {
+        const fetchMock = stubDecisions([]);
+        const task = makeTask({ id: 1, title: "資料を作る", status: "todo", estimated_minutes: 30 });
+
+        render(<TaskBoard tasksState={makeTasksState({ tasks: [task] })} />);
+        await flushAsync();
+
+        expect(fetchMock).toHaveBeenCalledTimes(1);
+        expect(fetchMock).toHaveBeenCalledWith("/api/decisions");
+      });
+    });
+
+    describe("印が出ない", () => {
+      // 兄弟の sentinel（記録なし・見積もり済み＝取得完了後に必ず印が出る）が
+      // 印を出すのを待ってから、対象のカードに印が無いことを確かめる。取得が
+      // 完了する前の「まだ印が出ていない」を不在の根拠にしないため。
+      async function sentinelMarked() {
+        await waitFor(() =>
+          expect(within(cardOf("sentinel")).getByText(MARK)).toBeInTheDocument(),
+        );
+      }
+      const sentinel = () =>
+        makeTask({ id: 99, title: "sentinel", status: "todo", estimated_minutes: 10 });
+
+      it("does not show the mark on an estimated todo task with a mentoring record (AC-60)", async () => {
+        stubDecisions([mentoringRecord(1)]);
+        const task = makeTask({ id: 1, title: "資料を作る", status: "todo", estimated_minutes: 30 });
+
+        render(<TaskBoard tasksState={makeTasksState({ tasks: [task, sentinel()] })} />);
+        await sentinelMarked();
+
+        expect(within(cardOf("資料を作る")).queryByText(MARK)).not.toBeInTheDocument();
+      });
+
+      it("counts a withdrawn mentoring record as confirmed (AC-61)", async () => {
+        stubDecisions([mentoringRecord(1, { status: "withdrawn" })]);
+        const task = makeTask({ id: 1, title: "資料を作る", status: "todo", estimated_minutes: 30 });
+
+        render(<TaskBoard tasksState={makeTasksState({ tasks: [task, sentinel()] })} />);
+        await sentinelMarked();
+
+        expect(within(cardOf("資料を作る")).queryByText(MARK)).not.toBeInTheDocument();
+      });
+
+      it("treats an estimate of 0 as an estimate: no mark when a mentoring record exists (AC-62)", async () => {
+        stubDecisions([mentoringRecord(1)]);
+        const task = makeTask({ id: 1, title: "資料を作る", status: "todo", estimated_minutes: 0 });
+
+        render(<TaskBoard tasksState={makeTasksState({ tasks: [task, sentinel()] })} />);
+        await sentinelMarked();
+
+        expect(within(cardOf("資料を作る")).queryByText(MARK)).not.toBeInTheDocument();
+      });
+
+      // 4 つの状態それぞれでカードを実際に描画させ、そのカードに印が無いことを
+      // 確かめる（描画されていないカードで「印が無い」は恒真になる）。
+      // done / dropped は既定で畳まれ、直近 7 日の窓がある（#428・#515）。
+      it.each([
+        ["in_progress", "進行中"],
+        ["paused", "一時停止"],
+        ["done", "完了"],
+        ["dropped", "中止"],
+      ] as const)(
+        "does not show the mark on an unestimated %s task (AC-63)",
+        async (status, columnLabel) => {
+          vi.useFakeTimers({ toFake: ["Date"] });
+          vi.setSystemTime(NOW);
+          stubDecisions([]);
+          const task = makeTask({
+            id: 1,
+            title: "対象のタスク",
+            status,
+            estimated_minutes: null,
+            completed_at: status === "done" ? localIso(2026, 8, 10, 9) : null,
+            updated_at: localIso(2026, 8, 10, 9),
+          });
+
+          render(
+            <TaskBoard tasksState={makeTasksState({ tasks: [task, sentinel()] })} />,
+          );
+          if (status === "done" || status === "dropped") {
+            expandTerminalColumn(columnLabel as "完了" | "中止");
+          }
+          await sentinelMarked();
+
+          const column = screen.getByRole("region", { name: columnLabel });
+          expect(within(column).getByText("対象のタスク")).toBeInTheDocument();
+          expect(within(cardOf("対象のタスク")).queryByText(MARK)).not.toBeInTheDocument();
+        },
+      );
+
+      it("does not show the mark on an estimated todo task when the decisions fetch fails (AC-64)", async () => {
+        const fetchMock = stubDecisionsFailure();
+        const task = makeTask({ id: 1, title: "資料を作る", status: "todo", estimated_minutes: 30 });
+
+        render(<TaskBoard tasksState={makeTasksState({ tasks: [task] })} />);
+        await waitFor(() => expect(fetchMock).toHaveBeenCalledWith("/api/decisions"));
+        await flushAsync();
+
+        expect(cardOf("資料を作る")).toBeInTheDocument();
+        expect(within(cardOf("資料を作る")).queryByText(MARK)).not.toBeInTheDocument();
+        // エラーは画面に出さない
+        expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+      });
+
+      it("does not show the mark on an estimated todo task while the decisions fetch is still pending (AC-65)", async () => {
+        const fetchMock = stubDecisionsPending();
+        const task = makeTask({ id: 1, title: "資料を作る", status: "todo", estimated_minutes: 30 });
+        const unestimated = makeTask({ id: 2, title: "見積もり無し", status: "todo", estimated_minutes: null });
+
+        render(<TaskBoard tasksState={makeTasksState({ tasks: [task, unestimated] })} />);
+        await waitFor(() => expect(fetchMock).toHaveBeenCalledWith("/api/decisions"));
+        await flushAsync();
+
+        // 見積もり無しの印は取得中でも出る（対の観測。取得中のまま描画されている）
+        expect(within(cardOf("見積もり無し")).getByText(MARK)).toBeInTheDocument();
+        expect(within(cardOf("資料を作る")).queryByText(MARK)).not.toBeInTheDocument();
+      });
+    });
+
+    describe("状態の変化と表示の条件", () => {
+      it("removes the mark from a card when its status is changed to in_progress, without refetching decisions (AC-66)", async () => {
+        const fetchMock = stubDecisions([]);
+
+        // 共有 tasks 状態の代役: editTask が status を更新して再描画させる
+        function Harness() {
+          const [tasks, setTasks] = useState<Task[]>([
+            makeTask({ id: 1, title: "資料を作る", status: "todo", estimated_minutes: 30 }),
+          ]);
+          const tasksState = makeTasksState({
+            tasks,
+            editTask: vi.fn((id: number, patch: { status?: Task["status"] }) => {
+              setTasks((current) =>
+                current.map((t) => (t.id === id ? { ...t, ...patch } : t)),
+              );
+              return Promise.resolve();
+            }) as unknown as UseTasksResult["editTask"],
+          });
+          return <TaskBoard tasksState={tasksState} />;
+        }
+
+        render(<Harness />);
+        await waitFor(() =>
+          expect(within(cardOf("資料を作る")).getByText(MARK)).toBeInTheDocument(),
+        );
+
+        fireEvent.change(within(cardOf("資料を作る")).getByLabelText("ステータス"), {
+          target: { value: "in_progress" },
+        });
+
+        await waitFor(() =>
+          expect(
+            within(screen.getByRole("region", { name: "進行中" })).getByText("資料を作る"),
+          ).toBeInTheDocument(),
+        );
+        expect(within(cardOf("資料を作る")).queryByText(MARK)).not.toBeInTheDocument();
+        expect(fetchMock).toHaveBeenCalledTimes(1);
+      });
     });
   });
 });
