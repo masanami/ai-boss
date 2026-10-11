@@ -321,6 +321,13 @@ function formatEvidenceInfo(evidenceRequired: boolean, evidenceCount: number): s
   return `${evidenceRequired ? "必須" : "不要"}・添付${evidenceCount}件`;
 }
 
+// タスク名は1行のラベルとして埋め込む（Issue #712）。改行（\r\n・\n・\r）は
+// 空白 1 つへ畳み、行が増えてセクションの区切りを壊さないようにする。
+// `\r\n` は 1 つの改行として扱う（空白 2 つにしない）。
+export function toSingleLineTitle(title: string): string {
+  return title.replace(/\r\n|\r|\n/g, " ");
+}
+
 function formatTaskLine(
   task: Task,
   includeId: boolean,
@@ -338,7 +345,7 @@ function formatTaskLine(
     task.committed_start_at === null
       ? ""
       : ` / 着手の約束: ${formatStoredDateTime(task.committed_start_at)}`;
-  return `- [${status}] ${idPart}${task.title}（優先度: ${priority} / エビデンス: ${evidenceInfo} / 締切: ${dueAt}${commitmentPart}）`;
+  return `- [${status}] ${idPart}${toSingleLineTitle(task.title)}（優先度: ${priority} / エビデンス: ${evidenceInfo} / 締切: ${dueAt}${commitmentPart}）`;
 }
 
 function formatTaskSection(
@@ -852,7 +859,7 @@ function formatUnconfirmedTasksSection(
     .filter((task) => task.status === "todo")
     .map((task) => ({ task, parts: resolveUnconfirmedParts(task, mentoredTaskIds) }))
     .filter(({ parts }) => parts.length > 0)
-    .map(({ task, parts }) => `- #${task.id} ${task.title}（未確認: ${parts.join("・")}）`);
+    .map(({ task, parts }) => `- #${task.id} ${toSingleLineTitle(task.title)}（未確認: ${parts.join("・")}）`);
   if (lines.length === 0) {
     return null;
   }

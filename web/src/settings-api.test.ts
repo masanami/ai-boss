@@ -116,6 +116,23 @@ describe("updateSettings", () => {
     expect(result.settings).not.toHaveProperty("warnings");
   });
 
+  // #712: 応答に warnings が欠けても警告ありとして扱わない（空配列にそろえる）。
+  it("returns warnings as [] when the 200 response has no warnings key (#712)", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue({
+        ok: true,
+        status: 200,
+        json: () => Promise.resolve({ settings: SAMPLE_SETTINGS }),
+      }),
+    );
+
+    const result = await updateSettings({ boss_name: "ボス" });
+
+    expect(result.settings).toEqual(SAMPLE_SETTINGS);
+    expect(result.warnings).toEqual([]);
+  });
+
   it("throws with the server error message when the update fails", async () => {
     vi.stubGlobal(
       "fetch",

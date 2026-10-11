@@ -47,5 +47,7 @@ export async function updateSettings(
   }
   const { settings, warnings } =
     (await response.json()) as UpdateSettingsResult;
-  return { settings, warnings };
+  // 応答に warnings が欠けたときは警告なしとして扱う（呼び出し側が
+  // undefined を触らないよう空配列にそろえる）。
+  return { settings, warnings: warnings ?? [] };
 }

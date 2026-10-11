@@ -153,3 +153,33 @@ describe("findMeetingTimeWarnings — 警告 1 件の形（決定 18・22）", (
     );
   });
 });
+
+// 解析できない時刻（書式は保存時に保証済みのため通常は来ない。万一来たとき
+// 根拠の無い警告を出さない）。
+describe("findMeetingTimeWarnings — 時刻を解析できない入力（#712）", () => {
+  it.each([
+    ["work_start", { work_start: "xx:yy" }],
+    ["work_end", { work_end: "" }],
+  ])("%s が解析できないとき、会が帯の外に見えても警告は 0 件である", (_name, patch) => {
+    expect(
+      findMeetingTimeWarnings({
+        ...DEFAULTS,
+        ...patch,
+        morning_meeting_time: "03:00",
+        evening_meeting_time: "23:00",
+      }),
+    ).toEqual([]);
+  });
+
+  it("朝会の時刻だけが解析できないとき、朝会は判定せず夕会は判定する", () => {
+    expect(
+      keysOf({ morning_meeting_time: "invalid", evening_meeting_time: "19:00" }),
+    ).toEqual(["evening_meeting_time"]);
+  });
+
+  it("夕会の時刻だけが解析できないとき、夕会は判定せず朝会は判定する", () => {
+    expect(
+      keysOf({ morning_meeting_time: "08:00", evening_meeting_time: "invalid" }),
+    ).toEqual(["morning_meeting_time"]);
+  });
+});
