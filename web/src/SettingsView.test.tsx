@@ -564,6 +564,30 @@ describe("SettingsView", () => {
       expect(screen.getByText("保存しました")).toBeInTheDocument();
     });
 
+    // #712: role="alert" の警告が出ても「保存しました」が読み上げから落ちないよう、
+    // 成功の文言は role="status" に置く。
+    it("警告ありの保存成功でも「保存しました」は role=status に表示される（#712）", async () => {
+      const fetchMock = stubGet();
+      fetchMock.mockResolvedValueOnce(
+        okPut({ ...SAMPLE_SETTINGS, morning_meeting_time: "08:30" }, [MORNING_WARNING]),
+      );
+
+      await renderAndSave(fetchMock);
+
+      expect(screen.getByRole("status")).toHaveTextContent("保存しました");
+      expect(screen.getByRole("alert")).toHaveTextContent(MORNING_WARNING.message);
+    });
+
+    it("警告なしの保存成功でも「保存しました」は role=status に表示され、role=alert は無い（#712）", async () => {
+      const fetchMock = stubGet();
+      fetchMock.mockResolvedValueOnce(okPut(SAMPLE_SETTINGS, []));
+
+      await renderAndSave(fetchMock);
+
+      expect(screen.getByRole("status")).toHaveTextContent("保存しました");
+      expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+    });
+
     it("警告が 2 件のとき、2 件の message がいずれも role=alert で表示される", async () => {
       const fetchMock = stubGet();
       fetchMock.mockResolvedValueOnce(

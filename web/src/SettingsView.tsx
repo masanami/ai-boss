@@ -378,7 +378,9 @@ function SettingsView() {
         {saveError !== null && <p role="alert">{saveError}</p>}
         {saveError === null && saveSuccess && (
           <div className="settings-save-feedback">
-            <p>保存しました</p>
+            {/* 警告の role="alert" と同時に出ても「保存しました」が読み上げから
+                落ちないよう、成功の文言は role="status" に置く（#712）。 */}
+            <p role="status">保存しました</p>
             {/* #708 決定 22: 会の時刻が帯の外なら、保存成功に並べて 1 件 1 行で
                 出す。閉じる操作は置かず、次の保存を始めた時点で消える。 */}
             {saveWarnings.map((warning) => (

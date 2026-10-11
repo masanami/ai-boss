@@ -2350,6 +2350,37 @@ describe("朝会の未確認セクションと予約の指示（Issue #706, 親 
     expect(taskListSection(withoutEstimate)).toContain("#6 ");
     expect(taskListSection(withoutEstimate)).toBe(taskListSection(withEstimate));
   });
+
+  // Issue #712: タスク名は1行のラベルとして埋め込む。改行（\r\n・\n・\r）は
+  // 空白 1 つへ畳み、行が増えてセクションの区切りを壊さないようにする。
+  describe.each([
+    ["\n", "LF"],
+    ["\r\n", "CRLF"],
+    ["\r", "CR"],
+  ])("タスク名に改行（%j: %s）を含むとき（Issue #712）", (newline) => {
+    const multiLine = makeTask({
+      id: 7,
+      title: `朝の${newline}資料作成`,
+      estimated_minutes: null,
+    });
+
+    it("「現在のタスク一覧」の行は 1 行のまま、改行が空白 1 つになる", () => {
+      const prompt = morningPrompt([multiLine], []);
+      const start = prompt.indexOf("現在のタスク一覧:");
+      const section = prompt.slice(start, prompt.indexOf("\n\n", start));
+
+      expect(section.split(/\r\n|\r|\n/)).toHaveLength(2);
+      expect(section).toContain("#7 朝の 資料作成（");
+    });
+
+    it("未確認セクションの行は 1 行のまま、改行が空白 1 つになる", () => {
+      const section = unconfirmedSection(morningPrompt([multiLine], []));
+
+      expect(section).toBeDefined();
+      expect(section!.split(/\r\n|\r|\n/)).toHaveLength(2);
+      expect(section).toContain("#7 朝の 資料作成（未確認: ");
+    });
+  });
 });
 
 describe("タスク起点メンタリングの見積もりの指示（Issue #706, 親 #561 決定10）", () => {
